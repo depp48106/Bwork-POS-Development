@@ -3,7 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-const dbPath = path.join(__dirname, 'database.sqlite');
+const dbFilename = process.env.NODE_ENV === 'production' ? 'database.sqlite' : 'database_test.sqlite';
+const dbPath = path.join(__dirname, dbFilename);
 const db = new sqlite3.Database(dbPath, (err) => {
   if (!err) {
     db.run("PRAGMA foreign_keys = ON;");
@@ -70,6 +71,8 @@ async function initDatabase() {
       classroom_capacity INTEGER DEFAULT 0,
       description TEXT,
       status TEXT DEFAULT 'active',
+      image_url TEXT,
+      category TEXT DEFAULT 'Meeting Room',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -79,6 +82,7 @@ async function initDatabase() {
       price REAL NOT NULL,
       category TEXT NOT NULL,
       status TEXT DEFAULT 'active',
+      image_url TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -117,9 +121,82 @@ async function initDatabase() {
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       role TEXT DEFAULT 'staff',
+      permissions TEXT,
+      fullname TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS roles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      label TEXT NOT NULL,
+      permissions TEXT NOT NULL,
+      is_system INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS quotations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_name TEXT NOT NULL,
+      department TEXT,
+      contact TEXT,
+      total_amount REAL NOT NULL,
+      status TEXT DEFAULT 'draft',
+      valid_until TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS quotation_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      quotation_id INTEGER REFERENCES quotations(id) ON DELETE CASCADE,
+      room_id INTEGER REFERENCES rooms(id),
+      service_id INTEGER REFERENCES services(id),
+      quantity INTEGER DEFAULT 1,
+      price REAL NOT NULL,
+      start_time TEXT,
+      end_time TEXT,
+      subtotal REAL NOT NULL,
+      layout TEXT DEFAULT 'standard',
+      booking_type TEXT DEFAULT 'hourly'
+    );
   `);
+
+  // Migration: Add permissions column to users if not exists
+  try {
+    await dbQuery.run('ALTER TABLE users ADD COLUMN permissions TEXT');
+    console.log('Migration: Added permissions column to users table.');
+  } catch (e) {}
+
+  // Migration: Add fullname column to users if not exists
+  try {
+    await dbQuery.run('ALTER TABLE users ADD COLUMN fullname TEXT');
+    console.log('Migration: Added fullname column to users table.');
+  } catch (e) {}
+
+  // Migration: Add image_url column to rooms if not exists
+  try {
+    await dbQuery.run('ALTER TABLE rooms ADD COLUMN image_url TEXT');
+    console.log('Migration: Added image_url column to rooms table.');
+  } catch (e) {}
+
+  // Migration: Add image_url column to services if not exists
+  try {
+    await dbQuery.run('ALTER TABLE services ADD COLUMN image_url TEXT');
+    console.log('Migration: Added image_url column to services table.');
+  } catch (e) {}
+
+  // Migration: Add category column to rooms if not exists
+  try {
+    await dbQuery.run("ALTER TABLE rooms ADD COLUMN category TEXT DEFAULT 'Meeting Room'");
+    console.log('Migration: Added category column to rooms table.');
+  } catch (e) {}
+
+  // Update existing users who have null permissions or fullnames
+  try {
+    await dbQuery.run("UPDATE users SET permissions = 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation' WHERE role = 'admin'");
+    await dbQuery.run("UPDATE users SET permissions = 'pos,pending,layout,history,quotations' WHERE role = 'staff'");
+    await dbQuery.run("UPDATE users SET fullname = 'ผู้ดูแลระบบหลัก' WHERE username = 'admin' AND (fullname IS NULL OR fullname = '')");
+    await dbQuery.run("UPDATE users SET fullname = 'พนักงานต้อนรับประจำกะ' WHERE username = 'staff' AND (fullname IS NULL OR fullname = '')");
+  } catch (e) {}
 
   // Migration: Add daily_rate column if not exists
   try {
@@ -152,6 +229,18 @@ async function initDatabase() {
   try {
     await dbQuery.run("ALTER TABLE rooms ADD COLUMN half_day_rate REAL DEFAULT 0");
     console.log('Migration: Added half_day_rate column to rooms table.');
+  } catch (e) {}
+
+  // Migration: Add booking type flag columns to rooms if not exists
+  try {
+    await dbQuery.run('ALTER TABLE rooms ADD COLUMN has_hourly INTEGER DEFAULT 1');
+    await dbQuery.run('ALTER TABLE rooms ADD COLUMN has_halfday INTEGER DEFAULT 0');
+    await dbQuery.run('ALTER TABLE rooms ADD COLUMN has_daily INTEGER DEFAULT 0');
+    // Backfill: set flags based on existing rate values
+    await dbQuery.run("UPDATE rooms SET has_hourly = 1 WHERE hourly_rate > 0");
+    await dbQuery.run("UPDATE rooms SET has_halfday = 1 WHERE half_day_rate > 0");
+    await dbQuery.run("UPDATE rooms SET has_daily = 1 WHERE daily_rate > 0");
+    console.log('Migration: Added has_hourly/has_halfday/has_daily columns to rooms table.');
   } catch (e) {}
 
   // Seed default rooms if empty
@@ -227,15 +316,42 @@ async function initDatabase() {
     await dbQuery.run('INSERT INTO settings (key, value) VALUES (?, ?)', ['onedrive_path', defaultBackupPath]);
   }
 
+  // Seed default settings for quotations if not exists
+  try {
+    const checkTerms = await dbQuery.get("SELECT value FROM settings WHERE key = 'quotation_terms'");
+    if (!checkTerms) {
+      await dbQuery.run("INSERT INTO settings (key, value) VALUES ('quotation_terms', '- ชำระมัดจำ 50% เพื่อจองคิวการใช้งาน\n- ส่วนที่เหลือชำระ ณ วันเข้าใช้งานบริการ\n- อัตราค่าบริการนี้รวมภาษีมูลค่าเพิ่มแล้ว')");
+    }
+    const checkSigner = await dbQuery.get("SELECT value FROM settings WHERE key = 'quotation_signer'");
+    if (!checkSigner) {
+      await dbQuery.run("INSERT INTO settings (key, value) VALUES ('quotation_signer', 'ผู้ดูแลระบบ')");
+    }
+    const checkValidDays = await dbQuery.get("SELECT value FROM settings WHERE key = 'quotation_valid_days'");
+    if (!checkValidDays) {
+      await dbQuery.run("INSERT INTO settings (key, value) VALUES ('quotation_valid_days', '7')");
+    }
+  } catch (e) {}
+
+  // Seed default roles if empty
+  const roleCount = await dbQuery.get('SELECT COUNT(*) as count FROM roles');
+  if (roleCount.count === 0) {
+    await dbQuery.run("INSERT INTO roles (name, label, permissions, is_system) VALUES (?, ?, ?, 1)", [
+      'admin', 'ผู้ดูแลระบบ (Admin)', 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation'
+    ]);
+    await dbQuery.run("INSERT INTO roles (name, label, permissions, is_system) VALUES (?, ?, ?, 1)", [
+      'staff', 'พนักงานต้อนรับ (Reception)', 'pos,pending,layout,history,quotations'
+    ]);
+  }
+
   // Seed default users if empty
   const userCount = await dbQuery.get('SELECT COUNT(*) as count FROM users');
   if (userCount.count === 0) {
     // default user: admin / admin123
-    await dbQuery.run('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', [
-      'admin', hashPassword('admin123'), 'admin'
+    await dbQuery.run('INSERT INTO users (username, password_hash, role, permissions, fullname) VALUES (?, ?, ?, ?, ?)', [
+      'admin', hashPassword('admin123'), 'admin', 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation', 'ผู้ดูแลระบบหลัก'
     ]);
-    await dbQuery.run('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', [
-      'staff', hashPassword('staff123'), 'staff'
+    await dbQuery.run('INSERT INTO users (username, password_hash, role, permissions, fullname) VALUES (?, ?, ?, ?, ?)', [
+      'staff', hashPassword('staff123'), 'staff', 'pos,pending,layout,history,quotations', 'พนักงานต้อนรับประจำกะ'
     ]);
   }
 

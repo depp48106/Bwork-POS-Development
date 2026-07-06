@@ -18,8 +18,7 @@ function ReceiptPrint({ booking, settings }) {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
+        minute: '2-digit'
       });
     } catch (e) {
       return dateString;
@@ -45,6 +44,7 @@ function ReceiptPrint({ booking, settings }) {
   };
 
   const itemCount = booking.items ? booking.items.length : 0;
+  const hasRoom = booking.items ? booking.items.some(item => !!item.room_id) : false;
 
   return (
     <div 
@@ -57,10 +57,24 @@ function ReceiptPrint({ booking, settings }) {
       }}
     >
       <div className="receipt-header">
+        {settings.logo_image && (
+          <div style={{ textAlign: 'center', marginBottom: '8px' }}>
+            <img 
+              src={settings.logo_image} 
+              alt="Logo" 
+              style={{ maxWidth: '80px', maxHeight: '50px', objectFit: 'contain' }} 
+            />
+          </div>
+        )}
         <div className="receipt-title" style={{ fontSize: '18px', fontWeight: 'bold' }}>
           {settings.company_name || 'บริษัทจองห้องประชุม'}
         </div>
-        <div className="receipt-sub" style={{ fontSize: '0.85em' }}>
+        {settings.company_address && (
+          <div className="receipt-address" style={{ fontSize: '0.8em', color: '#000000', whiteSpace: 'pre-line', marginTop: '4px', fontWeight: '600', textAlign: 'center' }}>
+            {settings.company_address}
+          </div>
+        )}
+        <div className="receipt-sub" style={{ fontSize: '0.85em', marginTop: '6px' }}>
           {settings.receipt_header || 'ใบรับจองและใบเสร็จรับเงิน'}
         </div>
       </div>
@@ -68,7 +82,7 @@ function ReceiptPrint({ booking, settings }) {
       <div className="receipt-divider" style={{ margin: '12px 0' }}></div>
 
       <div className="receipt-info-row" style={{ fontSize: '0.9em' }}>
-        <span>เลขที่ใบจอง:</span>
+        <span>เลขที่ใบเสร็จ:</span>
         <span style={{ fontWeight: 'bold' }}>#{String(booking.id).padStart(6, '0')}</span>
       </div>
       <div className="receipt-info-row" style={{ fontSize: '0.9em' }}>
@@ -76,7 +90,7 @@ function ReceiptPrint({ booking, settings }) {
         <span>{formatDateTime(booking.created_at)}</span>
       </div>
       <div className="receipt-info-row" style={{ fontSize: '0.9em' }}>
-        <span>ผู้ทำรายการจอง:</span>
+        <span>{hasRoom ? 'ชื่อผู้จองห้อง:' : 'ลูกค้า:'}</span>
         <span style={{ fontWeight: '600' }}>{booking.customer_name}</span>
       </div>
       {booking.department && (
@@ -121,13 +135,9 @@ function ReceiptPrint({ booking, settings }) {
                   {item.subtotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
-              {isRoom && item.start_time ? (
+              {isRoom && item.start_time && (
                 <div style={{ fontSize: '0.85em', color: '#000000', paddingLeft: '4px', marginTop: '2px', fontWeight: '700' }}>
-                  {formatPeriod(item.start_time, item.end_time)} • ราคาหน่วยละ: {item.price.toLocaleString('th-TH')} บาท
-                </div>
-              ) : (
-                <div style={{ fontSize: '0.8em', color: '#000000', paddingLeft: '4px', fontWeight: '600' }}>
-                  ราคาหน่วยละ: {item.price.toLocaleString('th-TH')} บาท
+                  {formatPeriod(item.start_time, item.end_time)}
                 </div>
               )}
             </div>

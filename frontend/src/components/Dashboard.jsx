@@ -77,7 +77,7 @@ function Dashboard() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
       {/* Header and Date Filter */}
-      <div className="tab-header" style={{ position: 'relative', zIndex: 10 }}>
+      <div className="tab-header">
         <div>
           <h1 className="tab-title">แดชบอร์ดสรุปผลการใช้งาน</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>วิเคราะห์รายได้ ยอดจองห้องประชุม และบริการเสริม</p>

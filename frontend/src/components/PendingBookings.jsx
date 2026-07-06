@@ -84,7 +84,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
           setSelectedBooking(detailData);
           setShowPayModal(false);
           setShowReceiptModal(true);
-          await sysAlert('💵 อัปเดตรายการชำระเงินสำเร็จเรียบร้อยแล้ว!');
+          await sysAlert('อัปเดตรายการชำระเงินสำเร็จเรียบร้อยแล้ว!');
           fetchBookings();
         }
       }
@@ -191,7 +191,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
       {/* Header Panel */}
-      <div className="tab-header" style={{ borderBottom: 'none', paddingBottom: 0 }}>
+      <div className="tab-header">
         <div>
           <h1 className="tab-title">รายการสถานะชำระเงิน (บิลค้างชำระ)</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
@@ -276,7 +276,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
           </div>
 
           <div style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-            💡 คลิกหัวตารางเพื่อจัดเรียงข้อมูลตามต้องการ
+             คลิกหัวตารางเพื่อจัดเรียงข้อมูลตามต้องการ
           </div>
         </div>
       </div>
@@ -477,7 +477,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
       )}
 
       {/* ========================================================= */}
-      {/* 💳 SELECT PAYMENT METHOD MODAL                             */}
+      {/*  SELECT PAYMENT METHOD MODAL                             */}
       {/* ========================================================= */}
       {showPayModal && selectedBooking && (
         <div style={{
@@ -513,7 +513,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
               <X size={18} />
             </button>
 
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0 }}>💰 ทำรายการรับชำระเงิน</h3>
+            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0 }}> ทำรายการรับชำระเงิน</h3>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
               ชำระบิลสำหรับคุณ <strong>{selectedBooking.customer_name}</strong> ยอดเงินสุทธิ <strong>{selectedBooking.total_amount.toLocaleString()} บาท</strong>
             </p>
@@ -539,7 +539,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
       )}
 
       {/* ========================================================= */}
-      {/* 📄 PRINTABLE RECEIPT MODAL OVERLAY                        */}
+      {/*  PRINTABLE RECEIPT MODAL OVERLAY                        */}
       {/* ========================================================= */}
       {showReceiptModal && selectedBooking && (
         <div style={{

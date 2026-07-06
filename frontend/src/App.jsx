@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, Database, KeyRound, X, Users, Cloud, Map, Clock } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu } from 'lucide-react';
 import BookingPOS from './components/BookingPOS';
 import Dashboard from './components/Dashboard';
 import HistoryLog from './components/History';
@@ -7,6 +7,7 @@ import SettingsPanel from './components/Settings';
 import ManagementPanel from './components/Management';
 import RoomLayout from './components/RoomLayout';
 import PendingBookings from './components/PendingBookings';
+import Quotations from './components/Quotations';
 
 function App() {
   const [activeTab, setActiveTab] = useState('pos');
@@ -22,6 +23,39 @@ function App() {
   // Collapsible Sidebar Submenus
   const [isManageOpen, setIsManageOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
+
+  // Hamburger Top Menu State
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+
+  // POS Checkout Cart States (lifted up for top menu display)
+  const [cartCount, setCartCount] = useState(0);
+  const [showCartSidebar, setShowCartSidebar] = useState(false);
+
+  // Auto-close submenus on activeTab changes
+  useEffect(() => {
+    setIsAdminOpen(false);
+    setIsMenuOpen(false);
+  }, [activeTab]);
+
+  // Quotation Cart State
+  const [quotationCartData, setQuotationCartData] = useState(null);
+
+  const handleExportToQuotation = (data) => {
+    setQuotationCartData(data);
+    setActiveTab('quotations');
+  };
+
+  // Check if current user has permission to view tab/menu
+  const hasPermission = (tabKey) => {
+    if (user && user.username === 'admin') return true;
+    if (!user) return false;
+    const permString = user.permissions || 'pos,pending,layout,history';
+    const perms = permString.split(',').map(p => p.trim());
+    if (tabKey === 'admin-management') {
+      return perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage');
+    }
+    return perms.includes(tabKey);
+  };
 
   // Change Password states
   const [showChangePassModal, setShowChangePassModal] = useState(false);
@@ -206,7 +240,7 @@ function App() {
                 id="username"
                 type="text"
                 className="login-input"
-                placeholder="ชื่อผู้ใช้งาน (เช่น admin)"
+                placeholder="ชื่อผู้ใช้งาน"
                 required
                 value={loginForm.username}
                 onChange={e => setLoginForm({ ...loginForm, username: e.target.value })}
@@ -219,7 +253,7 @@ function App() {
                 id="password"
                 type="password"
                 className="login-input"
-                placeholder="รหัสผ่าน (เช่น admin123)"
+                placeholder="รหัสผ่าน"
                 required
                 value={loginForm.password}
                 onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
@@ -232,10 +266,6 @@ function App() {
               <span>เข้าสู่ระบบความปลอดภัย</span>
             </button>
           </form>
-
-          <div className="login-demo-badge">
-            <span>สิทธิ์ผู้ใช้จำลอง: admin / admin123</span>
-          </div>
         </div>
       </div>
     );
@@ -257,194 +287,253 @@ function App() {
         </div>
       )}
 
-      {/* Sidebar Section */}
-      <aside className="sidebar">
-        <div className="brand">
-          <img src="/logo.jpg" alt="Logo" style={{ width: '30px', height: '30px', borderRadius: '6px', objectFit: 'contain', backgroundColor: '#ffffff', padding: '2px', boxShadow: '0 2px 6px rgba(0,0,0,0.1)' }} />
-          <span style={{ fontSize: '1.1rem', fontWeight: '800' }}>Bwork POS</span>
-        </div>
-
-        <nav style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          <ul className="nav-links" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <li>
-              <div 
-                className={`nav-item ${activeTab === 'pos' ? 'active' : ''}`}
-                onClick={() => setActiveTab('pos')}
-              >
-                <ShoppingCart size={20} />
-                <span>POS</span>
-              </div>
-            </li>
-
-            {/* Admin Only Dashboard */}
-            {user.role === 'admin' && (
-              <li>
-                <div 
-                  className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}
-                  onClick={() => setActiveTab('dashboard')}
-                >
-                  <LayoutDashboard size={20} />
-                  <span>Dashboard</span>
-                </div>
-              </li>
-            )}
-
-            <li>
-              <div 
-                className={`nav-item ${activeTab === 'pending' ? 'active' : ''}`}
-                onClick={() => setActiveTab('pending')}
-              >
-                <Clock size={20} />
-                <span>รายการสถานะชำระเงิน</span>
-              </div>
-            </li>
-
-            <li>
-              <div 
-                className={`nav-item ${activeTab === 'layout' ? 'active' : ''}`}
-                onClick={() => setActiveTab('layout')}
-              >
-                <Map size={20} />
-                <span>แผนผัง</span>
-              </div>
-            </li>
-
-            {/* Unified Main Menu: จัดการคลัง (Admin Only, No Submenus) */}
-            {user.role === 'admin' && (
-              <li>
-                <div 
-                  className={`nav-item ${activeTab === 'manage' ? 'active' : ''}`}
-                  onClick={() => setActiveTab('manage')}
-                >
-                  <Database size={20} />
-                  <span>จัดการคลัง</span>
-                </div>
-              </li>
-            )}
-
-            <li>
-              <div 
-                className={`nav-item ${activeTab === 'history' ? 'active' : ''}`}
-                onClick={() => setActiveTab('history')}
-              >
-                <History size={20} />
-                <span>ประวัติย้อนหลัง</span>
-              </div>
-            </li>
-
-            {/* Collapsible Main Menu: Admin management (Admin Only, placed at the bottom) */}
-            {user.role === 'admin' && (
-              <li style={{ marginTop: 'auto', borderTop: '1px dashed var(--border-color)', paddingTop: '12px' }}>
-                <div 
-                  className={`nav-item ${(activeTab === 'admin-users' || activeTab === 'admin-system' || activeTab === 'admin-backup') ? 'active-parent' : ''}`}
-                  onClick={() => setIsAdminOpen(!isAdminOpen)}
-                  style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <Sliders size={20} />
-                    <span>Admin management</span>
-                  </div>
-                  {isAdminOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                </div>
-                
-                {/* Indented submenu container with smooth slide transition */}
-                <div style={{
-                  maxHeight: isAdminOpen ? '180px' : '0px',
-                  overflow: 'hidden',
-                  transition: 'all 0.3s ease-in-out',
-                  paddingLeft: '14px',
-                  marginTop: isAdminOpen ? '4px' : '0px'
-                }}>
-                  <ul className="nav-links" style={{ gap: '4px' }}>
-                    <li>
-                      <div 
-                        className={`nav-item ${activeTab === 'admin-users' ? 'active' : ''}`}
-                        onClick={() => setActiveTab('admin-users')}
-                        style={{ padding: '10px 16px', fontSize: '0.875rem' }}
-                      >
-                        <Users size={16} />
-                        <span>จัดการสิทธิ์บัญชีผู้ใช้</span>
-                      </div>
-                    </li>
-                    <li>
-                      <div 
-                        className={`nav-item ${activeTab === 'admin-system' ? 'active' : ''}`}
-                        onClick={() => setActiveTab('admin-system')}
-                        style={{ padding: '10px 16px', fontSize: '0.875rem' }}
-                      >
-                        <Settings size={16} />
-                        <span>ตั้งค่าระบบ & ใบเสร็จ</span>
-                      </div>
-                    </li>
-                    <li>
-                      <div 
-                        className={`nav-item ${activeTab === 'admin-backup' ? 'active' : ''}`}
-                        onClick={() => setActiveTab('admin-backup')}
-                        style={{ padding: '10px 16px', fontSize: '0.875rem' }}
-                      >
-                        <Cloud size={16} />
-                        <span>สำรองข้อมูล OneDrive</span>
-                      </div>
-                    </li>
-                  </ul>
-                </div>
-              </li>
-            )}
-          </ul>
-        </nav>
-
-        <div className="sidebar-footer">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>ธีมการแสดงผล</span>
-            <button 
-              onClick={toggleTheme} 
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: '#38bdf8',
-                cursor: 'pointer'
-              }}
-            >
-              {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
-            </button>
+      {/* Top Navbar Header Section */}
+      <header className="top-navbar">
+        {/* Left Side: Logo & Hamburger Button */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '16px'
+        }}>
+          {/* Logo */}
+          <div style={{
+            width: '54px',
+            height: '54px',
+            borderRadius: '14px',
+            backgroundColor: '#ffffff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: 'var(--glass-shadow)',
+            border: '1px solid var(--border-color)',
+            transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+            cursor: 'pointer'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.transform = 'scale(1.06)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = 'scale(1)';
+          }}
+          >
+            <img src="/logo.jpg" alt="Logo" style={{ width: '44px', height: '44px', borderRadius: '10px', objectFit: 'contain' }} />
           </div>
-          
-          <div className="user-profile">
-            <div className="user-avatar">
-              {user.username.charAt(0).toUpperCase()}
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{user.username}</div>
-              <div style={{ fontSize: '0.725rem', color: '#94a3b8', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                <span>{user.role === 'admin' ? 'ผู้ดูแลระบบ (Admin)' : 'พนักงานต้อนรับ'}</span>
-                <button 
-                  onClick={() => setShowChangePassModal(true)} 
-                  style={{ background: 'transparent', border: 'none', color: '#38bdf8', fontSize: '0.725rem', cursor: 'pointer', padding: 0, textAlign: 'left', display: 'flex', alignItems: 'center', gap: '4px' }}
-                >
-                  <KeyRound size={12} /> เปลี่ยนรหัสผ่าน
-                </button>
-              </div>
-            </div>
-          </div>
-          
-          <button className="logout-btn" onClick={handleLogout}>
-            <LogOut size={16} />
-            <span>ออกจากระบบ</span>
+
+          {/* Hamburger Menu Toggle */}
+          <button 
+            className="hamburger-btn"
+            style={{ width: '38px', height: '38px', borderRadius: '10px' }}
+            onClick={() => setIsMenuOpen(!isMenuOpen)}
+          >
+            {isMenuOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
         </div>
-      </aside>
+
+        {/* Right Side: User info text, Cart, Theme Toggle & Logout */}
+        <div className="top-navbar-controls" style={{ display: 'flex', alignItems: 'center', gap: '12px', justifyContent: 'flex-end' }}>
+          {/* User Info Text */}
+          <span 
+            className="navbar-user-container"
+            style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', cursor: 'pointer', transition: 'color 0.2s ease', marginRight: '6px' }} 
+            onClick={() => setShowChangePassModal(true)} 
+            title="เปลี่ยนรหัสผ่าน"
+            onMouseEnter={(e) => e.currentTarget.style.color = 'var(--primary-color)'}
+            onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-main)'}
+          >
+            <span className="navbar-user-label">ผู้ใช้งาน: </span>
+            <span style={{ color: 'var(--primary-color)', fontWeight: 800 }}>{user.username}</span>
+          </span>
+
+          {/* Cart Toggle Icon Button with Red Badge (Only on POS tab) */}
+          {activeTab === 'pos' && (
+            <button 
+              onClick={() => setShowCartSidebar(!showCartSidebar)}
+              type="button"
+              className="hamburger-btn"
+              style={{
+                position: 'relative',
+                background: showCartSidebar ? 'var(--primary-color)' : 'transparent',
+                color: showCartSidebar ? '#ffffff' : 'var(--text-main)',
+                width: '38px',
+                height: '38px',
+                borderRadius: '10px'
+              }}
+              title="ดูสินค้าในตะกร้า"
+            >
+              <ShoppingCart size={18} />
+              {cartCount > 0 && (
+                <span style={{
+                  position: 'absolute',
+                  top: '-4px',
+                  right: '-4px',
+                  backgroundColor: 'var(--danger-color)',
+                  color: '#ffffff',
+                  fontSize: '0.6rem',
+                  fontWeight: 'bold',
+                  borderRadius: '50%',
+                  width: '16px',
+                  height: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  {cartCount}
+                </span>
+              )}
+            </button>
+          )}
+
+          {/* Theme display switcher */}
+          <button 
+            onClick={toggleTheme} 
+            className="hamburger-btn"
+            style={{ width: '38px', height: '38px', borderRadius: '10px' }}
+          >
+            {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+          </button>
+
+          {/* Logout button */}
+          <button 
+            className="hamburger-btn"
+            onClick={handleLogout}
+            style={{ width: '38px', height: '38px', borderRadius: '10px', color: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.08)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+            title="ออกจากระบบ"
+          >
+            <LogOut size={18} />
+          </button>
+        </div>
+      </header>
+
+      {/* Hamburger Liquid Glass Dropdown Menu */}
+      {isMenuOpen && (
+        <div className="menu-overlay">
+          <div>
+            <div className="menu-section-title">เมนูหลัก / Services</div>
+            <div className="menu-grid">
+              {hasPermission('pos') && (
+                <div className={`menu-card ${activeTab === 'pos' ? 'active' : ''}`} onClick={() => setActiveTab('pos')}>
+                  <div className="menu-card-icon-wrapper">
+                    <ShoppingCart size={20} />
+                  </div>
+                  <span>จุดขาย POS</span>
+                </div>
+              )}
+              {hasPermission('dashboard') && (
+                <div className={`menu-card ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
+                  <div className="menu-card-icon-wrapper">
+                    <LayoutDashboard size={20} />
+                  </div>
+                  <span>Dashboard</span>
+                </div>
+              )}
+              {hasPermission('pending') && (
+                <div className={`menu-card ${activeTab === 'pending' ? 'active' : ''}`} onClick={() => setActiveTab('pending')}>
+                  <div className="menu-card-icon-wrapper">
+                    <Clock size={20} />
+                  </div>
+                  <span>รายการรอชำระเงิน</span>
+                </div>
+              )}
+              {hasPermission('layout') && (
+                <div className={`menu-card ${activeTab === 'layout' ? 'active' : ''}`} onClick={() => setActiveTab('layout')}>
+                  <div className="menu-card-icon-wrapper">
+                    <Map size={20} />
+                  </div>
+                  <span>แผนผังห้อง</span>
+                </div>
+              )}
+              {hasPermission('history') && (
+                <div className={`menu-card ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>
+                  <div className="menu-card-icon-wrapper">
+                    <History size={20} />
+                  </div>
+                  <span>ประวัติย้อนหลัง</span>
+                </div>
+              )}
+              {hasPermission('quotations') && (
+                <div className={`menu-card ${activeTab === 'quotations' ? 'active' : ''}`} onClick={() => setActiveTab('quotations')}>
+                  <div className="menu-card-icon-wrapper">
+                    <FileText size={20} />
+                  </div>
+                  <span>ใบเสนอราคา</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {hasPermission('admin-management') && (
+            <div>
+              <div className="menu-section-title">แผงควบคุมระบบ / Admin Panel</div>
+              <div className="menu-grid">
+                {hasPermission('admin-users') && (
+                  <div className={`menu-card ${activeTab === 'admin-users' ? 'active' : ''}`} onClick={() => setActiveTab('admin-users')}>
+                    <div className="menu-card-icon-wrapper">
+                      <Users size={20} />
+                    </div>
+                    <span>จัดการสิทธิใช้งาน</span>
+                  </div>
+                )}
+                {hasPermission('manage') && (
+                  <div className={`menu-card ${activeTab === 'manage' ? 'active' : ''}`} onClick={() => setActiveTab('manage')}>
+                    <div className="menu-card-icon-wrapper">
+                      <Database size={20} />
+                    </div>
+                    <span>จัดการคลัง</span>
+                  </div>
+                )}
+                {hasPermission('admin-system') && (
+                  <div className={`menu-card ${activeTab === 'admin-system' ? 'active' : ''}`} onClick={() => setActiveTab('admin-system')}>
+                    <div className="menu-card-icon-wrapper">
+                      <Receipt size={20} />
+                    </div>
+                    <span>แก้ไขใบเสร็จ</span>
+                  </div>
+                )}
+                {hasPermission('admin-quotation') && (
+                  <div className={`menu-card ${activeTab === 'admin-quotation' ? 'active' : ''}`} onClick={() => setActiveTab('admin-quotation')}>
+                    <div className="menu-card-icon-wrapper">
+                      <FileText size={20} />
+                    </div>
+                    <span>แก้ไขใบเสนอราคา</span>
+                  </div>
+                )}
+                {hasPermission('admin-backup') && (
+                  <div className={`menu-card ${activeTab === 'admin-backup' ? 'active' : ''}`} onClick={() => setActiveTab('admin-backup')}>
+                    <div className="menu-card-icon-wrapper">
+                      <Cloud size={20} />
+                    </div>
+                    <span>ตั้งค่าการสำรองข้อมูล</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main Content Workspace */}
-      <main className="main-content">
-        {activeTab === 'pos' && <BookingPOS user={user} settings={settings} sysAlert={customAlert} preselectedRoom={preselectedRoom} clearPreselectedRoom={() => setPreselectedRoom(null)} onNavigate={setActiveTab} />}
+      <main className="main-content" style={{ 
+        marginLeft: 0, 
+        marginTop: 0, 
+        paddingTop: '100px', 
+        paddingBottom: '24px', 
+        height: '100vh', 
+        boxSizing: 'border-box', 
+        overflow: 'auto', 
+        display: 'flex', 
+        flexDirection: 'column' 
+      }}>
+        {activeTab === 'pos' && <BookingPOS user={user} settings={settings} sysAlert={customAlert} preselectedRoom={preselectedRoom} clearPreselectedRoom={() => setPreselectedRoom(null)} onNavigate={setActiveTab} onExportToQuotation={handleExportToQuotation} showCartSidebar={showCartSidebar} setShowCartSidebar={setShowCartSidebar} onCartCountChange={setCartCount} />}
         {activeTab === 'layout' && <RoomLayout sysAlert={customAlert} onNavigateToBook={(room) => { setPreselectedRoom(room); setActiveTab('pos'); }} />}
         {activeTab === 'pending' && <PendingBookings settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
         {user.role === 'admin' && activeTab === 'manage' && <ManagementPanel sysAlert={customAlert} sysConfirm={customConfirm} />}
         {user.role === 'admin' && activeTab === 'dashboard' && <Dashboard />}
         {activeTab === 'history' && <HistoryLog settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
+        {activeTab === 'quotations' && <Quotations user={user} settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} quotationCartData={quotationCartData} clearQuotationCartData={() => setQuotationCartData(null)} onNavigate={setActiveTab} />}
         {user.role === 'admin' && activeTab === 'admin-users' && <SettingsPanel viewMode="users" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
         {user.role === 'admin' && activeTab === 'admin-system' && <SettingsPanel viewMode="system" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
         {user.role === 'admin' && activeTab === 'admin-backup' && <SettingsPanel viewMode="backup" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+        {user.role === 'admin' && activeTab === 'admin-quotation' && <SettingsPanel viewMode="quotation" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
       </main>
 
       {/* ========================================================= */}

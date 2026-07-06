@@ -18,7 +18,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const rowsPerPage = 20;
+  const rowsPerPage = 10;
 
   // Sorting state
   const [sortKey, setSortKey] = useState('id');
@@ -196,7 +196,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <div className="tab-header" style={{ borderBottom: 'none', paddingBottom: '0', position: 'relative', zIndex: 10 }}>
+      <div className="tab-header">
         <div>
           <h1 className="tab-title">ประวัติการใช้บริการย้อนหลัง (พิมพ์ใบเสร็จ)</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
@@ -274,7 +274,20 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
             </div>
 
             {/* Custom Modern Calendar Date Picker (Pill-shaped) */}
-            <div className="futuristic-filter-container" style={{ width: 'auto' }}>
+            <div style={{ 
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              border: '1px solid var(--border-color)',
+              padding: '8px 18px',
+              borderRadius: '99px',
+              background: 'var(--bg-hover)',
+              position: 'relative',
+              cursor: 'pointer',
+              userSelect: 'none',
+              transition: 'all 0.3s ease',
+              height: '40px'
+            }}>
               <Calendar size={13} style={{ color: 'var(--primary-color)' }} />
               <CustomDatePicker 
                 value={filters.startDate}
@@ -289,14 +302,40 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
               />
             </div>
 
-            <button type="submit" className="btn-modern-receipt" style={{ padding: '8px 18px', gap: '6px' }}>
+            <button 
+              type="submit" 
+              className="btn btn-primary" 
+              style={{ 
+                padding: '10px 22px', 
+                borderRadius: '99px', 
+                fontSize: '0.875rem', 
+                height: '40px', 
+                gap: '6px', 
+                display: 'flex', 
+                alignItems: 'center', 
+                cursor: 'pointer' 
+              }}
+            >
               <Filter size={14} /> <span>ค้นหา</span>
             </button>
           </div>
 
           <button 
             type="button" 
-            className="btn-pagination" 
+            className="btn btn-secondary" 
+            style={{ 
+              padding: '10px 22px', 
+              borderRadius: '99px', 
+              fontSize: '0.875rem', 
+              height: '40px', 
+              gap: '6px',
+              backgroundColor: 'var(--bg-hover)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-main)',
+              display: 'flex',
+              alignItems: 'center',
+              cursor: 'pointer'
+            }}
             onClick={() => setFilters({ startDate: '', endDate: '', search: '' })}
           >
             ล้างตัวกรอง
@@ -427,7 +466,19 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         return (
                           <td key={key} style={{ textAlign: 'center', padding: cellPadding }}>
                             <button 
-                              className="btn-modern-receipt" 
+                              className="btn btn-secondary" 
+                              style={{ 
+                                padding: '6px 12px', 
+                                fontSize: '0.8rem', 
+                                borderRadius: '8px', 
+                                gap: '4px',
+                                backgroundColor: 'var(--bg-hover)',
+                                border: '1px solid var(--border-color)',
+                                color: 'var(--text-main)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                cursor: 'pointer'
+                              }}
                               onClick={() => openBookingDetails(b.id)}
                             >
                               <Printer size={12} /> <span>พิมพ์ใบเสร็จ</span>

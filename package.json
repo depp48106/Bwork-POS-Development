@@ -10,9 +10,11 @@
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "build:frontend": "npm run build --prefix frontend",
     "build": "npm run build:frontend",
-    "start": "node backend/server.js"
+    "start": "cross-env NODE_ENV=production node backend/server.js",
+    "start:test": "cross-env NODE_ENV=test node backend/server.js"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "cross-env": "^10.1.0"
   }
 }
