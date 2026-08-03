@@ -12,6 +12,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [showPayModal, setShowPayModal] = useState(false);
   const [payMethod, setPayMethod] = useState('cash');
+  const [isPayMethodOpen, setIsPayMethodOpen] = useState(false);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -63,8 +64,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     setShowPayModal(true);
   };
 
-  const handleOpenReceipt = (booking) => {
-    setSelectedBooking(booking);
+  const handleOpenReceipt = async (booking) => {
+    if (!booking) return;
+    try {
+      const res = await fetch(`/api/bookings/${booking.id}`);
+      if (res.ok) {
+        const detailData = await res.json();
+        setSelectedBooking(detailData);
+      } else {
+        setSelectedBooking(booking);
+      }
+    } catch (err) {
+      setSelectedBooking(booking);
+    }
     setShowReceiptModal(true);
   };
 
@@ -146,6 +158,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     const searchLower = searchQuery.toLowerCase();
     return (
       String(b.id).includes(searchLower) ||
+      (b.receipt_number && b.receipt_number.toLowerCase().includes(searchLower)) ||
       (b.customer_name && b.customer_name.toLowerCase().includes(searchLower)) ||
       (b.contact && b.contact.includes(searchLower))
     );
@@ -349,7 +362,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                     if (key === 'id') {
                       return (
                         <td key={key} style={{ fontWeight: 'bold', padding: padding }}>
-                          #{String(b.id).padStart(6, '0')}
+                          {b.receipt_number || `#${String(b.id).padStart(6, '0')}`}
                         </td>
                       );
                     }
@@ -515,19 +528,57 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
 
             <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0 }}> ทำรายการรับชำระเงิน</h3>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
-              ชำระบิลสำหรับคุณ <strong>{selectedBooking.customer_name}</strong> ยอดเงินสุทธิ <strong>{selectedBooking.total_amount.toLocaleString()} บาท</strong>
+              ชำระบิลสำหรับคุณ <strong>{selectedBooking?.customer_name || '-'}</strong> ยอดเงินสุทธิ <strong>{Number(selectedBooking?.total_amount || 0).toLocaleString()} บาท</strong>
             </p>
 
-            <div className="form-group" style={{ marginTop: '8px' }}>
+            <div className="form-group" style={{ marginTop: '8px', position: 'relative' }}>
               <label>ช่องทางการชำระเงิน</label>
-              <select 
-                className="form-control" 
-                value={payMethod} 
-                onChange={e => setPayMethod(e.target.value)}
+              <div 
+                className="form-control"
+                onClick={() => setIsPayMethodOpen(!isPayMethodOpen)}
+                style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'space-between', 
+                  height: '40px', 
+                  fontSize: '0.9rem', 
+                  borderRadius: '12px', 
+                  cursor: 'pointer',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  border: '1px solid var(--border-color)',
+                  padding: '0 12px',
+                  fontWeight: 600
+                }}
               >
-                <option value="cash">เงินสด (Cash)</option>
-                <option value="transfer">โอนเงินเข้าบัญชี</option>
-              </select>
+                <span style={{ color: 'var(--text-main)' }}>
+                  {payMethod === 'cash' ? 'เงินสด (Cash)' : payMethod === 'transfer' ? 'โอนเงินเข้าบัญชี' : payMethod}
+                </span>
+                <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
+              </div>
+
+              {isPayMethodOpen && (
+                <>
+                  <div onClick={() => setIsPayMethodOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                  <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
+                    <div 
+                      onClick={() => { setPayMethod('cash'); setIsPayMethodOpen(false); }}
+                      style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: payMethod === 'cash' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: payMethod === 'cash' ? 'bold' : 'normal', background: payMethod === 'cash' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                      onMouseEnter={e => { if (payMethod !== 'cash') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                      onMouseLeave={e => { if (payMethod !== 'cash') e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      เงินสด (Cash)
+                    </div>
+                    <div 
+                      onClick={() => { setPayMethod('transfer'); setIsPayMethodOpen(false); }}
+                      style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: payMethod === 'transfer' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: payMethod === 'transfer' ? 'bold' : 'normal', background: payMethod === 'transfer' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                      onMouseEnter={e => { if (payMethod !== 'transfer') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                      onMouseLeave={e => { if (payMethod !== 'transfer') e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      โอนเงินเข้าบัญชี
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>

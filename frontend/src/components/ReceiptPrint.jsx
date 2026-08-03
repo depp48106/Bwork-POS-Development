@@ -3,16 +3,18 @@ import React from 'react';
 function ReceiptPrint({ booking, settings }) {
   if (!booking) return null;
 
+  const safeSettings = settings || {};
+
   // Format date helper
   const formatDateTime = (dateString) => {
     if (!dateString) return '';
     try {
-      // If dateString is in SQLite format "YYYY-MM-DD HH:mm:ss", append "Z" so JS parses it as UTC
       let normalized = dateString;
       if (typeof dateString === 'string' && !dateString.includes('T') && !dateString.includes('Z')) {
         normalized = dateString.replace(' ', 'T') + 'Z';
       }
       const d = new Date(normalized);
+      if (isNaN(d.getTime())) return String(dateString);
       return d.toLocaleString('th-TH', {
         year: 'numeric',
         month: 'short',
@@ -21,7 +23,7 @@ function ReceiptPrint({ booking, settings }) {
         minute: '2-digit'
       });
     } catch (e) {
-      return dateString;
+      return String(dateString);
     }
   };
 
@@ -30,6 +32,7 @@ function ReceiptPrint({ booking, settings }) {
     try {
       const s = new Date(start);
       const e = new Date(end);
+      if (isNaN(s.getTime()) || isNaN(e.getTime())) return `${start} - ${end}`;
       const optDate = { month: 'short', day: 'numeric' };
       const optTime = { hour: '2-digit', minute: '2-digit' };
       
@@ -43,8 +46,8 @@ function ReceiptPrint({ booking, settings }) {
     }
   };
 
-  const itemCount = booking.items ? booking.items.length : 0;
-  const hasRoom = booking.items ? booking.items.some(item => !!item.room_id) : false;
+  const safeItems = Array.isArray(booking.items) ? booking.items : [];
+  const safeTotal = Number(booking.total_amount) || 0;
 
   return (
     <div 
@@ -56,93 +59,152 @@ function ReceiptPrint({ booking, settings }) {
         padding: '4mm'
       }}
     >
-      <div className="receipt-header">
-        {settings.logo_image && (
+      <div className="receipt-header" style={{ textAlign: 'center' }}>
+        {safeSettings.logo_image && (
           <div style={{ textAlign: 'center', marginBottom: '8px' }}>
             <img 
-              src={settings.logo_image} 
+              src={safeSettings.logo_image} 
               alt="Logo" 
-              style={{ maxWidth: '80px', maxHeight: '50px', objectFit: 'contain' }} 
+              style={{ maxWidth: '130px', maxHeight: '75px', objectFit: 'contain' }} 
             />
           </div>
         )}
-        <div className="receipt-title" style={{ fontSize: '18px', fontWeight: 'bold' }}>
-          {settings.company_name || 'บริษัทจองห้องประชุม'}
-        </div>
-        {settings.company_address && (
+        {safeSettings.company_name && (
+          <div className="receipt-title" style={{ fontSize: '18px', fontWeight: 'bold' }}>
+            {safeSettings.company_name}
+          </div>
+        )}
+        {safeSettings.company_address && (
           <div className="receipt-address" style={{ fontSize: '0.8em', color: '#000000', whiteSpace: 'pre-line', marginTop: '4px', fontWeight: '600', textAlign: 'center' }}>
-            {settings.company_address}
+            {safeSettings.company_address}
           </div>
         )}
         <div className="receipt-sub" style={{ fontSize: '0.85em', marginTop: '6px' }}>
-          {settings.receipt_header || 'ใบรับจองและใบเสร็จรับเงิน'}
+          {safeSettings.receipt_header || 'ใบรับจองและใบเสร็จรับเงิน'}
         </div>
       </div>
 
       <div className="receipt-divider" style={{ margin: '12px 0' }}></div>
 
-      <div className="receipt-info-row" style={{ fontSize: '0.9em' }}>
-        <span>เลขที่ใบเสร็จ:</span>
-        <span style={{ fontWeight: 'bold' }}>#{String(booking.id).padStart(6, '0')}</span>
+      <div className="receipt-info-row" style={{ fontSize: '0.9em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+        <span style={{ flexShrink: 0 }}>เลขที่ใบเสร็จ:</span>
+        <span style={{ fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{booking.receipt_number || `#${String(booking.id || '').padStart(6, '0')}`}</span>
       </div>
-      <div className="receipt-info-row" style={{ fontSize: '0.9em' }}>
-        <span>วันที่ทำรายการ:</span>
-        <span>{formatDateTime(booking.created_at)}</span>
+      <div className="receipt-info-row" style={{ fontSize: '0.9em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+        <span style={{ flexShrink: 0 }}>วันที่ทำรายการ:</span>
+        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{formatDateTime(booking.created_at)}</span>
       </div>
-      <div className="receipt-info-row" style={{ fontSize: '0.9em' }}>
-        <span>{hasRoom ? 'ชื่อผู้จองห้อง:' : 'ลูกค้า:'}</span>
-        <span style={{ fontWeight: '600' }}>{booking.customer_name}</span>
+      <div className="receipt-info-row" style={{ fontSize: '0.9em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+        <span style={{ flexShrink: 0 }}>ลูกค้า:</span>
+        <span style={{ fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'right' }} title={booking.customer_name}>{booking.customer_name || '-'}</span>
       </div>
       {booking.department && (
-        <div className="receipt-info-row" style={{ fontSize: '0.9em' }}>
-          <span>แผนก/ฝ่าย:</span>
-          <span>{booking.department}</span>
+        <div className="receipt-info-row" style={{ fontSize: '0.9em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+          <span style={{ flexShrink: 0 }}>แผนก/ฝ่าย:</span>
+          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'right' }} title={booking.department}>{booking.department}</span>
         </div>
       )}
       {booking.contact && (
-        <div className="receipt-info-row" style={{ fontSize: '0.9em' }}>
-          <span>เบอร์ติดต่อ:</span>
-          <span>{booking.contact}</span>
+        <div className="receipt-info-row" style={{ fontSize: '0.9em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+          <span style={{ flexShrink: 0 }}>เบอร์ติดต่อ:</span>
+          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'right' }}>{booking.contact}</span>
+        </div>
+      )}
+
+      {/* Room Access PIN Code Box */}
+      {booking.pin_code && (
+        <div style={{
+          marginTop: '8px',
+          padding: '8px 10px',
+          border: '2px solid #000000',
+          borderRadius: '8px',
+          textAlign: 'center',
+          backgroundColor: '#ffffff'
+        }}>
+          <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#000000', textTransform: 'uppercase' }}>
+            🔑 รหัสเข้าห้องประชุม (ROOM ACCESS PIN)
+          </div>
+          <div style={{ fontSize: '1.4rem', fontWeight: '900', letterSpacing: '4px', color: '#000000', marginTop: '2px' }}>
+            {booking.pin_code}
+          </div>
+          <div style={{ fontSize: '0.7rem', color: '#000000', marginTop: '2px' }}>
+            * กดรหัสที่แท็บเล็ตหน้าห้องก่อนเข้าใช้งาน
+          </div>
         </div>
       )}
 
       <div className="receipt-divider" style={{ margin: '12px 0' }}></div>
 
       <div className="receipt-items">
-        <div style={{ display: 'grid', gridTemplateColumns: '2.2fr 0.8fr 1fr', fontSize: '0.85em', fontWeight: 'bold', marginBottom: '8px', color: '#000000' }}>
-          <span>รายการ</span>
-          <span style={{ textAlign: 'center' }}>จำนวน</span>
-          <span style={{ textAlign: 'right' }}>รวม (บาท)</span>
-        </div>
-        
-        {booking.items && booking.items.map((item, idx) => {
-          const isRoom = !!item.room_id;
-          const isDaily = isRoom && item.quantity === 1 && item.price >= 1000;
-          const displayName = isRoom 
-            ? (item.room_name && item.room_name.includes('301')
-                ? `${item.room_name} (${item.layout === 'classroom' ? 'Classroom' : 'Standard'})`
-                : (item.room_name || 'ห้องประชุม'))
-            : (item.service_name || 'รายการสินค้า');
+        <table style={{ width: '100%', borderCollapse: 'collapse', border: 'none' }}>
+          <thead>
+            <tr style={{ fontSize: '0.85em', fontWeight: 'bold', color: '#000000', borderBottom: '2px dashed #000000' }}>
+              <th style={{ width: '55%', textAlign: 'left', padding: '4px 0' }}>รายการ</th>
+              <th style={{ width: '20%', textAlign: 'center', padding: '4px 0' }}>จำนวน</th>
+              <th style={{ width: '25%', textAlign: 'right', padding: '4px 0' }}>รวม (บาท)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {safeItems.map((item, idx) => {
+              const isRoom = !!item.room_id;
+              const itemPrice = Number(item.price) || 0;
+              const isDaily = isRoom && item.quantity === 1 && itemPrice >= 1000;
+              const displayName = isRoom 
+                ? (item.room_name && item.room_name.includes('301')
+                    ? `${item.room_name} (${item.layout === 'classroom' ? 'Classroom' : 'Standard'})`
+                    : (item.room_name || 'ห้องประชุม'))
+                : (item.service_name || 'รายการสินค้า');
+              let cleanName = displayName;
+              let detailText = item.room_description || '';
 
-          return (
-            <div key={idx} style={{ marginBottom: itemCount > 6 ? '4px' : '8px', borderBottom: '1px dotted #000000', paddingBottom: '4px' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '2.2fr 0.8fr 1fr', fontSize: '0.95em', color: '#000000' }}>
-                <span style={{ fontWeight: '700' }}>{displayName}</span>
-                <span style={{ textAlign: 'center', fontWeight: '700' }}>
-                  {isRoom ? (isDaily ? `${item.quantity} วัน` : `${item.quantity} ชม.`) : `x${item.quantity}`}
-                </span>
-                <span style={{ textAlign: 'right', fontWeight: '700' }}>
-                  {item.subtotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
-              </div>
-              {isRoom && item.start_time && (
-                <div style={{ fontSize: '0.85em', color: '#000000', paddingLeft: '4px', marginTop: '2px', fontWeight: '700' }}>
-                  {formatPeriod(item.start_time, item.end_time)}
-                </div>
-              )}
-            </div>
-          );
-        })}
+              if (displayName.includes(' (ส่วนลด')) {
+                const parts = displayName.split(' (ส่วนลด');
+                cleanName = parts[0];
+                if (!detailText) {
+                  detailText = '(ส่วนลด' + parts[1];
+                }
+              } else if (displayName.includes('(ส่วนลด')) {
+                const parts = displayName.split('(ส่วนลด');
+                cleanName = parts[0].trim();
+                if (!detailText) {
+                  detailText = '(ส่วนลด' + parts[1];
+                }
+              }
+
+              const itemSubtotal = Number(item.subtotal) || 0;
+
+              return (
+                <tr key={idx} style={{ borderBottom: '1px dashed #000000' }}>
+                  <td style={{ padding: '6px 0', verticalAlign: 'top', color: '#000000', textAlign: 'left', fontSize: '0.95em', fontWeight: '700' }}>
+                    <span style={{ display: 'inline', whiteSpace: 'normal', wordBreak: 'break-word', color: '#000000' }}>{cleanName}</span>
+                    {detailText && (
+                      <>
+                        <br />
+                        <span style={{ fontSize: '0.82em', color: '#000000', display: 'inline', fontWeight: '700' }}>
+                          {detailText}
+                        </span>
+                      </>
+                    )}
+                    {isRoom && item.start_time && (
+                      <>
+                        <br />
+                        <span style={{ fontSize: '0.85em', color: '#000000', display: 'inline', fontWeight: '700' }}>
+                          {formatPeriod(item.start_time, item.end_time)}
+                        </span>
+                      </>
+                    )}
+                  </td>
+                  <td style={{ padding: '6px 0', verticalAlign: 'top', color: '#000000', textAlign: 'center', fontWeight: '700' }}>
+                    {isRoom ? (isDaily ? `${item.quantity || 1} วัน` : `${item.quantity || 1} ชม.`) : `x${item.quantity || 1}`}
+                  </td>
+                  <td style={{ padding: '6px 0', verticalAlign: 'top', color: '#000000', textAlign: 'right', fontWeight: '700' }}>
+                    {itemSubtotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
 
       <div className="receipt-divider" style={{ margin: '12px 0' }}></div>
@@ -150,7 +212,7 @@ function ReceiptPrint({ booking, settings }) {
       <div className="receipt-total-section" style={{ color: '#000000' }}>
         <div className="receipt-info-row" style={{ fontSize: '1.1em', fontWeight: 'bold', color: '#000000' }}>
           <span>ยอดรวมสุทธิ:</span>
-          <span>{booking.total_amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
+          <span>{safeTotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
         </div>
         <div className="receipt-info-row" style={{ fontSize: '0.95em', fontWeight: 'bold', color: '#000000' }}>
           <span>การชำระเงิน:</span>
@@ -164,8 +226,8 @@ function ReceiptPrint({ booking, settings }) {
       <div className="receipt-divider" style={{ margin: '12px 0' }}></div>
 
       <div className="receipt-footer-text" style={{ fontSize: '0.85em', color: '#000000', fontWeight: '600' }}>
-        <p>{settings.receipt_footer || 'ขอบคุณที่มาจองบริการกับเรา'}</p>
-        <p style={{ marginTop: '8px', fontSize: '0.75em', color: '#000000' }}>พิมพ์โดยระบบ Bwork POS ท้องถิ่น</p>
+        <p>{safeSettings.receipt_footer || 'ขอบคุณที่มาจองบริการกับเรา'}</p>
+        <p style={{ marginTop: '8px', fontSize: '0.75em', color: '#000000' }}>พิมพ์โดยระบบ Bwork POS</p>
       </div>
     </div>
   );

@@ -41,7 +41,7 @@
 }
 
 [data-theme="dark"] {
-  /* Dark Theme - Cosmic Royal Navy Liquid Glass (Luxury Dark mode) */
+  /* Dark Theme - Dark Charcoal Gray Premium style */
   --primary-color: #38bdf8; /* Neon blue */
   --primary-hover: #0ea5e9;
   --primary-light: rgba(56, 189, 248, 0.15);
@@ -49,26 +49,26 @@
   --accent-color: #2563eb; /* Electric Sapphire */
   --accent-hover: #1d4ed8;
   
-  --bg-color: #050814; /* Deep Midnight space */
-  --bg-card: rgba(15, 23, 42, 0.65);
-  --bg-glass-modal: rgba(10, 15, 30, 0.92);
-  --border-color: rgba(56, 189, 248, 0.15);
-  --glass-border: rgba(255, 255, 255, 0.04);
-  --glass-shadow: 0 16px 50px 0 rgba(0, 0, 0, 0.55), 0 0 30px rgba(56, 189, 248, 0.08);
+  --bg-color: #121214; /* Elegant dark charcoal gray */
+  --bg-card: rgba(30, 30, 34, 0.75); /* Soft premium charcoal card */
+  --bg-glass-modal: rgba(22, 22, 26, 0.96);
+  --border-color: rgba(255, 255, 255, 0.08);
+  --glass-border: rgba(255, 255, 255, 0.03);
+  --glass-shadow: 0 16px 50px 0 rgba(0, 0, 0, 0.45), 0 0 30px rgba(56, 189, 248, 0.03);
   --text-main: #f8fafc; /* Crisp silver white */
   --text-muted: #94a3b8;
 
-  /* Sidebar styling variables (Dark Theme - Cosmic Midnight Glass) */
-  --sidebar-bg-start: rgba(10, 15, 30, 0.7);
-  --sidebar-bg-end: rgba(3, 7, 18, 0.35);
-  --sidebar-border: rgba(255, 255, 255, 0.05);
+  /* Sidebar styling variables (Dark Theme - Charcoal Sidebar) */
+  --sidebar-bg-start: rgba(22, 22, 26, 0.9);
+  --sidebar-bg-end: rgba(18, 18, 20, 0.95);
+  --sidebar-border: rgba(255, 255, 255, 0.06);
   --sidebar-text: #94a3b8;
   --sidebar-text-hover: #38bdf8;
   --sidebar-item-active-bg: linear-gradient(135deg, rgba(56, 189, 248, 0.15), rgba(14, 165, 233, 0.05));
   --sidebar-item-active-border: rgba(56, 189, 248, 0.25);
-  --sidebar-item-hover-bg: rgba(255, 255, 255, 0.05);
+  --sidebar-item-hover-bg: rgba(255, 255, 255, 0.04);
   --sidebar-brand-text: #38bdf8;
-  --sidebar-footer-border: rgba(255, 255, 255, 0.08);
+  --sidebar-footer-border: rgba(255, 255, 255, 0.06);
   
   --success-bg: rgba(16, 185, 129, 0.2);
   --danger-bg: rgba(239, 68, 68, 0.2);
@@ -97,9 +97,7 @@ body {
 }
 
 [data-theme="dark"] body {
-  background-image: 
-    radial-gradient(at 0% 0%, rgba(3, 105, 161, 0.25) 0px, transparent 60%),
-    radial-gradient(at 100% 100%, rgba(17, 24, 39, 0.8) 0px, transparent 60%);
+  background-image: none;
 }
 
 /* Scrollbars */
@@ -194,7 +192,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  z-index: 2;
 }
 
 /* ═══════════════════════════════════════════════════════════════ */
@@ -206,28 +203,24 @@ body {
   left: 0;
   right: 0;
   height: 76px;
-  background: rgba(255, 255, 255, 0.45);
-  backdrop-filter: blur(32px) saturate(210%);
-  -webkit-backdrop-filter: blur(32px) saturate(210%);
-  border-bottom: 1px solid rgba(226, 232, 240, 0.55);
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.25);
   color: var(--text-main);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 28px;
   z-index: 1000;
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.04),
-    0 8px 32px rgba(37, 99, 235, 0.04);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.02);
   transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 [data-theme="dark"] .top-navbar {
-  background: rgba(10, 10, 10, 0.55);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.2),
-    0 8px 32px rgba(0, 0, 0, 0.15);
+  background: rgba(15, 23, 42, 0.15);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
 }
 
 .top-navbar-brand {
@@ -315,6 +308,17 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(120%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
   }
 }
 
@@ -1031,6 +1035,18 @@ body {
   text-overflow: ellipsis;
   line-height: 1.5;
   cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.calendar-event-chip:hover {
+  transform: translateY(-1.5px) scale(1.015);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+  filter: brightness(1.1);
+}
+
+[data-theme="dark"] .calendar-event-chip:hover {
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  filter: brightness(1.2);
 }
 
 .calendar-event-chip.paid {
@@ -1051,6 +1067,18 @@ body {
 [data-theme="dark"] .calendar-event-chip.pending {
   background-color: rgba(245, 158, 11, 0.25);
   color: #fbbf24;
+}
+
+.calendar-event-chip.expired {
+  background-color: rgba(239, 68, 68, 0.22) !important;
+  color: #ef4444 !important;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+[data-theme="dark"] .calendar-event-chip.expired {
+  background-color: rgba(239, 68, 68, 0.25) !important;
+  color: #fca5a5 !important;
+  border: 1px solid rgba(239, 68, 68, 0.25);
 }
 
 .calendar-more-label {
@@ -1300,6 +1328,11 @@ body {
 
 /* Printing styling - Optimized to strictly print 1 page on thermal roll paper */
 @media print {
+  @page {
+    size: 72mm 200mm;
+    margin: 0;
+  }
+
   /* Force transparent background and remove shadows on all elements to prevent dark theme bleed-through */
   * {
     background: transparent !important;
@@ -1320,6 +1353,7 @@ body {
   .table-container,
   .bg-glow-orb-1,
   .bg-glow-orb-2,
+  .top-navbar,
   .no-print {
     display: none !important;
   }
@@ -1388,7 +1422,7 @@ body {
     align-items: flex-start !important;
   }
 
-  /* Print area styling */
+  /* Print area styling - 100% Parity with PDF Export */
   #print-receipt-area {
     position: relative !important;
     margin: 0 auto !important;
@@ -1396,19 +1430,30 @@ body {
     box-sizing: border-box !important;
     background: #ffffff !important;
     color: #000000 !important;
-    font-family: 'Sarabun', sans-serif;
+    font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important;
     page-break-inside: avoid !important;
     break-inside: avoid !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
   
   #print-receipt-area * {
     visibility: visible !important;
+    color: #000000 !important;
+    font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
 
-  /* Enhance readability and thickness of text/lines for thermal printing */
+  /* Match PDF Export crisp, clean typography exactly */
   #print-receipt-area,
   #print-receipt-area * {
-    font-weight: 600 !important; /* Forces thick semi-bold baseline */
+    color: #000000 !important;
+    font-weight: 600 !important;
+    line-height: 1.4 !important;
+    -webkit-font-smoothing: antialiased !important;
+    -moz-osx-font-smoothing: grayscale !important;
+    text-rendering: optimizeLegibility !important;
   }
 
   #print-receipt-area .receipt-title,
@@ -1715,7 +1760,12 @@ body {
 .pdf-export-mode,
 .pdf-export-mode * {
   color: #000000 !important;
-  font-weight: 600 !important;
+  font-weight: 700 !important;
+  line-height: 1.45 !important;
+  -webkit-font-smoothing: none !important;
+  -moz-osx-font-smoothing: none !important;
+  font-smoothing: none !important;
+  text-rendering: optimizeSpeed !important;
 }
 
 .pdf-export-mode .receipt-title,
@@ -1939,6 +1989,461 @@ body {
   cursor: not-allowed !important;
 }
 
+/* mini calendar cell styles */
+.mini-calendar-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 0.725rem;
+  font-weight: 600;
+  border: 1.5px solid transparent;
+  margin: 0 auto;
+  position: relative;
+  user-select: none;
+}
+
+.mini-calendar-cell:hover {
+  border-color: var(--primary-color) !important;
+  background-color: rgba(37, 99, 235, 0.06);
+  transform: scale(1.05);
+}
+
+[data-theme="dark"] .mini-calendar-cell:hover {
+  background-color: rgba(56, 189, 248, 0.1);
+  border-color: #38bdf8 !important;
+}
+
+.mini-calendar-cell.today {
+  border: 1.5px dashed var(--primary-color);
+  background-color: rgba(37, 99, 235, 0.02);
+}
+
+[data-theme="dark"] .mini-calendar-cell.today {
+  border-color: #38bdf8;
+  background-color: rgba(56, 189, 248, 0.05);
+}
+
+.mini-calendar-cell.selected {
+  background-color: var(--primary-color) !important;
+  color: #ffffff !important;
+  border-color: var(--primary-color) !important;
+  font-weight: 800;
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25);
+}
+
+[data-theme="dark"] .mini-calendar-cell.selected {
+  background-color: #38bdf8 !important;
+  color: #0f172a !important;
+  border-color: #38bdf8 !important;
+  box-shadow: 0 4px 10px rgba(56, 189, 248, 0.3);
+}
+
+/* Responsive & Layout for Top Navbar Horizontal Menu */
+.desktop-menu-bar {
+  display: none !important;
+}
+
+.hamburger-menu-toggle {
+  display: inline-flex !important;
+}
+
+@media (min-width: 1024px) {
+  .desktop-menu-bar {
+    display: flex !important;
+  }
+  .hamburger-menu-toggle {
+    display: none !important;
+  }
+}
+
+/* Top Navbar Horizontal Menu Items */
+.top-menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+  height: 38px;
+}
+
+.top-menu-item:hover {
+  background: rgba(37, 99, 235, 0.05);
+  color: var(--primary-color);
+  border-color: rgba(37, 99, 235, 0.08);
+}
+
+[data-theme="dark"] .top-menu-item:hover {
+  background: rgba(56, 189, 248, 0.08);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.12);
+}
+
+.top-menu-item.active {
+  background: var(--primary-color) !important;
+  color: #ffffff !important;
+  border-color: var(--primary-color) !important;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+}
+
+[data-theme="dark"] .top-menu-item.active {
+  background: #38bdf8 !important;
+  color: #0f172a !important;
+  border-color: #38bdf8 !important;
+  box-shadow: 0 4px 12px rgba(56, 189, 248, 0.3);
+}
+
+/* Dropdown Sub-menu Items */
+.dropdown-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  font-size: 0.825rem;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  width: 100%;
+  text-align: left;
+}
+
+.dropdown-menu-item:hover {
+  background: rgba(37, 99, 235, 0.06);
+  color: var(--primary-color);
+}
+
+[data-theme="dark"] .dropdown-menu-item:hover {
+  background: rgba(56, 189, 248, 0.1);
+  color: #38bdf8;
+}
+
+.dropdown-menu-item.active {
+  background: rgba(37, 99, 235, 0.1) !important;
+  color: var(--primary-color) !important;
+  font-weight: 700;
+}
+
+[data-theme="dark"] .dropdown-menu-item.active {
+  background: rgba(56, 189, 248, 0.15) !important;
+  color: #38bdf8 !important;
+}
+
+/* Premium Liquidglass Dropdown Container */
+.liquidglass-dropdown {
+  background: rgba(255, 255, 255, 0.25) !important;
+  backdrop-filter: blur(28px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(190%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+  padding: 6px !important;
+  animation: fadeIn 0.2s ease-out !important;
+}
+
+[data-theme="dark"] .liquidglass-dropdown {
+  background: rgba(15, 23, 42, 0.35) !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.03) !important;
+}
+
+/* Native select custom liquidglass focus glow */
+select.form-control:focus {
+  border-color: var(--primary-color) !important;
+  box-shadow: 0 0 15px rgba(37, 99, 235, 0.25) !important;
+  background: var(--bg-card) !important;
+}
+
+/* Force visible text and background colors on all native select options globally */
+select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+[data-theme="dark"] select option {
+  background-color: #1e293b !important;
+  color: #f8fafc !important;
+}
+
+select.form-control {
+  background-color: rgba(255, 255, 255, 0.75) !important;
+  color: #0f172a !important;
+}
+
+[data-theme="dark"] select.form-control {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+  color: #f8fafc !important;
+}/* Premium Liquidglass Quotation Editor Header */
+.quotation-editor-header {
+  background: rgba(255, 255, 255, 0.45) !important;
+  backdrop-filter: blur(20px) saturate(190%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(190%) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.4) !important;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.25) !important;
+  padding: 16px 28px !important;
+  margin: 0 -24px 24px -24px !important;
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  border-radius: 0 0 20px 20px !important;
+  position: relative !important;
+  z-index: 100 !important;
+}
+
+.quotation-editor-header .header-title {
+  color: var(--text-main) !important;
+}
+
+.quotation-editor-header .header-desc {
+  color: var(--text-muted) !important;
+}
+
+.quotation-editor-header .btn-cancel-glass {
+  background: rgba(0, 0, 0, 0.05) !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+  color: var(--text-main) !important;
+  padding: 8px 20px !important;
+  border-radius: 12px !important;
+  height: 38px !important;
+  font-size: 0.8rem !important;
+  font-weight: bold !important;
+  cursor: pointer !important;
+  transition: all 0.2s !important;
+}
+
+.quotation-editor-header .btn-cancel-glass:hover {
+  background: rgba(0, 0, 0, 0.1) !important;
+}
 
 
 
+/* Dark mode overrides for quotation editor header */
+[data-theme="dark"] .quotation-editor-header {
+  background: rgba(15, 23, 42, 0.35) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.03) !important;
+}
+
+[data-theme="dark"] .quotation-editor-header .header-title {
+  color: #ffffff !important;
+}
+
+[data-theme="dark"] .quotation-editor-header .header-desc {
+  color: rgba(241, 245, 249, 0.72) !important;
+}
+
+[data-theme="dark"] .quotation-editor-header .btn-cancel-glass {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  color: #f1f5f9 !important;
+}
+
+[data-theme="dark"] .quotation-editor-header .btn-cancel-glass:hover {
+  background: rgba(255, 255, 255, 0.16) !important;
+}
+
+/* Responsive login left pane */
+.login-left-pane {
+  display: flex !important;
+}
+@media (max-width: 991px) {
+  .login-left-pane {
+    display: none !important;
+  }
+}
+
+/* Inline document datepicker for Quotation A4 Paper Sheet (High Contrast & Visible in both Light & Dark Mode) */
+.inline-doc-datepicker {
+  background: #fff7ed !important;
+  border: 1px solid #fed7aa !important;
+  padding: 4px 12px !important;
+  border-radius: 99px !important;
+  transition: all 0.25s ease !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  cursor: pointer !important;
+}
+
+.inline-doc-datepicker:hover {
+  border-color: #f38f1d !important;
+  background: #ffedd5 !important;
+  box-shadow: 0 3px 10px rgba(243, 143, 29, 0.2) !important;
+}
+
+.inline-doc-datepicker span {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+  font-size: 0.8rem !important;
+}
+
+.inline-doc-datepicker svg {
+  color: #f38f1d !important;
+}
+
+/* Ensure inline-doc-datepicker text remains 100% crisp and black/dark navy on the white paper document EVEN IN DARK MODE */
+[data-theme="dark"] .inline-doc-datepicker {
+  background: #fff7ed !important;
+  border: 1px solid #fed7aa !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+}
+
+[data-theme="dark"] .inline-doc-datepicker:hover {
+  border-color: #f38f1d !important;
+  background: #ffedd5 !important;
+}
+
+[data-theme="dark"] .inline-doc-datepicker span {
+  color: #0f172a !important;
+}
+
+[data-theme="dark"] .inline-doc-datepicker svg {
+  color: #f38f1d !important;
+}
+
+/* CustomDatePicker Popover Calendar Dropdown (High Contrast in both Light & Dark Mode) */
+.custom-datepicker-popover {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 18px !important;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.18), 0 2px 10px rgba(243, 143, 29, 0.1) !important;
+  padding: 16px !important;
+  color: #0f172a !important;
+}
+
+.custom-datepicker-popover div,
+.custom-datepicker-popover span {
+  color: #0f172a !important;
+}
+
+[data-theme="dark"] .custom-datepicker-popover {
+  background: #1e293b !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7), 0 0 25px rgba(56, 189, 248, 0.12) !important;
+  color: #ffffff !important;
+}
+
+[data-theme="dark"] .custom-datepicker-popover div,
+[data-theme="dark"] .custom-datepicker-popover span {
+  color: #ffffff !important;
+}
+
+[data-theme="dark"] .custom-datepicker-popover button {
+  color: #f8fafc !important;
+}
+
+[data-theme="dark"] .custom-datepicker-popover button:hover:not(.selected) {
+  background-color: rgba(56, 189, 248, 0.2) !important;
+  color: #38bdf8 !important;
+}
+
+/* Document Liquidglass Dropdown Trigger & Menu (High Contrast for both Light & Dark Mode) */
+.doc-liquidglass-trigger {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  height: 32px !important;
+  font-size: 0.8rem !important;
+  font-weight: 700 !important;
+  border-radius: 8px !important;
+  padding: 0 10px !important;
+  cursor: pointer !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #0f172a !important;
+  transition: all 0.2s ease !important;
+}
+
+.doc-liquidglass-trigger:hover {
+  border-color: var(--primary-color) !important;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15) !important;
+}
+
+[data-theme="dark"] .doc-liquidglass-trigger {
+  background: #1e293b !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  color: #f8fafc !important;
+}
+
+[data-theme="dark"] .doc-liquidglass-trigger span {
+  color: #f8fafc !important;
+}
+
+[data-theme="dark"] .doc-liquidglass-trigger:hover {
+  border-color: #38bdf8 !important;
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.25) !important;
+}
+
+.doc-liquidglass-menu {
+  position: absolute !important;
+  top: calc(100% + 4px) !important;
+  left: 0 !important;
+  right: 0 !important;
+  max-height: 220px !important;
+  overflow-y: auto !important;
+  z-index: 9999 !important;
+  border-radius: 12px !important;
+  padding: 6px !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 12px 35px rgba(15, 23, 42, 0.18) !important;
+  animation: fadeIn 0.15s ease-out !important;
+}
+
+[data-theme="dark"] .doc-liquidglass-menu {
+  background: #1e293b !important;
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 16px 45px rgba(0, 0, 0, 0.6) !important;
+}
+
+.doc-liquidglass-item {
+  padding: 7px 12px !important;
+  border-radius: 8px !important;
+  cursor: pointer !important;
+  font-size: 0.775rem !important;
+  font-weight: 600 !important;
+  color: #0f172a !important;
+  transition: all 0.15s ease !important;
+  margin-bottom: 2px !important;
+}
+
+.doc-liquidglass-item:hover {
+  background: rgba(37, 99, 235, 0.08) !important;
+  color: var(--primary-color) !important;
+}
+
+.doc-liquidglass-item.active {
+  background: rgba(37, 99, 235, 0.14) !important;
+  color: var(--primary-color) !important;
+  font-weight: 800 !important;
+}
+
+[data-theme="dark"] .doc-liquidglass-item {
+  color: #f8fafc !important;
+}
+
+[data-theme="dark"] .doc-liquidglass-item:hover {
+  background: rgba(56, 189, 248, 0.15) !important;
+  color: #38bdf8 !important;
+}
+
+[data-theme="dark"] .doc-liquidglass-item.active {
+  background: rgba(56, 189, 248, 0.22) !important;
+  color: #38bdf8 !important;
+  font-weight: 800 !important;
+}

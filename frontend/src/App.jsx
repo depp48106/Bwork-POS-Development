@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu, Trash2, Package, Bell } from 'lucide-react';
 import BookingPOS from './components/BookingPOS';
 import Dashboard from './components/Dashboard';
 import HistoryLog from './components/History';
@@ -12,6 +12,25 @@ import Quotations from './components/Quotations';
 function App() {
   const [activeTab, setActiveTab] = useState('pos');
   const [theme, setTheme] = useState('light');
+  const [activeSettingsSubTab, setActiveSettingsSubTab] = useState('manage');
+  
+  const getFirstAllowedSettingsTab = (currentUser) => {
+    if (!currentUser) return 'manage';
+    const permString = currentUser.permissions || 'pos,pending,layout,history';
+    const perms = permString.split(',').map(p => p.trim());
+    if (perms.includes('manage')) return 'manage';
+    if (perms.includes('admin-users') || currentUser.username === 'admin') return 'users';
+    if (perms.includes('admin-system')) return 'system';
+    if (perms.includes('admin-quotation')) return 'quotation';
+    if (perms.includes('admin-backup')) return 'backup';
+    return 'general';
+  };
+
+  const handleNavigateToSettings = () => {
+    setActiveSettingsSubTab(getFirstAllowedSettingsTab(user));
+    setActiveTab('settings');
+  };
+
   const [user, setUser] = useState(null);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
@@ -52,7 +71,11 @@ function App() {
     const permString = user.permissions || 'pos,pending,layout,history';
     const perms = permString.split(',').map(p => p.trim());
     if (tabKey === 'admin-management') {
-      return perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage');
+      return perms.includes('admin-management') || perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage');
+    }
+    // If checking a settings sub-tab, grant it if they have the main 'admin-management' permission
+    if (['manage', 'admin-users', 'admin-system', 'admin-quotation', 'admin-backup'].includes(tabKey)) {
+      return perms.includes('admin-management') || perms.includes(tabKey);
     }
     return perms.includes(tabKey);
   };
@@ -94,6 +117,62 @@ function App() {
       setIsAdminOpen(true);
     }
   }, [activeTab]);
+
+  // Upcoming Room Booking Notifications & Alerts
+  const [toasts, setToasts] = useState([]);
+  const [activeAlerts, setActiveAlerts] = useState([]);
+  const [isBellOpen, setIsBellOpen] = useState(false);
+  const notifiedIdsRef = useRef(new Set());
+
+  useEffect(() => {
+    if (!user) return;
+
+    const checkUpcomingAlerts = async () => {
+      try {
+        const res = await fetch('/api/bookings/upcoming-alerts');
+        if (!res.ok) return;
+        const alerts = await res.json();
+        
+        setActiveAlerts(alerts);
+
+        alerts.forEach(alert => {
+          const alertKey = `${alert.booking_id}-${alert.start_time}`;
+          if (!notifiedIdsRef.current.has(alertKey)) {
+            notifiedIdsRef.current.add(alertKey);
+
+            const startT = new Date(alert.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+            const endT = new Date(alert.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+
+            const toastId = Date.now() + Math.random().toString(36).substr(2, 9);
+            const newToast = {
+              id: toastId,
+              room_name: alert.room_name,
+              customer_name: alert.customer_name,
+              start_time_formatted: startT,
+              end_time_formatted: endT
+            };
+
+            setToasts(prev => [...prev, newToast]);
+
+            setTimeout(() => {
+              setToasts(prev => prev.filter(t => t.id !== toastId));
+            }, 12000);
+          }
+        });
+      } catch (err) {
+        console.error('Failed to fetch upcoming booking alerts:', err);
+      }
+    };
+
+    checkUpcomingAlerts();
+
+    const interval = setInterval(checkUpcomingAlerts, 30000);
+    return () => clearInterval(interval);
+  }, [user]);
+
+  const removeToast = (id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  };
 
   const handleChangePassword = async (e) => {
     e.preventDefault();
@@ -137,6 +216,13 @@ function App() {
     if (savedUser) {
       setUser(JSON.parse(savedUser));
       triggerTransition(); // Transition on initial load
+      const savedTheme = localStorage.getItem('pos_theme') || 'light';
+      setTheme(savedTheme);
+      document.documentElement.setAttribute('data-theme', savedTheme);
+    } else {
+      // Default to Lightmode always on login page
+      setTheme('light');
+      document.documentElement.setAttribute('data-theme', 'light');
     }
     fetchSettings();
   }, []);
@@ -170,6 +256,11 @@ function App() {
     }, 2300);
   };
 
+  const handleLogoClick = () => {
+    setActiveTab('pos');
+    triggerTransition();
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoginError('');
@@ -182,6 +273,8 @@ function App() {
       const data = await res.json();
       if (res.ok && data.success) {
         setUser(data.user);
+        setActiveTab('pos');
+        setActiveSettingsSubTab(getFirstAllowedSettingsTab(data.user));
         localStorage.setItem('pos_user', JSON.stringify(data.user));
         triggerTransition(); // Trigger loading screen after successful login
       } else {
@@ -192,30 +285,130 @@ function App() {
     }
   };
 
-  const handleLogout = () => {
-    setUser(null);
-    localStorage.removeItem('pos_user');
-    setIsTransitioning(false);
+  const handleLogout = async () => {
+    const confirm = await customConfirm("คุณต้องการออกจากระบบใช่หรือไม่?");
+    if (confirm) {
+      setUser(null);
+      setActiveTab('pos');
+      setActiveSettingsSubTab('manage');
+      localStorage.removeItem('pos_user');
+      setIsTransitioning(false);
+      
+      // Force theme to light on logout
+      setTheme('light');
+      document.documentElement.setAttribute('data-theme', 'light');
+      localStorage.removeItem('pos_theme');
+    }
   };
 
   const toggleTheme = () => {
     const nextTheme = theme === 'light' ? 'dark' : 'light';
     setTheme(nextTheme);
     document.documentElement.setAttribute('data-theme', nextTheme);
+    localStorage.setItem('pos_theme', nextTheme);
+  };
+
+  const handleClearHistory = async () => {
+    const confirmClear = await customConfirm(
+      "คุณต้องการล้างประวัติการใช้งานทั้งหมด (ประวัติการจองและประวัติใบเสนอราคา) หรือไม่?\n\n*คำเตือน: ข้อมูลประวัติการใช้งานทั้งหมดจะถูกลบถาวร แต่ข้อมูลสินค้าและห้องประชุมในคลังจะไม่ได้รับผลกระทบใดๆ"
+    );
+    if (!confirmClear) return;
+
+    try {
+      const res = await fetch('/api/admin/clear-history', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await customAlert(data.message);
+        // Refresh to pos screen to prevent stale data display
+        setActiveTab('pos');
+        window.location.reload();
+      } else {
+        await customAlert(data.error || 'เกิดข้อผิดพลาดในการล้างประวัติ');
+      }
+    } catch (err) {
+      await customAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    }
   };
 
   // If there's no user, we render the login screen (no glass transition needed yet)
   if (!user) {
     return (
-      <div className="login-bg">
-        <div className="bg-glow-orb-1"></div>
-        <div className="bg-glow-orb-2"></div>
-        <div className="login-card">
+      <div className="login-bg" style={{ 
+        position: 'relative', 
+        minHeight: '100vh', 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center', 
+        padding: '20px', 
+        overflow: 'hidden',
+        backgroundColor: 'var(--bg-main)'
+      }}>
+        {/* Full-screen Background Image */}
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundImage: 'url("/Bworktower.jpg")',
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          opacity: theme === 'light' ? 0.45 : 0.3,
+          zIndex: 1,
+          pointerEvents: 'none'
+        }}></div>
+
+        {/* Overlay matching app theme colors */}
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: theme === 'light' 
+            ? 'linear-gradient(135deg, rgba(240,244,248,0.3) 0%, rgba(240,244,248,0.55) 100%)'
+            : 'linear-gradient(135deg, rgba(18,18,20,0.4) 0%, rgba(18,18,20,0.7) 100%)',
+          zIndex: 2,
+          pointerEvents: 'none'
+        }}></div>
+
+        {/* Floating Theme Toggle in Top Right of Login Page */}
+        <button 
+          onClick={toggleTheme} 
+          className="hamburger-btn"
+          style={{ 
+            position: 'absolute', 
+            top: '24px', 
+            right: '24px', 
+            width: '44px', 
+            height: '44px', 
+            borderRadius: '12px',
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'var(--glass-bg)',
+            border: '1px solid var(--glass-border)',
+            boxShadow: 'var(--glass-shadow)',
+            cursor: 'pointer',
+            transition: 'all 0.2s'
+          }}
+          title={theme === 'light' ? 'สลับเป็นโหมดมืด' : 'สลับเป็นโหมดสว่าง'}
+        >
+          {theme === 'light' ? <Moon size={20} style={{ color: 'var(--text-main)' }} /> : <Sun size={20} style={{ color: '#fbbf24' }} />}
+        </button>
+
+        {/* Glowing Orbs */}
+        <div className="bg-glow-orb-1" style={{ zIndex: 3 }}></div>
+        <div className="bg-glow-orb-2" style={{ zIndex: 3 }}></div>
+
+        {/* Centered Login Card */}
+        <div className="login-card" style={{ zIndex: 4, border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-shadow)', maxWidth: '440px', width: '100%', padding: '44px 36px' }}>
           <div className="login-logo-container">
-            <img src="/logo.jpg" alt="Bwork Logo" />
+            <img src="/BWORK-LOGO.png" alt="Bwork Logo" style={{ width: '90px', height: '90px', borderRadius: '22px', objectFit: 'contain', backgroundColor: '#ffffff', padding: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }} />
           </div>
-          <h2 className="login-title">เข้าสู่ระบบ Bwork POS</h2>
-          <p className="login-subtitle">ระบบจองพื้นที่และจัดการบริการเสริมห้องประชุม</p>
+          <h2 className="login-title" style={{ marginTop: '20px', fontSize: '1.75rem', fontWeight: 800 }}>Bwork POS</h2>
+          <p className="login-subtitle">ระบบบริหารจัดการจุดขายและห้องประชุม</p>
 
           {loginError && (
             <div style={{
@@ -263,7 +456,7 @@ function App() {
 
             <button type="submit" className="login-button">
               <Key size={18} />
-              <span>เข้าสู่ระบบความปลอดภัย</span>
+              <span>Login</span>
             </button>
           </form>
         </div>
@@ -282,23 +475,24 @@ function App() {
       {isTransitioning && (
         <div className={`liquid-glass-overlay ${fadeClass}`}>
           <div className="liquid-logo-container">
-            <img src="/logo.jpg" alt="Logo" />
+            <img src="/BWORK-LOGO.png" alt="Logo" />
           </div>
         </div>
       )}
 
       {/* Top Navbar Header Section */}
       <header className="top-navbar">
-        {/* Left Side: Logo & Hamburger Button */}
+        {/* Left Side: Logo, Desktop Navigation Bar & Hamburger Button */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '16px'
+          gap: '16px',
+          flex: 1
         }}>
           {/* Logo */}
           <div style={{
-            width: '54px',
-            height: '54px',
+            width: '62px',
+            height: '62px',
             borderRadius: '14px',
             backgroundColor: '#ffffff',
             display: 'flex',
@@ -309,6 +503,7 @@ function App() {
             transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
             cursor: 'pointer'
           }}
+          onClick={handleLogoClick}
           onMouseEnter={(e) => {
             e.currentTarget.style.transform = 'scale(1.06)';
           }}
@@ -316,13 +511,78 @@ function App() {
             e.currentTarget.style.transform = 'scale(1)';
           }}
           >
-            <img src="/logo.jpg" alt="Logo" style={{ width: '44px', height: '44px', borderRadius: '10px', objectFit: 'contain' }} />
+            <img src="/BWORK-LOGO.png" alt="Logo" style={{ width: '52px', height: '52px', borderRadius: '10px', objectFit: 'contain' }} />
           </div>
 
-          {/* Hamburger Menu Toggle */}
+          {/* Horizontal Desktop Menu Bar */}
+          <nav className="desktop-menu-bar" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '12px' }}>
+            {hasPermission('pos') && (
+              <button 
+                type="button"
+                className={`top-menu-item ${activeTab === 'pos' ? 'active' : ''}`}
+                onClick={() => setActiveTab('pos')}
+              >
+                <ShoppingCart size={15} />
+                <span>จุดขาย POS</span>
+              </button>
+            )}
+            {hasPermission('dashboard') && (
+              <button 
+                type="button"
+                className={`top-menu-item ${activeTab === 'dashboard' ? 'active' : ''}`}
+                onClick={() => setActiveTab('dashboard')}
+              >
+                <LayoutDashboard size={15} />
+                <span>Dashboard</span>
+              </button>
+            )}
+            {hasPermission('pending') && (
+              <button 
+                type="button"
+                className={`top-menu-item ${activeTab === 'pending' ? 'active' : ''}`}
+                onClick={() => setActiveTab('pending')}
+              >
+                <Clock size={15} />
+                <span>รอชำระเงิน</span>
+              </button>
+            )}
+            {hasPermission('layout') && (
+              <button 
+                type="button"
+                className={`top-menu-item ${activeTab === 'layout' ? 'active' : ''}`}
+                onClick={() => setActiveTab('layout')}
+              >
+                <Map size={15} />
+                <span>แผนผังห้อง</span>
+              </button>
+            )}
+            {hasPermission('history') && (
+              <button 
+                type="button"
+                className={`top-menu-item ${activeTab === 'history' ? 'active' : ''}`}
+                onClick={() => setActiveTab('history')}
+              >
+                <History size={15} />
+                <span>ประวัติย้อนหลัง</span>
+              </button>
+            )}
+
+            {hasPermission('quotations') && (
+              <button 
+                type="button"
+                className={`top-menu-item ${activeTab === 'quotations' ? 'active' : ''}`}
+                onClick={() => setActiveTab('quotations')}
+              >
+                <FileText size={15} />
+                <span>ใบเสนอราคา</span>
+              </button>
+            )}
+          </nav>
+
+          {/* Hamburger Menu Toggle (Only visible on mobile screens) */}
           <button 
-            className="hamburger-btn"
-            style={{ width: '38px', height: '38px', borderRadius: '10px' }}
+            className="hamburger-btn hamburger-menu-toggle"
+            style={{ width: '38px', height: '38px', borderRadius: '10px', marginLeft: 'auto' }}
             onClick={() => setIsMenuOpen(!isMenuOpen)}
           >
             {isMenuOpen ? <X size={20} /> : <Menu size={20} />}
@@ -331,14 +591,22 @@ function App() {
 
         {/* Right Side: User info text, Cart, Theme Toggle & Logout */}
         <div className="top-navbar-controls" style={{ display: 'flex', alignItems: 'center', gap: '12px', justifyContent: 'flex-end' }}>
+          {hasPermission('admin-management') && (
+            <button 
+              type="button"
+              className={`top-menu-item ${activeTab === 'settings' ? 'active' : ''}`}
+              onClick={handleNavigateToSettings}
+              style={{ gap: '6px' }}
+            >
+              <Settings size={15} />
+              <span>Settings</span>
+            </button>
+          )}
+
           {/* User Info Text */}
           <span 
             className="navbar-user-container"
-            style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', cursor: 'pointer', transition: 'color 0.2s ease', marginRight: '6px' }} 
-            onClick={() => setShowChangePassModal(true)} 
-            title="เปลี่ยนรหัสผ่าน"
-            onMouseEnter={(e) => e.currentTarget.style.color = 'var(--primary-color)'}
-            onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-main)'}
+            style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginRight: '6px' }} 
           >
             <span className="navbar-user-label">ผู้ใช้งาน: </span>
             <span style={{ color: 'var(--primary-color)', fontWeight: 800 }}>{user.username}</span>
@@ -391,6 +659,8 @@ function App() {
           >
             {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
           </button>
+
+
 
           {/* Logout button */}
           <button 
@@ -463,48 +733,20 @@ function App() {
 
           {hasPermission('admin-management') && (
             <div>
-              <div className="menu-section-title">แผงควบคุมระบบ / Admin Panel</div>
+              <div className="menu-section-title">ตั้งค่าระบบ / Settings</div>
               <div className="menu-grid">
-                {hasPermission('admin-users') && (
-                  <div className={`menu-card ${activeTab === 'admin-users' ? 'active' : ''}`} onClick={() => setActiveTab('admin-users')}>
-                    <div className="menu-card-icon-wrapper">
-                      <Users size={20} />
-                    </div>
-                    <span>จัดการสิทธิใช้งาน</span>
+                <div 
+                  className={`menu-card ${activeTab === 'settings' ? 'active' : ''}`} 
+                  onClick={() => {
+                    handleNavigateToSettings();
+                    setIsMenuOpen(false);
+                  }}
+                >
+                  <div className="menu-card-icon-wrapper">
+                    <Settings size={20} />
                   </div>
-                )}
-                {hasPermission('manage') && (
-                  <div className={`menu-card ${activeTab === 'manage' ? 'active' : ''}`} onClick={() => setActiveTab('manage')}>
-                    <div className="menu-card-icon-wrapper">
-                      <Database size={20} />
-                    </div>
-                    <span>จัดการคลัง</span>
-                  </div>
-                )}
-                {hasPermission('admin-system') && (
-                  <div className={`menu-card ${activeTab === 'admin-system' ? 'active' : ''}`} onClick={() => setActiveTab('admin-system')}>
-                    <div className="menu-card-icon-wrapper">
-                      <Receipt size={20} />
-                    </div>
-                    <span>แก้ไขใบเสร็จ</span>
-                  </div>
-                )}
-                {hasPermission('admin-quotation') && (
-                  <div className={`menu-card ${activeTab === 'admin-quotation' ? 'active' : ''}`} onClick={() => setActiveTab('admin-quotation')}>
-                    <div className="menu-card-icon-wrapper">
-                      <FileText size={20} />
-                    </div>
-                    <span>แก้ไขใบเสนอราคา</span>
-                  </div>
-                )}
-                {hasPermission('admin-backup') && (
-                  <div className={`menu-card ${activeTab === 'admin-backup' ? 'active' : ''}`} onClick={() => setActiveTab('admin-backup')}>
-                    <div className="menu-card-icon-wrapper">
-                      <Cloud size={20} />
-                    </div>
-                    <span>ตั้งค่าการสำรองข้อมูล</span>
-                  </div>
-                )}
+                  <span>Settings</span>
+                </div>
               </div>
             </div>
           )}
@@ -526,14 +768,189 @@ function App() {
         {activeTab === 'pos' && <BookingPOS user={user} settings={settings} sysAlert={customAlert} preselectedRoom={preselectedRoom} clearPreselectedRoom={() => setPreselectedRoom(null)} onNavigate={setActiveTab} onExportToQuotation={handleExportToQuotation} showCartSidebar={showCartSidebar} setShowCartSidebar={setShowCartSidebar} onCartCountChange={setCartCount} />}
         {activeTab === 'layout' && <RoomLayout sysAlert={customAlert} onNavigateToBook={(room) => { setPreselectedRoom(room); setActiveTab('pos'); }} />}
         {activeTab === 'pending' && <PendingBookings settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
-        {user.role === 'admin' && activeTab === 'manage' && <ManagementPanel sysAlert={customAlert} sysConfirm={customConfirm} />}
         {user.role === 'admin' && activeTab === 'dashboard' && <Dashboard />}
         {activeTab === 'history' && <HistoryLog settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
         {activeTab === 'quotations' && <Quotations user={user} settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} quotationCartData={quotationCartData} clearQuotationCartData={() => setQuotationCartData(null)} onNavigate={setActiveTab} />}
-        {user.role === 'admin' && activeTab === 'admin-users' && <SettingsPanel viewMode="users" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
-        {user.role === 'admin' && activeTab === 'admin-system' && <SettingsPanel viewMode="system" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
-        {user.role === 'admin' && activeTab === 'admin-backup' && <SettingsPanel viewMode="backup" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
-        {user.role === 'admin' && activeTab === 'admin-quotation' && <SettingsPanel viewMode="quotation" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+        
+        {activeTab === 'settings' && hasPermission('admin-management') && (
+          <div style={{
+            display: 'flex',
+            height: '100%',
+            width: '100%',
+            overflow: 'hidden',
+            backgroundColor: 'var(--bg-main)'
+          }}>
+            {/* Left Sidebar */}
+            <div style={{
+              width: '280px',
+              borderRight: '1px solid var(--border-color)',
+              padding: '24px 16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+              flexShrink: 0,
+              backgroundColor: 'rgba(255, 255, 255, 0.01)',
+              textAlign: 'left'
+            }}>
+              <h2 style={{ fontSize: '1.5rem', fontWeight: 800, margin: '0 0 10px 8px', color: 'var(--text-main)' }}>Settings</h2>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {hasPermission('manage') && (
+                  <button
+                    onClick={() => setActiveSettingsSubTab('manage')}
+                    className={`top-menu-item ${activeSettingsSubTab === 'manage' ? 'active' : ''}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      width: '100%',
+                      textAlign: 'left',
+                      justifyContent: 'flex-start',
+                      boxSizing: 'border-box',
+                      height: '44px'
+                    }}
+                  >
+                    <Package size={16} />
+                    <span>จัดการคลังสินค้า</span>
+                  </button>
+                )}
+
+                {hasPermission('admin-users') && (
+                  <button
+                    onClick={() => setActiveSettingsSubTab('users')}
+                    className={`top-menu-item ${activeSettingsSubTab === 'users' ? 'active' : ''}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      width: '100%',
+                      textAlign: 'left',
+                      justifyContent: 'flex-start',
+                      boxSizing: 'border-box',
+                      height: '44px'
+                    }}
+                  >
+                    <Users size={16} />
+                    <span>จัดการสิทธิการใช้งาน</span>
+                  </button>
+                )}
+
+                {hasPermission('admin-system') && (
+                  <button
+                    onClick={() => setActiveSettingsSubTab('system')}
+                    className={`top-menu-item ${activeSettingsSubTab === 'system' ? 'active' : ''}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      width: '100%',
+                      textAlign: 'left',
+                      justifyContent: 'flex-start',
+                      boxSizing: 'border-box',
+                      height: '44px'
+                    }}
+                  >
+                    <Receipt size={16} />
+                    <span>ตั้งค่าใบเสร็จรับเงิน</span>
+                  </button>
+                )}
+
+                {hasPermission('admin-quotation') && (
+                  <button
+                    onClick={() => setActiveSettingsSubTab('quotation')}
+                    className={`top-menu-item ${activeSettingsSubTab === 'quotation' ? 'active' : ''}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      width: '100%',
+                      textAlign: 'left',
+                      justifyContent: 'flex-start',
+                      boxSizing: 'border-box',
+                      height: '44px'
+                    }}
+                  >
+                    <FileText size={16} />
+                    <span>ตั้งค่าใบเสนอราคา</span>
+                  </button>
+                )}
+
+                {hasPermission('admin-backup') && (
+                  <button
+                    onClick={() => setActiveSettingsSubTab('backup')}
+                    className={`top-menu-item ${activeSettingsSubTab === 'backup' ? 'active' : ''}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      width: '100%',
+                      textAlign: 'left',
+                      justifyContent: 'flex-start',
+                      boxSizing: 'border-box',
+                      height: '44px'
+                    }}
+                  >
+                    <Database size={16} />
+                    <span>จัดการฐานข้อมูล</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setActiveSettingsSubTab('dooraccess')}
+                  className={`top-menu-item ${activeSettingsSubTab === 'dooraccess' ? 'active' : ''}`}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    width: '100%',
+                    textAlign: 'left',
+                    justifyContent: 'flex-start',
+                    boxSizing: 'border-box',
+                    height: '44px'
+                  }}
+                >
+                  <KeyRound size={16} />
+                  <span>ระบบจอง LINE & รหัสเข้าห้อง</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveSettingsSubTab('general')}
+                  className={`top-menu-item ${activeSettingsSubTab === 'general' ? 'active' : ''}`}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    width: '100%',
+                    textAlign: 'left',
+                    justifyContent: 'flex-start',
+                    boxSizing: 'border-box',
+                    height: '44px'
+                  }}
+                >
+                  <Sliders size={16} />
+                  <span>ทั่วไป</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Right Work Area */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '32px',
+              display: 'flex',
+              flexDirection: 'column'
+            }}>
+              {activeSettingsSubTab === 'users' && hasPermission('admin-users') && <SettingsPanel viewMode="users" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'manage' && hasPermission('manage') && <ManagementPanel sysAlert={customAlert} sysConfirm={customConfirm} />}
+              {activeSettingsSubTab === 'system' && hasPermission('admin-system') && <SettingsPanel viewMode="system" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'quotation' && hasPermission('admin-quotation') && <SettingsPanel viewMode="quotation" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'backup' && hasPermission('admin-backup') && <SettingsPanel viewMode="backup" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} onClearHistory={handleClearHistory} />}
+              {activeSettingsSubTab === 'dooraccess' && <SettingsPanel viewMode="dooraccess" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'general' && <SettingsPanel viewMode="general" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+            </div>
+          </div>
+        )}
       </main>
 
       {/* ========================================================= */}
@@ -549,7 +966,7 @@ function App() {
           background: 'rgba(15, 23, 42, 0.45)',
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
-          zIndex: 1000,
+          zIndex: 2000,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -710,6 +1127,93 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Toast Notifications Container (Line Style at Bottom Right) */}
+      <div style={{
+        position: 'fixed',
+        bottom: '24px',
+        right: '24px',
+        zIndex: 11000,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '12px',
+        maxWidth: '380px',
+        width: 'calc(100% - 48px)',
+        pointerEvents: 'none'
+      }}>
+        {toasts.map(toast => (
+          <div 
+            key={toast.id}
+            style={{
+              pointerEvents: 'auto',
+              background: 'var(--bg-glass-modal)',
+              borderLeft: '5px solid #06c755', // Line Green accent border
+              borderTop: '1px solid var(--border-color)',
+              borderRight: '1px solid var(--border-color)',
+              borderBottom: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              padding: '12px 16px',
+              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.25)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              position: 'relative',
+              animation: 'slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+              backdropFilter: 'blur(25px)',
+              WebkitBackdropFilter: 'blur(25px)'
+            }}
+          >
+            {/* Left side: Circular Icon Container (Line Green style) */}
+            <div style={{
+              width: '42px',
+              height: '42px',
+              borderRadius: '50%',
+              backgroundColor: 'rgba(6, 199, 85, 0.15)',
+              border: '1px solid rgba(6, 199, 85, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}>
+              <Bell size={20} style={{ color: '#06c755' }} />
+            </div>
+
+            {/* Middle: Content text */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px', textAlign: 'left', minWidth: 0 }}>
+              <div style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                ห้องประชุมใกล้เริ่มใช้งาน
+              </div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                คุณ <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>{toast.customer_name}</span> กำลังจะเข้าใช้ <span style={{ fontWeight: 700, color: 'var(--primary-color)' }}>{toast.room_name}</span> (เวลา {toast.start_time_formatted} - {toast.end_time_formatted} น.)
+              </div>
+            </div>
+
+            {/* Right: Close button */}
+            <button 
+              onClick={() => removeToast(toast.id)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--text-muted)',
+                padding: '4px',
+                borderRadius: '6px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s',
+                alignSelf: 'flex-start',
+                marginTop: '-4px',
+                marginRight: '-8px'
+              }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.08)'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+            >
+              <X size={14} />
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

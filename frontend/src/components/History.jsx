@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Calendar, Eye, DollarSign, Printer, X, Filter, FileText, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2 } from 'lucide-react';
+import { Search, Calendar, Eye, DollarSign, Printer, X, Filter, FileText, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2, Trash2 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
 
@@ -112,10 +112,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
     const opt = {
       margin:       [0, 0, 0, 0],
-      filename:     `receipt-${String(selectedBooking.id).padStart(6, '0')}.pdf`,
-      image:        { type: 'jpeg', quality: 0.98 },
-      html2canvas:  { scale: 3, useCORS: true, letterRendering: true },
-      jsPDF:        { unit: 'mm', format: [72, estimatedHeight], orientation: 'portrait' },
+      filename:     `receipt-${selectedBooking.receipt_number || String(selectedBooking.id).padStart(6, '0')}.pdf`,
+      image:        { type: 'png' },
+      html2canvas:  { scale: 4, useCORS: true },
+      jsPDF:        { unit: 'mm', format: [72, 200], orientation: 'portrait' },
       pagebreak:    { mode: ['avoid-all', 'css', 'legacy'] }
     };
 
@@ -125,6 +125,35 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       element.classList.remove('pdf-export-mode');
       console.error(err);
     });
+  };
+
+  const handleDeleteBooking = async (id, customerName, receiptNo) => {
+    const confirmMessage = `คุณต้องการลบ/ยกเลิกรายการจองของ ${customerName || ''} (${receiptNo || '#' + id}) ใช่หรือไม่?\n\n* ข้อมูลการจองและรายการในบิลนี้จะถูกลบออกจากระบบถาวร`;
+    
+    if (sysConfirm) {
+      const ok = await sysConfirm(confirmMessage);
+      if (!ok) return;
+    } else if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/bookings/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        if (sysAlert) sysAlert('ลบรายการจองเรียบร้อยแล้ว');
+        if (selectedBooking && selectedBooking.id === id) {
+          setShowDetailsModal(false);
+          setSelectedBooking(null);
+        }
+        fetchBookings();
+      } else {
+        const errData = await res.json();
+        if (sysAlert) sysAlert(errData.error || 'เกิดข้อผิดพลาดในการลบรายการจอง');
+      }
+    } catch (err) {
+      console.error('Delete booking error:', err);
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    }
   };
 
   const formatDate = (dateStr) => {
@@ -414,7 +443,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                       if (key === 'id') {
                         return (
                           <td key={key} style={{ fontWeight: 'bold', padding: cellPadding }}>
-                            #{String(b.id).padStart(6, '0')}
+                            {b.receipt_number || `#${String(b.id).padStart(6, '0')}`}
                           </td>
                         );
                       }
@@ -465,24 +494,47 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                       if (key === 'actions') {
                         return (
                           <td key={key} style={{ textAlign: 'center', padding: cellPadding }}>
-                            <button 
-                              className="btn btn-secondary" 
-                              style={{ 
-                                padding: '6px 12px', 
-                                fontSize: '0.8rem', 
-                                borderRadius: '8px', 
-                                gap: '4px',
-                                backgroundColor: 'var(--bg-hover)',
-                                border: '1px solid var(--border-color)',
-                                color: 'var(--text-main)',
-                                display: 'flex',
-                                alignItems: 'center',
-                                cursor: 'pointer'
-                              }}
-                              onClick={() => openBookingDetails(b.id)}
-                            >
-                              <Printer size={12} /> <span>พิมพ์ใบเสร็จ</span>
-                            </button>
+                            <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', alignItems: 'center' }}>
+                              <button 
+                                className="btn btn-secondary" 
+                                style={{ 
+                                  padding: '6px 12px', 
+                                  fontSize: '0.8rem', 
+                                  borderRadius: '8px', 
+                                  gap: '4px',
+                                  backgroundColor: 'var(--bg-hover)',
+                                  border: '1px solid var(--border-color)',
+                                  color: 'var(--text-main)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  cursor: 'pointer'
+                                }}
+                                onClick={() => openBookingDetails(b.id)}
+                                title="พิมพ์ใบเสร็จ"
+                              >
+                                <Printer size={12} /> <span>พิมพ์ใบเสร็จ</span>
+                              </button>
+                              <button 
+                                type="button"
+                                className="btn btn-danger" 
+                                style={{ 
+                                  padding: '6px 10px', 
+                                  fontSize: '0.8rem', 
+                                  borderRadius: '8px', 
+                                  gap: '4px',
+                                  backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                                  color: 'var(--danger-color)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  cursor: 'pointer'
+                                }}
+                                onClick={() => handleDeleteBooking(b.id, b.customer_name, b.receipt_number)}
+                                title="ลบรายการจองนี้"
+                              >
+                                <Trash2 size={12} /> <span>ลบ</span>
+                              </button>
+                            </div>
                           </td>
                         );
                       }
@@ -533,7 +585,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
         </div>
       )}
 
-      {/* Booking Details and Print Modal Overlay (Redesigned with Premium Liquid Glass style) */}
+      {/* Booking Details and Print Modal Overlay (Redesigned Split Studio Preview) */}
       {showDetailsModal && selectedBooking && (
         <div style={{
           position: 'fixed',
@@ -541,48 +593,59 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
           left: 0,
           right: 0,
           bottom: 0,
-          backgroundColor: 'rgba(15, 23, 42, 0.45)',
-          backdropFilter: 'blur(20px)',
-          WebkitBackdropFilter: 'blur(20px)',
+          backgroundColor: 'rgba(15, 23, 42, 0.65)',
+          backdropFilter: 'blur(24px) saturate(200%)',
+          WebkitBackdropFilter: 'blur(24px) saturate(200%)',
           display: 'flex',
-          zIndex: 999,
+          zIndex: 9999,
           overflowY: 'auto',
           padding: '24px'
         }} className="print-modal-overlay">
           <div className="history-modal-container" style={{
             display: 'flex',
-            maxWidth: '820px',
+            maxWidth: '920px',
             width: '100%',
             backgroundColor: 'var(--bg-card)',
             margin: 'auto',
-            borderRadius: '24px',
+            borderRadius: '28px',
             border: '1px solid var(--glass-border)',
-            boxShadow: '0 24px 70px rgba(0,0,0,0.4)',
-            overflow: 'hidden'
+            boxShadow: '0 30px 80px rgba(0,0,0,0.45)',
+            overflow: 'hidden',
+            animation: 'fadeIn 0.25s ease-out'
           }}>
             {/* Left side detail control and updates */}
-            <div style={{ flex: 1, padding: '32px', display: 'flex', flexDirection: 'column', gap: '20px' }} className="no-print">
+            <div style={{ flex: 1.1, padding: '32px', display: 'flex', flexDirection: 'column', gap: '20px' }} className="no-print">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '16px' }}>
-                <h2 style={{ fontSize: '1.2rem', fontWeight: 850, margin: 0 }}>ใบเสร็จรับเงิน #{String(selectedBooking.id).padStart(6, '0')}</h2>
-                <button style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }} onClick={() => setShowDetailsModal(false)}>
-                  <X size={22} />
+                <div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>ประวัติการทำรายการ</div>
+                  <h2 style={{ fontSize: '1.25rem', fontWeight: 850, margin: 0, color: 'var(--text-main)' }}>
+                    ใบเสร็จรับเงิน {selectedBooking.receipt_number || `#${String(selectedBooking.id).padStart(6, '0')}`}
+                  </h2>
+                </div>
+                <button 
+                  type="button"
+                  style={{ background: 'rgba(239, 68, 68, 0.1)', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', color: 'var(--danger-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} 
+                  onClick={() => setShowDetailsModal(false)}
+                  title="ปิดหน้าต่าง"
+                >
+                  <X size={18} />
                 </button>
               </div>
 
-              {/* Status Display (Immutable) */}
+              {/* Status Display */}
               <div style={{ 
                 display: 'flex', 
                 alignItems: 'center', 
-                gap: '8px', 
+                gap: '12px', 
                 color: 'var(--success-color)', 
                 fontWeight: '700', 
-                fontSize: '0.9rem', 
+                fontSize: '0.875rem', 
                 backgroundColor: 'var(--success-bg)', 
                 padding: '14px 18px', 
                 borderRadius: '16px', 
                 border: '1px solid rgba(34, 197, 94, 0.2)' 
               }}>
-                <CheckCircle2 size={18} /> 
+                <CheckCircle2 size={20} /> 
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <span>ชำระเงินเสร็จสิ้นแล้ว</span>
                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>
@@ -591,36 +654,89 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 </div>
               </div>
 
+              {/* Summary breakdown card */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', backgroundColor: 'var(--bg-hover)', padding: '16px', borderRadius: '16px', border: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>ลูกค้า:</span>
+                  <strong style={{ color: 'var(--text-main)' }}>{selectedBooking.customer_name}</strong>
+                </div>
+                {selectedBooking.contact && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>เบอร์ติดต่อ:</span>
+                    <strong style={{ color: 'var(--text-main)' }}>{selectedBooking.contact}</strong>
+                  </div>
+                )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>ยอดรวมสุทธิ:</span>
+                  <strong style={{ color: 'var(--primary-color)', fontSize: '1rem', fontWeight: 800 }}>
+                    {Number(selectedBooking.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
+                  </strong>
+                </div>
+              </div>
+
               {/* Booking Actions */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: 'auto' }}>
                 <button 
                   className="btn btn-secondary" 
-                  style={{ width: '100%', padding: '12px', gap: '8px', borderRadius: '99px', backgroundColor: '#e2e8f0', color: '#1e293b' }}
+                  style={{ width: '100%', padding: '12px', gap: '8px', borderRadius: '14px', backgroundColor: '#e2e8f0', color: '#1e293b', fontWeight: 'bold' }}
                   onClick={handleDownloadPDF}
                 >
                   <FileText size={18} /> บันทึกสลิปเป็นไฟล์ PDF
                 </button>
                 <button 
                   className="btn btn-primary" 
-                  style={{ width: '100%', padding: '12px', gap: '8px', borderRadius: '99px' }}
+                  style={{ width: '100%', padding: '12px', gap: '8px', borderRadius: '14px', fontWeight: 800 }}
                   onClick={triggerPrint}
                 >
                   <Printer size={18} /> พิมพ์ใบเสร็จออกเครื่องพิมพ์
+                </button>
+                <button 
+                  type="button"
+                  className="btn btn-danger" 
+                  style={{ width: '100%', padding: '10px', gap: '8px', borderRadius: '14px', backgroundColor: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.3)', color: 'var(--danger-color)', cursor: 'pointer', fontWeight: 'bold' }}
+                  onClick={() => handleDeleteBooking(selectedBooking.id, selectedBooking.customer_name, selectedBooking.receipt_number)}
+                >
+                  <Trash2 size={16} /> ลบรายการจองนี้ถาวร
                 </button>
               </div>
             </div>
 
             {/* Right side live print preview receipt layout */}
             <div className="history-receipt-column" style={{ 
-              width: '380px', 
-              backgroundColor: '#1f2937', 
-              padding: '28px', 
+              width: '420px', 
+              backgroundColor: 'rgba(15, 23, 42, 0.85)', 
+              padding: '32px 24px', 
               display: 'flex', 
+              flexDirection: 'column',
               alignItems: 'center', 
               justifyContent: 'center',
-              borderLeft: '1px solid var(--border-color)' 
+              borderLeft: '1px solid var(--border-color)',
+              position: 'relative' 
             }}>
-              <ReceiptPrint booking={selectedBooking} settings={settings} />
+              <div className="no-print" style={{ 
+                fontSize: '0.75rem', 
+                color: 'rgba(255, 255, 255, 0.65)', 
+                fontWeight: 700, 
+                marginBottom: '14px', 
+                letterSpacing: '0.5px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <Eye size={14} /> ตัวอย่างสลิปใบเสร็จรับเงิน (Thermal Slip Preview)
+              </div>
+              <div style={{
+                backgroundColor: '#ffffff',
+                borderRadius: '18px',
+                padding: '18px',
+                boxShadow: '0 20px 50px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.15)',
+                width: '100%',
+                maxWidth: '375px',
+                display: 'flex',
+                justify: 'center'
+              }}>
+                <ReceiptPrint booking={selectedBooking} settings={settings} />
+              </div>
             </div>
           </div>
         </div>

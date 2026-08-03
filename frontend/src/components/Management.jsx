@@ -25,6 +25,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
     description: '',
     status: 'active',
     image_url: '',
+    pin_code: '',
     dbType: 'room' // 'room' or 'service'
   });
   const [showModal, setShowModal] = useState(false);
@@ -38,6 +39,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
   const [editingCatName, setEditingCatName] = useState({ old: '', current: '' });
   const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
   const [isFormDropdownOpen, setIsFormDropdownOpen] = useState(false);
+  const [isStatusFormDropdownOpen, setIsStatusFormDropdownOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
@@ -202,7 +204,8 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
             has_hourly: r.has_hourly,
             has_halfday: r.has_halfday,
             has_daily: r.has_daily,
-            image_url: r.image_url || ''
+            image_url: r.image_url || '',
+            pin_code: r.pin_code || ''
           })),
           ...servicesData.map(s => ({
             id: s.id,
@@ -287,6 +290,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
         description: currentItemForm.description,
         status: currentItemForm.status,
         image_url: currentItemForm.image_url || null,
+        pin_code: currentItemForm.pin_code || null,
         category: roomCategoryName
       };
     } else {
@@ -324,6 +328,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
           description: '',
           status: 'active',
           image_url: '',
+          pin_code: '',
           dbType: 'room',
           originalDbType: 'room',
           has_hourly: true,
@@ -356,6 +361,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
       description: item.description || '',
       status: item.status,
       image_url: item.image_url || '',
+      pin_code: item.pin_code || '',
       dbType: item.dbType,
       originalDbType: item.dbType,
       has_hourly: item.has_hourly === 1 || item.has_hourly === true || (item.dbType === 'room' && item.hourly_rate > 0),
@@ -543,24 +549,21 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
             {isFilterDropdownOpen && (
               <>
                 <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 998 }} onClick={() => setIsFilterDropdownOpen(false)} />
-                <div style={{
-                  position: 'absolute',
-                  top: '48px',
-                  left: 0,
-                  right: 0,
-                  background: 'var(--bg-glass-modal)',
-                  backdropFilter: 'blur(25px)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '16px',
-                  boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25)',
-                  padding: '6px',
-                  zIndex: 999,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '2px',
-                  maxHeight: '260px',
-                  overflowY: 'auto'
-                }}>
+                <div 
+                  className="liquidglass-dropdown"
+                  style={{
+                    position: 'absolute',
+                    top: '48px',
+                    left: 0,
+                    right: 0,
+                    zIndex: 999,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                    maxHeight: '260px',
+                    overflowY: 'auto'
+                  }}
+                >
                   <button
                     type="button"
                     onClick={() => {
@@ -684,6 +687,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                 description: '',
                 status: 'active',
                 image_url: '',
+                pin_code: '',
                 dbType: 'room',
                 originalDbType: 'room',
                 has_daily: false
@@ -717,6 +721,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                 <tr>
                   <th style={{ padding: '20px 24px' }}>ชื่อรายการสินค้า / ห้องประชุม</th>
                   <th>ประเภทคลัง</th>
+                  <th style={{ textAlign: 'center' }}>รหัสผ่าน</th>
                   <th style={{ textAlign: 'right' }}>ราคา / อัตราค่าบริการ</th>
                   <th>รายละเอียด / ความจุ</th>
                   <th style={{ textAlign: 'center' }}>สถานะคลัง</th>
@@ -726,7 +731,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
               <tbody>
                 {filteredInventory.length === 0 ? (
                   <tr>
-                    <td colSpan="6" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+                    <td colSpan="7" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
                       <AlertCircle size={24} style={{ marginBottom: '8px', opacity: 0.5 }} />
                       <div>ไม่พบข้อมูลคลังที่ต้องการหา</div>
                     </td>
@@ -758,6 +763,25 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                         }}>
                           {item.category}
                         </span>
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        {item.dbType === 'room' && item.pin_code ? (
+                          <span style={{ 
+                            fontFamily: 'monospace', 
+                            fontWeight: '800', 
+                            fontSize: '0.9rem', 
+                            padding: '4px 10px', 
+                            borderRadius: '8px', 
+                            backgroundColor: 'rgba(16, 185, 129, 0.12)', 
+                            color: '#10b981',
+                            border: '1px solid rgba(16, 185, 129, 0.25)',
+                            letterSpacing: '1px'
+                          }}>
+                            {item.pin_code}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>-</span>
+                        )}
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: '800', fontSize: '1.05rem', color: 'var(--primary-color)' }}>
                         {item.dbType === 'service' ? (
@@ -902,7 +926,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
           background: 'rgba(15, 23, 42, 0.45)',
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
-          zIndex: 1000,
+          zIndex: 2000,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -1007,24 +1031,21 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                       {isFormDropdownOpen && (
                         <>
                           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 998 }} onClick={() => setIsFormDropdownOpen(false)} />
-                          <div style={{
-                            position: 'absolute',
-                            top: '46px',
-                            left: 0,
-                            right: 0,
-                            background: 'var(--bg-card)',
-                            backdropFilter: 'blur(20px)',
-                            border: '1px solid var(--border-color)',
-                            borderRadius: '12px',
-                            boxShadow: '0 10px 30px rgba(0, 0, 0, 0.25)',
-                            padding: '6px',
-                            zIndex: 999,
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '2px',
-                            maxHeight: '200px',
-                            overflowY: 'auto'
-                          }}>
+                          <div 
+                            className="liquidglass-dropdown"
+                            style={{
+                              position: 'absolute',
+                              top: '46px',
+                              left: 0,
+                              right: 0,
+                              zIndex: 999,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '2px',
+                              maxHeight: '200px',
+                              overflowY: 'auto'
+                            }}
+                          >
                             {categories.map(cat => {
                               if (itemForm.dbType === 'service' && cat === roomCategoryName) return null;
                               const isSel = itemForm.category === cat;
@@ -1065,24 +1086,76 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                   </div>
                 )}
 
-                <div className="form-group" style={{ margin: 0 }}>
+                 <div className="form-group" style={{ margin: 0, position: 'relative' }}>
                   <label style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>สถานะคลัง</label>
-                  <select 
-                    className="form-control" 
-                    value={itemForm.status} 
-                    onChange={e => setItemForm({...itemForm, status: e.target.value})}
+                  <div 
+                    className="form-control"
+                    onClick={() => setIsStatusFormDropdownOpen(!isStatusFormDropdownOpen)}
                     style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'space-between', 
                       height: '42px', 
-                      padding: '8px 12px', 
-                      borderRadius: '10px',
-                      fontSize: '0.9rem'
+                      fontSize: '0.9rem', 
+                      borderRadius: '10px', 
+                      cursor: 'pointer',
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      border: '1px solid var(--border-color)',
+                      padding: '0 12px',
+                      fontWeight: 600
                     }}
                   >
-                    <option value="active">เปิดใช้บริการ/ขายตามปกติ (Active)</option>
-                    <option value="inactive">ปิดใช้งานชั่วคราว (Inactive)</option>
-                  </select>
+                    <span>
+                      {itemForm.status === 'active' ? 'เปิดใช้บริการ/ขายตามปกติ (Active)' : itemForm.status === 'inactive' ? 'ปิดใช้งานชั่วคราว (Inactive)' : itemForm.status}
+                    </span>
+                    <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
+                  </div>
+
+                  {isStatusFormDropdownOpen && (
+                    <>
+                      <div onClick={() => setIsStatusFormDropdownOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                      <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
+                        <div 
+                          onClick={() => { setItemForm({...itemForm, status: 'active'}); setIsStatusFormDropdownOpen(false); }}
+                          style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: itemForm.status === 'active' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: itemForm.status === 'active' ? 'bold' : 'normal', background: itemForm.status === 'active' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                          onMouseEnter={e => { if (itemForm.status !== 'active') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                          onMouseLeave={e => { if (itemForm.status !== 'active') e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          เปิดใช้บริการ/ขายตามปกติ (Active)
+                        </div>
+                        <div 
+                          onClick={() => { setItemForm({...itemForm, status: 'inactive'}); setIsStatusFormDropdownOpen(false); }}
+                          style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: itemForm.status === 'inactive' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: itemForm.status === 'inactive' ? 'bold' : 'normal', background: itemForm.status === 'inactive' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                          onMouseEnter={e => { if (itemForm.status !== 'inactive') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                          onMouseLeave={e => { if (itemForm.status !== 'inactive') e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          ปิดใช้งานชั่วคราว (Inactive)
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
+
+              {/* Fixed Room PIN Code (Only for Room) */}
+              {itemForm.dbType === 'room' && (
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>
+                    รหัสผ่านเข้าห้องประชุม
+                  </label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="ระบุรหัสผ่านเข้าใช้งานห้องประชุม"
+                    value={itemForm.pin_code || ''}
+                    onChange={e => setItemForm({ ...itemForm, pin_code: e.target.value })}
+                    style={{ height: '42px', fontSize: '0.9rem', padding: '0 12px', borderRadius: '10px', fontWeight: 'bold', letterSpacing: '1px' }}
+                  />
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                    * เมื่อมีคนจองห้องนี้ รหัสนี้จะถูกพิมพ์บนสลิปและส่งเข้า LINE OA ตอนเช็คอินให้อัตโนมัติ (เปลี่ยนรหัสใหม่ได้ทุกเดือน)
+                  </span>
+                </div>
+              )}
 
               {/* Image Upload Component */}
               <div className="form-group" style={{ margin: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -1353,7 +1426,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
           background: 'rgba(15, 23, 42, 0.45)',
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
-          zIndex: 1000,
+          zIndex: 2000,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',

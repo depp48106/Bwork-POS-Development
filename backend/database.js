@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-const dbFilename = process.env.NODE_ENV === 'production' ? 'database.sqlite' : 'database_test.sqlite';
+const dbFilename = 'database.sqlite';
 const dbPath = path.join(__dirname, dbFilename);
 const db = new sqlite3.Database(dbPath, (err) => {
   if (!err) {
@@ -73,6 +73,7 @@ async function initDatabase() {
       status TEXT DEFAULT 'active',
       image_url TEXT,
       category TEXT DEFAULT 'Meeting Room',
+      pin_code TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -94,6 +95,11 @@ async function initDatabase() {
       total_amount REAL NOT NULL,
       payment_status TEXT DEFAULT 'pending',
       payment_method TEXT,
+      pin_code TEXT,
+      qr_token TEXT,
+      line_user_id TEXT,
+      checkin_status TEXT DEFAULT 'pending',
+      checkin_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -108,7 +114,10 @@ async function initDatabase() {
       end_time TEXT,
       subtotal REAL NOT NULL,
       layout TEXT DEFAULT 'standard',
-      booking_type TEXT DEFAULT 'hourly'
+      booking_type TEXT DEFAULT 'hourly',
+      pin_code TEXT,
+      checkin_status TEXT DEFAULT 'pending',
+      checkin_at DATETIME
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -190,12 +199,45 @@ async function initDatabase() {
     console.log('Migration: Added category column to rooms table.');
   } catch (e) {}
 
+  // Migration: Add pin_code column to rooms if not exists
+  try {
+    await dbQuery.run("ALTER TABLE rooms ADD COLUMN pin_code TEXT");
+    console.log('Migration: Added pin_code column to rooms table.');
+  } catch (e) {}
+
   // Update existing users who have null permissions or fullnames
   try {
-    await dbQuery.run("UPDATE users SET permissions = 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation' WHERE role = 'admin'");
+    await dbQuery.run("UPDATE users SET permissions = 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation,admin-dooraccess' WHERE role = 'admin'");
     await dbQuery.run("UPDATE users SET permissions = 'pos,pending,layout,history,quotations' WHERE role = 'staff'");
     await dbQuery.run("UPDATE users SET fullname = 'ผู้ดูแลระบบหลัก' WHERE username = 'admin' AND (fullname IS NULL OR fullname = '')");
     await dbQuery.run("UPDATE users SET fullname = 'พนักงานต้อนรับประจำกะ' WHERE username = 'staff' AND (fullname IS NULL OR fullname = '')");
+  } catch (e) {}
+
+  // Migration: Add PIN Code and LINE OA columns to bookings & booking_items
+  try {
+    await dbQuery.run('ALTER TABLE bookings ADD COLUMN pin_code TEXT');
+  } catch (e) {}
+  try {
+    await dbQuery.run('ALTER TABLE bookings ADD COLUMN qr_token TEXT');
+  } catch (e) {}
+  try {
+    await dbQuery.run('ALTER TABLE bookings ADD COLUMN line_user_id TEXT');
+  } catch (e) {}
+  try {
+    await dbQuery.run("ALTER TABLE bookings ADD COLUMN checkin_status TEXT DEFAULT 'pending'");
+  } catch (e) {}
+  try {
+    await dbQuery.run('ALTER TABLE bookings ADD COLUMN checkin_at DATETIME');
+  } catch (e) {}
+
+  try {
+    await dbQuery.run('ALTER TABLE booking_items ADD COLUMN pin_code TEXT');
+  } catch (e) {}
+  try {
+    await dbQuery.run("ALTER TABLE booking_items ADD COLUMN checkin_status TEXT DEFAULT 'pending'");
+  } catch (e) {}
+  try {
+    await dbQuery.run('ALTER TABLE booking_items ADD COLUMN checkin_at DATETIME');
   } catch (e) {}
 
   // Migration: Add daily_rate column if not exists
@@ -231,6 +273,20 @@ async function initDatabase() {
     console.log('Migration: Added half_day_rate column to rooms table.');
   } catch (e) {}
 
+  // Migration: Add quotation metadata columns if not exists
+  try {
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN seller_name TEXT");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN job_name TEXT");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN customer_address TEXT");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN quotation_no TEXT");
+  } catch (e) {}
+
+  try {
+    await dbQuery.run("ALTER TABLE quotation_items ADD COLUMN discount REAL DEFAULT 0");
+    await dbQuery.run("ALTER TABLE quotation_items ADD COLUMN item_date TEXT");
+    await dbQuery.run("ALTER TABLE quotation_items ADD COLUMN discount_type TEXT DEFAULT 'amount'");
+  } catch (e) {}
+
   // Migration: Add booking type flag columns to rooms if not exists
   try {
     await dbQuery.run('ALTER TABLE rooms ADD COLUMN has_hourly INTEGER DEFAULT 1');
@@ -241,6 +297,18 @@ async function initDatabase() {
     await dbQuery.run("UPDATE rooms SET has_halfday = 1 WHERE half_day_rate > 0");
     await dbQuery.run("UPDATE rooms SET has_daily = 1 WHERE daily_rate > 0");
     console.log('Migration: Added has_hourly/has_halfday/has_daily columns to rooms table.');
+  } catch (e) {}
+
+  // Migration: Add receipt_number column to bookings if not exists
+  try {
+    await dbQuery.run('ALTER TABLE bookings ADD COLUMN receipt_number TEXT');
+    console.log('Migration: Added receipt_number column to bookings table.');
+  } catch (e) {}
+
+  // Migration: Add approved_at column to quotations if not exists
+  try {
+    await dbQuery.run('ALTER TABLE quotations ADD COLUMN approved_at TEXT');
+    console.log('Migration: Added approved_at column to quotations table.');
   } catch (e) {}
 
   // Seed default rooms if empty

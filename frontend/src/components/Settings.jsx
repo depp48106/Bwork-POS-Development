@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer } from 'lucide-react';
+import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone } from 'lucide-react';
+import DoorAccessSettings from './DoorAccessSettings';
 
-function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPrompt }) {
+function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPrompt, onClearHistory }) {
   // Config Settings
   const [configs, setConfigs] = useState({
     company_name: '',
@@ -9,10 +10,12 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
     receipt_footer: '',
     onedrive_path: '',
     company_address: '',
+    company_tax_id: '',
     logo_image: '',
     quotation_terms: '',
     quotation_signer: '',
-    quotation_valid_days: ''
+    quotation_valid_days: '',
+    room_alert_minutes: '15'
   });
 
   // DB Backup logs
@@ -27,6 +30,10 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
   // Custom permissions settings states
   const [editingUser, setEditingUser] = useState(null);
   const [editForm, setEditForm] = useState({ username: '', role: 'staff', fullname: '', permissions: [], password: '' });
+  const [isNewUserRoleOpen, setIsNewUserRoleOpen] = useState(false);
+  const [isEditUserRoleOpen, setIsEditUserRoleOpen] = useState(false);
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
+  const [resetPassForm, setResetPassForm] = useState({ newPassword: '', confirmPassword: '' });
 
   // Roles management states
   const [roles, setRoles] = useState([]);
@@ -34,6 +41,32 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
   const [editingRole, setEditingRole] = useState(null);
   const [roleForm, setRoleForm] = useState({ name: '', label: '', permissions: [] });
   const [roleMode, setRoleMode] = useState(null); // 'edit' | 'create' | null
+
+  // Quotation Sellers input state
+  const [sellerInput, setSellerInput] = useState('');
+
+  const handleAddSeller = () => {
+    if (!sellerInput.trim()) return;
+    const newName = sellerInput.trim();
+    const currentList = configs.quotation_signer
+      ? configs.quotation_signer.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
+      : [];
+    if (currentList.includes(newName)) {
+      if (sysAlert) sysAlert('มีรายชื่อผู้ขายนี้อยู่ในระบบแล้ว');
+      return;
+    }
+    const updated = [...currentList, newName];
+    setConfigs(prev => ({ ...prev, quotation_signer: updated.join(', ') }));
+    setSellerInput('');
+  };
+
+  const handleRemoveSeller = (indexToRemove) => {
+    const currentList = configs.quotation_signer
+      ? configs.quotation_signer.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
+      : [];
+    const updated = currentList.filter((_, i) => i !== indexToRemove);
+    setConfigs(prev => ({ ...prev, quotation_signer: updated.join(', ') }));
+  };
 
   useEffect(() => {
     fetchConfigs();
@@ -50,7 +83,10 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
         const data = await res.json();
         setConfigs(prev => ({
           ...prev,
-          ...data
+          ...data,
+          quotation_company_name: data.quotation_company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)',
+          quotation_company_address: data.quotation_company_address || '98 หมู่ 2 อาคารบีเวิร์ค ยูนิต602 ซอยแจ้งวัฒนะ-ปากเกร็ด 35 ต.คลองเกลือ อ.ปากเกร็ด จ.นนทบุรี 11120',
+          quotation_company_tax_id: data.quotation_company_tax_id || '0125554000401'
         }));
       }
     } catch (err) {
@@ -271,19 +307,28 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
           <h1 className="tab-title">
             {viewMode === 'users' && 'จัดการสิทธิ์บัญชีผู้ใช้'}
             {viewMode === 'system' && 'ตั้งค่าใบเสร็จ'}
-            {viewMode === 'backup' && 'การสำรองข้อมูลสำรอง'}
+            {viewMode === 'backup' && 'จัดการฐานข้อมูล'}
             {viewMode === 'quotation' && 'แก้ไขใบเสนอราคา'}
+            {viewMode === 'dooraccess' && 'ระบบจอง LINE OA & รหัสเข้าห้อง'}
+            {viewMode === 'general' && 'ตั้งค่าทั่วไป'}
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
             {viewMode === 'users' && 'บริหารบัญชีพนักงานต้อนรับและแอดมิน เพื่อสิทธิ์การเปิดบิลและจัดการฐานข้อมูล'}
             {viewMode === 'system' && 'ตั้งค่าข้อมูลบริษัท ข้อความหัวใบเสร็จ และส่วนท้ายใบเสร็จพร้อมดูตัวอย่างจริง'}
-            {viewMode === 'backup' && 'กำหนดที่อยู่โฟลเดอร์สำหรับสำรองฐานข้อมูล และสั่งสำรองข้อมูลด่วนลง OneDrive'}
+            {viewMode === 'backup' && 'จัดการการสำรองข้อมูล คัดลอกฐานข้อมูล และล้างข้อมูลประวัติการทำรายการเพื่อรีเซ็ตระบบ'}
             {viewMode === 'quotation' && 'กำหนดเงื่อนไขเริ่มต้น วันหมดอายุ และชื่อผู้ลงนามบนเอกสารใบเสนอราคา'}
+            {viewMode === 'dooraccess' && 'กำหนดการเชื่อมต่อ LINE Messaging API, Google Sheets Sync และสิทธิ์เวลาการเช็คอินรหัส PIN'}
+            {viewMode === 'general' && 'กำหนดค่าการทำงานทั่วไปของระบบ เช่น ช่วงเวลาการเตือนก่อนห้องประชุมเริ่มใช้งาน'}
           </p>
         </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        
+        {/* VIEW: DOOR ACCESS & LINE OA SETTINGS */}
+        {viewMode === 'dooraccess' && (
+          <DoorAccessSettings sysAlert={sysAlert} />
+        )}
         
         {/* VIEW: SYSTEM SETTINGS */}
         {viewMode === 'system' && (
@@ -608,17 +653,49 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
                       onChange={e => setNewUser({ ...newUser, password: e.target.value })} 
                   />
                   </div>
-                  <div className="form-group">
+                  <div className="form-group" style={{ position: 'relative' }}>
                     <label>สิทธิ์ / บทบาท (Role)</label>
-                    <select 
-                      className="form-control" 
-                      value={newUser.role} 
-                      onChange={e => setNewUser({ ...newUser, role: e.target.value })}
+                    <div 
+                      className="form-control"
+                      onClick={() => setIsNewUserRoleOpen(!isNewUserRoleOpen)}
+                      style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'space-between', 
+                        height: '40px', 
+                        fontSize: '0.9rem', 
+                        borderRadius: '10px', 
+                        cursor: 'pointer',
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid var(--border-color)',
+                        padding: '0 12px',
+                        fontWeight: 600
+                      }}
                     >
-                      {roles.map(r => (
-                        <option key={r.name} value={r.name}>{r.label}</option>
-                      ))}
-                    </select>
+                      <span>
+                        {roles.find(r => r.name === newUser.role)?.label || newUser.role}
+                      </span>
+                      <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
+                    </div>
+
+                    {isNewUserRoleOpen && (
+                      <>
+                        <div onClick={() => setIsNewUserRoleOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                        <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
+                          {roles.map(r => (
+                            <div 
+                              key={r.name}
+                              onClick={() => { setNewUser({ ...newUser, role: r.name }); setIsNewUserRoleOpen(false); }}
+                              style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: newUser.role === r.name ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: newUser.role === r.name ? 'bold' : 'normal', background: newUser.role === r.name ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                              onMouseEnter={e => { if (newUser.role !== r.name) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                              onMouseLeave={e => { if (newUser.role !== r.name) e.currentTarget.style.background = 'transparent'; }}
+                            >
+                              {r.label}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -667,6 +744,8 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
                             style={{ padding: '6px 12px', fontSize: '0.8rem', borderRadius: '8px', gap: '4px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', color: 'var(--text-main)', cursor: 'pointer' }} 
                             onClick={() => {
                               setEditingUser(u);
+                              setIsResettingPassword(false);
+                              setResetPassForm({ newPassword: '', confirmPassword: '' });
                               setEditForm({
                                 username: u.username,
                                 role: u.role,
@@ -705,92 +784,332 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
         )}
 
         {/* VIEW: DATABASE BACKUP */}
+        {/* VIEW: DATABASE MANAGEMENT (BACKUP & SYSTEM RESET) */}
         {viewMode === 'backup' && (
-          <>
-            {/* OneDrive Path Config */}
-            <div className="card">
-              <h2 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                กำหนดที่อยู่โฟลเดอร์สำหรับสำรองข้อมูล
-              </h2>
-              <form onSubmit={handleSaveOneDrivePath}>
-                <div className="form-group">
-                  <label htmlFor="onedrivePath" style={{ color: 'var(--primary-color)', fontWeight: 'bold' }}>ที่อยู่โฟลเดอร์ OneDrive ในเครื่อง</label>
-                  <input 
-                    id="onedrivePath"
-                    type="text" 
-                    className="form-control" 
-                    placeholder="เช่น C:\Users\ADMIN\OneDrive\POS_Backups"
-                    value={configs.onedrive_path}
-                    onChange={e => setConfigs({ ...configs, onedrive_path: e.target.value })}
-                    required
-                  />
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '6px', display: 'block' }}>
-                    * ระบุโฟลเดอร์ภายใน OneDrive หรือไดรฟ์ที่ต้องการนำฐานข้อมูล SQL ไปสำรองเก็บไว้เมื่อเปิดโปรแกรม
-                  </span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            
+            {/* 💾 1. DATABASE BACKUP SECTION */}
+            <div className="card" style={{ padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                <Database size={22} className="text-primary" />
+                <h2 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                  ระบบสำรองข้อมูล (Database Backup & Synchronization)
+                </h2>
+              </div>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', flexWrap: 'wrap' }}>
+                
+                {/* Left side: OneDrive Config */}
+                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '100%' }}>
+                  <form onSubmit={handleSaveOneDrivePath} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label htmlFor="onedrivePath" style={{ color: 'var(--primary-color)', fontWeight: 'bold', fontSize: '0.85rem', display: 'block', marginBottom: '6px' }}>
+                        เส้นทางโฟลเดอร์ OneDrive ภายในเครื่อง
+                      </label>
+                      <input 
+                        id="onedrivePath"
+                        type="text" 
+                        className="form-control" 
+                        placeholder="เช่น C:\Users\ADMIN\OneDrive\POS_Backups"
+                        value={configs.onedrive_path}
+                        onChange={e => setConfigs({ ...configs, onedrive_path: e.target.value })}
+                        required
+                        style={{ fontSize: '0.85rem', padding: '8px 12px' }}
+                      />
+                      <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '6px', display: 'block', lineHeight: 1.4 }}>
+                        * เมื่อเปิดระบบ POS ในแต่ละวัน ไฟล์ฐานข้อมูล SQLite สำรองจะถูกคัดลอกไปบันทึกไว้ในเส้นทางที่คุณระบุนี้ทันทีเพื่อให้เชื่อมโยงขึ้น OneDrive อัตโนมัติ
+                      </span>
+                    </div>
+                    <button type="submit" className="btn btn-primary" style={{ width: '100%', gap: '8px', borderRadius: '12px', height: '40px', fontSize: '0.85rem', fontWeight: 'bold' }}>
+                      <Save size={16} />
+                      <span>บันทึกเส้นทางสำรองข้อมูล</span>
+                    </button>
+                  </form>
                 </div>
-                <button type="submit" className="btn btn-primary" style={{ width: '100%', gap: '8px' }}>
-                  <Save size={18} />
-                  บันทึกที่อยู่สำรองข้อมูล
-                </button>
-              </form>
-            </div>
 
-            {/* Trigger Manual Backup */}
-            <div className="card">
-              <h2 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Cloud size={20} className="text-primary" />
-                ซิงค์สำรองข้อมูลทันที (OneDrive Manual Backup)
-              </h2>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '20px' }}>
-                ปกติระบบหลังบ้านจะทำงานซิงค์ฐานข้อมูล SQL ขึ้น OneDrive เป็นประจำทุกวันโดยอัตโนมัติ คุณสามารถสั่งทำระบบสำรองด่วนได้ในคลิกเดียวด้านล่าง
-              </p>
+                {/* Right side: Manual Trigger Backup */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', borderLeft: '1px solid var(--border-color)', paddingLeft: '24px' }}>
+                  <h3 style={{ fontSize: '0.9rem', fontWeight: 700, margin: '0 0 4px 0', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <CloudLightning size={16} className="text-primary" />
+                    คัดลอกสำรองข้อมูลด่วนด้วยตนเอง
+                  </h3>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.4 }}>
+                    ปกติระบบจะทำการซิงค์ไฟล์เป็นประจำเมื่อเปิดโปรแกรม หากต้องการสำรองข้อมูลด่วนเดี่ยวนี้ สามารถกดทำรายการคัดลอกไฟล์ได้ทันที
+                  </p>
 
-              <button 
-                className="btn btn-secondary" 
-                style={{ width: '100%', gap: '8px', color: 'var(--primary-color)', borderColor: 'var(--primary-color)' }}
-                onClick={handleTriggerBackup}
-                disabled={backupLoading}
-              >
-                <CloudLightning size={18} />
-                {backupLoading ? 'กำลังสร้างไฟล์ฐานข้อมูลสำรอง...' : 'กดสำรองไฟล์ข้อมูล SQLite ด่วนเดี๋ยวนี้'}
-              </button>
+                  <button 
+                    className="btn btn-secondary" 
+                    style={{ 
+                      width: '100%', 
+                      gap: '8px', 
+                      color: 'var(--primary-color)', 
+                      borderColor: 'var(--primary-color)',
+                      borderRadius: '12px',
+                      height: '40px',
+                      fontSize: '0.85rem',
+                      fontWeight: 'bold',
+                      marginTop: '8px'
+                    }}
+                    onClick={handleTriggerBackup}
+                    disabled={backupLoading}
+                  >
+                    <Cloud size={16} />
+                    <span>{backupLoading ? 'กำลังสร้างไฟล์สำรอง...' : 'กดบันทึกไฟล์ SQLite ด่วนทันที'}</span>
+                  </button>
 
-              {backupStatus && (
-                <div style={{
-                  marginTop: '20px',
-                  padding: '16px',
-                  borderRadius: 'var(--border-radius-sm)',
-                  fontSize: '0.85rem',
-                  border: '1px solid',
-                  borderColor: backupStatus.success ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                  backgroundColor: backupStatus.success ? 'var(--success-bg)' : 'var(--danger-bg)',
-                  color: backupStatus.success ? 'var(--success-color)' : 'var(--danger-color)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px'
-                }}>
-                  <div style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    {backupStatus.success ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
-                    {backupStatus.message}
-                  </div>
-                  {backupStatus.success && (
-                    <>
-                      <div><strong>ชื่อไฟล์สำรอง:</strong> {backupStatus.fileName}</div>
-                      <div style={{ wordBreak: 'break-all' }}><strong>ที่อยู่สำรอง:</strong> {backupStatus.path}</div>
-                    </>
+                  {backupStatus && (
+                    <div style={{
+                      marginTop: '8px',
+                      padding: '12px 14px',
+                      borderRadius: '12px',
+                      fontSize: '0.775rem',
+                      border: '1px solid',
+                      borderColor: backupStatus.success ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                      backgroundColor: backupStatus.success ? 'var(--success-bg)' : 'var(--danger-bg)',
+                      color: backupStatus.success ? 'var(--success-color)' : 'var(--danger-color)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px'
+                    }}>
+                      <div style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {backupStatus.success ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+                        {backupStatus.message}
+                      </div>
+                      {backupStatus.success && (
+                        <div style={{ fontSize: '0.7rem', opacity: 0.85, marginTop: '2px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          <div><strong>ชื่อไฟล์:</strong> {backupStatus.fileName}</div>
+                          <div style={{ wordBreak: 'break-all' }}><strong>พาธ:</strong> {backupStatus.path}</div>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
-              )}
+
+              </div>
             </div>
-          </>
+
+            {/* 🚨 2. SYSTEM RESET / CLEAR OPERATION HISTORY SECTION */}
+            <div className="card" style={{ 
+              padding: '24px', 
+              borderRadius: '24px', 
+              border: '1px solid rgba(239, 68, 68, 0.25)', 
+              background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.02), rgba(239, 68, 68, 0.05))',
+              boxShadow: '0 8px 32px rgba(239, 68, 68, 0.03)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', borderBottom: '1px solid rgba(239, 68, 68, 0.15)', paddingBottom: '12px' }}>
+                <Trash2 size={22} style={{ color: 'var(--danger-color)' }} />
+                <h2 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: 'var(--danger-color)' }}>
+                  ล้างข้อมูลและประวัติการใช้งานระบบ (System Data Reset)
+                </h2>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '32px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: '280px' }}>
+                  <p style={{ fontSize: '0.825rem', color: 'var(--text-main)', margin: '0 0 8px 0', fontWeight: 'bold' }}>
+                    ลบประวัติการทำธุรกรรมทั้งหมดและเริ่มต้นระบบนับหนึ่งใหม่
+                  </p>
+                  <p style={{ fontSize: '0.775rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+                    ปุ่มนี้จะทำการลบประวัติการจองห้องประชุมทั้งหมด, ประวัติการชำระเงินบิลหน้าร้าน, และประวัติการจัดทำเอกสารใบเสนอราคาทั้งหมดแบบถาวร (รวมถึงรีเซ็ตเลขที่รันบิลกลับไปเริ่มต้นใหม่ด้วย)
+                  </p>
+                  <div style={{ 
+                    marginTop: '12px', 
+                    padding: '8px 12px', 
+                    borderRadius: '8px', 
+                    backgroundColor: 'rgba(239, 68, 68, 0.08)', 
+                    color: 'var(--danger-color)', 
+                    fontSize: '0.725rem', 
+                    fontWeight: 500,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}>
+                    <AlertTriangle size={12} />
+                    <span>ข้อมูลสินค้า คลังห้องประชุม บริการเสริม และบัญชีสิทธิ์พนักงานจะไม่มีการเปลี่ยนแปลงใดๆ</span>
+                  </div>
+                </div>
+
+                <div style={{ flexShrink: 0 }}>
+                  <button 
+                    type="button"
+                    className="btn"
+                    style={{ 
+                      padding: '12px 24px', 
+                      borderRadius: '16px', 
+                      fontSize: '0.875rem', 
+                      fontWeight: 800, 
+                      backgroundColor: 'var(--danger-color)',
+                      border: 'none',
+                      color: '#ffffff',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      boxShadow: '0 4px 16px rgba(239, 68, 68, 0.25)',
+                      transition: 'all 0.2s'
+                    }}
+                    onClick={onClearHistory}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.transform = 'translateY(-1px)';
+                      e.currentTarget.style.boxShadow = '0 6px 20px rgba(239, 68, 68, 0.35)';
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.transform = 'translateY(0)';
+                      e.currentTarget.style.boxShadow = '0 4px 16px rgba(239, 68, 68, 0.25)';
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    <span>สั่งล้างประวัติการทำรายการด่วน</span>
+                  </button>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
         )}
 
         {viewMode === 'quotation' && (
           <div className="card" style={{ maxWidth: '680px', padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)' }}>
             <h2 style={{ fontSize: '1.1rem', fontWeight: 800, marginBottom: '18px', color: 'var(--primary-color)', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-              ตั้งค่าเอกสารใบเสนอราคาเริ่มต้น
+              ตั้งค่าเอกสารใบเสนอราคาและข้อมูลบริษัท
             </h2>
             <form onSubmit={handleSaveConfigs} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              
+              <div className="form-group">
+                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ชื่อบริษัทของเรา (สำหรับใบเสนอราคา)</label>
+                <input 
+                  type="text" 
+                  className="form-control" 
+                  value={configs.quotation_company_name || ''} 
+                  onChange={e => setConfigs({ ...configs, quotation_company_name: e.target.value })} 
+                  placeholder="เช่น บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)..."
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ชื่อบริษัทที่แสดงบริเวณส่วนหัวของเอกสารใบเสนอราคา (แยกอิสระจากใบเสร็จรับเงิน)</span>
+              </div>
+
+              <div className="form-group">
+                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ที่อยู่บริษัทของเรา (สำหรับใบเสนอราคา)</label>
+                <textarea 
+                  className="form-control" 
+                  rows="2"
+                  value={configs.quotation_company_address || ''} 
+                  onChange={e => setConfigs({ ...configs, quotation_company_address: e.target.value })} 
+                  placeholder="เช่น 98 หมู่ 2 อาคารบีเวิร์ค ยูนิต602 ซอยแจ้งวัฒนะ-ปากเกร็ด 35..."
+                  style={{ borderRadius: '12px', padding: '10px', fontSize: '0.85rem' }}
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ที่อยู่บริษัทที่แสดงใต้ชื่อบริษัทในใบเสนอราคา</span>
+              </div>
+
+              <div className="form-group">
+                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>เลขประจำตัวผู้เสียภาษี (สำหรับใบเสนอราคา)</label>
+                <input 
+                  type="text" 
+                  className="form-control" 
+                  value={configs.quotation_company_tax_id || ''} 
+                  onChange={e => setConfigs({ ...configs, quotation_company_tax_id: e.target.value })} 
+                  placeholder="เช่น 0125554000401..."
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>เลขประจำตัวผู้เสียภาษีอากร 13 หลัก สำหรับแสดงในใบเสนอราคา</span>
+              </div>
+
+              <div className="form-group">
+                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ภาพลายเซ็นผู้อนุมัติ 1 (Signature 1)</label>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '6px' }}>
+                  {configs.quotation_signature_image ? (
+                    <div style={{ position: 'relative', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '8px', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <img 
+                        src={configs.quotation_signature_image} 
+                        alt="ลายเซ็นผู้อนุมัติ 1" 
+                        style={{ height: '48px', maxWidth: '180px', objectFit: 'contain' }} 
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setConfigs({ ...configs, quotation_signature_image: '' })}
+                        style={{ position: 'absolute', top: '-6px', right: '-6px', background: 'var(--danger-color)', color: '#ffffff', border: 'none', borderRadius: '50%', width: '22px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.2)' }}
+                        title="ลบลายเซ็น"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ flex: 1 }}>
+                      <input 
+                        type="file" 
+                        accept="image/*"
+                        className="form-control"
+                        onChange={e => {
+                          const file = e.target.files[0];
+                          if (file) {
+                            if (file.size > 2 * 1024 * 1024) {
+                              if (sysAlert) sysAlert('ขนาดไฟล์ลายเซ็นต้องไม่เกิน 2MB');
+                              return;
+                            }
+                            const reader = new FileReader();
+                            reader.onload = (uploadEvent) => {
+                              setConfigs({ ...configs, quotation_signature_image: uploadEvent.target.result });
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }}
+                        style={{ fontSize: '0.85rem', padding: '6px 12px' }}
+                      />
+                    </div>
+                  )}
+                </div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                  อัปโหลดไฟล์ภาพลายเซ็นหลัก สำหรับแสดงตรงช่อง 'ผู้อนุมัติ' ในเอกสารใบเสนอราคา
+                </span>
+              </div>
+
+              <div className="form-group">
+                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ภาพลายเซ็นผู้อนุมัติ 2 (Signature 2 - ถ้ามี)</label>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '6px' }}>
+                  {configs.quotation_signature_image2 ? (
+                    <div style={{ position: 'relative', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '8px', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <img 
+                        src={configs.quotation_signature_image2} 
+                        alt="ลายเซ็นผู้อนุมัติ 2" 
+                        style={{ height: '48px', maxWidth: '180px', objectFit: 'contain' }} 
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setConfigs({ ...configs, quotation_signature_image2: '' })}
+                        style={{ position: 'absolute', top: '-6px', right: '-6px', background: 'var(--danger-color)', color: '#ffffff', border: 'none', borderRadius: '50%', width: '22px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.2)' }}
+                        title="ลบลายเซ็น"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ flex: 1 }}>
+                      <input 
+                        type="file" 
+                        accept="image/*"
+                        className="form-control"
+                        onChange={e => {
+                          const file = e.target.files[0];
+                          if (file) {
+                            if (file.size > 2 * 1024 * 1024) {
+                              if (sysAlert) sysAlert('ขนาดไฟล์ลายเซ็นต้องไม่เกิน 2MB');
+                              return;
+                            }
+                            const reader = new FileReader();
+                            reader.onload = (uploadEvent) => {
+                              setConfigs({ ...configs, quotation_signature_image2: uploadEvent.target.result });
+                            };
+                            reader.readAsDataURL(file);
+                          }
+                        }}
+                        style={{ fontSize: '0.85rem', padding: '6px 12px' }}
+                      />
+                    </div>
+                  )}
+                </div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                  อัปโหลดภาพลายเซ็นที่ 2 (หากต้องการให้มี 2 ลายเซ็นบนเอกสารใบเสนอราคา)
+                </span>
+              </div>
+
               <div className="form-group">
                 <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>จำนวนวันเสนอราคาเริ่มต้น (Valid Days)</label>
                 <input 
@@ -804,23 +1123,90 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>จำนวนวันเสนอราคานับตั้งแต่วันที่ออกเอกสารใบเสนอราคา</span>
               </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ชื่อผู้มีอำนาจลงนามเริ่มต้น / ตำแหน่ง</label>
-                <input 
-                  type="text" 
-                  className="form-control" 
-                  value={configs.quotation_signer || ''} 
-                  onChange={e => setConfigs({ ...configs, quotation_signer: e.target.value })} 
-                  placeholder="เช่น ผู้ดูแลระบบหลัก, ผู้จัดการ..."
-                />
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ระบุชื่อตำแหน่งผู้ลงนามที่แสดงตรงมุมขวาล่างของเอกสาร</span>
+              <div className="form-group" style={{ margin: 0 }}>
+                <label style={{ fontSize: '0.825rem', fontWeight: 650, marginBottom: '6px', display: 'block' }}>
+                  รายชื่อผู้มีอำนาจลงนาม / ผู้ขาย
+                </label>
+                
+                {/* Input box and Add button */}
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                  <input 
+                    type="text" 
+                    className="form-control" 
+                    value={sellerInput} 
+                    onChange={e => setSellerInput(e.target.value)} 
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddSeller();
+                      }
+                    }}
+                    placeholder="พิมพ์ชื่อ-นามสกุล ผู้มีอำนาจลงนาม/ผู้ขาย แล้วกดปุ่มแอด..."
+                    style={{ flex: 1, height: '40px', borderRadius: '12px', fontSize: '0.85rem' }}
+                  />
+                  <button 
+                    type="button" 
+                    onClick={handleAddSeller}
+                    className="btn btn-primary"
+                    title="เพิ่มรายชื่อผู้ขาย"
+                    style={{ width: '40px', height: '40px', padding: 0, borderRadius: '12px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+                  >
+                    <Plus size={20} />
+                  </button>
+                </div>
+
+                {/* Display list of added sellers */}
+                {(() => {
+                  const currentList = configs.quotation_signer
+                    ? configs.quotation_signer.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
+                    : [];
+                  return (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', minHeight: '42px', padding: '10px', background: 'rgba(0,0,0,0.03)', borderRadius: '12px', border: '1px solid var(--border-color)', alignItems: 'center' }}>
+                      {currentList.length === 0 ? (
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>ยังไม่มีรายชื่อ (กรุณาพิมพ์ชื่อแล้วกดปุ่มแอด)</span>
+                      ) : (
+                        currentList.map((name, idx) => (
+                          <div 
+                            key={idx} 
+                            style={{ 
+                              display: 'inline-flex', 
+                              alignItems: 'center', 
+                              gap: '6px', 
+                              padding: '5px 12px', 
+                              background: 'var(--bg-card)', 
+                              border: '1px solid var(--border-color)', 
+                              borderRadius: '99px',
+                              fontSize: '0.8rem',
+                              fontWeight: 'bold',
+                              color: 'var(--text-main)',
+                              boxShadow: '0 2px 6px rgba(0,0,0,0.04)'
+                            }}
+                          >
+                            <span>{name}</span>
+                            <button 
+                              type="button" 
+                              onClick={() => handleRemoveSeller(idx)}
+                              style={{ background: 'transparent', border: 'none', color: 'var(--danger-color)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2px', borderRadius: '50%' }}
+                              title="ลบรายชื่อนี้"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  );
+                })()}
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '6px', display: 'block' }}>
+                  รายชื่อผู้มีอำนาจลงนาม/ผู้ขายที่แอดไว้ที่นี่ จะถูกนำไปเป็นตัวเลือก Liquidglass Dropdown ในช่อง 'ผู้ขาย' ของใบเสนอราคา
+                </span>
               </div>
 
               <div className="form-group">
                 <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>เงื่อนไขการจองและชำระเงินเริ่มต้น (Terms & Conditions)</label>
                 <textarea 
                   className="form-control" 
-                  rows="5"
+                  rows="4"
                   value={configs.quotation_terms || ''} 
                   onChange={e => setConfigs({ ...configs, quotation_terms: e.target.value })} 
                   placeholder="เช่น &#10;- ชำระมัดจำ 50% &#10;- ส่วนที่เหลือชำระวันเข้างาน..."
@@ -832,6 +1218,99 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
               <button type="submit" className="btn btn-primary" style={{ width: '100%', padding: '12px', borderRadius: '12px', marginTop: '8px', gap: '8px' }}>
                 <Save size={16} />
                 บันทึกการตั้งค่าใบเสนอราคา
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* VIEW: GENERAL SETTINGS */}
+        {viewMode === 'general' && (
+          <div className="card" style={{
+            background: 'var(--glass-bg)',
+            border: '1px solid var(--glass-border)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            borderRadius: '24px',
+            padding: '28px',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.05)',
+            maxWidth: '680px'
+          }}>
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 800, marginBottom: '18px', color: 'var(--primary-color)', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
+              ตั้งค่าข้อมูลบริษัท (สำหรับใบเสร็จรับเงิน) และระบบทั่วไป
+            </h2>
+            <form onSubmit={handleSaveConfigs} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+              
+              <div className="form-group" style={{ margin: 0 }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  ชื่อบริษัทของเรา (สำหรับพิมพ์ใบเสร็จรับเงิน)
+                </label>
+                <input 
+                  type="text" 
+                  className="form-control" 
+                  value={configs.company_name || ''} 
+                  onChange={e => setConfigs({ ...configs, company_name: e.target.value })} 
+                  placeholder="เช่น บริษัท ดีพมายด์ โซลูชั่น จำกัด..."
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>ชื่อบริษัทที่แสดงส่วนหัวของใบเสร็จรับเงิน/สลิปหน้าร้าน</span>
+              </div>
+
+              <div className="form-group" style={{ margin: 0 }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  ที่อยู่บริษัทของเรา (สำหรับพิมพ์ใบเสร็จรับเงิน)
+                </label>
+                <textarea 
+                  className="form-control" 
+                  rows="2"
+                  value={configs.company_address || ''} 
+                  onChange={e => setConfigs({ ...configs, company_address: e.target.value })} 
+                  placeholder="เช่น ที่อยู่บริษัทสำหรับพิมพ์บนใบเสร็จ..."
+                  style={{ borderRadius: '12px', padding: '10px', fontSize: '0.85rem' }}
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>ที่อยู่บริษัทที่แสดงบนใบเสร็จรับเงิน</span>
+              </div>
+
+              <div className="form-group" style={{ margin: 0 }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  เลขประจำตัวผู้เสียภาษี (สำหรับพิมพ์ใบเสร็จรับเงิน)
+                </label>
+                <input 
+                  type="text" 
+                  className="form-control" 
+                  value={configs.company_tax_id || ''} 
+                  onChange={e => setConfigs({ ...configs, company_tax_id: e.target.value })} 
+                  placeholder="เช่น 0125554000401..."
+                />
+              </div>
+
+              <div className="form-group" style={{ margin: 0 }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  เวลาแจ้งเตือนก่อนถึงกำหนดเวลาใช้งานห้องประชุม (นาที)
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <input 
+                    type="number" 
+                    className="form-control" 
+                    required
+                    min="1"
+                    max="120"
+                    style={{ width: '120px', height: '40px', borderRadius: '10px', textAlign: 'center', fontWeight: 'bold' }}
+                    value={configs.room_alert_minutes || '15'} 
+                    onChange={e => setConfigs({ ...configs, room_alert_minutes: e.target.value })} 
+                  />
+                  <span style={{ fontSize: '0.875rem', color: 'var(--text-main)' }}>นาที</span>
+                </div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', display: 'block', lineHeight: 1.4 }}>
+                  ระบุจำนวนนาทีล่วงหน้าที่จะแสดงป๊อปอัปแจ้งเตือนสไตล์ LINE บริเวณมุมขวา-ล่างของหน้าจอ เมื่อคิวการจองของห้องต่าง ๆ ใกล้เริ่มใช้งาน
+                </span>
+              </div>
+
+              <button 
+                type="submit" 
+                className="btn btn-primary" 
+                style={{ width: '100%', padding: '12px', borderRadius: '12px', marginTop: '8px', gap: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Save size={16} />
+                <span>บันทึกการตั้งค่าทั่วไป</span>
               </button>
             </form>
           </div>
@@ -870,159 +1349,252 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
             }} onClick={(e) => e.stopPropagation()}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '16px' }}>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Sliders size={20} className="text-primary" />
-                  <span>แก้ไขข้อมูลบัญชีผู้ใช้: {editingUser.username}</span>
+                  {isResettingPassword ? <KeyRound size={20} className="text-primary" /> : <Sliders size={20} className="text-primary" />}
+                  <span>{isResettingPassword ? `เปลี่ยนรหัสผ่านใหม่: ${editingUser.username}` : `แก้ไขข้อมูลบัญชีผู้ใช้: ${editingUser.username}`}</span>
                 </h2>
                 <button style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }} onClick={() => setEditingUser(null)}>
                   <X size={22} />
                 </button>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
-                {/* Username Field */}
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>ชื่อผู้ใช้งาน (Username)</label>
-                  <input 
-                    type="text" 
-                    className="form-control" 
-                    disabled={editingUser.username === 'admin'}
-                    value={editForm.username}
-                    onChange={e => setEditForm({ ...editForm, username: e.target.value })}
-                    placeholder="เช่น reception_bwork"
-                    style={{ height: '40px', borderRadius: '10px' }}
-                  />
-                  {editingUser.username === 'admin' && (
-                    <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
-                      บัญชีผู้ดูแลระบบหลัก (admin) ไม่สามารถเปลี่ยนชื่อผู้ใช้งานได้
-                    </span>
-                  )}
-                </div>
+              {isResettingPassword ? (
+                /* Reset Password View */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>รหัสผ่านใหม่ (New Password)</label>
+                    <input 
+                      type="password" 
+                      className="form-control" 
+                      value={resetPassForm.newPassword}
+                      onChange={e => setResetPassForm({ ...resetPassForm, newPassword: e.target.value })}
+                      placeholder="ป้อนรหัสผ่านใหม่อย่างน้อย 4 ตัวอักษร"
+                      style={{ height: '40px', borderRadius: '10px' }}
+                    />
+                  </div>
 
-                {/* Fullname Field */}
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>ชื่อ-นามสกุล (Full Name)</label>
-                  <input 
-                    type="text" 
-                    className="form-control" 
-                    value={editForm.fullname}
-                    onChange={e => setEditForm({ ...editForm, fullname: e.target.value })}
-                    placeholder="เช่น สมชาย ใจดี"
-                    style={{ height: '40px', borderRadius: '10px' }}
-                  />
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>ยืนยันรหัสผ่านใหม่ (Confirm Password)</label>
+                    <input 
+                      type="password" 
+                      className="form-control" 
+                      value={resetPassForm.confirmPassword}
+                      onChange={e => setResetPassForm({ ...resetPassForm, confirmPassword: e.target.value })}
+                      placeholder="ป้อนรหัสผ่านใหม่อีกครั้งเพื่อยืนยัน"
+                      style={{ height: '40px', borderRadius: '10px' }}
+                    />
+                  </div>
                 </div>
+              ) : (
+                /* Edit User Details View */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
+                  {/* Username Field */}
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>ชื่อผู้ใช้งาน (Username)</label>
+                    <input 
+                      type="text" 
+                      className="form-control" 
+                      disabled={editingUser.username === 'admin'}
+                      value={editForm.username}
+                      onChange={e => setEditForm({ ...editForm, username: e.target.value })}
+                      placeholder="เช่น reception_bwork"
+                      style={{ height: '40px', borderRadius: '10px' }}
+                    />
+                    {editingUser.username === 'admin' && (
+                      <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                        บัญชีผู้ดูแลระบบหลัก (admin) ไม่สามารถเปลี่ยนชื่อผู้ใช้งานได้
+                      </span>
+                    )}
+                  </div>
 
-                {/* Role Field */}
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>สิทธิ์ / บทบาท (Role)</label>
-                  <select 
-                    className="form-control"
-                    disabled={editingUser.username === 'admin'}
-                    value={editForm.role}
-                    onChange={e => {
-                      const rName = e.target.value;
-                      const matchedRole = roles.find(r => r.name === rName);
-                      const defaultPerms = matchedRole ? matchedRole.permissions.split(',').map(p => p.trim()) : [];
-                      setEditForm({ ...editForm, role: rName, permissions: defaultPerms });
-                    }}
-                    style={{ height: '40px', borderRadius: '10px' }}
-                  >
-                    {roles.map(r => (
-                      <option key={r.name} value={r.name}>{r.label}</option>
-                    ))}
-                  </select>
+                  {/* Fullname Field */}
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>ชื่อ-นามสกุล (Full Name)</label>
+                    <input 
+                      type="text" 
+                      className="form-control" 
+                      value={editForm.fullname}
+                      onChange={e => setEditForm({ ...editForm, fullname: e.target.value })}
+                      placeholder="เช่น สมชาย ใจดี"
+                      style={{ height: '40px', borderRadius: '10px' }}
+                    />
+                  </div>
+
+                  {/* Role Field */}
+                  <div className="form-group" style={{ margin: 0, position: 'relative' }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>สิทธิ์ / บทบาท (Role)</label>
+                    <div 
+                      className="form-control"
+                      onClick={() => {
+                        if (editingUser.username !== 'admin') {
+                          setIsEditUserRoleOpen(!isEditUserRoleOpen);
+                        }
+                      }}
+                      style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'space-between', 
+                        height: '40px', 
+                        fontSize: '0.9rem', 
+                        borderRadius: '10px', 
+                        cursor: editingUser.username === 'admin' ? 'not-allowed' : 'pointer',
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid var(--border-color)',
+                        padding: '0 12px',
+                        fontWeight: 600,
+                        opacity: editingUser.username === 'admin' ? 0.6 : 1
+                      }}
+                    >
+                      <span>
+                        {roles.find(r => r.name === editForm.role)?.label || editForm.role}
+                      </span>
+                      {editingUser.username !== 'admin' && <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />}
+                    </div>
+
+                    {isEditUserRoleOpen && editingUser.username !== 'admin' && (
+                      <>
+                        <div onClick={() => setIsEditUserRoleOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                        <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
+                          {roles.map(r => (
+                            <div 
+                              key={r.name}
+                              onClick={() => {
+                                const rName = r.name;
+                                const matchedRole = roles.find(role => role.name === rName);
+                                const defaultPerms = matchedRole ? matchedRole.permissions.split(',').map(p => p.trim()) : [];
+                                setEditForm({ ...editForm, role: rName, permissions: defaultPerms });
+                                setIsEditUserRoleOpen(false);
+                              }}
+                              style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: editForm.role === r.name ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: editForm.role === r.name ? 'bold' : 'normal', background: editForm.role === r.name ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                              onMouseEnter={e => { if (editForm.role !== r.name) e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                              onMouseLeave={e => { if (editForm.role !== r.name) e.currentTarget.style.background = 'transparent'; }}
+                            >
+                              {r.label}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Password reset action button */}
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>การรักษาความปลอดภัย</label>
+                    <button 
+                      type="button" 
+                      className="btn btn-secondary" 
+                      style={{ 
+                        padding: '8px 16px', 
+                        fontSize: '0.8rem', 
+                        borderRadius: '10px', 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: '6px', 
+                        backgroundColor: 'var(--bg-hover)',
+                        border: '1px solid var(--border-color)',
+                        color: 'var(--text-main)',
+                        cursor: 'pointer',
+                        height: '40px'
+                      }}
+                      onClick={() => {
+                        setResetPassForm({ newPassword: '', confirmPassword: '' });
+                        setIsResettingPassword(true);
+                      }}
+                    >
+                      <KeyRound size={14} />
+                      <span>รีเซ็ตรหัสผ่านใหม่...</span>
+                    </button>
+                  </div>
                 </div>
+              )}
 
-                {/* Password reset action button */}
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>การรักษาความปลอดภัย</label>
+              {isResettingPassword ? (
+                /* Password Reset Footer Buttons */
+                <div style={{ display: 'flex', gap: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '16px', marginTop: '4px' }}>
                   <button 
                     type="button" 
                     className="btn btn-secondary" 
-                    style={{ 
-                      padding: '8px 16px', 
-                      fontSize: '0.8rem', 
-                      borderRadius: '10px', 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      gap: '6px', 
-                      backgroundColor: 'var(--bg-hover)',
-                      border: '1px solid var(--border-color)',
-                      color: 'var(--text-main)',
-                      cursor: 'pointer',
-                      height: '40px'
-                    }}
+                    style={{ flex: 1, padding: '10px 16px', borderRadius: '99px', height: '40px', fontSize: '0.875rem' }} 
+                    onClick={() => setIsResettingPassword(false)}
+                  >
+                    ย้อนกลับ
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-primary" 
+                    style={{ flex: 2, padding: '10px 16px', borderRadius: '99px', height: '40px', fontSize: '0.875rem' }}
                     onClick={async () => {
-                      const newPass = await sysPrompt(`กรุณากรอกรหัสผ่านใหม่สำหรับผู้ใช้ "${editingUser.username}":`);
-                      if (newPass !== null) {
-                        const trimmed = newPass.trim();
-                        if (trimmed.length < 4) {
-                          sysAlert('รหัสผ่านต้องมีความยาวอย่างน้อย 4 ตัวอักษร');
-                          return;
+                      const { newPassword, confirmPassword } = resetPassForm;
+                      if (newPassword.trim().length < 4) {
+                        sysAlert('รหัสผ่านต้องมีความยาวอย่างน้อย 4 ตัวอักษร');
+                        return;
+                      }
+                      if (newPassword !== confirmPassword) {
+                        sysAlert('รหัสผ่านใหม่และการยืนยันรหัสผ่านไม่ตรงกัน');
+                        return;
+                      }
+                      try {
+                        const res = await fetch(`/api/users/${editingUser.id}/reset-password`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ newPassword: newPassword.trim() })
+                        });
+                        if (res.ok) {
+                          await sysAlert('รีเซ็ตรหัสผ่านสำเร็จแล้ว');
+                          setIsResettingPassword(false);
+                        } else {
+                          const data = await res.json();
+                          sysAlert(data.error || 'รีเซ็ตรหัสผ่านล้มเหลว');
                         }
-                        try {
-                          const res = await fetch(`/api/users/${editingUser.id}/reset-password`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ newPassword: trimmed })
-                          });
-                          if (res.ok) {
-                            sysAlert('รีเซ็ตรหัสผ่านสำเร็จแล้ว');
-                          } else {
-                            const data = await res.json();
-                            sysAlert(data.error || 'รีเซ็ตรหัสผ่านล้มเหลว');
-                          }
-                        } catch (e) {
-                          sysAlert('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์เพื่อรีเซ็ตรหัสผ่านได้');
-                        }
+                      } catch (e) {
+                        sysAlert('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์เพื่อรีเซ็ตรหัสผ่านได้');
                       }
                     }}
                   >
-                    <KeyRound size={14} />
-                    <span>รีเซ็ตรหัสผ่านใหม่...</span>
+                    บันทึกรหัสผ่านใหม่
                   </button>
                 </div>
-
-              </div>
-
-              <div style={{ display: 'flex', gap: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '16px', marginTop: '4px' }}>
-                <button type="button" className="btn btn-secondary" style={{ flex: 1, padding: '10px 16px', borderRadius: '99px', height: '40px', fontSize: '0.875rem' }} onClick={() => setEditingUser(null)}>
-                  ยกเลิก
-                </button>
-                <button 
-                  type="button" 
-                  className="btn btn-primary" 
-                  style={{ flex: 2, padding: '10px 16px', borderRadius: '99px', height: '40px', fontSize: '0.875rem' }}
-                  onClick={async () => {
-                    if (!editForm.username.trim()) {
-                      sysAlert('กรุณากรอกชื่อผู้ใช้งาน');
-                      return;
-                    }
-                    try {
-                      const res = await fetch(`/api/users/${editingUser.id}`, {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          username: editForm.username,
-                          role: editForm.role,
-                          fullname: editForm.fullname
-                        })
-                      });
-                      if (res.ok) {
-                        setEditingUser(null);
-                        fetchUsers();
-                        sysAlert('บันทึกข้อมูลบัญชีผู้ใช้เรียบร้อยแล้ว');
-                      } else {
-                        const data = await res.json();
-                        sysAlert(data.error || 'บันทึกข้อมูลล้มเหลว');
+              ) : (
+                /* Edit User Details Footer Buttons */
+                <div style={{ display: 'flex', gap: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '16px', marginTop: '4px' }}>
+                  <button type="button" className="btn btn-secondary" style={{ flex: 1, padding: '10px 16px', borderRadius: '99px', height: '40px', fontSize: '0.875rem' }} onClick={() => setEditingUser(null)}>
+                    ยกเลิก
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-primary" 
+                    style={{ flex: 2, padding: '10px 16px', borderRadius: '99px', height: '40px', fontSize: '0.875rem' }}
+                    onClick={async () => {
+                      if (!editForm.username.trim()) {
+                        sysAlert('กรุณากรอกชื่อผู้ใช้งาน');
+                        return;
                       }
-                    } catch (e) {
-                      sysAlert('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์เพื่อบันทึกข้อมูลได้');
-                    }
-                  }}
-                >
-                  บันทึกข้อมูล
-                </button>
-              </div>
+                      try {
+                        const res = await fetch(`/api/users/${editingUser.id}`, {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            username: editForm.username,
+                            role: editForm.role,
+                            fullname: editForm.fullname
+                          })
+                        });
+                        if (res.ok) {
+                          setEditingUser(null);
+                          fetchUsers();
+                          sysAlert('บันทึกข้อมูลบัญชีผู้ใช้เรียบร้อยแล้ว');
+                        } else {
+                          const data = await res.json();
+                          sysAlert(data.error || 'บันทึกข้อมูลล้มเหลว');
+                        }
+                      } catch (e) {
+                        sysAlert('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์เพื่อบันทึกข้อมูลได้');
+                      }
+                    }}
+                  >
+                    บันทึกข้อมูล
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1204,15 +1776,13 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
                           <label style={{ fontSize: '0.775rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>สิทธิ์เข้าใช้งานเริ่มต้น (Default Permissions)</label>
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', maxHeight: '180px', overflowY: 'auto', border: '1px solid var(--border-color)', padding: '10px', borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.1)' }}>
                             {[
-                              { key: 'pos', label: 'หน้า POS' },
-                              { key: 'layout', label: 'แผนผังที่นั่ง/ห้อง' },
-                              { key: 'pending', label: 'รายการรออนุมัติ' },
-                              { key: 'history', label: 'ประวัติธุรกรรม' },
-                              { key: 'manage', label: 'จัดการคลังสินค้า' },
-                              { key: 'dashboard', label: 'แผงสถิติ/รายงาน' },
-                              { key: 'admin-users', label: 'จัดการสิทธิ์ผู้ใช้' },
-                              { key: 'admin-system', label: 'ตั้งค่าระบบ/ใบเสร็จ' },
-                              { key: 'admin-backup', label: 'สำรองข้อมูล OneDrive' }
+                              { key: 'pos', label: 'จุดขาย POS' },
+                              { key: 'dashboard', label: 'Dashboard' },
+                              { key: 'pending', label: 'รอชำระเงิน' },
+                              { key: 'layout', label: 'แผนผังห้อง' },
+                              { key: 'history', label: 'ประวัติย้อนหลัง' },
+                              { key: 'quotations', label: 'ใบเสนอราคา' },
+                              { key: 'admin-management', label: 'Settings' }
                             ].map(menu => {
                               const checked = roleForm.permissions.includes(menu.key);
                               return (

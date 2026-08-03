@@ -56,6 +56,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [bookingType, setBookingType] = useState('hourly'); // 'hourly' | 'daily'
   const [dailyTimeSlot, setDailyTimeSlot] = useState('08-17'); // '08-17' | '09-18'
   const [layoutType, setLayoutType] = useState('standard'); // 'standard' | 'classroom'
+  const [isDailyTimeSlotOpen, setIsDailyTimeSlotOpen] = useState(false);
+  const [isHalfdayTimeSlotOpen, setIsHalfdayTimeSlotOpen] = useState(false);
+  const [isPaymentStatusOpen, setIsPaymentStatusOpen] = useState(false);
+  const [isPaymentMethodOpen, setIsPaymentMethodOpen] = useState(false);
   const [roomSchedule, setRoomSchedule] = useState({
     date: new Date().toISOString().split('T')[0],
     startHour: '09',
@@ -345,9 +349,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     const opt = {
       margin:       [0, 0, 0, 0],
       filename:     `receipt-${String(printBooking.id).padStart(6, '0')}.pdf`,
-      image:        { type: 'jpeg', quality: 0.98 },
-      html2canvas:  { scale: 3, useCORS: true, letterRendering: true },
-      jsPDF:        { unit: 'mm', format: [72, estimatedHeight], orientation: 'portrait' },
+      image:        { type: 'png' },
+      html2canvas:  { scale: 4, useCORS: true },
+      jsPDF:        { unit: 'mm', format: [72, 200], orientation: 'portrait' },
       pagebreak:    { mode: ['avoid-all', 'css', 'legacy'] }
     };
 
@@ -657,6 +661,35 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     }
   };
 
+  const handleDownloadReceiptPDF = () => {
+    if (!printBooking) return;
+    const element = document.getElementById('print-receipt-area');
+    if (!element) return;
+
+    element.classList.add('pdf-export-mode');
+
+    const opt = {
+      margin:       [0, 0, 0, 0],
+      filename:     `receipt-${printBooking.receipt_number || String(printBooking.id).padStart(6, '0')}.pdf`,
+      image:        { type: 'png' },
+      html2canvas:  { scale: 4, useCORS: true },
+      jsPDF:        { unit: 'mm', format: [72, 200], orientation: 'portrait' },
+      pagebreak:    { mode: ['avoid-all', 'css', 'legacy'] }
+    };
+
+    if (window.html2pdf) {
+      window.html2pdf().from(element).set(opt).save().then(() => {
+        element.classList.remove('pdf-export-mode');
+      }).catch(err => {
+        element.classList.remove('pdf-export-mode');
+        console.error('PDF export error:', err);
+      });
+    } else {
+      element.classList.remove('pdf-export-mode');
+      if (sysAlert) sysAlert('กำลังโหลดระบบ PDF กรุณาลองใหม่อีกครั้ง');
+    }
+  };
+
   const handleExportToQuotation = () => {
     if (cart.length === 0) {
       sysAlert('กรุณาเลือกรายการในตะกร้าอย่างน้อย 1 รายการก่อนสร้างใบเสนอราคา');
@@ -768,7 +801,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
       <div className="pos-layout" style={{ 
         display: 'grid', 
-        gridTemplateColumns: showCartSidebar ? '220px 1fr 380px' : '220px 1fr', 
+        gridTemplateColumns: showCartSidebar ? '240px 1fr 380px' : '240px 1fr', 
         gap: '20px', 
         height: 'calc(100vh - 145px)',
         overflow: 'hidden',
@@ -817,14 +850,23 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
             </div>
 
             {/* Mini Calendar Weekdays */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', textAlign: 'center', marginBottom: '4px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', textAlign: 'center', marginBottom: '6px', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
               {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayChar, i) => (
-                <div key={i} style={{ fontSize: '0.6rem', fontWeight: 'bold', color: 'var(--text-muted)' }}>{dayChar}</div>
+                <div 
+                  key={i} 
+                  style={{ 
+                    fontSize: '0.65rem', 
+                    fontWeight: 'bold', 
+                    color: i === 0 ? '#ef4444' : i === 6 ? '#3b82f6' : 'var(--text-muted)' 
+                  }}
+                >
+                  {dayChar}
+                </div>
               ))}
             </div>
 
             {/* Mini Calendar Cells Grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '2px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px' }}>
               {calendarDays.map((dayObj, i) => {
                 const dateKey = getDateKey(dayObj.day, dayObj.month, dayObj.year);
                 const dayEvents = filteredEventsByDay[dateKey] || [];
@@ -842,20 +884,23 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     }}
                     className={`mini-calendar-cell${isTodayCell ? ' today' : ''}${isSelected ? ' selected' : ''}`}
                     style={{
-                      color: isTodayCell ? '#ffffff' : (dayObj.isOtherMonth ? 'var(--text-muted)' : 'var(--text-main)'),
-                      opacity: dayObj.isOtherMonth ? 0.4 : 1,
-                      position: 'relative'
+                      color: isSelected 
+                        ? '#ffffff' 
+                        : isTodayCell 
+                          ? 'var(--primary-color)' 
+                          : (dayObj.isOtherMonth ? 'var(--text-muted)' : 'var(--text-main)'),
+                      opacity: dayObj.isOtherMonth ? 0.35 : 1,
                     }}
                   >
                     {dayObj.day}
-                    {dayEvents.length > 0 && !isTodayCell && (
+                    {dayEvents.length > 0 && (
                       <div style={{
                         position: 'absolute',
-                        bottom: '1px',
-                        width: '3px',
-                        height: '3px',
+                        bottom: '2px',
+                        width: '3.5px',
+                        height: '3.5px',
                         borderRadius: '50%',
-                        backgroundColor: 'var(--primary-color)'
+                        backgroundColor: isSelected ? '#ffffff' : 'var(--primary-color)'
                       }} />
                     )}
                   </div>
@@ -915,6 +960,36 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 selectedDayBookings.map((ev, idx) => {
                   const startT = new Date(ev.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
                   const endT = new Date(ev.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                  const now = new Date();
+                  const startTime = new Date(ev.start_time);
+                  const endTime = new Date(ev.end_time);
+                  const isExpired = now > endTime;
+                  const isActive = now >= startTime && now <= endTime;
+
+                  let statusText = '';
+                  let statusBg = '';
+                  let statusColor = '';
+
+                  if (isExpired) {
+                    statusText = 'ใช้งานเสร็จแล้ว';
+                    statusBg = 'rgba(239, 68, 68, 0.1)';
+                    statusColor = 'var(--danger-color)';
+                  } else if (isActive) {
+                    statusText = 'กำลังใช้งาน';
+                    statusBg = 'rgba(34, 197, 94, 0.1)';
+                    statusColor = 'var(--success-color)';
+                  } else {
+                    if (ev.payment_status === 'pending') {
+                      statusText = 'ค้างชำระ';
+                      statusBg = 'rgba(245, 158, 11, 0.1)';
+                      statusColor = 'var(--warning-color)';
+                    } else {
+                      statusText = 'รอใช้งาน';
+                      statusBg = 'rgba(100, 116, 139, 0.1)';
+                      statusColor = 'var(--text-muted)';
+                    }
+                  }
+
                   return (
                     <div 
                       key={idx}
@@ -950,10 +1025,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                           fontWeight: 'bold',
                           padding: '2px 6px',
                           borderRadius: '6px',
-                          backgroundColor: ev.payment_status === 'paid' ? 'rgba(34,197,94,0.1)' : 'rgba(245,158,11,0.1)',
-                          color: ev.payment_status === 'paid' ? 'var(--success-color)' : 'var(--warning-color)'
+                          backgroundColor: statusBg,
+                          color: statusColor
                         }}>
-                          {ev.payment_status === 'paid' ? 'จ่ายแล้ว' : 'ค้างชำระ'}
+                          {statusText}
                         </span>
                       </div>
                       <div style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '0.78rem' }}>{startT} - {endT}</div>
@@ -1000,19 +1075,17 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
               {/* FLOATING MONTH-YEAR SELECTOR POPUP (matching screenshot) */}
               {showMonthSelector && (
-                <div style={{
-                  position: 'absolute',
-                  top: '32px',
-                  left: '8px',
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '16px',
-                  padding: '16px',
-                  boxShadow: '0 12px 36px rgba(0,0,0,0.5)',
-                  width: '240px',
-                  zIndex: 150,
-                  animation: 'fadeIn 0.15s ease-out'
-                }}>
+                <div 
+                  className="liquidglass-dropdown"
+                  style={{
+                    position: 'absolute',
+                    top: '32px',
+                    left: '8px',
+                    padding: '16px',
+                    width: '240px',
+                    zIndex: 150
+                  }}
+                >
                   {/* Year navigation row */}
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
                     <span style={{ fontSize: '1rem', fontWeight: 'bold', color: 'var(--text-main)' }}>{calendarYear}</span>
@@ -1118,17 +1191,20 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                         const typeText = isDaily ? ' [รายวัน]' : ' [รายชม.]';
                         
                         const fullTitle = `${ev.room_name}${layoutText}${typeText} | เวลา ${startT} - ${endT} น. | ผู้จอง: ${ev.customer_name}`;
-                        
-                        const displayLayoutChip = has301 ? (ev.layout === 'classroom' ? '(CR)' : '(Std)') : '';
-                        const displayChipText = `${ev.room_name}${displayLayoutChip}${isDaily ? '[วัน]' : '[ชม.]'} ${startT}-${endT} • ${ev.customer_name}`;
+                        const isExpired = new Date() > new Date(ev.end_time);
 
                         return (
                           <div 
                             key={i} 
-                            className={`calendar-event-chip ${ev.payment_status}`}
+                            className={`calendar-event-chip ${isExpired ? 'expired' : ev.payment_status}`}
                             title={fullTitle}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewedEvent(ev);
+                            }}
                           >
-                            {displayChipText}
+                            <span style={{ fontWeight: 500, opacity: 0.85, marginRight: '16px' }}>{startT}-{endT}</span>
+                            <span style={{ fontWeight: 700 }}>{ev.room_name} {ev.customer_name}</span>
                           </div>
                         );
                       })}
@@ -1256,7 +1332,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          zIndex: 100
+          zIndex: 2000
         }}>
           <div className="card" style={{ 
             width: '95%', 
@@ -1454,7 +1530,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          zIndex: 120
+          zIndex: 2000
         }}>
           <div className="card" style={{ width: '95%', maxWidth: '480px', padding: '24px', backgroundColor: 'var(--bg-card)', display: 'flex', flexDirection: 'column', gap: '16px', borderRadius: '24px', boxShadow: '0 20px 50px rgba(0,0,0,0.3)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
@@ -1551,6 +1627,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 <CustomDatePicker
                   value={roomSchedule.date}
                   onChange={val => setRoomSchedule({ ...roomSchedule, date: val })}
+                  showHistory={true}
                   className="form-control"
                   style={{ display: 'flex', alignItems: 'center', height: '40px', padding: '8px 12px', cursor: 'pointer', backgroundColor: 'var(--bg-color)', borderRadius: '12px' }}
                 />
@@ -1563,26 +1640,104 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
                 {bookingType === 'daily' ? (
                   /* Daily: Dropdown time slot selector */
-                  <select
-                    className="form-control"
-                    style={{ padding: '8px 12px', height: '40px', borderRadius: '12px', fontWeight: 600, fontSize: '0.9rem' }}
-                    value={dailyTimeSlot}
-                    onChange={e => setDailyTimeSlot(e.target.value)}
-                  >
-                    <option value="08-17">08:00 - 17:00 น.</option>
-                    <option value="09-18">09:00 - 18:00 น.</option>
-                  </select>
+                  <div style={{ flex: 1, position: 'relative' }}>
+                    <div 
+                      className="form-control"
+                      onClick={() => setIsDailyTimeSlotOpen(!isDailyTimeSlotOpen)}
+                      style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'space-between', 
+                        height: '40px', 
+                        fontSize: '0.9rem', 
+                        borderRadius: '12px', 
+                        cursor: 'pointer',
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid var(--border-color)',
+                        padding: '0 12px',
+                        fontWeight: 600
+                      }}
+                    >
+                      <span style={{ color: 'var(--text-main)' }}>
+                        {dailyTimeSlot === '08-17' ? '08:00 - 17:00 น.' : dailyTimeSlot === '09-18' ? '09:00 - 18:00 น.' : dailyTimeSlot}
+                      </span>
+                      <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
+                    </div>
+
+                    {isDailyTimeSlotOpen && (
+                      <>
+                        <div onClick={() => setIsDailyTimeSlotOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                        <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
+                          <div 
+                            onClick={() => { setDailyTimeSlot('08-17'); setIsDailyTimeSlotOpen(false); }}
+                            style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: dailyTimeSlot === '08-17' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: dailyTimeSlot === '08-17' ? 'bold' : 'normal', background: dailyTimeSlot === '08-17' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                            onMouseEnter={e => { if (dailyTimeSlot !== '08-17') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                            onMouseLeave={e => { if (dailyTimeSlot !== '08-17') e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            08:00 - 17:00 น.
+                          </div>
+                          <div 
+                            onClick={() => { setDailyTimeSlot('09-18'); setIsDailyTimeSlotOpen(false); }}
+                            style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: dailyTimeSlot === '09-18' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: dailyTimeSlot === '09-18' ? 'bold' : 'normal', background: dailyTimeSlot === '09-18' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                            onMouseEnter={e => { if (dailyTimeSlot !== '09-18') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                            onMouseLeave={e => { if (dailyTimeSlot !== '09-18') e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            09:00 - 18:00 น.
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 ) : bookingType === 'halfday' ? (
                   /* Half-Day: Dropdown time slot selector */
-                  <select
-                    className="form-control"
-                    style={{ padding: '8px 12px', height: '40px', borderRadius: '12px', fontWeight: 600, fontSize: '0.9rem' }}
-                    value={dailyTimeSlot}
-                    onChange={e => setDailyTimeSlot(e.target.value)}
-                  >
-                    <option value="08-12">08:00 - 12:00 น. (ครึ่งวันเช้า)</option>
-                    <option value="13-17">13:00 - 17:00 น. (ครึ่งวันบ่าย)</option>
-                  </select>
+                  <div style={{ flex: 1, position: 'relative' }}>
+                    <div 
+                      className="form-control"
+                      onClick={() => setIsHalfdayTimeSlotOpen(!isHalfdayTimeSlotOpen)}
+                      style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'space-between', 
+                        height: '40px', 
+                        fontSize: '0.9rem', 
+                        borderRadius: '12px', 
+                        cursor: 'pointer',
+                        background: 'rgba(255, 255, 255, 0.05)',
+                        border: '1px solid var(--border-color)',
+                        padding: '0 12px',
+                        fontWeight: 600
+                      }}
+                    >
+                      <span style={{ color: 'var(--text-main)' }}>
+                        {dailyTimeSlot === '08-12' ? '08:00 - 12:00 น. (ครึ่งวันเช้า)' : dailyTimeSlot === '13-17' ? '13:00 - 17:00 น. (ครึ่งวันบ่าย)' : dailyTimeSlot}
+                      </span>
+                      <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
+                    </div>
+
+                    {isHalfdayTimeSlotOpen && (
+                      <>
+                        <div onClick={() => setIsHalfdayTimeSlotOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                        <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
+                          <div 
+                            onClick={() => { setDailyTimeSlot('08-12'); setIsHalfdayTimeSlotOpen(false); }}
+                            style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: dailyTimeSlot === '08-12' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: dailyTimeSlot === '08-12' ? 'bold' : 'normal', background: dailyTimeSlot === '08-12' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                            onMouseEnter={e => { if (dailyTimeSlot !== '08-12') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                            onMouseLeave={e => { if (dailyTimeSlot !== '08-12') e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            08:00 - 12:00 น. (ครึ่งวันเช้า)
+                          </div>
+                          <div 
+                            onClick={() => { setDailyTimeSlot('13-17'); setIsHalfdayTimeSlotOpen(false); }}
+                            style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: dailyTimeSlot === '13-17' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: dailyTimeSlot === '13-17' ? 'bold' : 'normal', background: dailyTimeSlot === '13-17' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                            onMouseEnter={e => { if (dailyTimeSlot !== '13-17') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
+                            onMouseLeave={e => { if (dailyTimeSlot !== '13-17') e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            13:00 - 17:00 น. (ครึ่งวันบ่าย)
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 ) : (
                   /* Hourly: Manual time input */
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', height: '40px' }}>
@@ -1725,39 +1880,109 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
             {/* Row 3: Payment Status & Method */}
             <div style={{ display: 'grid', gridTemplateColumns: paymentStatus === 'paid' ? '1fr 1fr' : '1fr', gap: '16px' }}>
-              <div className="form-group">
+              <div className="form-group" style={{ flex: 1, position: 'relative' }}>
                 <label style={{ fontSize: '0.825rem', fontWeight: 600 }}>สถานะการชำระเงิน <span style={{ color: 'var(--danger-color)', fontWeight: 'bold' }}>*</span></label>
-                <select 
-                  className="form-control" 
-                  style={{ padding: '8px 12px', height: '40px', borderRadius: '12px' }} 
-                  value={paymentStatus} 
-                  onChange={e => {
-                    const val = e.target.value;
-                    setPaymentStatus(val);
-                    if (val === 'pending') {
-                      setPaymentMethod(''); // Clear payment method for pending bookings
-                    }
+                <div 
+                  className="form-control"
+                  onClick={() => setIsPaymentStatusOpen(!isPaymentStatusOpen)}
+                  style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'space-between', 
+                    height: '40px', 
+                    fontSize: '0.9rem', 
+                    borderRadius: '12px', 
+                    cursor: 'pointer',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid var(--border-color)',
+                    padding: '0 12px',
+                    fontWeight: 600
                   }}
                 >
-                  <option value="">ยังไม่เลือก</option>
-                  <option value="paid">ชำระเงินแล้ว</option>
-                  <option value="pending">ค้างชำระ (Pending)</option>
-                </select>
+                  <span style={{ color: paymentStatus ? 'var(--text-main)' : 'var(--text-muted)' }}>
+                    {paymentStatus === 'paid' ? 'ชำระเงินแล้ว' : paymentStatus === 'pending' ? 'ค้างชำระ (Pending)' : 'ยังไม่เลือก'}
+                  </span>
+                  <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
+                </div>
+
+                {isPaymentStatusOpen && (
+                  <>
+                    <div onClick={() => setIsPaymentStatusOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                    <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
+                      <div 
+                        onClick={() => { setPaymentStatus(''); setPaymentMethod(''); setIsPaymentStatusOpen(false); }}
+                        style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentStatus === '' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentStatus === '' ? 'bold' : 'normal', background: paymentStatus === '' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                      >
+                        ยังไม่เลือก
+                      </div>
+                      <div 
+                        onClick={() => { setPaymentStatus('paid'); setIsPaymentStatusOpen(false); }}
+                        style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentStatus === 'paid' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentStatus === 'paid' ? 'bold' : 'normal', background: paymentStatus === 'paid' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                      >
+                        ชำระเงินแล้ว
+                      </div>
+                      <div 
+                        onClick={() => { setPaymentStatus('pending'); setPaymentMethod(''); setIsPaymentStatusOpen(false); }}
+                        style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentStatus === 'pending' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentStatus === 'pending' ? 'bold' : 'normal', background: paymentStatus === 'pending' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                      >
+                        ค้างชำระ (Pending)
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
 
               {paymentStatus === 'paid' && (
-                <div className="form-group">
+                <div className="form-group" style={{ flex: 1, position: 'relative' }}>
                   <label style={{ fontSize: '0.825rem', fontWeight: 600 }}>ช่องทางการชำระเงิน <span style={{ color: 'var(--danger-color)', fontWeight: 'bold' }}>*</span></label>
-                  <select 
-                    className="form-control" 
-                    style={{ padding: '8px 12px', height: '40px', borderRadius: '12px' }} 
-                    value={paymentMethod} 
-                    onChange={e => setPaymentMethod(e.target.value)}
+                  <div 
+                    className="form-control"
+                    onClick={() => setIsPaymentMethodOpen(!isPaymentMethodOpen)}
+                    style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'space-between', 
+                      height: '40px', 
+                      fontSize: '0.9rem', 
+                      borderRadius: '12px', 
+                      cursor: 'pointer',
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      border: '1px solid var(--border-color)',
+                      padding: '0 12px',
+                      fontWeight: 600
+                    }}
                   >
-                    <option value="">ยังไม่เลือก</option>
-                    <option value="cash">เงินสด (Cash)</option>
-                    <option value="transfer">โอนเงินเข้าบัญชี</option>
-                  </select>
+                    <span style={{ color: paymentMethod ? 'var(--text-main)' : 'var(--text-muted)' }}>
+                      {paymentMethod === 'cash' ? 'เงินสด (Cash)' : paymentMethod === 'transfer' ? 'โอนเงินเข้าบัญชี' : 'ยังไม่เลือก'}
+                    </span>
+                    <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
+                  </div>
+
+                  {isPaymentMethodOpen && (
+                    <>
+                      <div onClick={() => setIsPaymentMethodOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                      <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
+                        <div 
+                          onClick={() => { setPaymentMethod(''); setIsPaymentMethodOpen(false); }}
+                          style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentMethod === '' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentMethod === '' ? 'bold' : 'normal', background: paymentMethod === '' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                        >
+                          ยังไม่เลือก
+                        </div>
+                        <div 
+                          onClick={() => { setPaymentMethod('cash'); setIsPaymentMethodOpen(false); }}
+                          style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentMethod === 'cash' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentMethod === 'cash' ? 'bold' : 'normal', background: paymentMethod === 'cash' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                        >
+                          เงินสด (Cash)
+                        </div>
+                        <div 
+                          onClick={() => { setPaymentMethod('transfer'); setIsPaymentMethodOpen(false); }}
+                          style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentMethod === 'transfer' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentMethod === 'transfer' ? 'bold' : 'normal', background: paymentMethod === 'transfer' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
+                        >
+                          โอนเงินเข้าบัญชี
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -1800,28 +2025,144 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       )}
 
       {/* ========================================================= */}
-      {/* RECEIPT PRINT MODAL                                        */}
+      {/* 🧾 RECEIPT PRINT MODAL (REDESIGNED ULTRA-MODERN PREVIEW)   */}
       {/* ========================================================= */}
       {showReceiptModal && printBooking && (
         <div style={{
           position: 'fixed',
           top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(15, 23, 42, 0.8)',
+          backgroundColor: 'rgba(15, 23, 42, 0.65)',
+          backdropFilter: 'blur(24px) saturate(200%)',
+          WebkitBackdropFilter: 'blur(24px) saturate(200%)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          zIndex: 200,
+          zIndex: 9999,
           overflowY: 'auto',
-          padding: '20px'
+          padding: '24px'
         }} className="print-modal-overlay">
-          <div style={{ backgroundColor: 'var(--bg-card)', padding: '16px', borderRadius: 'var(--border-radius)', marginBottom: '16px', display: 'flex', gap: '8px', width: '100%', maxWidth: '380px', flexWrap: 'wrap' }} className="no-print">
-            <button className="btn btn-secondary" style={{ flex: '1 1 120px', fontSize: '0.85rem', padding: '10px 12px' }} onClick={handleCloseReceiptModal}>ปิดหน้าต่าง</button>
-            <button className="btn btn-primary" style={{ flex: '2 1 160px', fontSize: '0.85rem', padding: '10px 12px', gap: '6px' }} onClick={() => window.print()}>
-              <Printer size={16} /> พิมพ์ใบเสร็จ
-            </button>
+          
+          {/* Main Floating Glass Container */}
+          <div style={{
+            maxWidth: '460px',
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '16px',
+            animation: 'fadeIn 0.25s ease-out'
+          }}>
+            {/* Top Action Header Bar */}
+            <div style={{
+              width: '100%',
+              backgroundColor: 'var(--bg-card)',
+              border: '1px solid var(--glass-border)',
+              borderRadius: '20px',
+              padding: '12px 18px',
+              display: 'flex',
+              alignItems: 'center',
+              justify: 'space-between',
+              boxShadow: '0 12px 35px rgba(0, 0, 0, 0.2)'
+            }} className="no-print">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ 
+                  backgroundColor: 'rgba(16, 185, 129, 0.15)', 
+                  color: '#10b981', 
+                  padding: '4px 10px', 
+                  borderRadius: '99px', 
+                  fontSize: '0.75rem', 
+                  fontWeight: 800,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}>
+                  <Check size={13} /> ชำระเงินสำเร็จ
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button 
+                  type="button"
+                  onClick={handleDownloadReceiptPDF}
+                  className="btn btn-secondary"
+                  style={{
+                    height: '36px',
+                    padding: '0 14px',
+                    borderRadius: '12px',
+                    fontSize: '0.8rem',
+                    fontWeight: 700,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--bg-hover)',
+                    color: 'var(--text-main)',
+                    cursor: 'pointer'
+                  }}
+                  title="ดาวน์โหลดไฟล์ PDF สลิป"
+                >
+                  <FileText size={15} />
+                  <span>PDF</span>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={() => window.print()}
+                  className="btn btn-primary"
+                  style={{
+                    height: '36px',
+                    padding: '0 16px',
+                    borderRadius: '12px',
+                    fontSize: '0.8rem',
+                    fontWeight: 800,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <Printer size={15} />
+                  <span>พิมพ์ใบเสร็จ</span>
+                </button>
+
+                <button 
+                  type="button"
+                  onClick={handleCloseReceiptModal}
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '12px',
+                    border: '1px solid var(--border-color)',
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    color: 'var(--danger-color)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer'
+                  }}
+                  title="ปิดหน้าต่าง"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Thermal Paper Slip Preview Sheet Container */}
+            <div style={{
+              backgroundColor: '#ffffff',
+              borderRadius: '20px',
+              padding: '20px',
+              boxShadow: '0 25px 60px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.2)',
+              width: '100%',
+              maxWidth: '390px',
+              display: 'flex',
+              justify: 'center'
+            }}>
+              <ReceiptPrint booking={printBooking} settings={settings} />
+            </div>
           </div>
-          <ReceiptPrint booking={printBooking} settings={settings} />
+
         </div>
       )}
 
@@ -1834,7 +2175,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           background: 'rgba(15, 23, 42, 0.45)',
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
-          zIndex: 1010,
+          zIndex: 2000,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ChevronLeft, ChevronRight, Calendar, Clock, MapPin } from 'lucide-react';
 
-function CustomDatePicker({ value, onChange, placeholder = 'เลือกวันที่', className, style }) {
+function CustomDatePicker({ value, onChange, placeholder = 'เลือกวันที่', className, style, showHistory = false }) {
   // value represents 'YYYY-MM-DD'
   const [isOpen, setIsOpen] = useState(false);
   const [hoveredDay, setHoveredDay] = useState(null);
@@ -37,6 +37,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
 
   // Fetch daily bookings when value changes
   const fetchDailyBookings = useCallback(async (dateStr) => {
+    if (!showHistory) return;
     if (!dateStr) { setDailyBookings([]); return; }
     setLoadingBookings(true);
     try {
@@ -58,13 +59,13 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
       setDailyBookings([]);
     }
     setLoadingBookings(false);
-  }, []);
+  }, [showHistory]);
 
   useEffect(() => {
-    if (value) {
+    if (value && showHistory) {
       fetchDailyBookings(value);
     }
-  }, [value, fetchDailyBookings]);
+  }, [value, showHistory, fetchDailyBookings]);
 
   const formatDateDisplay = (dateStr) => {
     if (!dateStr) return '';
@@ -147,7 +148,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
   // Previous month empty slots
   for (let i = 0; i < firstDay; i++) {
     daysGrid.push(
-      <div key={`empty-${i}`} style={{ width: '36px', height: '36px' }}></div>
+      <div key={`empty-${i}`} style={{ width: '38px', height: '38px' }}></div>
     );
   }
   
@@ -165,25 +166,35 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
         onMouseEnter={() => setHoveredDay(day)}
         onMouseLeave={() => setHoveredDay(null)}
         style={{
-          width: '36px',
-          height: '36px',
-          borderRadius: '10px',
-          border: isToday && !isSelected ? '2px solid var(--primary-color)' : 'none',
+          width: '38px',
+          height: '38px',
+          borderRadius: '8px',
+          border: isSelected
+            ? '2px solid var(--primary-color)'
+            : isHovered
+              ? '2px solid var(--primary-color)'
+              : isToday
+                ? '2px dashed var(--primary-color)'
+                : '2px solid transparent',
           backgroundColor: isSelected
             ? 'var(--primary-color)'
             : isHovered
-              ? 'rgba(37, 99, 235, 0.12)'
+              ? 'rgba(37, 99, 235, 0.05)'
               : 'transparent',
-          color: isSelected ? '#ffffff' : isToday ? 'var(--primary-color)' : 'var(--text-main)',
-          fontSize: '0.82rem',
-          fontWeight: isSelected || isToday ? 800 : 500,
+          color: isSelected 
+            ? '#ffffff' 
+            : isToday 
+              ? 'var(--primary-color)' 
+              : 'var(--text-main)',
+          fontSize: '0.85rem',
+          fontWeight: isSelected || isToday || isHovered ? 800 : 500,
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           transition: 'all 0.15s ease',
-          boxShadow: isSelected ? '0 4px 12px rgba(37, 99, 235, 0.3)' : 'none',
-          transform: isHovered && !isSelected ? 'scale(1.08)' : 'scale(1)'
+          boxShadow: isSelected ? '0 4px 12px rgba(37, 99, 235, 0.25)' : 'none',
+          transform: isHovered && !isSelected ? 'scale(1.05)' : 'scale(1)'
         }}
       >
         {day}
@@ -216,62 +227,75 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
       {isOpen && (
         <div 
           onClick={(e) => e.stopPropagation()}
+          className="custom-datepicker-popover"
           style={{
             position: 'absolute',
-            top: 'calc(100% + 10px)',
+            top: 'calc(100% + 8px)',
             left: 0,
             backgroundColor: 'var(--bg-card)',
-            border: '1px solid var(--glass-border)',
+            border: '1px solid var(--border-color)',
             borderRadius: '20px',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.2), 0 0 40px rgba(37, 99, 235, 0.05)',
-            padding: '20px',
+            boxShadow: '0 20px 40px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.02)',
+            padding: '16px',
             zIndex: 9999,
-            width: '320px',
-            backdropFilter: 'blur(24px)',
-            WebkitBackdropFilter: 'blur(24px)',
-            animation: 'fadeIn 0.25s ease-out'
+            width: '302px',
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+            animation: 'fadeIn 0.2s ease-out'
           }}
         >
           {/* Header */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
             <button 
               type="button" 
               onClick={prevMonth} 
               style={{ 
-                background: 'rgba(37, 99, 235, 0.06)', 
-                border: '1px solid rgba(37, 99, 235, 0.1)', 
-                color: 'var(--primary-color)', 
+                background: 'transparent', 
+                border: '1px solid var(--border-color)', 
+                color: 'var(--text-muted)', 
                 cursor: 'pointer', 
                 display: 'flex', 
                 padding: '6px',
-                borderRadius: '10px',
+                borderRadius: '8px',
                 transition: 'all 0.2s'
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(37, 99, 235, 0.15)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(37, 99, 235, 0.06)'; }}
+              onMouseEnter={(e) => { 
+                e.currentTarget.style.borderColor = 'var(--primary-color)'; 
+                e.currentTarget.style.color = 'var(--primary-color)'; 
+              }}
+              onMouseLeave={(e) => { 
+                e.currentTarget.style.borderColor = 'var(--border-color)'; 
+                e.currentTarget.style.color = 'var(--text-muted)'; 
+              }}
             >
-              <ChevronLeft size={16} />
+              <ChevronLeft size={14} />
             </button>
-            <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-main)', letterSpacing: '-0.3px' }}>
+            <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-main)' }}>
               {monthNames[currentMonth]} {currentYear + 543}
             </div>
             <button 
               type="button" 
               onClick={nextMonth} 
               style={{ 
-                background: 'rgba(37, 99, 235, 0.06)', 
-                border: '1px solid rgba(37, 99, 235, 0.1)', 
-                color: 'var(--primary-color)', 
+                background: 'transparent', 
+                border: '1px solid var(--border-color)', 
+                color: 'var(--text-muted)', 
                 cursor: 'pointer', 
                 display: 'flex', 
                 padding: '6px',
-                borderRadius: '10px',
+                borderRadius: '8px',
                 transition: 'all 0.2s'
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(37, 99, 235, 0.15)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(37, 99, 235, 0.06)'; }}
+              onMouseEnter={(e) => { 
+                e.currentTarget.style.borderColor = 'var(--primary-color)'; 
+                e.currentTarget.style.color = 'var(--primary-color)'; 
+              }}
+              onMouseLeave={(e) => { 
+                e.currentTarget.style.borderColor = 'var(--border-color)'; 
+                e.currentTarget.style.color = 'var(--text-muted)'; 
+              }}
             >
-              <ChevronRight size={16} />
+              <ChevronRight size={14} />
             </button>
           </div>
 
@@ -283,16 +307,24 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
             textAlign: 'center', 
             marginBottom: '8px', 
             fontWeight: 800, 
-            fontSize: '0.7rem', 
-            color: 'var(--text-muted)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.5px'
+            fontSize: '0.725rem',
+            borderBottom: '1px solid var(--border-color)',
+            paddingBottom: '6px'
           }}>
-            {dayNames.map(name => <div key={name}>{name}</div>)}
+            {dayNames.map((name, idx) => (
+              <div 
+                key={name} 
+                style={{ 
+                  color: idx === 0 ? '#ef4444' : idx === 6 ? '#3b82f6' : 'var(--text-muted)' 
+                }}
+              >
+                {name}
+              </div>
+            ))}
           </div>
 
           {/* Days Grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '3px', justifyItems: 'center', marginBottom: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '2px', justifyItems: 'center', marginBottom: '10px' }}>
             {daysGrid}
           </div>
 
@@ -303,22 +335,22 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
             style={{
               width: '100%',
               padding: '8px',
-              borderRadius: '12px',
-              border: '1px solid var(--border-color)',
-              background: 'rgba(37, 99, 235, 0.04)',
+              borderRadius: '10px',
+              border: '1px solid var(--primary-color)',
+              background: 'transparent',
               color: 'var(--primary-color)',
               fontSize: '0.78rem',
               fontWeight: 700,
               cursor: 'pointer',
               transition: 'all 0.2s',
-              marginBottom: dailyBookings.length > 0 ? '12px' : 0
+              marginBottom: (showHistory && dailyBookings.length > 0) ? '12px' : 0
             }}
             onMouseEnter={(e) => { 
               e.currentTarget.style.background = 'var(--primary-color)'; 
               e.currentTarget.style.color = '#ffffff'; 
             }}
             onMouseLeave={(e) => { 
-              e.currentTarget.style.background = 'rgba(37, 99, 235, 0.04)'; 
+              e.currentTarget.style.background = 'transparent'; 
               e.currentTarget.style.color = 'var(--primary-color)'; 
             }}
           >
@@ -326,8 +358,8 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
           </button>
 
           {/* Daily Booking History Panel */}
-          {value && (
-            <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>
+          {showHistory && value && (
+            <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '10px' }}>
               <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 📋 ประวัติจองวันที่ {formatDateDisplay(value)}
               </div>
@@ -337,15 +369,15 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
                   กำลังโหลด...
                 </div>
               ) : dailyBookings.length > 0 ? (
-                <div style={{ maxHeight: '140px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ maxHeight: '120px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {dailyBookings.map((b, i) => (
                     <div 
                       key={i} 
                       style={{ 
                         padding: '8px 10px', 
                         borderRadius: '10px', 
-                        background: 'rgba(37, 99, 235, 0.05)', 
-                        border: '1px solid rgba(37, 99, 235, 0.08)',
+                        background: 'var(--bg-body)', 
+                        border: '1px solid var(--border-color)',
                         fontSize: '0.75rem',
                         display: 'flex',
                         flexDirection: 'column',

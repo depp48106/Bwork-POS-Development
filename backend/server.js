@@ -74,7 +74,7 @@ app.post('/api/rooms', async (req, res) => {
     name, capacity, hourly_rate, daily_rate, half_day_rate,
     has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, 
     description, status, image_url,
-    has_hourly, has_halfday, has_daily
+    has_hourly, has_halfday, has_daily, pin_code
   } = req.body;
   
   if (!name) {
@@ -86,13 +86,13 @@ app.post('/api/rooms', async (req, res) => {
         name, capacity, hourly_rate, daily_rate, half_day_rate,
         has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, 
         description, status, image_url,
-        has_hourly, has_halfday, has_daily
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        has_hourly, has_halfday, has_daily, pin_code
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name, capacity, hourly_rate, daily_rate || 0, half_day_rate || 0,
         has_classroom || 0, classroom_hourly_rate || 0, classroom_daily_rate || 0, classroom_capacity || 0,
         description || '', status || 'active', image_url || null,
-        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0
+        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null
       ]
     );
     res.status(201).json({ 
@@ -102,7 +102,8 @@ app.post('/api/rooms', async (req, res) => {
       classroom_daily_rate: classroom_daily_rate || 0,
       classroom_capacity: classroom_capacity || 0,
       description, status: status || 'active', image_url: image_url || null,
-      has_hourly: has_hourly !== undefined ? has_hourly : 1, has_halfday: has_halfday || 0, has_daily: has_daily || 0
+      has_hourly: has_hourly !== undefined ? has_hourly : 1, has_halfday: has_halfday || 0, has_daily: has_daily || 0,
+      pin_code: pin_code || null
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -114,7 +115,7 @@ app.put('/api/rooms/:id', async (req, res) => {
     name, capacity, hourly_rate, daily_rate, half_day_rate,
     has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, 
     description, status, image_url,
-    has_hourly, has_halfday, has_daily
+    has_hourly, has_halfday, has_daily, pin_code
   } = req.body;
   try {
     await dbQuery.run(
@@ -122,13 +123,13 @@ app.put('/api/rooms/:id', async (req, res) => {
        SET name = ?, capacity = ?, hourly_rate = ?, daily_rate = ?, half_day_rate = ?,
            has_classroom = ?, classroom_hourly_rate = ?, classroom_daily_rate = ?, classroom_capacity = ?, 
            description = ?, status = ?, image_url = ?,
-           has_hourly = ?, has_halfday = ?, has_daily = ?
+           has_hourly = ?, has_halfday = ?, has_daily = ?, pin_code = ?
        WHERE id = ?`,
       [
         name, capacity, hourly_rate, daily_rate || 0, half_day_rate || 0,
         has_classroom || 0, classroom_hourly_rate || 0, classroom_daily_rate || 0, classroom_capacity || 0,
         description, status, image_url,
-        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0,
+        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null,
         req.params.id
       ]
     );
@@ -270,18 +271,75 @@ app.delete('/api/categories/:name', async (req, res) => {
 // ==========================================================
 // 4. BOOKINGS (POS CHECKOUT & HISTORY)
 // ==========================================
+// Helper to generate a daily-resetting receipt number in the format REC-YYYYMMDD-XXXX
+async function generateReceiptNumber() {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const dateStr = `${yyyy}${mm}${dd}`; // e.g. "20260717"
+
+  // Query the last receipt number generated today
+  const lastBooking = await dbQuery.get(
+    `SELECT receipt_number FROM bookings 
+     WHERE date(created_at, 'localtime') = date('now', 'localtime')
+     AND receipt_number LIKE ?
+     ORDER BY id DESC LIMIT 1`,
+    [`REC-${dateStr}-%`]
+  );
+
+  let sequence = 1;
+  if (lastBooking && lastBooking.receipt_number) {
+    const parts = lastBooking.receipt_number.split('-');
+    const lastSeq = parseInt(parts[parts.length - 1], 10);
+    if (!isNaN(lastSeq)) {
+      sequence = lastSeq + 1;
+    }
+  }
+
+  return `REC-${dateStr}-${String(sequence).padStart(4, '0')}`;
+}
+
+// Helper function to generate 6-digit PIN Code
+async function generateUniquePinCode() {
+  let pin = Math.floor(100000 + Math.random() * 900000).toString();
+  // Ensure uniqueness among active bookings
+  let existing = await dbQuery.get('SELECT id FROM bookings WHERE pin_code = ? AND checkin_status != "expired"', [pin]);
+  let tries = 0;
+  while (existing && tries < 10) {
+    pin = Math.floor(100000 + Math.random() * 900000).toString();
+    existing = await dbQuery.get('SELECT id FROM bookings WHERE pin_code = ? AND checkin_status != "expired"', [pin]);
+    tries++;
+  }
+  return pin;
+}
+
 app.post('/api/bookings', async (req, res) => {
-  const { customer_name, department, contact, total_amount, payment_status, payment_method, items } = req.body;
+  const { customer_name, department, contact, total_amount, payment_status, payment_method, items, line_user_id } = req.body;
 
   if (!customer_name || !items || !items.length) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลผู้จองและเลือกรายการอย่างน้อย 1 รายการ' });
   }
 
   try {
+    const receiptNumber = await generateReceiptNumber();
+    const roomItem = items.find(it => !!it.room_id);
+    let pinCode = null;
+
+    if (roomItem) {
+      // Check if room has a fixed PIN code configured
+      const roomDb = await dbQuery.get('SELECT pin_code FROM rooms WHERE id = ?', [roomItem.room_id]);
+      if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
+        pinCode = roomDb.pin_code.trim();
+      } else {
+        pinCode = await generateUniquePinCode();
+      }
+    }
+
     // 1. Insert master booking
     const bookingResult = await dbQuery.run(
-      'INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [customer_name, department || '', contact || '', total_amount, payment_status || 'pending', payment_method || 'cash', new Date().toISOString()]
+      'INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, checkin_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [customer_name, department || '', contact || '', total_amount, payment_status || 'pending', payment_method || 'cash', receiptNumber, pinCode, line_user_id || null, 'pending', new Date().toISOString()]
     );
     const bookingId = bookingResult.id;
 
@@ -289,8 +347,8 @@ app.post('/api/bookings', async (req, res) => {
     for (const item of items) {
       await dbQuery.run(
         `INSERT INTO booking_items 
-         (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code, checkin_status) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           bookingId,
           item.room_id || null,
@@ -301,12 +359,20 @@ app.post('/api/bookings', async (req, res) => {
           item.end_time || null,
           item.subtotal,
           item.layout || 'standard',
-          item.booking_type || 'hourly'
+          item.booking_type || 'hourly',
+          item.room_id ? pinCode : null,
+          'pending'
         ]
       );
     }
 
-    res.status(201).json({ success: true, bookingId, message: 'บันทึกการจองสำเร็จ' });
+    res.status(201).json({ 
+      success: true, 
+      bookingId, 
+      receiptNumber,
+      pinCode,
+      message: 'บันทึกการจองสำเร็จ' 
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -327,8 +393,8 @@ app.get('/api/bookings', async (req, res) => {
         params.push(end_date + ' 23:59:59');
       }
       if (search) {
-        sql += ' AND (customer_name LIKE ? OR department LIKE ?)';
-        params.push(`%${search}%`, `%${search}%`);
+        sql += ' AND (customer_name LIKE ? OR department LIKE ? OR receipt_number LIKE ? OR CAST(id AS TEXT) LIKE ?)';
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
       }
       if (payment_status) {
         sql += ' AND payment_status = ?';
@@ -375,6 +441,36 @@ app.get('/api/bookings/calendar', async (req, res) => {
   }
 });
 
+// Get upcoming booking alerts (with customizable warning time)
+app.get('/api/bookings/upcoming-alerts', async (req, res) => {
+  try {
+    const settingRow = await dbQuery.get('SELECT value FROM settings WHERE key = ?', ['room_alert_minutes']);
+    const alertMinutes = settingRow && settingRow.value ? parseInt(settingRow.value, 10) : 15;
+
+    const now = new Date();
+    const futureLimit = new Date(now.getTime() + alertMinutes * 60 * 1000);
+    const nowISO = now.toISOString();
+    const futureISO = futureLimit.toISOString();
+
+    const alerts = await dbQuery.all(
+      `SELECT bi.start_time, bi.end_time, bi.room_id, bi.layout, bi.booking_type,
+              r.name as room_name,
+              b.id as booking_id, b.customer_name, b.payment_status
+       FROM booking_items bi
+       JOIN bookings b ON bi.booking_id = b.id
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE bi.room_id IS NOT NULL
+         AND bi.start_time >= ?
+         AND bi.start_time <= ?
+       ORDER BY bi.start_time ASC`,
+      [nowISO, futureISO]
+    );
+    res.json(alerts);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Check if room has an overlapping booking during the requested time range
 app.get('/api/bookings/check-overlap', async (req, res) => {
   const { room_id, start_time, end_time } = req.query;
@@ -414,9 +510,8 @@ app.get('/api/bookings/:id', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจองนี้' });
     }
 
-    // Get details
     const items = await dbQuery.all(
-      `SELECT bi.*, r.name as room_name, s.name as service_name 
+      `SELECT bi.*, r.name as room_name, r.description as room_description, s.name as service_name 
        FROM booking_items bi
        LEFT JOIN rooms r ON bi.room_id = r.id
        LEFT JOIN services s ON bi.service_id = s.id
@@ -455,27 +550,231 @@ app.patch('/api/bookings/:id/payment', async (req, res) => {
 });
 
 // ==========================================
+// 4.4 DOOR ACCESS & LINE OA CHECK-IN API
+// ==========================================
+
+// Verify PIN Code from Door Access Tablet
+app.post('/api/access/verify-pin', async (req, res) => {
+  const { room_id, pin_code } = req.body;
+  if (!pin_code) {
+    return res.status(400).json({ success: false, error: 'กรุณากรอกรหัส PIN 6 หลัก' });
+  }
+
+  try {
+    const now = new Date();
+    const nowISO = now.toISOString();
+
+    // Query active room booking for this PIN code
+    let sql = `
+      SELECT bi.id as item_id, bi.start_time, bi.end_time, bi.checkin_status,
+             b.id as booking_id, b.customer_name, b.payment_status, b.pin_code,
+             r.id as room_id, r.name as room_name
+      FROM booking_items bi
+      JOIN bookings b ON bi.booking_id = b.id
+      JOIN rooms r ON bi.room_id = r.id
+      WHERE (b.pin_code = ? OR bi.pin_code = ?)
+    `;
+    const params = [pin_code.trim(), pin_code.trim()];
+
+    if (room_id) {
+      sql += ' AND bi.room_id = ?';
+      params.push(room_id);
+    }
+
+    const bookingRow = await dbQuery.get(sql, params);
+
+    if (!bookingRow) {
+      return res.status(404).json({ success: false, error: 'ไม่พบข้อมูลการจองด้วยรหัส PIN นี้' });
+    }
+
+    // Check payment status
+    if (bookingRow.payment_status !== 'paid') {
+      return res.status(400).json({ success: false, error: 'รายการจองนี้ยังไม่ได้ชำระเงิน กรุณาชำระเงินที่เคาน์เตอร์ก่อน' });
+    }
+
+    // Check time window (allow early check-in based on settings, default: 15 mins before start_time)
+    const settingRow = await dbQuery.get('SELECT value FROM settings WHERE key = ?', ['early_checkin_minutes']);
+    const earlyMins = settingRow && settingRow.value ? parseInt(settingRow.value, 10) : 15;
+
+    const startTime = new Date(bookingRow.start_time);
+    const endTime = new Date(bookingRow.end_time);
+    const earlyCheckinTime = new Date(startTime.getTime() - earlyMins * 60 * 1000); // Dynamic early checkin
+
+    if (now < earlyCheckinTime) {
+      const timeStr = startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+      return res.status(400).json({ 
+        success: false, 
+        error: `ยังไม่ถึงเวลาเข้าใช้งาน (สามารถเช็คอินได้ล่วงหน้า ${earlyMins} นาที ก่อนเวลา ${timeStr} น.)` 
+      });
+    }
+
+    if (now > endTime) {
+      return res.status(400).json({ success: false, error: 'หมดเวลาการเข้าใช้งานห้องประชุมนี้แล้ว' });
+    }
+
+    // Mark as checked in
+    const checkinTime = new Date().toISOString();
+    await dbQuery.run('UPDATE bookings SET checkin_status = "checked_in", checkin_at = ? WHERE id = ?', [checkinTime, bookingRow.booking_id]);
+    await dbQuery.run('UPDATE booking_items SET checkin_status = "checked_in", checkin_at = ? WHERE id = ?', [checkinTime, bookingRow.item_id]);
+
+    res.json({
+      success: true,
+      message: 'อนุมัติการเข้าใช้งาน (Access Granted)',
+      customer_name: bookingRow.customer_name,
+      room_name: bookingRow.room_name,
+      start_time: bookingRow.start_time,
+      end_time: bookingRow.end_time
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'เกิดข้อผิดพลาดของระบบ: ' + err.message });
+  }
+});
+
+// Check-in via LINE OA (Within customizable mins before start time) -> Returns 6-digit PIN Code Flex Card
+app.post('/api/line/checkin', async (req, res) => {
+  const { line_user_id, booking_id } = req.body;
+
+  try {
+    let bookingRow;
+    if (booking_id) {
+      bookingRow = await dbQuery.get(
+        `SELECT b.*, bi.start_time, bi.end_time, r.name as room_name 
+         FROM bookings b 
+         JOIN booking_items bi ON b.id = bi.booking_id 
+         LEFT JOIN rooms r ON bi.room_id = r.id 
+         WHERE b.id = ?`,
+        [booking_id]
+      );
+    } else if (line_user_id) {
+      bookingRow = await dbQuery.get(
+        `SELECT b.*, bi.start_time, bi.end_time, r.name as room_name 
+         FROM bookings b 
+         JOIN booking_items bi ON b.id = bi.booking_id 
+         LEFT JOIN rooms r ON bi.room_id = r.id 
+         WHERE b.line_user_id = ? AND b.checkin_status != 'expired' 
+         ORDER BY bi.start_time ASC LIMIT 1`,
+        [line_user_id]
+      );
+    }
+
+    if (!bookingRow) {
+      return res.status(404).json({ success: false, error: 'ไม่พบรายการจองห้องประชุมของคุณในระบบ' });
+    }
+
+    if (bookingRow.payment_status !== 'paid') {
+      return res.status(400).json({ success: false, error: 'รายการจองนี้ยังไม่ได้ชำระเงิน กรุณาชำระเงินที่เคาน์เตอร์ก่อนรับรหัสเข้าห้อง' });
+    }
+
+    const settingRow = await dbQuery.get('SELECT value FROM settings WHERE key = ?', ['early_checkin_minutes']);
+    const earlyMins = settingRow && settingRow.value ? parseInt(settingRow.value, 10) : 15;
+
+    const now = new Date();
+    const startTime = new Date(bookingRow.start_time);
+    const endTime = new Date(bookingRow.end_time);
+    const earlyCheckinTime = new Date(startTime.getTime() - earlyMins * 60 * 1000);
+
+    if (now < earlyCheckinTime) {
+      const timeStr = startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+      return res.status(400).json({ 
+        success: false, 
+        error: `ยังไม่ถึงเวลาเช็คอิน (สามารถกดรับรหัสผ่านได้ล่วงหน้า ${earlyMins} นาที ก่อนเวลา ${timeStr} น.)` 
+      });
+    }
+
+    if (now > endTime) {
+      return res.status(400).json({ success: false, error: 'หมดเวลาจองใช้งานห้องประชุมนี้แล้ว' });
+    }
+
+    res.json({
+      success: true,
+      pin_code: bookingRow.pin_code,
+      customer_name: bookingRow.customer_name,
+      room_name: bookingRow.room_name,
+      start_time: bookingRow.start_time,
+      end_time: bookingRow.end_time,
+      receipt_number: bookingRow.receipt_number
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ==========================================
 // 4.5. QUOTATIONS API
 // ==========================================
+app.get('/api/quotations/next-number', async (req, res) => {
+  try {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const datePrefix = `QT${year}${month}`;
+
+    const rows = await dbQuery.all(
+      "SELECT quotation_no FROM quotations WHERE quotation_no LIKE ?",
+      [`${datePrefix}%`]
+    );
+
+    let maxSeq = 0;
+    rows.forEach(r => {
+      if (r.quotation_no && r.quotation_no.startsWith(datePrefix)) {
+        const seqStr = r.quotation_no.replace(datePrefix, '').trim();
+        const seqNum = parseInt(seqStr, 10);
+        if (!isNaN(seqNum) && seqNum > maxSeq) {
+          maxSeq = seqNum;
+        }
+      }
+    });
+
+    const nextSeqStr = String(maxSeq + 1).padStart(4, '0');
+    res.json({ quotation_no: `${datePrefix}${nextSeqStr}` });
+  } catch (err) {
+    console.error('Failed to generate next quotation number:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/quotations', async (req, res) => {
-  const { customer_name, department, contact, total_amount, valid_until, items } = req.body;
+  const { customer_name, department, contact, total_amount, valid_until, items, seller_name, job_name, customer_address, quotation_no } = req.body;
 
   if (!customer_name || !items || !items.length) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลลูกค้าและเลือกรายการอย่างน้อย 1 รายการ' });
   }
 
   try {
+    let finalQuotationNo = quotation_no;
+    if (!finalQuotationNo || !finalQuotationNo.trim()) {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const datePrefix = `QT${year}${month}`;
+      const rows = await dbQuery.all(
+        "SELECT quotation_no FROM quotations WHERE quotation_no LIKE ?",
+        [`${datePrefix}%`]
+      );
+      let maxSeq = 0;
+      rows.forEach(r => {
+        if (r.quotation_no && r.quotation_no.startsWith(datePrefix)) {
+          const seqStr = r.quotation_no.replace(datePrefix, '').trim();
+          const seqNum = parseInt(seqStr, 10);
+          if (!isNaN(seqNum) && seqNum > maxSeq) {
+            maxSeq = seqNum;
+          }
+        }
+      });
+      finalQuotationNo = `${datePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
+    }
+
     const result = await dbQuery.run(
-      'INSERT INTO quotations (customer_name, department, contact, total_amount, status, valid_until) VALUES (?, ?, ?, ?, ?, ?)',
-      [customer_name, department || '', contact || '', total_amount, 'draft', valid_until || '']
+      'INSERT INTO quotations (customer_name, department, contact, total_amount, status, valid_until, seller_name, job_name, customer_address, quotation_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [customer_name, department || '', contact || '', total_amount, 'draft', valid_until || '', seller_name || '', job_name || '', customer_address || '', finalQuotationNo]
     );
     const quotationId = result.id;
 
     for (const item of items) {
       await dbQuery.run(
         `INSERT INTO quotation_items 
-         (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           quotationId,
           item.room_id || null,
@@ -486,7 +785,10 @@ app.post('/api/quotations', async (req, res) => {
           item.end_time || null,
           item.subtotal,
           item.layout || 'standard',
-          item.booking_type || 'hourly'
+          item.booking_type || 'hourly',
+          item.discount || 0,
+          item.item_date || null,
+          item.discount_type || 'amount'
         ]
       );
     }
@@ -528,7 +830,7 @@ app.get('/api/quotations/:id', async (req, res) => {
     }
 
     const items = await dbQuery.all(
-      `SELECT qi.*, r.name as room_name, s.name as service_name 
+      `SELECT qi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name 
        FROM quotation_items qi
        LEFT JOIN rooms r ON qi.room_id = r.id
        LEFT JOIN services s ON qi.service_id = s.id
@@ -545,7 +847,8 @@ app.get('/api/quotations/:id', async (req, res) => {
 app.patch('/api/quotations/:id/status', async (req, res) => {
   const { status } = req.body;
   try {
-    await dbQuery.run('UPDATE quotations SET status = ? WHERE id = ?', [status, req.params.id]);
+    const approvedAt = status === 'accepted' ? new Date().toISOString() : null;
+    await dbQuery.run('UPDATE quotations SET status = ?, approved_at = ? WHERE id = ?', [status, approvedAt, req.params.id]);
     res.json({ success: true, message: 'อัปเดตสถานะสำเร็จ' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -553,7 +856,7 @@ app.patch('/api/quotations/:id/status', async (req, res) => {
 });
 
 app.put('/api/quotations/:id', async (req, res) => {
-  const { customer_name, department, contact, total_amount, valid_until, items } = req.body;
+  const { customer_name, department, contact, total_amount, valid_until, items, seller_name, job_name, customer_address, quotation_no } = req.body;
   const quotationId = req.params.id;
 
   if (!customer_name || !items || !items.length) {
@@ -562,8 +865,8 @@ app.put('/api/quotations/:id', async (req, res) => {
 
   try {
     await dbQuery.run(
-      'UPDATE quotations SET customer_name = ?, department = ?, contact = ?, total_amount = ?, valid_until = ? WHERE id = ?',
-      [customer_name, department || '', contact || '', total_amount, valid_until || '', quotationId]
+      'UPDATE quotations SET customer_name = ?, department = ?, contact = ?, total_amount = ?, valid_until = ?, seller_name = ?, job_name = ?, customer_address = ?, quotation_no = ? WHERE id = ?',
+      [customer_name, department || '', contact || '', total_amount, valid_until || '', seller_name || '', job_name || '', customer_address || '', quotation_no || '', quotationId]
     );
 
     await dbQuery.run('DELETE FROM quotation_items WHERE quotation_id = ?', [quotationId]);
@@ -571,8 +874,8 @@ app.put('/api/quotations/:id', async (req, res) => {
     for (const item of items) {
       await dbQuery.run(
         `INSERT INTO quotation_items 
-         (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           quotationId,
           item.room_id || null,
@@ -583,7 +886,10 @@ app.put('/api/quotations/:id', async (req, res) => {
           item.end_time || null,
           item.subtotal,
           item.layout || 'standard',
-          item.booking_type || 'hourly'
+          item.booking_type || 'hourly',
+          item.discount || 0,
+          item.item_date || null,
+          item.discount_type || 'amount'
         ]
       );
     }
@@ -613,10 +919,12 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
 
     const items = await dbQuery.all('SELECT * FROM quotation_items WHERE quotation_id = ?', [req.params.id]);
 
+    const receiptNumber = await generateReceiptNumber();
+
     // 1. Insert into bookings
     const bookingResult = await dbQuery.run(
-      'INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [quotation.customer_name, quotation.department, quotation.contact, quotation.total_amount, payment_status || 'pending', payment_method || 'cash', new Date().toISOString()]
+      'INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [quotation.customer_name, quotation.department, quotation.contact, quotation.total_amount, payment_status || 'pending', payment_method || 'cash', receiptNumber, new Date().toISOString()]
     );
     const bookingId = bookingResult.id;
 
@@ -642,7 +950,7 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
     }
 
     // 3. Update quotation status to converted
-    await dbQuery.run("UPDATE quotations SET status = 'accepted' WHERE id = ?", [req.params.id]);
+    await dbQuery.run("UPDATE quotations SET status = 'accepted', approved_at = ? WHERE id = ?", [new Date().toISOString(), req.params.id]);
 
     res.json({ success: true, bookingId, message: 'แปลงเป็นรายการจองสำเร็จ' });
   } catch (err) {
@@ -773,6 +1081,22 @@ app.post('/api/backup/trigger', async (req, res) => {
     res.status(500).json(result);
   }
 });
+
+// Clear transaction and booking history (admin only)
+app.post('/api/admin/clear-history', async (req, res) => {
+  try {
+    await dbQuery.run('DELETE FROM booking_items');
+    await dbQuery.run('DELETE FROM bookings');
+    await dbQuery.run('DELETE FROM quotation_items');
+    await dbQuery.run('DELETE FROM quotations');
+    await dbQuery.run("DELETE FROM sqlite_sequence WHERE name IN ('bookings', 'booking_items', 'quotations', 'quotation_items')");
+
+    res.json({ success: true, message: 'ล้างประวัติการใช้งานและประวัติใบเสนอราคาทั้งหมดเรียบร้อยแล้ว' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 
 
