@@ -106,22 +106,20 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
       const res = await fetch(`/api/bookings/${bookingId}`);
       if (res.ok) {
         const bookingData = await res.json();
-        const roomItem = bookingData.items.find(item => item.room_id === roomId);
-        if (roomItem) {
-          setViewedEvent({
-            room_name: roomItem.room_name,
-            customer_name: bookingData.customer_name,
-            start_time: roomItem.start_time,
-            end_time: roomItem.end_time,
-            booking_type: roomItem.booking_type,
-            layout: roomItem.layout,
-            booking_id: bookingData.id,
-            payment_status: bookingData.payment_status,
-            subtotal: roomItem.subtotal
-          });
-        } else {
-          sysAlert('ไม่พบข้อมูลรายการจองห้องประชุมในบิลนี้');
-        }
+        const roomItem = bookingData.items ? bookingData.items.find(item => item.room_id === roomId) : null;
+        setViewedEvent({
+          room_name: roomItem ? roomItem.room_name : 'ห้องประชุม',
+          customer_name: bookingData.customer_name,
+          booking_source: bookingData.booking_source || 'walkin',
+          receipt_number: bookingData.receipt_number || `#${String(bookingData.id).padStart(6, '0')}`,
+          start_time: roomItem ? roomItem.start_time : bookingData.created_at,
+          end_time: roomItem ? roomItem.end_time : bookingData.created_at,
+          booking_type: roomItem ? roomItem.booking_type : 'hourly',
+          layout: roomItem ? roomItem.layout : 'standard',
+          booking_id: bookingData.id,
+          payment_status: bookingData.payment_status,
+          subtotal: roomItem ? roomItem.subtotal : bookingData.total_amount
+        });
       } else {
         sysAlert('ไม่สามารถโหลดรายละเอียดการจองได้');
       }
@@ -721,14 +719,26 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                             e.currentTarget.style.boxShadow = 'none';
                           }}
                         >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', marginBottom: '4px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold', marginBottom: '4px' }}>
                             <span>{sTime} - {eTime} น.</span>
-                            <span style={{ 
-                              color: b.payment_status === 'paid' ? 'var(--success-color)' : '#f59e0b',
-                              fontSize: '0.75rem'
-                            }}>
-                              {b.payment_status === 'paid' ? '● ชำระแล้ว' : '● ค้างชำระ'}
-                            </span>
+                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                              <span style={{
+                                fontSize: '0.675rem',
+                                padding: '2px 6px',
+                                borderRadius: '6px',
+                                backgroundColor: b.booking_source === 'online' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                                color: b.booking_source === 'online' ? '#0ea5e9' : '#10b981',
+                                fontWeight: 700
+                              }}>
+                                {b.booking_source === 'online' ? '🌐 ออนไลน์' : '🏬 Walk-in'}
+                              </span>
+                              <span style={{ 
+                                color: b.payment_status === 'paid' ? 'var(--success-color)' : '#f59e0b',
+                                fontSize: '0.725rem'
+                              }}>
+                                {b.payment_status === 'paid' ? '● ชำระแล้ว' : '● ค้างชำระ'}
+                              </span>
+                            </div>
                           </div>
                           <div style={{ color: 'var(--text-main)', fontWeight: 600 }}>คุณ {b.customer_name}</div>
                           {b.contact && <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '2px' }}> เบอร์ติดต่อ: {b.contact}</div>}
@@ -919,13 +929,31 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
               <X size={20} />
             </button>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--primary-color)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                รายละเอียดการจองประจำวัน
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingRight: '28px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--primary-color)', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                  รายละเอียดการจองประจำวัน
+                </div>
+                <h2 style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+                  {viewedEvent.room_name}
+                </h2>
               </div>
-              <h2 style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
-                {viewedEvent.room_name}
-              </h2>
+
+              {/* Top Right Booking Source Badge */}
+              <span style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '6px 12px',
+                borderRadius: '99px',
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                backgroundColor: viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                color: viewedEvent.booking_source === 'online' ? '#0ea5e9' : '#10b981',
+                border: `1px solid ${viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`
+              }}>
+                {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'}
+              </span>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -943,6 +971,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                 color: 'var(--text-main)'
               }}>
                 <div><strong>ผู้จอง:</strong> {viewedEvent.customer_name}</div>
+                <div><strong>ช่องทางการจอง:</strong> {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์ผ่านเว็บ' : '🏬 Walk-in ผ่าน POS หน้าร้าน'}</div>
                 <div><strong>วันที่จอง:</strong> {(() => {
                   const d = new Date(viewedEvent.start_time);
                   return `${d.getDate()} ${monthNames[d.getMonth()]} ${d.getFullYear() + 543}`;
