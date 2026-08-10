@@ -1011,7 +1011,18 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                     หมายเลขอ้างอิงใบเสร็จ: #{viewedEvent.booking_id}
                   </div>
-                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '2px' }}>
+                    <span style={{
+                      fontSize: '0.7rem',
+                      fontWeight: 'bold',
+                      padding: '2px 8px',
+                      borderRadius: '99px',
+                      backgroundColor: viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                      color: viewedEvent.booking_source === 'online' ? '#0ea5e9' : '#10b981',
+                      border: `1px solid ${viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`
+                    }}>
+                      {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'}
+                    </span>
                     <span style={{
                       fontSize: '0.7rem',
                       fontWeight: 'bold',
