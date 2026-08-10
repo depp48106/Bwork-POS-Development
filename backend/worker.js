@@ -1,5 +1,5 @@
 // Cloudflare Worker API for Bwork-POS & Booking App
-// Comprehensive API routing, Cloudflare D1 SQLite queries, Auth, and LINE Webhook
+// Comprehensive API routing, Cloudflare D1 SQLite queries, Auth, Management & LINE Webhook
 
 async function hashPassword(password) {
   const msgUint8 = new TextEncoder().encode(password);
@@ -49,16 +49,73 @@ export default {
         }
       }
 
-      // 1. GET /api/rooms & GET /api/public/rooms
+      // 1. ROOMS CRUD (/api/rooms)
       if (pathname === '/api/rooms' || pathname === '/api/public/rooms') {
-        const { results } = await env.DB.prepare("SELECT * FROM rooms WHERE status = 'active' ORDER BY name ASC").all();
-        return new Response(JSON.stringify(results), { headers: corsHeaders });
+        if (method === 'GET') {
+          const { results } = await env.DB.prepare("SELECT * FROM rooms WHERE status = 'active' ORDER BY name ASC").all();
+          return new Response(JSON.stringify(results), { headers: corsHeaders });
+        }
+        if (method === 'POST') {
+          const body = await request.json();
+          const ins = await env.DB.prepare(
+            `INSERT INTO rooms (name, capacity, hourly_rate, daily_rate, half_day_rate, has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url, description, image_url, category, pin_code, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
+          ).bind(
+            body.name, body.capacity || 0, body.hourly_rate || 0, body.daily_rate || 0, body.half_day_rate || 0,
+            body.has_classroom || 0, body.classroom_hourly_rate || 0, body.classroom_daily_rate || 0, body.classroom_capacity || 0,
+            body.classroom_image_url || null, body.description || '', body.image_url || null, body.category || 'Meeting Room', body.pin_code || null
+          ).run();
+          return new Response(JSON.stringify({ success: true, id: ins.meta.last_row_id }), { status: 201, headers: corsHeaders });
+        }
       }
 
-      // 2. GET /api/services
+      if (pathname.startsWith('/api/rooms/')) {
+        const roomId = pathname.replace('/api/rooms/', '');
+        if (method === 'PUT') {
+          const body = await request.json();
+          await env.DB.prepare(
+            `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=? WHERE id=?`
+          ).bind(
+            body.name, body.capacity || 0, body.hourly_rate || 0, body.daily_rate || 0, body.half_day_rate || 0,
+            body.has_classroom || 0, body.classroom_hourly_rate || 0, body.classroom_daily_rate || 0, body.classroom_capacity || 0,
+            body.classroom_image_url || null, body.description || '', body.image_url || null, body.category || 'Meeting Room', body.pin_code || null, roomId
+          ).run();
+          return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+        }
+        if (method === 'DELETE') {
+          await env.DB.prepare("UPDATE rooms SET status = 'inactive' WHERE id = ?").bind(roomId).run();
+          return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+        }
+      }
+
+      // 2. SERVICES CRUD (/api/services)
       if (pathname === '/api/services') {
-        const { results } = await env.DB.prepare("SELECT * FROM services WHERE status = 'active' ORDER BY name ASC").all();
-        return new Response(JSON.stringify(results), { headers: corsHeaders });
+        if (method === 'GET') {
+          const { results } = await env.DB.prepare("SELECT * FROM services WHERE status = 'active' ORDER BY name ASC").all();
+          return new Response(JSON.stringify(results), { headers: corsHeaders });
+        }
+        if (method === 'POST') {
+          const body = await request.json();
+          const ins = await env.DB.prepare(
+            "INSERT INTO services (name, price, category, image_url, status) VALUES (?, ?, ?, ?, 'active')"
+          ).bind(body.name, body.price || 0, body.category || 'catering', body.image_url || null).run();
+          return new Response(JSON.stringify({ success: true, id: ins.meta.last_row_id }), { status: 201, headers: corsHeaders });
+        }
+      }
+
+      if (pathname.startsWith('/api/services/')) {
+        const serviceId = pathname.replace('/api/services/', '');
+        if (method === 'PUT') {
+          const body = await request.json();
+          await env.DB.prepare(
+            "UPDATE services SET name=?, price=?, category=?, image_url=? WHERE id=?"
+          ).bind(body.name, body.price || 0, body.category || 'catering', body.image_url || null, serviceId).run();
+          return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+        }
+        if (method === 'DELETE') {
+          await env.DB.prepare("UPDATE services SET status = 'inactive' WHERE id = ?").bind(serviceId).run();
+          return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+        }
       }
 
       // 3. GET /api/public/rooms/schedule
@@ -88,7 +145,7 @@ export default {
         return new Response(JSON.stringify({ date, rooms: scheduleMap }), { headers: corsHeaders });
       }
 
-      // 4. GET /api/bookings (List bookings for POS history & pending approvals)
+      // 4. GET /api/bookings
       if (pathname === '/api/bookings' && method === 'GET') {
         const status = url.searchParams.get('status');
         let query = `SELECT * FROM bookings`;
@@ -115,7 +172,7 @@ export default {
         return new Response(JSON.stringify(bookings), { headers: corsHeaders });
       }
 
-      // 5. POST /api/bookings (POS Walk-in Booking Endpoint)
+      // 5. POST /api/bookings
       if (pathname === '/api/bookings' && method === 'POST') {
         const body = await request.json();
         const { customer_name, department, contact, total_amount, payment_status, payment_method, items, line_user_id } = body;
@@ -162,7 +219,7 @@ export default {
         }), { status: 201, headers: corsHeaders });
       }
 
-      // 6. PUT /api/bookings/:id/payment-status (Admin approve/reject slip)
+      // 6. PUT /api/bookings/:id/payment-status
       if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/payment-status') && method === 'PUT') {
         const parts = pathname.split('/');
         const bookingId = parts[3];
@@ -173,7 +230,7 @@ export default {
         return new Response(JSON.stringify({ success: true, message: 'อัปเดตสถานะสำเร็จ' }), { headers: corsHeaders });
       }
 
-      // 7. POST /api/public/bookings/:id/upload-slip (Upload Payment Slip)
+      // 7. POST /api/public/bookings/:id/upload-slip
       if (pathname.startsWith('/api/public/bookings/') && pathname.endsWith('/upload-slip') && method === 'POST') {
         const parts = pathname.split('/');
         const idParam = parts[4];
@@ -309,7 +366,7 @@ export default {
         }), { status: 201, headers: corsHeaders });
       }
 
-      // 10. GET /api/settings & GET /api/public/settings/payment & POST /api/settings
+      // 10. GET/POST /api/settings & GET /api/public/settings/payment
       if (pathname === '/api/settings' || pathname === '/api/public/settings/payment') {
         if (method === 'POST') {
           const body = await request.json();
@@ -337,12 +394,46 @@ export default {
         }), { headers: corsHeaders });
       }
 
-      // 11. GET /api/bookings/upcoming-alerts
+      // 11. USERS & ADMIN MANAGEMENT (/api/users, /api/admin/users, /api/admin/clear-history)
+      if (pathname === '/api/users' || pathname === '/api/admin/users') {
+        if (method === 'GET') {
+          const { results: users } = await env.DB.prepare("SELECT id, username, role, permissions, fullname, created_at FROM users").all();
+          return new Response(JSON.stringify(users), { headers: corsHeaders });
+        }
+        if (method === 'POST') {
+          const body = await request.json();
+          const passHash = await hashPassword(body.password || '123456');
+          const ins = await env.DB.prepare(
+            "INSERT INTO users (username, password_hash, role, permissions, fullname) VALUES (?, ?, ?, ?, ?)"
+          ).bind(body.username, passHash, body.role || 'staff', body.permissions || '', body.fullname || '').run();
+          return new Response(JSON.stringify({ success: true, id: ins.meta.last_row_id }), { status: 201, headers: corsHeaders });
+        }
+      }
+
+      if (pathname === '/api/users/change-password' && method === 'POST') {
+        const { username, oldPassword, newPassword } = await request.json();
+        const oldHash = await hashPassword(oldPassword);
+        const user = await env.DB.prepare("SELECT * FROM users WHERE username = ? AND password_hash = ?").bind(username, oldHash).first();
+        if (!user) {
+          return new Response(JSON.stringify({ error: 'รหัสผ่านเดิมไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+        const newHash = await hashPassword(newPassword);
+        await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(newHash, user.id).run();
+        return new Response(JSON.stringify({ success: true, message: 'เปลี่ยนรหัสผ่านสำเร็จ' }), { headers: corsHeaders });
+      }
+
+      if (pathname === '/api/admin/clear-history' && method === 'POST') {
+        await env.DB.prepare("DELETE FROM booking_items").run();
+        await env.DB.prepare("DELETE FROM bookings").run();
+        return new Response(JSON.stringify({ success: true, message: 'ล้างประวัติการใช้งานเรียบร้อยแล้ว' }), { headers: corsHeaders });
+      }
+
+      // 12. GET /api/bookings/upcoming-alerts
       if (pathname === '/api/bookings/upcoming-alerts') {
         return new Response(JSON.stringify([]), { headers: corsHeaders });
       }
 
-      // 12. POST /api/line/webhook
+      // 13. POST /api/line/webhook
       if (pathname === '/api/line/webhook') {
         return new Response(JSON.stringify({ success: true, message: 'LINE Webhook Received' }), { headers: corsHeaders });
       }
