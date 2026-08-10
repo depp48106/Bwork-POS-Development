@@ -68,7 +68,11 @@ function App() {
   const hasPermission = (tabKey) => {
     if (user && user.username === 'admin') return true;
     if (!user) return false;
-    const permString = user.permissions || 'pos,pending,layout,history';
+    const permString = (user.permissions && user.permissions.trim()) 
+      ? user.permissions 
+      : (user.role === 'admin' 
+          ? 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation' 
+          : 'pos,pending,layout,manage,history,quotations');
     const perms = permString.split(',').map(p => p.trim());
     if (tabKey === 'admin-management') {
       return perms.includes('admin-management') || perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage');
