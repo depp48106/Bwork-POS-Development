@@ -1774,27 +1774,31 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
 
                         <div>
                           <label style={{ fontSize: '0.775rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>สิทธิ์เข้าใช้งานเริ่มต้น (Default Permissions)</label>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', maxHeight: '180px', overflowY: 'auto', border: '1px solid var(--border-color)', padding: '10px', borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.1)' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', maxHeight: '220px', overflowY: 'auto', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '12px', backgroundColor: 'rgba(0,0,0,0.1)' }}>
                             {[
                               { key: 'pos', label: 'จุดขาย POS' },
-                              { key: 'dashboard', label: 'Dashboard' },
-                              { key: 'pending', label: 'รอชำระเงิน' },
-                              { key: 'layout', label: 'แผนผังห้อง' },
-                              { key: 'history', label: 'ประวัติย้อนหลัง' },
+                              { key: 'dashboard', label: 'Dashboard สรุปยอด' },
+                              { key: 'pending', label: 'รายการรอชำระเงิน' },
+                              { key: 'layout', label: 'แผนผังห้องประชุม' },
+                              { key: 'manage', label: 'คลังสินค้า & ห้องประชุม' },
+                              { key: 'history', label: 'ประวัติการจองย้อนหลัง' },
                               { key: 'quotations', label: 'ใบเสนอราคา' },
-                              { key: 'admin-management', label: 'Settings' }
+                              { key: 'admin-users', label: 'จัดการผู้ใช้ & บทบาท' },
+                              { key: 'admin-system', label: 'ตั้งค่าระบบ & ใบเสร็จ' },
+                              { key: 'admin-backup', label: 'สำรองข้อมูล (Backup)' }
                             ].map(menu => {
-                              const checked = roleForm.permissions.includes(menu.key);
+                              const checked = Array.isArray(roleForm.permissions) && roleForm.permissions.includes(menu.key);
                               return (
                                 <label key={menu.key} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.775rem', cursor: 'pointer', color: checked ? 'var(--text-main)' : 'var(--text-muted)' }}>
                                   <input 
                                     type="checkbox" 
                                     checked={checked}
                                     onChange={() => {
+                                      const currentPerms = Array.isArray(roleForm.permissions) ? roleForm.permissions : [];
                                       if (checked) {
-                                        setRoleForm({ ...roleForm, permissions: roleForm.permissions.filter(k => k !== menu.key) });
+                                        setRoleForm({ ...roleForm, permissions: currentPerms.filter(k => k !== menu.key) });
                                       } else {
-                                        setRoleForm({ ...roleForm, permissions: [...roleForm.permissions, menu.key] });
+                                        setRoleForm({ ...roleForm, permissions: [...currentPerms, menu.key] });
                                       }
                                     }}
                                   />
@@ -1824,18 +1828,20 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
                             style={{ flex: 1.5, height: '36px', fontSize: '0.8rem', borderRadius: '8px', cursor: 'pointer' }}
                             onClick={async () => {
                               if (!roleForm.name.trim() || !roleForm.label.trim()) {
-                                sysAlert('กรุณากรอกข้อมูลให้ครบถ้วน');
+                                sysAlert('กรุณากรอกข้อมูลให้ครบถ้วน (รหัสบทบาท และ ชื่อแสดงผล)');
                                 return;
                               }
                               try {
                                 let res;
+                                const permStr = Array.isArray(roleForm.permissions) ? roleForm.permissions.join(',') : '';
                                 if (editingRole) {
                                   res = await fetch(`/api/roles/${editingRole.id}`, {
                                     method: 'PUT',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({
-                                      label: roleForm.label,
-                                      permissions: roleForm.permissions.join(',')
+                                      name: roleForm.name.trim(),
+                                      label: roleForm.label.trim(),
+                                      permissions: permStr
                                     })
                                   });
                                 } else {
@@ -1843,20 +1849,20 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({
-                                      name: roleForm.name,
-                                      label: roleForm.label,
-                                      permissions: roleForm.permissions.join(',')
+                                      name: roleForm.name.trim(),
+                                      label: roleForm.label.trim(),
+                                      permissions: permStr
                                     })
                                   });
                                 }
 
                                 if (res.ok) {
-                                  sysAlert(editingRole ? 'บันทึกบทบาทสำเร็จ' : 'สร้างบทบาทสำเร็จแล้ว');
+                                  sysAlert(editingRole ? 'บันทึกบทบาทสำเร็จ' : 'สร้างบทบาทใหม่สำเร็จแล้ว');
                                   setEditingRole(null);
                                   setRoleMode(null);
                                   setRoleForm({ name: '', label: '', permissions: ['pos', 'layout', 'pending', 'history'] });
                                   fetchRoles();
-                                  fetchUsers(); // Refresh users list in case roles update names/labels
+                                  fetchUsers();
                                 } else {
                                   const data = await res.json();
                                   sysAlert(data.error || 'บันทึกบทบาทล้มเหลว');
