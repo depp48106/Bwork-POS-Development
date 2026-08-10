@@ -302,6 +302,10 @@ export default {
         return new Response(JSON.stringify({ success: true, message: 'อัปเดตสถานะสำเร็จ' }), { headers: corsHeaders });
       }
 
+      if (pathname === '/api/bookings/upcoming-alerts') {
+        return new Response(JSON.stringify([]), { headers: corsHeaders });
+      }
+
       if (pathname.startsWith('/api/bookings/') && (method === 'GET' || method === 'PUT' || method === 'DELETE')) {
         const parts = pathname.split('/');
         const bookingId = parts[3];
