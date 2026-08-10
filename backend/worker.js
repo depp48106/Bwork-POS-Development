@@ -308,14 +308,17 @@ export default {
         }), { status: 201, headers: corsHeaders });
       }
 
-      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/payment-status') && method === 'PUT') {
+      if (pathname.startsWith('/api/bookings/') && (pathname.endsWith('/payment-status') || pathname.endsWith('/payment')) && (method === 'PUT' || method === 'PATCH')) {
         const parts = pathname.split('/');
         const bookingId = parts[3];
-        const { payment_status } = await request.json();
+        const body = await request.json();
+        const paymentStatus = body.payment_status || 'paid';
+        const paymentMethod = body.payment_method || 'transfer';
 
-        await env.DB.prepare('UPDATE bookings SET payment_status = ? WHERE id = ?').bind(payment_status, bookingId).run();
+        await env.DB.prepare('UPDATE bookings SET payment_status = ?, payment_method = ? WHERE id = ?')
+          .bind(paymentStatus, paymentMethod, bookingId).run();
 
-        return new Response(JSON.stringify({ success: true, message: 'อัปเดตสถานะสำเร็จ' }), { headers: corsHeaders });
+        return new Response(JSON.stringify({ success: true, message: 'อัปเดตสถานะการชำระเงินสำเร็จ' }), { headers: corsHeaders });
       }
 
       if (pathname === '/api/bookings/upcoming-alerts') {

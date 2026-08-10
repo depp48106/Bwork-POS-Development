@@ -26,12 +26,13 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   const columns = [
     { key: 'id', label: 'เลขที่ใบจอง' },
     { key: 'created_at', label: 'วันที่ทำรายการ' },
+    { key: 'booking_source', label: 'ช่องทางจอง' },
     { key: 'customer_name', label: 'ชื่อผู้จอง' },
     { key: 'contact', label: 'เบอร์ติดต่อ' },
     { key: 'total_amount', label: 'ยอดชำระสุทธิ' },
     { key: 'payment_status', label: 'สถานะการชำระ' },
     { key: 'payment_method', label: 'ช่องทางชำระ' },
-    { key: 'actions', label: 'จัดการ' }
+    { key: 'actions', label: 'พนักงานยืนยันชำระ' }
   ];
 
   useEffect(() => {
@@ -373,6 +374,27 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                         </td>
                       );
                     }
+                    if (key === 'booking_source') {
+                      const isOnline = b.booking_source === 'online';
+                      return (
+                        <td key={key} style={{ textAlign: 'center', padding: padding }}>
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '4px 10px',
+                            borderRadius: '99px',
+                            fontSize: '0.75rem',
+                            fontWeight: 700,
+                            backgroundColor: isOnline ? 'rgba(14, 165, 233, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+                            color: isOnline ? '#0ea5e9' : '#10b981',
+                            border: `1px solid ${isOnline ? 'rgba(14, 165, 233, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`
+                          }}>
+                            {isOnline ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'}
+                          </span>
+                        </td>
+                      );
+                    }
                     if (key === 'customer_name') {
                       return (
                         <td key={key} style={{ fontWeight: '700', padding: padding }}>
@@ -395,10 +417,20 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                       );
                     }
                     if (key === 'payment_status') {
+                      const isReviewing = b.payment_status === 'reviewing' || !!b.slip_image_url;
+                      const isPaid = b.payment_status === 'paid';
                       return (
                         <td key={key} style={{ textAlign: 'center', padding: padding }}>
-                          <span className={`badge ${b.payment_status === 'paid' ? 'badge-success' : 'badge-warning'}`} style={{ padding: '4px 10px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700 }}>
-                            {b.payment_status === 'paid' ? 'จ่ายแล้ว' : 'ค้างชำระ'}
+                          <span className={`badge ${isPaid ? 'badge-success' : 'badge-warning'}`} style={{
+                            padding: '4px 10px',
+                            borderRadius: '99px',
+                            fontSize: '0.75rem',
+                            fontWeight: 700,
+                            backgroundColor: isPaid ? 'rgba(16, 185, 129, 0.15)' : isReviewing ? 'rgba(245, 158, 11, 0.18)' : 'rgba(239, 68, 68, 0.15)',
+                            color: isPaid ? '#10b981' : isReviewing ? '#f59e0b' : '#ef4444',
+                            border: `1px solid ${isPaid ? '#10b981' : isReviewing ? '#f59e0b' : '#ef4444'}`
+                          }}>
+                            {isPaid ? '✅ ชำระแล้ว' : isReviewing ? '📑 รอตรวจสลิปโอน' : '⏳ รอชำระเงิน'}
                           </span>
                         </td>
                       );
@@ -406,7 +438,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                     if (key === 'payment_method') {
                       return (
                         <td key={key} style={{ textAlign: 'center', fontSize: '0.8rem', color: 'var(--text-muted)', padding: padding }}>
-                          {b.payment_status === 'paid' ? (b.payment_method === 'cash' ? 'เงินสด' : b.payment_method === 'transfer' ? 'โอนเงิน' : '-') : '-'}
+                          {b.payment_status === 'paid' ? (b.payment_method === 'cash' ? 'เงินสด' : b.payment_method === 'transfer' ? 'โอนเงิน' : b.payment_method) : (b.payment_method === 'transfer' ? 'โอนเงิน' : 'เงินสด')}
                         </td>
                       );
                     }
@@ -414,20 +446,35 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                       return (
                         <td key={key} style={{ textAlign: 'center', padding: padding }}>
                           <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
-                            {b.payment_status === 'pending' ? (
+                            {b.payment_status !== 'paid' ? (
                               <>
                                 <button 
-                                  className="btn-modern-pay"
+                                  className="btn btn-primary"
+                                  style={{
+                                    padding: '6px 12px',
+                                    fontSize: '0.78rem',
+                                    borderRadius: '10px',
+                                    fontWeight: 'bold',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    backgroundColor: '#10b981',
+                                    borderColor: '#10b981',
+                                    color: '#fff',
+                                    cursor: 'pointer',
+                                    boxShadow: '0 4px 12px rgba(16, 185, 129, 0.25)'
+                                  }}
                                   onClick={() => handleOpenPayment(b)}
                                 >
-                                  <DollarSign size={12} />
-                                  <span>ชำระเงิน</span>
+                                  <CheckCircle2 size={14} />
+                                  <span>{b.slip_image_url ? '🔍 ตรวจสลิป & ยืนยัน' : '✅ ยืนยันชำระเงิน'}</span>
                                 </button>
                                 <button 
                                   className="btn-modern-trash"
+                                  title="ยกเลิกการจอง"
                                   onClick={() => cancelBooking(b.id)}
                                 >
-                                  <Trash2 size={12} />
+                                  <Trash2 size={14} />
                                 </button>
                               </>
                             ) : (
@@ -526,13 +573,24 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
               <X size={18} />
             </button>
 
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0 }}> ทำรายการรับชำระเงิน</h3>
+            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <CheckCircle2 size={20} style={{ color: '#10b981' }} />
+              <span>พนักงานยืนยันการรับชำระเงิน</span>
+            </h3>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>
-              ชำระบิลสำหรับคุณ <strong>{selectedBooking?.customer_name || '-'}</strong> ยอดเงินสุทธิ <strong>{Number(selectedBooking?.total_amount || 0).toLocaleString()} บาท</strong>
+              ใบจอง <strong>{selectedBooking?.receipt_number || `#${selectedBooking?.id}`}</strong> ({selectedBooking?.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'})<br />
+              ลูกค้า: <strong>{selectedBooking?.customer_name || '-'}</strong> | ยอดสุทธิ <strong style={{ color: '#10b981', fontSize: '1rem' }}>{Number(selectedBooking?.total_amount || 0).toLocaleString()} บาท</strong>
             </p>
 
+            {selectedBooking?.slip_image_url && selectedBooking?.slip_image_url !== 'uploaded' && (
+              <div style={{ textAlign: 'center', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#0ea5e9', display: 'block', marginBottom: '6px' }}>📎 รูปสลิปโอนเงินจากลูกค้า:</span>
+                <img src={selectedBooking.slip_image_url} alt="สลิปการชำระเงิน" style={{ maxHeight: '180px', borderRadius: '8px', border: '1px solid var(--border-color)' }} />
+              </div>
+            )}
+
             <div className="form-group" style={{ marginTop: '8px', position: 'relative' }}>
-              <label>ช่องทางการชำระเงิน</label>
+              <label style={{ fontSize: '0.8rem', fontWeight: 700 }}>เลือกช่องทางการรับชำระเงิน</label>
               <div 
                 className="form-control"
                 onClick={() => setIsPayMethodOpen(!isPayMethodOpen)}
@@ -551,7 +609,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                 }}
               >
                 <span style={{ color: 'var(--text-main)' }}>
-                  {payMethod === 'cash' ? 'เงินสด (Cash)' : payMethod === 'transfer' ? 'โอนเงินเข้าบัญชี' : payMethod}
+                  {payMethod === 'cash' ? '💵 เงินสด (Cash)' : payMethod === 'transfer' ? '📱 โอนเงินเข้าบัญชี (Transfer)' : payMethod}
                 </span>
                 <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
               </div>
@@ -566,7 +624,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                       onMouseEnter={e => { if (payMethod !== 'cash') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
                       onMouseLeave={e => { if (payMethod !== 'cash') e.currentTarget.style.background = 'transparent'; }}
                     >
-                      เงินสด (Cash)
+                      💵 เงินสด (Cash)
                     </div>
                     <div 
                       onClick={() => { setPayMethod('transfer'); setIsPayMethodOpen(false); }}
@@ -574,7 +632,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                       onMouseEnter={e => { if (payMethod !== 'transfer') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
                       onMouseLeave={e => { if (payMethod !== 'transfer') e.currentTarget.style.background = 'transparent'; }}
                     >
-                      โอนเงินเข้าบัญชี
+                      📱 โอนเงินเข้าบัญชี (Transfer)
                     </div>
                   </div>
                 </>
@@ -582,8 +640,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
             </div>
 
             <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
-              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowPayModal(false)}>ยกเลิก</button>
-              <button className="btn btn-primary" style={{ flex: 2 }} onClick={submitPayment}>ยืนยันชำระเงิน</button>
+              <button className="btn btn-secondary" style={{ flex: 1, borderRadius: '12px' }} onClick={() => setShowPayModal(false)}>ยกเลิก</button>
+              <button className="btn btn-primary" style={{ flex: 2, borderRadius: '12px', backgroundColor: '#10b981', borderColor: '#10b981', fontWeight: 'bold' }} onClick={submitPayment}>
+                <CheckCircle2 size={16} style={{ marginRight: '4px' }} />
+                <span>พนักงานยืนยันการรับชำระเงิน</span>
+              </button>
             </div>
           </div>
         </div>

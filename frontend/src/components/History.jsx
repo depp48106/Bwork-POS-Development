@@ -28,6 +28,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const columns = [
     { key: 'id', label: 'เลขที่ใบเสร็จ' },
     { key: 'created_at', label: 'วันที่ทำรายการ' },
+    { key: 'booking_source', label: 'ช่องทางจอง' },
     { key: 'customer_name', label: 'ชื่อผู้จอง' },
     { key: 'contact', label: 'เบอร์ติดต่อ' },
     { key: 'total_amount', label: 'ยอดชำระสุทธิ' },
@@ -451,6 +452,27 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         return (
                           <td key={key} style={{ color: 'var(--text-muted)', padding: cellPadding }}>
                             {formatDate(b.created_at)}
+                          </td>
+                        );
+                      }
+                      if (key === 'booking_source') {
+                        const isOnline = b.booking_source === 'online';
+                        return (
+                          <td key={key} style={{ textAlign: 'center', padding: cellPadding }}>
+                            <span style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              padding: '4px 10px',
+                              borderRadius: '99px',
+                              fontSize: '0.75rem',
+                              fontWeight: 700,
+                              backgroundColor: isOnline ? 'rgba(14, 165, 233, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+                              color: isOnline ? '#0ea5e9' : '#10b981',
+                              border: `1px solid ${isOnline ? 'rgba(14, 165, 233, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`
+                            }}>
+                              {isOnline ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'}
+                            </span>
                           </td>
                         );
                       }
