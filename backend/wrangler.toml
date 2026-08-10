@@ -1,0 +1,9 @@
+name = "bwork-pos-api"
+main = "worker.js"
+compatibility_date = "2026-08-10"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bworkpos_db"
+database_id = "0f171606-080b-4380-bf91-167dc678e2e4"

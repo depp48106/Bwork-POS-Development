@@ -247,13 +247,11 @@ async function initDatabase() {
   } catch (e) {}
 
   // Migration: Add classroom columns if not exists
-  try {
-    await dbQuery.run('ALTER TABLE rooms ADD COLUMN has_classroom INTEGER DEFAULT 0');
-    await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_hourly_rate REAL DEFAULT 0');
-    await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_daily_rate REAL DEFAULT 0');
-    await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_capacity INTEGER DEFAULT 0');
-    console.log('Migration: Added classroom layout columns to rooms table.');
-  } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE rooms ADD COLUMN has_classroom INTEGER DEFAULT 0'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_hourly_rate REAL DEFAULT 0'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_daily_rate REAL DEFAULT 0'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_capacity INTEGER DEFAULT 0'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_image_url TEXT'); } catch (e) {}
 
   // Migration: Add layout column to booking_items if not exists
   try {
@@ -305,10 +303,30 @@ async function initDatabase() {
     console.log('Migration: Added receipt_number column to bookings table.');
   } catch (e) {}
 
+  // Migration: Add online booking columns to bookings table
+  try {
+    await dbQuery.run("ALTER TABLE bookings ADD COLUMN booking_source TEXT DEFAULT 'walk-in'");
+    console.log('Migration: Added booking_source column to bookings table.');
+  } catch (e) {}
+  try {
+    await dbQuery.run('ALTER TABLE bookings ADD COLUMN slip_image_url TEXT');
+    console.log('Migration: Added slip_image_url column to bookings table.');
+  } catch (e) {}
+  try {
+    await dbQuery.run('ALTER TABLE bookings ADD COLUMN customer_email TEXT');
+    console.log('Migration: Added customer_email column to bookings table.');
+  } catch (e) {}
+
   // Migration: Add approved_at column to quotations if not exists
   try {
     await dbQuery.run('ALTER TABLE quotations ADD COLUMN approved_at TEXT');
     console.log('Migration: Added approved_at column to quotations table.');
+  } catch (e) {}
+
+  // Performance: Add index for room overlap detection queries
+  try {
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_booking_items_room_time ON booking_items(room_id, start_time, end_time)');
+    console.log('Index: Created idx_booking_items_room_time for fast overlap detection.');
   } catch (e) {}
 
   // Seed default rooms if empty
