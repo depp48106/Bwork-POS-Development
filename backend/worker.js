@@ -91,7 +91,15 @@ export default {
       // 2. ROOMS CRUD & SCHEDULE (/api/rooms, /api/public/rooms/schedule, /api/bookings/check-overlap)
       if (pathname === '/api/rooms' || pathname === '/api/public/rooms') {
         if (method === 'GET') {
-          const { results } = await env.DB.prepare("SELECT * FROM rooms WHERE status = 'active' ORDER BY name ASC").all();
+          const statusParam = url.searchParams.get('status');
+          let query = "SELECT * FROM rooms";
+          const params = [];
+          if (statusParam) {
+            query += " WHERE status = ?";
+            params.push(statusParam);
+          }
+          query += " ORDER BY name ASC";
+          const { results } = await env.DB.prepare(query).bind(...params).all();
           return new Response(JSON.stringify(results), { headers: corsHeaders });
         }
         if (method === 'POST') {
@@ -114,11 +122,11 @@ export default {
         if (method === 'PUT') {
           const body = await request.json();
           await env.DB.prepare(
-            `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=? WHERE id=?`
+            `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=?, status=? WHERE id=?`
           ).bind(
             body.name, body.capacity || 0, body.hourly_rate || 0, body.daily_rate || 0, body.half_day_rate || 0,
             body.has_classroom || 0, body.classroom_hourly_rate || 0, body.classroom_daily_rate || 0, body.classroom_capacity || 0,
-            body.classroom_image_url || null, body.description || '', body.image_url || null, body.category || 'Meeting Room', body.pin_code || null, roomId
+            body.classroom_image_url || null, body.description || '', body.image_url || null, body.category || 'Meeting Room', body.pin_code || null, body.status || 'active', roomId
           ).run();
           return new Response(JSON.stringify({ success: true, message: 'แก้ไขข้อมูลห้องสำเร็จ' }), { headers: corsHeaders });
         }
@@ -137,7 +145,15 @@ export default {
       // 3. SERVICES CRUD & CATEGORIES (/api/services, /api/categories)
       if (pathname === '/api/services') {
         if (method === 'GET') {
-          const { results } = await env.DB.prepare("SELECT * FROM services WHERE status = 'active' ORDER BY name ASC").all();
+          const statusParam = url.searchParams.get('status');
+          let query = "SELECT * FROM services";
+          const params = [];
+          if (statusParam) {
+            query += " WHERE status = ?";
+            params.push(statusParam);
+          }
+          query += " ORDER BY name ASC";
+          const { results } = await env.DB.prepare(query).bind(...params).all();
           return new Response(JSON.stringify(results), { headers: corsHeaders });
         }
         if (method === 'POST') {
@@ -154,8 +170,8 @@ export default {
         if (method === 'PUT') {
           const body = await request.json();
           await env.DB.prepare(
-            "UPDATE services SET name=?, price=?, category=?, image_url=? WHERE id=?"
-          ).bind(body.name, body.price || 0, body.category || 'catering', body.image_url || null, serviceId).run();
+            "UPDATE services SET name=?, price=?, category=?, image_url=?, status=? WHERE id=?"
+          ).bind(body.name, body.price || 0, body.category || 'catering', body.image_url || null, body.status || 'active', serviceId).run();
           return new Response(JSON.stringify({ success: true, message: 'แก้ไขบริการสำเร็จ' }), { headers: corsHeaders });
         }
         if (method === 'DELETE') {
