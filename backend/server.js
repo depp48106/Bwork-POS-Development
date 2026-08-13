@@ -155,7 +155,7 @@ app.delete('/api/rooms/:id', async (req, res) => {
 app.get('/api/rooms/:id/bookings', async (req, res) => {
   try {
     const bookings = await dbQuery.all(
-      `SELECT bi.start_time, bi.end_time, b.customer_name, b.contact, b.payment_status, b.payment_method, b.id as booking_id
+      `SELECT bi.start_time, bi.end_time, b.customer_name, b.contact, b.payment_status, b.payment_method, b.booking_source, b.receipt_number, b.id as booking_id
        FROM booking_items bi
        JOIN bookings b ON bi.booking_id = b.id
        WHERE bi.room_id = ?
@@ -1194,7 +1194,7 @@ app.get('/api/rooms/occupancy', async (req, res) => {
     for (const room of rooms) {
       // Find if there is a booking overlapping with the current local time
       const activeBooking = await dbQuery.get(
-        `SELECT b.id as booking_id, b.customer_name, b.department, bi.start_time, bi.end_time, b.payment_status
+        `SELECT b.id as booking_id, b.customer_name, b.department, b.booking_source, bi.start_time, bi.end_time, b.payment_status
          FROM booking_items bi
          JOIN bookings b ON bi.booking_id = b.id
          WHERE bi.room_id = ? 

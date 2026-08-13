@@ -970,7 +970,23 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                 gap: '8px',
                 color: 'var(--text-main)'
               }}>
-                <div><strong>ผู้จอง:</strong> {viewedEvent.customer_name}</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div><strong>ผู้จอง:</strong> {viewedEvent.customer_name}</div>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: '4px 10px',
+                    borderRadius: '99px',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    backgroundColor: viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                    color: viewedEvent.booking_source === 'online' ? '#0ea5e9' : '#10b981',
+                    border: `1px solid ${viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`
+                  }}>
+                    {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'}
+                  </span>
+                </div>
                 <div><strong>ช่องทางการจอง:</strong> {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์ผ่านเว็บ' : '🏬 Walk-in ผ่าน POS หน้าร้าน'}</div>
                 <div><strong>วันที่จอง:</strong> {(() => {
                   const d = new Date(viewedEvent.start_time);

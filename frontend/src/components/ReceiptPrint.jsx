@@ -64,7 +64,13 @@ function ReceiptPrint({ booking, settings }) {
           <div style={{ textAlign: 'center', marginBottom: '8px' }}>
             <img 
               src={safeSettings.logo_image} 
-              alt="Logo" 
+              alt="" 
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+                if (e.currentTarget.parentElement) {
+                  e.currentTarget.parentElement.style.display = 'none';
+                }
+              }}
               style={{ maxWidth: '130px', maxHeight: '75px', objectFit: 'contain' }} 
             />
           </div>
@@ -108,28 +114,6 @@ function ReceiptPrint({ booking, settings }) {
         <div className="receipt-info-row" style={{ fontSize: '0.9em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
           <span style={{ flexShrink: 0 }}>เบอร์ติดต่อ:</span>
           <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'right' }}>{booking.contact}</span>
-        </div>
-      )}
-
-      {/* Room Access PIN Code Box */}
-      {booking.pin_code && (
-        <div style={{
-          marginTop: '8px',
-          padding: '8px 10px',
-          border: '2px solid #000000',
-          borderRadius: '8px',
-          textAlign: 'center',
-          backgroundColor: '#ffffff'
-        }}>
-          <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#000000', textTransform: 'uppercase' }}>
-            🔑 รหัสเข้าห้องประชุม (ROOM ACCESS PIN)
-          </div>
-          <div style={{ fontSize: '1.4rem', fontWeight: '900', letterSpacing: '4px', color: '#000000', marginTop: '2px' }}>
-            {booking.pin_code}
-          </div>
-          <div style={{ fontSize: '0.7rem', color: '#000000', marginTop: '2px' }}>
-            * กดรหัสที่แท็บเล็ตหน้าห้องก่อนเข้าใช้งาน
-          </div>
         </div>
       )}
 
