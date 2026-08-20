@@ -2121,7 +2121,12 @@ app.get('/api/public/rooms/available', async (req, res) => {
 
 // Create a public online booking
 app.post('/api/public/bookings', async (req, res) => {
-  const { customer_name, contact, email, department, note, room_id, booking_date, start_time, end_time, booking_type, layout, total_amount } = req.body;
+  const { 
+    customer_name, contact, email, department, note, room_id, booking_date, 
+    start_time, end_time, booking_type, layout, total_amount, line_user_id,
+    tax_invoice_required, tax_name, tax_address, tax_id, tax_phone,
+    tax_delivery_method, tax_postal_address
+  } = req.body;
 
   if (!customer_name || !contact || !room_id || !booking_date || !start_time || !end_time) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน (ชื่อ, เบอร์โทร, ห้อง, วันที่, เวลา)' });
@@ -2179,12 +2184,12 @@ app.post('/api/public/bookings', async (req, res) => {
         price = bLayout === 'classroom' ? (room.classroom_hourly_rate || room.hourly_rate) : room.hourly_rate;
         const startParts = start_time.split(':');
         const endParts = end_time.split(':');
-        const startMinutes = parseInt(startParts[0]) * 60 + parseInt(startParts[1]);
-        const endMinutes = parseInt(endParts[0]) * 60 + parseInt(endParts[1]);
+        const startMinutes = parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10);
+        const endMinutes = parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10);
         quantity = Math.max(1, Math.ceil((endMinutes - startMinutes) / 60));
       }
 
-      const subtotal = Math.round(price * quantity * 100) / 100;
+      const subtotal = total_amount || Math.round(price * quantity * 100) / 100;
 
       const receiptNumber = await generateReceiptNumber();
 
@@ -2197,11 +2202,20 @@ app.post('/api/public/bookings', async (req, res) => {
 
       // Insert master booking
       const bookingResult = await dbQuery.run(
-        `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, 
-         receipt_number, pin_code, booking_source, customer_email, checkin_status, created_at) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [customer_name, department || note || '', contact, subtotal, 'pending', 'transfer', 
-         receiptNumber, pinCode, 'online', email || null, 'pending', normalizeToLocalISO(new Date())]
+        `INSERT INTO bookings (
+          customer_name, department, contact, total_amount, payment_status, payment_method, 
+          receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
+          tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
+          created_at
+        ) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          customer_name, department || note || '', contact, subtotal, 'pending', 'transfer', 
+          receiptNumber, pinCode, 'online', email || null, 'pending', line_user_id || null,
+          tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
+          tax_delivery_method || null, tax_postal_address || null,
+          normalizeToLocalISO(new Date())
+        ]
       );
       const bookingId = bookingResult.id;
 
@@ -2235,16 +2249,97 @@ app.post('/api/public/bookings', async (req, res) => {
   }
 });
 
+// Lookup Bookings By Phone Number (for Status Page)
+app.get(['/api/public/bookings/by-phone', '/api/public/bookings/lookup'], async (req, res) => {
+  const phone = req.query.phone || req.query.contact;
+  if (!phone || !phone.trim()) {
+    return res.status(400).json({ error: 'กรุณากรอกเบอร์โทรศัพท์' });
+  }
+
+  try {
+    const cleanPhone = String(phone).replace(/\D/g, '');
+    const bookings = await dbQuery.all(
+      `SELECT * FROM bookings 
+       WHERE (REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', '') = ? 
+          OR contact = ? 
+          OR contact LIKE ?)
+       ORDER BY id DESC LIMIT 10`,
+      [cleanPhone, phone, `%${cleanPhone}%`]
+    );
+
+    if (!bookings || !bookings.length) {
+      return res.status(404).json({ error: 'ไม่พบรายการจองสำหรับเบอร์โทรศัพท์นี้ กรุณาตรวจสอบเบอร์อีกครั้ง' });
+    }
+
+    for (let b of bookings) {
+      const items = await dbQuery.all(
+        `SELECT bi.*, r.name as room_name, r.capacity, r.image_url, r.description
+         FROM booking_items bi
+         LEFT JOIN rooms r ON bi.room_id = r.id
+         WHERE bi.booking_id = ?`,
+        [b.id]
+      );
+      b.items = items || [];
+      b.bookingCode = `BK-${String(b.id).padStart(6, '0')}`;
+      if (items && items.length && items[0].room_name) {
+        b.room_name = items[0].room_name;
+        b.room = { id: items[0].room_id, name: items[0].room_name, capacity: items[0].capacity, image_url: items[0].image_url };
+        b.start_time = items[0].start_time?.includes('T') ? items[0].start_time.split('T')[1].substring(0, 5) : items[0].start_time;
+        b.end_time = items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time;
+        b.booking_date = items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : b.created_at?.split('T')[0];
+      }
+    }
+
+    res.json({ success: true, bookings });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Customer requests Door PIN via Web
+app.post('/api/public/bookings/:id/request-pin', async (req, res) => {
+  const { id } = req.params;
+  let numericId = null;
+  if (!isNaN(id)) {
+    numericId = parseInt(id, 10);
+  } else if (typeof id === 'string' && id.startsWith('BK-')) {
+    const raw = id.replace('BK-', '');
+    if (!isNaN(raw)) {
+      numericId = parseInt(raw, 10);
+    }
+  }
+
+  try {
+    const booking = await dbQuery.get(
+      'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
+      [numericId, id, id, id]
+    );
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    if (booking.payment_status !== 'paid') {
+      return res.status(400).json({ error: 'รายการจองนี้ยังไม่ได้รับการยืนยันชำระเงิน กรุณาติดต่อพนักงาน' });
+    }
+
+    res.json({ success: true, pin_code: booking.pin_code, message: `รหัสผ่านเปิดประตูคือ ${booking.pin_code}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get booking status (public - requires contact for verification)
 app.get('/api/public/bookings/:id', async (req, res) => {
   const { id } = req.params;
   const { contact } = req.query;
 
-  let bookingId = id;
-  if (typeof id === 'string' && id.startsWith('BK-')) {
+  let numericId = null;
+  if (!isNaN(id)) {
+    numericId = parseInt(id, 10);
+  } else if (typeof id === 'string' && id.startsWith('BK-')) {
     const raw = id.replace('BK-', '');
-    if (raw.length <= 6 && !isNaN(raw)) {
-      bookingId = parseInt(raw, 10);
+    if (!isNaN(raw)) {
+      numericId = parseInt(raw, 10);
     }
   }
 
@@ -2254,14 +2349,14 @@ app.get('/api/public/bookings/:id', async (req, res) => {
       const cleanContact = String(contact).replace(/\D/g, '');
       booking = await dbQuery.get(
         `SELECT * FROM bookings 
-         WHERE (id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)) 
+         WHERE (id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)) 
            AND (REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', '') = ? OR contact = ?)`,
-        [bookingId, id, id, cleanContact, contact]
+        [numericId, id, id, id, cleanContact, contact]
       );
     } else {
       booking = await dbQuery.get(
-        'SELECT * FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
-        [bookingId, id, id]
+        'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
+        [numericId, id, id, id]
       );
     }
 
@@ -2269,21 +2364,35 @@ app.get('/api/public/bookings/:id', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง หรือเบอร์โทรศัพท์ไม่ถูกต้อง' });
     }
 
-    // Get booking items with room info
+    // Get booking items with room info using integer booking.id
     const items = await dbQuery.all(
       `SELECT bi.*, r.name as room_name, r.capacity, r.image_url, r.description
        FROM booking_items bi
        LEFT JOIN rooms r ON bi.room_id = r.id
        WHERE bi.booking_id = ?`,
-      [bookingId]
+      [booking.id]
     );
 
     const bookingCode = `BK-${String(booking.id).padStart(6, '0')}`;
+    let roomInfo = null;
+    if (items && items.length) {
+      roomInfo = {
+        id: items[0].room_id,
+        name: items[0].room_name,
+        capacity: items[0].capacity,
+        image_url: items[0].image_url,
+        description: items[0].description
+      };
+    }
 
     res.json({
       ...booking,
       bookingCode,
-      items,
+      items: items || [],
+      room: roomInfo,
+      start_time: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[1].substring(0, 5) : items[0].start_time) : null,
+      end_time: items && items.length ? (items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time) : null,
+      booking_date: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : booking.created_at?.split('T')[0]) : null,
       paymentDeadline: new Date(new Date(booking.created_at).getTime() + 24 * 60 * 60 * 1000).toISOString()
     });
   } catch (err) {
@@ -2296,11 +2405,13 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
   const { id } = req.params;
   const { slip_image } = req.body;
 
-  let bookingId = id;
-  if (typeof id === 'string' && id.startsWith('BK-')) {
+  let numericId = null;
+  if (!isNaN(id)) {
+    numericId = parseInt(id, 10);
+  } else if (typeof id === 'string' && id.startsWith('BK-')) {
     const raw = id.replace('BK-', '');
-    if (raw.length <= 6 && !isNaN(raw)) {
-      bookingId = parseInt(raw, 10);
+    if (!isNaN(raw)) {
+      numericId = parseInt(raw, 10);
     }
   }
 
@@ -2311,8 +2422,8 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
   try {
     // Verify booking exists by ID or receipt_number
     const booking = await dbQuery.get(
-      'SELECT * FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
-      [bookingId, id, id]
+      'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
+      [numericId, id, id, id]
     );
     if (!booking) {
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
@@ -2331,8 +2442,8 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     }
 
     const imageBuffer = Buffer.from(matches[3], 'base64');
-    if (imageBuffer.length > 5 * 1024 * 1024) {
-      return res.status(400).json({ error: 'ขนาดรูปภาพเกิน 5MB กรุณาอัปโหลดรูปที่มีขนาดเล็กลง' });
+    if (imageBuffer.length > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: 'ขนาดรูปภาพเกิน 10MB กรุณาอัปโหลดรูปที่มีขนาดเล็กลง' });
     }
 
     const ext = matches[2] === 'jpeg' ? 'jpg' : matches[2];

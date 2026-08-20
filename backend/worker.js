@@ -1964,11 +1964,25 @@ export default {
         ).bind(booking.id).all();
 
         const bookingCode = `BK-${String(booking.id).padStart(6, '0')}`;
+        let roomInfo = null;
+        if (items && items.length) {
+          roomInfo = {
+            id: items[0].room_id,
+            name: items[0].room_name,
+            capacity: items[0].capacity,
+            image_url: items[0].image_url,
+            description: items[0].description
+          };
+        }
 
         return new Response(JSON.stringify({
           ...booking,
           bookingCode,
           items: items || [],
+          room: roomInfo,
+          start_time: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[1].substring(0, 5) : items[0].start_time) : null,
+          end_time: items && items.length ? (items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time) : null,
+          booking_date: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : booking.created_at?.split('T')[0]) : null,
           paymentDeadline: new Date(new Date(booking.created_at).getTime() + 24 * 60 * 60 * 1000).toISOString()
         }), { headers: corsHeaders });
       }

@@ -4,11 +4,14 @@
   "description": "Company POS system for meeting rooms and services",
   "main": "backend/server.js",
   "scripts": {
-    "install:all": "npm install && npm install --prefix backend && npm install --prefix frontend",
+    "install:all": "npm install && npm install --prefix backend && npm install --prefix frontend && npm install --prefix booking-app",
     "dev:backend": "npm run dev --prefix backend",
     "dev:frontend": "npm run dev --prefix frontend",
+    "dev:booking": "npm run dev --prefix booking-app",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:all": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:booking\"",
     "build:frontend": "npm run build --prefix frontend",
+    "build:booking": "npm run build --prefix booking-app",
     "build": "npm run build:frontend",
     "start": "cross-env NODE_ENV=production node backend/server.js",
     "start:test": "cross-env NODE_ENV=test node backend/server.js"

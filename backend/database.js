@@ -319,6 +319,15 @@ async function initDatabase() {
     console.log('Migration: Added customer_email column to bookings table.');
   } catch (e) {}
 
+  // Migration: Add tax invoice columns to bookings if not exists
+  try { await dbQuery.run("ALTER TABLE bookings ADD COLUMN tax_invoice_required INTEGER DEFAULT 0"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE bookings ADD COLUMN tax_name TEXT"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE bookings ADD COLUMN tax_address TEXT"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE bookings ADD COLUMN tax_id TEXT"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE bookings ADD COLUMN tax_phone TEXT"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE bookings ADD COLUMN tax_delivery_method TEXT"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE bookings ADD COLUMN tax_postal_address TEXT"); } catch (e) {}
+
   // Migration: Add approved_at column to quotations if not exists
   try {
     await dbQuery.run('ALTER TABLE quotations ADD COLUMN approved_at TEXT');

@@ -34,7 +34,7 @@ export default function ConfirmPage() {
         if (bRes.ok) {
           const bData = await bRes.json();
           setBooking(bData);
-        } else {
+        } else if (!location.state?.booking) {
           setError('ไม่พบข้อมูลการจอง');
         }
 
