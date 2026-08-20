@@ -974,6 +974,55 @@ async function sendLineBookingReschedule(env, bookingId, oldStartTime, oldEndTim
   }
 }
 
+let schemaInitialized = false;
+async function ensureD1Schema(env) {
+  if (schemaInitialized || !env || !env.DB) return;
+  const migrations = [
+    "ALTER TABLE bookings ADD COLUMN tax_invoice_required INTEGER DEFAULT 0",
+    "ALTER TABLE bookings ADD COLUMN tax_name TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_address TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_id TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_phone TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_delivery_method TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_postal_address TEXT",
+    "ALTER TABLE bookings ADD COLUMN booking_source TEXT DEFAULT 'online'",
+    "ALTER TABLE bookings ADD COLUMN customer_email TEXT",
+    "ALTER TABLE bookings ADD COLUMN slip_image_url TEXT",
+    "ALTER TABLE bookings ADD COLUMN line_user_id TEXT",
+    "ALTER TABLE bookings ADD COLUMN pin_code TEXT",
+    "ALTER TABLE bookings ADD COLUMN qr_token TEXT",
+    "ALTER TABLE bookings ADD COLUMN receipt_number TEXT",
+    "ALTER TABLE bookings ADD COLUMN checkin_status TEXT DEFAULT 'pending'",
+    "ALTER TABLE bookings ADD COLUMN checkin_at DATETIME",
+    "ALTER TABLE booking_items ADD COLUMN layout TEXT DEFAULT 'standard'",
+    "ALTER TABLE booking_items ADD COLUMN booking_type TEXT DEFAULT 'hourly'",
+    "ALTER TABLE booking_items ADD COLUMN pin_code TEXT",
+    "ALTER TABLE booking_items ADD COLUMN checkin_status TEXT DEFAULT 'pending'",
+    "ALTER TABLE booking_items ADD COLUMN checkin_at DATETIME",
+    "ALTER TABLE rooms ADD COLUMN daily_rate REAL DEFAULT 0",
+    "ALTER TABLE rooms ADD COLUMN half_day_rate REAL DEFAULT 0",
+    "ALTER TABLE rooms ADD COLUMN has_classroom INTEGER DEFAULT 0",
+    "ALTER TABLE rooms ADD COLUMN classroom_hourly_rate REAL DEFAULT 0",
+    "ALTER TABLE rooms ADD COLUMN classroom_daily_rate REAL DEFAULT 0",
+    "ALTER TABLE rooms ADD COLUMN classroom_capacity INTEGER DEFAULT 0",
+    "ALTER TABLE rooms ADD COLUMN classroom_image_url TEXT",
+    "ALTER TABLE rooms ADD COLUMN has_hourly INTEGER DEFAULT 1",
+    "ALTER TABLE rooms ADD COLUMN has_halfday INTEGER DEFAULT 0",
+    "ALTER TABLE rooms ADD COLUMN has_daily INTEGER DEFAULT 0",
+    "ALTER TABLE rooms ADD COLUMN pin_code TEXT",
+    "ALTER TABLE rooms ADD COLUMN category TEXT DEFAULT 'Meeting Room'"
+  ];
+
+  for (const sql of migrations) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch (e) {
+      // Ignored: column already exists
+    }
+  }
+  schemaInitialized = true;
+}
+
 // ==========================================
 // 6. MAIN WORKER ROUTER
 // ==========================================
@@ -996,6 +1045,8 @@ export default {
     }
 
     try {
+      // Ensure D1 database schema has all latest columns
+      await ensureD1Schema(env);
       // ----------------------------------------------------
       // SERVE R2 UPLOADS / STATIC IMAGES (/uploads/*)
       // ----------------------------------------------------
@@ -2051,28 +2102,53 @@ export default {
         const pinCode = room.pin_code?.trim() || await generateUniquePinCode(env);
 
         const nowIso = new Date().toISOString();
-        const insBooking = await env.DB.prepare(
-          `INSERT INTO bookings (
-             customer_name, department, contact, total_amount, payment_status, payment_method, 
-             receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
-             tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
-             created_at
-           )
-           VALUES (?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(
-          customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode, 
-          email || null, line_user_id || null, 
-          tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null, 
-          tax_delivery_method || null, tax_postal_address || null, 
-          nowIso
-        ).run();
+        let insBooking;
+        try {
+          insBooking = await env.DB.prepare(
+            `INSERT INTO bookings (
+               customer_name, department, contact, total_amount, payment_status, payment_method, 
+               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
+               tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
+               created_at
+             )
+             VALUES (?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(
+            customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode, 
+            email || null, line_user_id || null, 
+            tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null, 
+            tax_delivery_method || null, tax_postal_address || null, 
+            nowIso
+          ).run();
+        } catch (dbErr) {
+          console.warn('Extended booking insert failed, falling back to core schema:', dbErr);
+          insBooking = await env.DB.prepare(
+            `INSERT INTO bookings (
+               customer_name, department, contact, total_amount, payment_status, payment_method, 
+               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
+               created_at
+             )
+             VALUES (?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?)`
+          ).bind(
+            customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode, 
+            email || null, line_user_id || null, 
+            nowIso
+          ).run();
+        }
 
         const bookingId = insBooking.meta.last_row_id;
 
-        await env.DB.prepare(
-          `INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code)
-           VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(bookingId, room_id, subtotal, fullStart, fullEnd, subtotal, bLayout, bType, pinCode).run();
+        try {
+          await env.DB.prepare(
+            `INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code)
+             VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(bookingId, room_id, subtotal, fullStart, fullEnd, subtotal, bLayout, bType, pinCode).run();
+        } catch (itemErr) {
+          console.warn('Extended item insert failed, falling back to core item schema:', itemErr);
+          await env.DB.prepare(
+            `INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal)
+             VALUES (?, ?, 1, ?, ?, ?, ?)`
+          ).bind(bookingId, room_id, subtotal, fullStart, fullEnd, subtotal).run();
+        }
 
         const bookingCode = `BK-${String(bookingId).padStart(6, '0')}`;
 

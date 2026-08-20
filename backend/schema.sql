@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS rooms (
   description TEXT,
   status TEXT DEFAULT 'active',
   image_url TEXT,
+  has_hourly INTEGER DEFAULT 1,
+  has_halfday INTEGER DEFAULT 0,
+  has_daily INTEGER DEFAULT 0,
   category TEXT DEFAULT 'Meeting Room',
   pin_code TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -47,6 +50,13 @@ CREATE TABLE IF NOT EXISTS bookings (
   slip_image_url TEXT,
   checkin_status TEXT DEFAULT 'pending',
   checkin_at DATETIME,
+  tax_invoice_required INTEGER DEFAULT 0,
+  tax_name TEXT,
+  tax_address TEXT,
+  tax_id TEXT,
+  tax_phone TEXT,
+  tax_delivery_method TEXT,
+  tax_postal_address TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
