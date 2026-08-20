@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Minus, Trash2, Calendar, ShoppingCart, Printer, X, CreditCard, User, Building, Phone, FileText, Check, ChevronLeft, ChevronRight, Clock, Search, ChevronUp, ChevronDown, Image } from 'lucide-react';
+import { Plus, Minus, Trash2, Calendar, ShoppingCart, Printer, X, CreditCard, User, Building, Phone, FileText, Check, ChevronLeft, ChevronRight, Clock, Search, ChevronUp, ChevronDown, Image, CheckCircle2, Key, Send, AlertTriangle } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
+
+const TIME_SLOT_OPTIONS = [
+  '08:00', '08:30', '09:00', '09:30',
+  '10:00', '10:30', '11:00', '11:30', '12:00', '12:30',
+  '13:00', '13:30', '14:00', '14:30', '15:00', '15:30',
+  '16:00', '16:30', '17:00', '17:30', '18:00'
+];
 
 function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselectedRoom, onNavigate, onExportToQuotation, showCartSidebar, setShowCartSidebar, onCartCountChange }) {
   const [rooms, setRooms] = useState([]);
@@ -23,10 +30,11 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     department: '',
     contact: ''
   });
+
   const [paymentStatus, setPaymentStatus] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('');
 
-  // Calendar state
+  // Main interactive calendar navigation (Large Calendar)
   const today = new Date();
   const [calendarYear, setCalendarYear] = useState(today.getFullYear());
   const [calendarMonth, setCalendarMonth] = useState(today.getMonth()); // 0-indexed
@@ -40,6 +48,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     isOtherMonth: false
   });
   const [isDayModalOpen, setIsDayModalOpen] = useState(false);
+  const [dayModalTab, setDayModalTab] = useState('bookings'); // 'bookings' | 'catalog'
 
   // Sidebar selected day state (only changed when clicking mini-calendar)
   const [sidebarSelectedDay, setSidebarSelectedDay] = useState({
@@ -58,6 +67,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [layoutType, setLayoutType] = useState('standard'); // 'standard' | 'classroom'
   const [isDailyTimeSlotOpen, setIsDailyTimeSlotOpen] = useState(false);
   const [isHalfdayTimeSlotOpen, setIsHalfdayTimeSlotOpen] = useState(false);
+  const [isStartHourOpen, setIsStartHourOpen] = useState(false);
+  const [isEndHourOpen, setIsEndHourOpen] = useState(false);
   const [isPaymentStatusOpen, setIsPaymentStatusOpen] = useState(false);
   const [isPaymentMethodOpen, setIsPaymentMethodOpen] = useState(false);
   const [roomSchedule, setRoomSchedule] = useState({
@@ -163,7 +174,35 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
 
-  // Filter events by selected rooms from sidebar checkboxes
+  // Helpers to format local date without UTC timezone shifting
+  const getLocalDateStr = (timeVal) => {
+    if (!timeVal) return '';
+    if (typeof timeVal === 'string') {
+      if (timeVal.includes('T')) return timeVal.split('T')[0];
+      if (timeVal.includes(' ')) return timeVal.split(' ')[0];
+    }
+    const d = new Date(timeVal);
+    if (isNaN(d.getTime())) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const formatLocalISO = (d) => {
+    if (!d) return '';
+    const dateObj = (d instanceof Date) ? d : new Date(d);
+    if (isNaN(dateObj.getTime())) return String(d);
+    const year = dateObj.getFullYear();
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const day = String(dateObj.getDate()).padStart(2, '0');
+    const hours = String(dateObj.getHours()).padStart(2, '0');
+    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+    const seconds = String(dateObj.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+  };
+
+  // Group events by day for calendar display
   const filteredEventsByDay = useMemo(() => {
     const map = {};
     calendarEvents.forEach(ev => {
@@ -171,7 +210,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       const isFiltered = Object.keys(selectedRoomsFilter).length > 0 && selectedRoomsFilter[ev.room_id] === false;
       if (isFiltered) return; // skip this event since it's filtered out!
       
-      const dateStr = new Date(ev.start_time).toISOString().split('T')[0];
+      const dateStr = getLocalDateStr(ev.start_time);
       if (!map[dateStr]) map[dateStr] = [];
       map[dateStr].push(ev);
     });
@@ -182,12 +221,105 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const eventsByDay = useMemo(() => {
     const map = {};
     calendarEvents.forEach(ev => {
-      const dateStr = new Date(ev.start_time).toISOString().split('T')[0];
+      const dateStr = getLocalDateStr(ev.start_time);
       if (!map[dateStr]) map[dateStr] = [];
       map[dateStr].push(ev);
     });
     return map;
   }, [calendarEvents]);
+
+  // Real-time slot overlap checker for the open Room Modal
+  const currentSlotOverlap = useMemo(() => {
+    if (!selectedRoom || !roomSchedule.date) return { isValid: true, isOverlap: false, booking: null };
+
+    let sTime = null;
+    let eTime = null;
+    let isValid = true;
+
+    if (bookingType === 'daily') {
+      const [startH, endH] = dailyTimeSlot === '08-17' ? ['08', '17'] : ['09', '18'];
+      sTime = new Date(`${roomSchedule.date}T${startH}:00`);
+      eTime = new Date(`${roomSchedule.date}T${endH}:00`);
+    } else if (bookingType === 'halfday') {
+      const [startH, endH] = dailyTimeSlot === '08-12' ? ['08', '12'] : ['13', '17'];
+      sTime = new Date(`${roomSchedule.date}T${startH}:00`);
+      eTime = new Date(`${roomSchedule.date}T${endH}:00`);
+    } else {
+      const sh = parseInt(roomSchedule.startHour, 10);
+      const sm = parseInt(roomSchedule.startMinute, 10);
+      const eh = parseInt(roomSchedule.endHour, 10);
+      const em = parseInt(roomSchedule.endMinute, 10);
+      if (isNaN(sh) || isNaN(sm) || isNaN(eh) || isNaN(em) ||
+          sh < 0 || sh > 23 || sm < 0 || sm > 59 ||
+          eh < 0 || eh > 23 || em < 0 || em > 59) {
+        isValid = false;
+      } else {
+        const startHPad = String(sh).padStart(2, '0');
+        const startMPad = String(sm).padStart(2, '0');
+        const endHPad = String(eh).padStart(2, '0');
+        const endMPad = String(em).padStart(2, '0');
+        sTime = new Date(`${roomSchedule.date}T${startHPad}:${startMPad}`);
+        eTime = new Date(`${roomSchedule.date}T${endHPad}:${endMPad}`);
+        if (eTime <= sTime) isValid = false;
+      }
+    }
+
+    if (!isValid || !sTime || !eTime) {
+      return { isValid: false, isOverlap: false, booking: null };
+    }
+
+    // Check overlap with calendarEvents (excluding cancelled)
+    const foundOverlap = calendarEvents.find(ev => {
+      if (ev.room_id !== selectedRoom.id) return false;
+      if (ev.status === 'cancelled') return false;
+      const evStart = new Date(ev.start_time);
+      const evEnd = new Date(ev.end_time);
+      return sTime < evEnd && eTime > evStart;
+    });
+
+    if (foundOverlap) {
+      return {
+        isValid: true,
+        isOverlap: true,
+        booking: foundOverlap,
+        source: 'database'
+      };
+    }
+
+    // Check overlap with cart items
+    const cartOverlap = cart.find(item => {
+      if (item.room_id !== selectedRoom.id) return false;
+      const cStart = new Date(item.start_time);
+      const cEnd = new Date(item.end_time);
+      return sTime < cEnd && eTime > cStart;
+    });
+
+    if (cartOverlap) {
+      return {
+        isValid: true,
+        isOverlap: true,
+        booking: {
+          customer_name: customer.name || 'ในตะกร้าสินค้า',
+          start_time: cartOverlap.start_time,
+          end_time: cartOverlap.end_time
+        },
+        source: 'cart'
+      };
+    }
+
+    return { isValid: true, isOverlap: false, booking: null };
+  }, [selectedRoom, roomSchedule, bookingType, dailyTimeSlot, calendarEvents, cart, customer.name]);
+
+  // All bookings for selected room on the chosen date
+  const dayRoomBookings = useMemo(() => {
+    if (!selectedRoom || !roomSchedule.date) return [];
+    return calendarEvents.filter(ev => {
+      if (ev.room_id !== selectedRoom.id) return false;
+      if (ev.status === 'cancelled') return false;
+      const dStr = ev.start_time ? ev.start_time.split('T')[0] : '';
+      return dStr === roomSchedule.date;
+    }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+  }, [selectedRoom, roomSchedule.date, calendarEvents]);
 
   const isToday = (day, month, year) => {
     return day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
@@ -227,15 +359,25 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     return eventsByDay[dateKey] || [];
   }, [sidebarSelectedDay, eventsByDay]);
 
+  // Select day bookings list for main day detail modal (depends on selectedDay)
+  const modalDayEvents = useMemo(() => {
+    if (!selectedDay) return [];
+    const dateKey = getDateKey(selectedDay.day, selectedDay.month, selectedDay.year);
+    return eventsByDay[dateKey] || [];
+  }, [selectedDay, eventsByDay]);
+
   // =========================================================
   // CLICK DAY -> OPEN DAY MODAL
   // =========================================================
-  const handleDayClick = (dayObj) => {
+  const handleDayClick = (dayObj, initialTab = null) => {
     setSelectedDay(dayObj);
     if (dayObj.month !== calendarMonth || dayObj.year !== calendarYear) {
       setCalendarMonth(dayObj.month);
       setCalendarYear(dayObj.year);
     }
+    const dateKey = getDateKey(dayObj.day, dayObj.month, dayObj.year);
+    const count = (eventsByDay[dateKey] || []).length;
+    setDayModalTab(initialTab || (count > 0 ? 'bookings' : 'catalog'));
   };
 
   // CLICK MINI CALENDAR DAY -> UPDATE SIDEBAR AGENDA
@@ -256,19 +398,32 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     // Auto-select first available booking type based on room flags
     if (room.has_hourly === 1 || room.has_hourly === true) {
       setBookingType('hourly');
+      setDailyTimeSlot('08-17');
     } else if (room.has_halfday === 1 || room.has_halfday === true) {
       setBookingType('halfday');
+      setDailyTimeSlot('08-12');
     } else if (room.has_daily === 1 || room.has_daily === true) {
       setBookingType('daily');
+      setDailyTimeSlot('08-17');
     } else {
       setBookingType('hourly');
+      setDailyTimeSlot('08-17');
     }
-    setDailyTimeSlot('08-17');
     setLayoutType('standard');
     const now = new Date();
     const currHour = now.getHours();
-    const startHourVal = String((currHour + 1) % 24).padStart(2, '0');
-    const endHourVal = String((currHour + 2) % 24).padStart(2, '0');
+    let startHourVal = '09';
+    let endHourVal = '10';
+    if (currHour >= 8 && currHour < 17) {
+      startHourVal = String(currHour).padStart(2, '0');
+      endHourVal = String(currHour + 1).padStart(2, '0');
+    } else if (currHour < 8) {
+      startHourVal = '08';
+      endHourVal = '09';
+    } else {
+      startHourVal = '08';
+      endHourVal = '09';
+    }
     setRoomSchedule({
       date: getDateKey(selectedDay.day, selectedDay.month, selectedDay.year),
       startHour: startHourVal,
@@ -277,15 +432,12 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       endMinute: '00'
     });
     setCustomer({ name: '', department: '', contact: '' });
-    setPaymentStatus('');
-    setPaymentMethod('');
+    setPaymentStatus('paid');
+    setPaymentMethod('cash');
   };
 
   const closeRoomModal = () => {
     setSelectedRoom(null);
-    setCustomer({ name: '', department: '', contact: '' });
-    setPaymentStatus('');
-    setPaymentMethod('');
   };
 
   // Automatically trigger schedule modal if room was preselected from layout status page
@@ -458,7 +610,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       hours = Math.ceil(diffMs / (1000 * 60 * 60));
       price = layoutType === 'classroom' ? (selectedRoom.classroom_hourly_rate || 0) : (selectedRoom.hourly_rate || 0);
       quantity = hours;
-      subtotal = hours * price;
+      subtotal = Math.round(hours * price * 100) / 100;
 
       if (price <= 0) {
         sysAlert('ราคารายชั่วโมงของรูปแบบที่เลือกยังไม่ได้ถูกตั้งค่า กรุณาตั้งค่าราคาก่อน');
@@ -469,7 +621,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     // Check overlap with database bookings
     try {
       const checkRes = await fetch(
-        `/api/bookings/check-overlap?room_id=${selectedRoom.id}&start_time=${startDateTime.toISOString()}&end_time=${endDateTime.toISOString()}`
+        `/api/bookings/check-overlap?room_id=${selectedRoom.id}&start_time=${formatLocalISO(startDateTime)}&end_time=${formatLocalISO(endDateTime)}`
       );
       if (checkRes.ok) {
         const checkData = await checkRes.json();
@@ -499,10 +651,11 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       uniqueKey,
       room_id: selectedRoom.id,
       room_name: selectedRoom.name,
+      room_description: selectedRoom.description || '',
       price: price,
       quantity: quantity,
-      start_time: startDateTime.toISOString(),
-      end_time: endDateTime.toISOString(),
+      start_time: formatLocalISO(startDateTime),
+      end_time: formatLocalISO(endDateTime),
       subtotal: subtotal,
       booking_type: bookingType, // 'hourly' or 'daily'
       layout: layoutType // 'standard' or 'classroom'
@@ -518,7 +671,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     if (existing) {
       setCart(cart.map(item => 
         item.service_id === service.id 
-          ? { ...item, quantity: item.quantity + 1, subtotal: (item.quantity + 1) * item.price } 
+          ? { ...item, quantity: item.quantity + 1, subtotal: Math.round((item.quantity + 1) * item.price * 100) / 100 } 
           : item
       ));
     } else {
@@ -526,6 +679,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         uniqueKey: `service-${service.id}-${Date.now()}`,
         service_id: service.id,
         service_name: service.name,
+        service_description: service.description || '',
+        service_category: service.category || '',
         price: service.price,
         quantity: 1,
         subtotal: service.price
@@ -547,7 +702,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         return {
           ...item,
           quantity: nextQty,
-          subtotal: nextQty * item.price
+          subtotal: Math.round(nextQty * item.price * 100) / 100
         };
       }
       return item;
@@ -576,21 +731,13 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       }
     }
     
-    if (hasRoomInCart) {
-      if (!paymentStatus) {
-        sysAlert('กรุณาเลือกสถานะการชำระเงินสำหรับการจองห้องประชุม');
-        return;
-      }
-      if (paymentStatus === 'paid' && !paymentMethod) {
-        sysAlert('กรุณาเลือกช่องทางการชำระเงินสำหรับการจองห้องประชุม');
-        return;
-      }
-    }
-    
     if (cart.length === 0) {
       sysAlert('กรุณาเลือกรายการในตะกร้าอย่างน้อย 1 รายการ');
       return;
     }
+
+    const finalPaymentStatus = paymentStatus || (hasRoomInCart ? 'paid' : 'paid');
+    const finalPaymentMethod = (finalPaymentStatus === 'paid') ? (paymentMethod || 'cash') : '';
 
     // Verify overlap check for all rooms in cart before final checkout
     for (const item of cart) {
@@ -621,8 +768,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       department: customer.department,
       contact: customer.contact,
       total_amount: calculateTotal(),
-      payment_status: paymentStatus || (hasRoomInCart ? 'pending' : 'paid'),
-      payment_method: paymentMethod || 'cash',
+      payment_status: finalPaymentStatus,
+      payment_method: finalPaymentMethod,
+      booking_source: 'walkin',
       items: cart
     };
 
@@ -654,10 +802,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         setSelectedDay(null);
         fetchCalendarEvents();
       } else {
-        alert('เกิดข้อผิดพลาด: ' + (data.error || 'ไม่สามารถชำระเงินได้'));
+        sysAlert('เกิดข้อผิดพลาด: ' + (data.error || 'ไม่สามารถชำระเงินได้'));
       }
     } catch (err) {
-      alert('เชื่อมต่อเซิร์ฟเวอร์หลักไม่ได้ กรุณาตรวจสอบการรันเซิร์ฟเวอร์');
+      sysAlert('เชื่อมต่อเซิร์ฟเวอร์หลักไม่ได้ กรุณาตรวจสอบการรันเซิร์ฟเวอร์');
     }
   };
 
@@ -792,30 +940,27 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   // RENDER
   // =========================================================
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%' }}>
-      <div className="tab-header">
-        <div>
-          <h1 className="tab-title">จองพื้นที่ & บริการเสริม (POS Counter)</h1>
-        </div>
-      </div>
-
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, flex: 1, gap: '4px', overflow: 'hidden' }}>
       <div className="pos-layout" style={{ 
         display: 'grid', 
-        gridTemplateColumns: showCartSidebar ? '240px 1fr 380px' : '240px 1fr', 
-        gap: '20px', 
-        height: 'calc(100vh - 145px)',
-        overflow: 'hidden',
-        transition: 'grid-template-columns 0.3s ease-in-out'
+        gridTemplateColumns: showCartSidebar ? '220px 1fr 340px' : '220px 1fr', 
+        gap: '10px', 
+        height: '100%',
+        minHeight: 0,
+        flex: 1,
+        transition: 'grid-template-columns 0.3s ease-in-out',
+        overflow: 'hidden'
       }}>
         {/* LEFT COLUMN: Mini Calendar Sidebar & Selected Day History (Liquidglass theme blocks) */}
         <div style={{
           display: 'flex',
           flexDirection: 'column',
           borderRight: '1px solid var(--border-color)',
-          paddingRight: '14px',
+          paddingRight: '10px',
           height: '100%',
+          minHeight: 0,
           overflowY: 'auto',
-          gap: '16px'
+          gap: '10px'
         }}>
           {/* Block 1: Mini Calendar (Liquidglass card) */}
           <div style={{
@@ -1042,24 +1187,24 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         </div>
 
         {/* RIGHT COLUMN: Outlook-style Main Calendar Grid */}
-        <div className="calendar-container" style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+        <div className="calendar-container" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden', flex: 1 }}>
           {/* Calendar Navigation Bar (Outlook-style) */}
-          <div className="calendar-nav" style={{ display: 'flex', alignItems: 'center', gap: '12px', paddingBottom: '16px' }}>
+          <div className="calendar-nav" style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '6px', flexShrink: 0 }}>
             <button 
               className="calendar-today-btn" 
               onClick={goToToday}
-              style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', padding: '6px 12px', borderRadius: '6px' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem', padding: '4px 10px', borderRadius: '6px' }}
             >
-              <Calendar size={13} />
+              <Calendar size={12} />
               <span>Today</span>
-              <ChevronDown size={11} style={{ opacity: 0.5 }} />
+              <ChevronDown size={10} style={{ opacity: 0.5 }} />
             </button>
             <div style={{ display: 'flex', gap: '2px' }}>
-              <button className="calendar-nav-btn" onClick={goToPrevMonth} style={{ width: '28px', height: '28px', borderRadius: '6px' }}>
-                <ChevronLeft size={14} />
+              <button className="calendar-nav-btn" onClick={goToPrevMonth} style={{ width: '26px', height: '26px', borderRadius: '6px' }}>
+                <ChevronLeft size={13} />
               </button>
-              <button className="calendar-nav-btn" onClick={goToNextMonth} style={{ width: '28px', height: '28px', borderRadius: '6px' }}>
-                <ChevronRight size={14} />
+              <button className="calendar-nav-btn" onClick={goToNextMonth} style={{ width: '26px', height: '26px', borderRadius: '6px' }}>
+                <ChevronRight size={13} />
               </button>
             </div>
             
@@ -1067,48 +1212,48 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               <span 
                 className="calendar-month-label" 
                 onClick={() => setShowMonthSelector(!showMonthSelector)}
-                style={{ fontSize: '1.1rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', userSelect: 'none' }}
+                style={{ fontSize: '1.05rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', userSelect: 'none', marginLeft: '4px' }}
               >
                 {calendarYear} {monthNamesEng[calendarMonth]}
-                <ChevronDown size={14} style={{ opacity: 0.5 }} />
+                <ChevronDown size={13} style={{ opacity: 0.5 }} />
               </span>
 
-              {/* FLOATING MONTH-YEAR SELECTOR POPUP (matching screenshot) */}
+              {/* FLOATING MONTH-YEAR SELECTOR POPUP */}
               {showMonthSelector && (
                 <div 
                   className="liquidglass-dropdown"
                   style={{
                     position: 'absolute',
-                    top: '32px',
-                    left: '8px',
-                    padding: '16px',
-                    width: '240px',
+                    top: '28px',
+                    left: '4px',
+                    padding: '14px',
+                    width: '230px',
                     zIndex: 150
                   }}
                 >
                   {/* Year navigation row */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                    <span style={{ fontSize: '1rem', fontWeight: 'bold', color: 'var(--text-main)' }}>{calendarYear}</span>
-                    <div style={{ display: 'flex', gap: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
+                    <span style={{ fontSize: '0.95rem', fontWeight: 'bold', color: 'var(--text-main)' }}>{calendarYear}</span>
+                    <div style={{ display: 'flex', gap: '6px' }}>
                       <button 
                         onClick={() => setCalendarYear(calendarYear - 1)}
                         type="button"
                         style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '2px' }}
                       >
-                        <ChevronUp size={16} />
+                        <ChevronUp size={15} />
                       </button>
                       <button 
                         onClick={() => setCalendarYear(calendarYear + 1)}
                         type="button"
                         style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '2px' }}
                       >
-                        <ChevronDown size={16} />
+                        <ChevronDown size={15} />
                       </button>
                     </div>
                   </div>
 
                   {/* Months Grid */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
                     {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((mName, idx) => {
                       const isSel = idx === calendarMonth;
                       return (
@@ -1117,7 +1262,6 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                           onClick={() => {
                             setCalendarMonth(idx);
                             setShowMonthSelector(false);
-                            // Also update selectedDay month/year if selectedDay is set
                             if (sidebarSelectedDay) {
                               setSidebarSelectedDay({
                                 ...sidebarSelectedDay,
@@ -1131,10 +1275,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                             background: isSel ? 'var(--primary-color)' : 'transparent',
                             color: isSel ? '#ffffff' : 'var(--text-main)',
                             border: 'none',
-                            padding: '8px 0',
-                            fontSize: '0.75rem',
+                            padding: '6px 0',
+                            fontSize: '0.72rem',
                             fontWeight: 'bold',
-                            borderRadius: '8px',
+                            borderRadius: '6px',
                             cursor: 'pointer',
                             transition: 'all 0.15s'
                           }}
@@ -1166,6 +1310,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 const dayEvents = filteredEventsByDay[dateKey] || [];
                 const isTodayCell = isToday(dayObj.day, dayObj.month, dayObj.year);
                 const isSelected = sidebarSelectedDay && sidebarSelectedDay.day === dayObj.day && sidebarSelectedDay.month === dayObj.month && sidebarSelectedDay.year === dayObj.year;
+                
+                // Show exactly 3 items per cell; if more than 3, show top 3 + 'ดูเพิ่มเติม' button
                 const maxVisible = 3;
 
                 return (
@@ -1177,8 +1323,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       setIsDayModalOpen(true);
                     }}
                   >
-                    <div className="calendar-day-number">
-                      {dayObj.day}
+                    <div className="calendar-day-header">
+                      <div className="calendar-day-number">
+                        {dayObj.day}
+                      </div>
+                      {dayEvents.length > 0 && (
+                        <span className="calendar-day-count-badge">
+                          {dayEvents.length} รายการ
+                        </span>
+                      )}
                     </div>
                     <div className="calendar-events-list">
                       {dayEvents.slice(0, maxVisible).map((ev, i) => {
@@ -1190,27 +1343,41 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                         const layoutText = has301 ? (ev.layout === 'classroom' ? ' (Classroom)' : ' (Standard)') : '';
                         const typeText = isDaily ? ' [รายวัน]' : ' [รายชม.]';
                         
-                        const fullTitle = `${ev.room_name}${layoutText}${typeText} | เวลา ${startT} - ${endT} น. | ผู้จอง: ${ev.customer_name}`;
+                        const fullTitle = `${ev.room_name || 'ห้องประชุม'}${layoutText}${typeText} | เวลา ${startT} - ${endT} น. | ผู้จอง: ${ev.customer_name || 'ลูกค้า'}`;
                         const isExpired = new Date() > new Date(ev.end_time);
 
                         return (
                           <div 
                             key={i} 
-                            className={`calendar-event-chip ${isExpired ? 'expired' : ev.payment_status}`}
+                            className={`calendar-event-chip ${isExpired ? 'expired' : (ev.payment_status || 'pending')}`}
                             title={fullTitle}
                             onClick={(e) => {
                               e.stopPropagation();
                               setViewedEvent(ev);
                             }}
                           >
-                            <span style={{ fontWeight: 500, opacity: 0.85, marginRight: '16px' }}>{startT}-{endT}</span>
-                            <span style={{ fontWeight: 700 }}>{ev.room_name} {ev.customer_name}</span>
+                            <span className="event-chip-time">{startT} - {endT}</span>
+                            <span className="event-chip-room">{ev.room_name}</span>
+                            <span className="event-chip-divider">·</span>
+                            <span className="event-chip-customer">{ev.customer_name || 'ลูกค้า'}</span>
                           </div>
                         );
                       })}
 
                       {dayEvents.length > maxVisible && (
-                        <div className="calendar-more-label">+{dayEvents.length - maxVisible} รายการ</div>
+                        <button
+                          type="button"
+                          className="calendar-more-label"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleMiniDayClick(dayObj);
+                            handleDayClick(dayObj);
+                            setIsDayModalOpen(true);
+                          }}
+                          title={`มีรายการจองทั้งหมด ${dayEvents.length} รายการ (คลิกเพื่อเปิดดูทั้งหมด)`}
+                        >
+                          +{dayEvents.length - maxVisible} ดูเพิ่มเติม...
+                        </button>
                       )}
                     </div>
                   </div>
@@ -1286,6 +1453,33 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
             {/* Cart Summary & Checkout */}
             <div className="cart-summary" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+              {cart.some(item => item.room_id) && (
+                <div style={{
+                  padding: '8px 12px',
+                  borderRadius: '10px',
+                  backgroundColor: 'rgba(255,255,255,0.03)',
+                  border: '1px solid var(--border-color)',
+                  fontSize: '0.78rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px',
+                  marginBottom: '8px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>ผู้จอง:</span>
+                    <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{customer.name.trim() || 'ลูกค้าทั่วไป'}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>การชำระเงิน:</span>
+                    <span style={{ 
+                      fontWeight: 600, 
+                      color: paymentStatus === 'pending' ? '#f59e0b' : 'var(--primary-color)' 
+                    }}>
+                      {paymentStatus === 'pending' ? 'ค้างชำระ (Pending)' : (paymentMethod === 'transfer' ? 'ชำระแล้ว (โอนเงิน)' : 'ชำระแล้ว (เงินสด)')}
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="cart-summary-row">
                 <span style={{ color: 'var(--text-muted)' }}>จำนวนรายการทั้งหมด</span>
                 <span>{cart.reduce((sum, item) => sum + (item.room_id ? 1 : item.quantity), 0)} รายการ</span>
@@ -1402,118 +1596,291 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               </button>
             </div>
 
-            {/* Single Column Layout (Removed Left Column History) */}
-            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
-              
-              {/* Product/Service Catalog */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, overflow: 'hidden' }}>
-                
-                {/* Category selectors (Tabs) */}
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                  <button 
-                    onClick={() => setModalCategory('all')}
-                    type="button"
-                    style={{
-                      padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                      backgroundColor: modalCategory === 'all' ? 'var(--primary-color)' : 'var(--bg-color)',
-                      color: modalCategory === 'all' ? '#ffffff' : 'var(--text-muted)'
-                    }}
-                  >ทั้งหมด</button>
-                  <button 
-                    onClick={() => setModalCategory('room')}
-                    type="button"
-                    style={{
-                      padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                      backgroundColor: modalCategory === 'room' ? 'var(--primary-color)' : 'var(--bg-color)',
-                      color: modalCategory === 'room' ? '#ffffff' : 'var(--text-muted)'
-                    }}
-                  >ห้องประชุม</button>
-                  <button 
-                    onClick={() => setModalCategory('Co-Working')}
-                    type="button"
-                    style={{
-                      padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                      backgroundColor: modalCategory === 'Co-Working' ? 'var(--primary-color)' : 'var(--bg-color)',
-                      color: modalCategory === 'Co-Working' ? '#ffffff' : 'var(--text-muted)'
-                    }}
-                  >Co-Working</button>
-                  <button 
-                    onClick={() => setModalCategory('Koocafe')}
-                    type="button"
-                    style={{
-                      padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                      backgroundColor: modalCategory === 'Koocafe' ? 'var(--primary-color)' : 'var(--bg-color)',
-                      color: modalCategory === 'Koocafe' ? '#ffffff' : 'var(--text-muted)'
-                    }}
-                  >Koocafe</button>
-                  <button 
-                    onClick={() => setModalCategory('Parking')}
-                    type="button"
-                    style={{
-                      padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                      backgroundColor: modalCategory === 'Parking' ? 'var(--primary-color)' : 'var(--bg-color)',
-                      color: modalCategory === 'Parking' ? '#ffffff' : 'var(--text-muted)'
-                    }}
-                  >ที่จอดรถ</button>
-                </div>
+            {/* Tabs: รายการจองห้อง vs จองห้อง/บริการใหม่ */}
+            <div style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
+              <button 
+                type="button"
+                onClick={() => setDayModalTab('bookings')}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '12px',
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  border: '1px solid',
+                  borderColor: dayModalTab === 'bookings' ? 'var(--primary-color)' : 'var(--border-color)',
+                  backgroundColor: dayModalTab === 'bookings' ? 'var(--primary-color)' : 'transparent',
+                  color: dayModalTab === 'bookings' ? '#ffffff' : 'var(--text-main)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  transition: 'all 0.15s ease-in-out'
+                }}
+              >
+                <Calendar size={16} />
+                <span>รายการจองห้องของวันนี้ ({modalDayEvents.length})</span>
+              </button>
 
-                {/* Items Catalog Grid */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '10px', overflowY: 'auto', flex: 1, padding: '4px' }}>
-                  {getModalFilteredItems().map(item => (
-                    <div 
-                      key={`${item.type}-${item.id}`}
-                      className="pos-item-card"
-                      style={{ height: 'auto', padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', cursor: 'pointer' }}
-                      onClick={() => item.type === 'room' ? openRoomModalFromDay(item) : addServiceToCartDirect(item)}
-                    >
-                      {/* Image Thumbnail */}
-                      <div style={{ width: '100%', height: '110px', borderRadius: '10px', overflow: 'hidden', border: '1px solid var(--border-color)', backgroundColor: 'rgba(255,255,255,0.02)', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-                        {item.image_url ? (
-                          <img src={item.image_url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                        ) : (
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', opacity: 0.2 }}>
-                            <Image size={20} />
-                            <span style={{ fontSize: '0.6rem' }}>ไม่มีรูปภาพ</span>
-                          </div>
-                        )}
-                        <span className={`badge ${item.type === 'room' ? 'badge-success' : 'badge-warning'}`} style={{ position: 'absolute', top: '6px', right: '6px', fontSize: '0.65rem', padding: '2px 6px', boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>
-                          {item.type === 'room' ? 'ห้อง' : 'บริการ'}
-                        </span>
-                      </div>
+              <button 
+                type="button"
+                onClick={() => setDayModalTab('catalog')}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '12px',
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  border: '1px solid',
+                  borderColor: dayModalTab === 'catalog' ? 'var(--primary-color)' : 'var(--border-color)',
+                  backgroundColor: dayModalTab === 'catalog' ? 'var(--primary-color)' : 'transparent',
+                  color: dayModalTab === 'catalog' ? '#ffffff' : 'var(--text-main)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  transition: 'all 0.15s ease-in-out'
+                }}
+              >
+                <Plus size={16} />
+                <span>จองห้อง / สั่งบริการใหม่</span>
+              </button>
+            </div>
 
-                      <div className="pos-item-info" style={{ gap: '2px', display: 'flex', flexDirection: 'column' }}>
-                        <span className="pos-item-title" style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>{item.name}</span>
-                        {item.type === 'room' ? (
-                          <p className="pos-item-desc" style={{ fontSize: '0.7rem', margin: 0 }}>ความจุ {item.capacity} คน</p>
-                        ) : (
-                          <p className="pos-item-desc" style={{ fontSize: '0.7rem', margin: 0 }}>{item.category}</p>
-                        )}
-                      </div>
-
-                      <div className="pos-item-footer" style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span className="pos-item-price" style={{ fontSize: '0.85rem', fontWeight: '700' }}>
-                          {item.type === 'room' ? (
-                            (item.has_hourly === 1 || item.has_hourly === true || (!item.has_hourly && !item.has_halfday && !item.has_daily)) ? `${item.hourly_rate}.-/ชม.` :
-                            (item.has_halfday === 1 || item.has_halfday === true) ? `${item.half_day_rate}.-/ครึ่งวัน` :
-                            `${item.daily_rate}.-/วัน`
-                          ) : (
-                            `${item.price}.-`
-                          )}
-                        </span>
-                        <div style={{ 
-                          backgroundColor: 'var(--primary-light)', 
-                          color: 'var(--primary-color)',
-                          width: '24px', height: '24px', borderRadius: '50%',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontWeight: 'bold', fontSize: '0.8rem'
-                        }}>+</div>
-                      </div>
+            {/* TAB 1: LIST OF BOOKED ROOMS FOR SELECTED DAY */}
+            {dayModalTab === 'bookings' && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', minHeight: 0, paddingRight: '4px' }}>
+                {modalDayEvents.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+                    <div style={{ width: '56px', height: '56px', borderRadius: '50%', backgroundColor: 'rgba(16, 185, 129, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#10b981' }}>
+                      <CheckCircle2 size={32} />
                     </div>
-                  ))}
+                    <div style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                      วันนี้ยังไม่มีรายการจองห้องประชุม
+                    </div>
+                    <p style={{ fontSize: '0.85rem', margin: 0 }}>
+                      สามารถกดเลือกแท็บ "จองห้อง / สั่งบริการใหม่" เพื่อทำการจองได้ทันที
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ marginTop: '8px', padding: '8px 20px', borderRadius: '10px', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                      onClick={() => setDayModalTab('catalog')}
+                    >
+                      <Plus size={16} />
+                      ทำการจองห้องประชุม
+                    </button>
+                  </div>
+                ) : (
+                  modalDayEvents.map((ev, i) => {
+                    const startT = new Date(ev.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                    const endT = new Date(ev.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                    const isDaily = ev.booking_type === 'daily' || (ev.quantity === 1 && ev.price >= 1000);
+                    const isExpired = new Date() > new Date(ev.end_time);
+
+                    return (
+                      <div 
+                        key={i} 
+                        style={{
+                          backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                          border: '1px solid var(--border-color)',
+                          borderLeft: `5px solid ${isExpired ? '#ef4444' : (ev.payment_status === 'paid' ? '#10b981' : '#f59e0b')}`,
+                          borderRadius: '14px',
+                          padding: '14px 16px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '12px',
+                          transition: 'all 0.15s ease-in-out'
+                        }}
+                      >
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                              {ev.room_name}
+                            </span>
+                            {ev.layout === 'classroom' && (
+                              <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6' }}>
+                                Classroom
+                              </span>
+                            )}
+                            <span style={{ 
+                              fontSize: '0.7rem', 
+                              fontWeight: 700, 
+                              padding: '2px 8px', 
+                              borderRadius: '99px',
+                              backgroundColor: isExpired ? 'rgba(239, 68, 68, 0.15)' : (ev.payment_status === 'paid' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)'),
+                              color: isExpired ? '#ef4444' : (ev.payment_status === 'paid' ? '#10b981' : '#f59e0b'),
+                              border: `1px solid ${isExpired ? 'rgba(239, 68, 68, 0.25)' : (ev.payment_status === 'paid' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(245, 158, 11, 0.25)')}`
+                            }}>
+                              {isExpired ? 'ใช้งานเสร็จแล้ว' : (ev.payment_status === 'paid' ? 'ชำระเงินแล้ว' : 'รอชำระเงิน')}
+                            </span>
+                            <span style={{
+                              fontSize: '0.7rem',
+                              fontWeight: 700,
+                              padding: '2px 8px',
+                              borderRadius: '99px',
+                              backgroundColor: ev.booking_source === 'online' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                              color: ev.booking_source === 'online' ? '#0ea5e9' : '#10b981',
+                              border: `1px solid ${ev.booking_source === 'online' ? 'rgba(14, 165, 233, 0.25)' : 'rgba(16, 185, 129, 0.25)'}`
+                            }}>
+                              {ev.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
+                            </span>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '0.8rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <Clock size={14} className="text-primary" />
+                              <strong style={{ color: 'var(--text-main)' }}>{startT} - {endT} น.</strong>
+                              {isDaily ? ' [เต็มวัน]' : ' [รายชั่วโมง]'}
+                            </div>
+                            <div>
+                              ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{ev.customer_name || 'ลูกค้า'}</strong>
+                            </div>
+                            {ev.contact && (
+                              <div>
+                                ติดต่อ: <strong style={{ color: 'var(--text-main)' }}>{ev.contact}</strong>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                          <div style={{ textAlign: 'right', marginRight: '6px' }}>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>ยอดชำระ</div>
+                            <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--primary-color)' }}>
+                              {Number(ev.subtotal || ev.price || 0).toLocaleString()}.-
+                            </div>
+                          </div>
+
+                          {/* Button: View Details & Slip */}
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{ padding: '8px 14px', fontSize: '0.78rem', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 600 }}
+                            onClick={() => setViewedEvent(ev)}
+                            title="ดูรายละเอียดใบเสร็จและข้อมูลการจอง"
+                          >
+                            <FileText size={14} />
+                            <span>ดูสลิป</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
+            {/* TAB 2: PRODUCT/SERVICE CATALOG TO MAKE NEW BOOKING */}
+            {dayModalTab === 'catalog' && (
+              <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, overflow: 'hidden' }}>
+                  
+                  {/* Category selectors (Tabs) */}
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                    <button 
+                      onClick={() => setModalCategory('all')}
+                      type="button"
+                      style={{
+                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
+                        backgroundColor: modalCategory === 'all' ? 'var(--primary-color)' : 'var(--bg-color)',
+                        color: modalCategory === 'all' ? '#ffffff' : 'var(--text-muted)'
+                      }}
+                    >ทั้งหมด</button>
+                    <button 
+                      onClick={() => setModalCategory('room')}
+                      type="button"
+                      style={{
+                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
+                        backgroundColor: modalCategory === 'room' ? 'var(--primary-color)' : 'var(--bg-color)',
+                        color: modalCategory === 'room' ? '#ffffff' : 'var(--text-muted)'
+                      }}
+                    >ห้องประชุม</button>
+                    <button 
+                      onClick={() => setModalCategory('Co-Working')}
+                      type="button"
+                      style={{
+                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
+                        backgroundColor: modalCategory === 'Co-Working' ? 'var(--primary-color)' : 'var(--bg-color)',
+                        color: modalCategory === 'Co-Working' ? '#ffffff' : 'var(--text-muted)'
+                      }}
+                    >Co-Working</button>
+                    <button 
+                      onClick={() => setModalCategory('Koocafe')}
+                      type="button"
+                      style={{
+                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
+                        backgroundColor: modalCategory === 'Koocafe' ? 'var(--primary-color)' : 'var(--bg-color)',
+                        color: modalCategory === 'Koocafe' ? '#ffffff' : 'var(--text-muted)'
+                      }}
+                    >Koocafe</button>
+                    <button 
+                      onClick={() => setModalCategory('Parking')}
+                      type="button"
+                      style={{
+                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
+                        backgroundColor: modalCategory === 'Parking' ? 'var(--primary-color)' : 'var(--bg-color)',
+                        color: modalCategory === 'Parking' ? '#ffffff' : 'var(--text-muted)'
+                      }}
+                    >ที่จอดรถ</button>
+                  </div>
+
+                  {/* Items Catalog Grid */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '10px', overflowY: 'auto', flex: 1, padding: '4px' }}>
+                    {getModalFilteredItems().map(item => (
+                      <div 
+                        key={`${item.type}-${item.id}`}
+                        className="pos-item-card"
+                        style={{ height: 'auto', padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', cursor: 'pointer' }}
+                        onClick={() => item.type === 'room' ? openRoomModalFromDay(item) : addServiceToCartDirect(item)}
+                      >
+                        {/* Image Thumbnail */}
+                        <div style={{ width: '100%', height: '110px', borderRadius: '10px', overflow: 'hidden', border: '1px solid var(--border-color)', backgroundColor: 'rgba(255,255,255,0.02)', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+                          {item.image_url ? (
+                            <img src={item.image_url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ) : (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', opacity: 0.2 }}>
+                              <Image size={20} />
+                              <span style={{ fontSize: '0.6rem' }}>ไม่มีรูปภาพ</span>
+                            </div>
+                          )}
+                          <span className={`badge ${item.type === 'room' ? 'badge-success' : 'badge-warning'}`} style={{ position: 'absolute', top: '6px', right: '6px', fontSize: '0.65rem', padding: '2px 6px', boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>
+                            {item.type === 'room' ? 'ห้อง' : 'บริการ'}
+                          </span>
+                        </div>
+
+                        <div className="pos-item-info" style={{ gap: '2px', display: 'flex', flexDirection: 'column' }}>
+                          <span className="pos-item-title" style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>{item.name}</span>
+                          {item.type === 'room' ? (
+                            <p className="pos-item-desc" style={{ fontSize: '0.7rem', margin: 0 }}>ความจุ {item.capacity} คน</p>
+                          ) : (
+                            <p className="pos-item-desc" style={{ fontSize: '0.7rem', margin: 0 }}>{item.category}</p>
+                          )}
+                        </div>
+
+                        <div className="pos-item-footer" style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span className="pos-item-price" style={{ fontSize: '0.85rem', fontWeight: '700' }}>
+                            {item.type === 'room' ? (
+                              (item.has_hourly === 1 || item.has_hourly === true || (!item.has_hourly && !item.has_halfday && !item.has_daily)) ? `${item.hourly_rate}.-/ชม.` :
+                              (item.has_halfday === 1 || item.has_halfday === true) ? `${item.half_day_rate}.-/ครึ่งวัน` :
+                              `${item.daily_rate}.-/วัน`
+                            ) : (
+                              `${item.price}.-`
+                            )}
+                          </span>
+                          <div style={{ 
+                            backgroundColor: 'var(--primary-light)', 
+                            color: 'var(--primary-color)',
+                            width: '24px', height: '24px', borderRadius: '50%',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontWeight: 'bold', fontSize: '0.8rem'
+                          }}>+</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -1559,7 +1926,18 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                         backgroundColor: bookingType === t.key ? t.color : 'transparent',
                         color: bookingType === t.key ? '#fff' : 'var(--text-muted)',
                       }}
-                      onClick={() => setBookingType(t.key)}
+                      onClick={() => {
+                        setBookingType(t.key);
+                        if (t.key === 'halfday') {
+                          if (dailyTimeSlot !== '08-12' && dailyTimeSlot !== '13-17') {
+                            setDailyTimeSlot('08-12');
+                          }
+                        } else if (t.key === 'daily') {
+                          if (dailyTimeSlot !== '08-17' && dailyTimeSlot !== '09-18') {
+                            setDailyTimeSlot('08-17');
+                          }
+                        }
+                      }}
                     >
                       {t.key === 'hourly' || t.key === 'halfday' ? <Clock size={15} /> : <Calendar size={15} />}
                       {t.label}
@@ -1659,7 +2037,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       }}
                     >
                       <span style={{ color: 'var(--text-main)' }}>
-                        {dailyTimeSlot === '08-17' ? '08:00 - 17:00 น.' : dailyTimeSlot === '09-18' ? '09:00 - 18:00 น.' : dailyTimeSlot}
+                        {dailyTimeSlot === '09-18' ? '09:00 - 18:00 น.' : '08:00 - 17:00 น.'}
                       </span>
                       <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
                     </div>
@@ -1708,8 +2086,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                         fontWeight: 600
                       }}
                     >
-                      <span style={{ color: 'var(--text-main)' }}>
-                        {dailyTimeSlot === '08-12' ? '08:00 - 12:00 น. (ครึ่งวันเช้า)' : dailyTimeSlot === '13-17' ? '13:00 - 17:00 น. (ครึ่งวันบ่าย)' : dailyTimeSlot}
+                      <span style={{ color: 'var(--text-main)', fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {dailyTimeSlot === '13-17' ? '13:00 - 17:00 น. (บ่าย)' : '08:00 - 12:00 น. (เช้า)'}
                       </span>
                       <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
                     </div>
@@ -1739,38 +2117,147 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     )}
                   </div>
                 ) : (
-                  /* Hourly: Manual time input */
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', height: '40px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '4px 6px', backgroundColor: 'var(--bg-color)', height: '40px', width: '90px' }}>
-                      <input 
-                        type="text" placeholder="HH" maxLength={2}
-                        style={{ border: 'none', background: 'transparent', textAlign: 'center', width: '22px', color: 'var(--text-main)', fontSize: '0.9rem', fontWeight: 'bold', outline: 'none' }}
-                        value={roomSchedule.startHour || ''}
-                        onChange={e => setRoomSchedule({ ...roomSchedule, startHour: e.target.value.replace(/\D/g, '') })}
-                      />
-                      <span style={{ fontWeight: 'bold', color: 'var(--text-muted)' }}>:</span>
-                      <input 
-                        type="text" placeholder="MM" maxLength={2}
-                        style={{ border: 'none', background: 'transparent', textAlign: 'center', width: '22px', color: 'var(--text-main)', fontSize: '0.9rem', fontWeight: 'bold', outline: 'none' }}
-                        value={roomSchedule.startMinute || ''}
-                        onChange={e => setRoomSchedule({ ...roomSchedule, startMinute: e.target.value.replace(/\D/g, '') })}
-                      />
+                  /* Hourly: Dropdown time selectors (No manual typing) */
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', height: '40px', width: '100%' }}>
+                    {/* Start Time Dropdown */}
+                    <div style={{ flex: 1, position: 'relative' }}>
+                      <div 
+                        className="form-control"
+                        onClick={() => { setIsStartHourOpen(!isStartHourOpen); setIsEndHourOpen(false); }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          height: '40px',
+                          fontSize: '0.85rem',
+                          borderRadius: '12px',
+                          cursor: 'pointer',
+                          background: 'rgba(255, 255, 255, 0.05)',
+                          border: '1px solid var(--border-color)',
+                          padding: '0 8px',
+                          fontWeight: 700,
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        <span>
+                          {roomSchedule.startHour 
+                            ? `${String(roomSchedule.startHour).padStart(2, '0')}:${String(roomSchedule.startMinute || '00').padStart(2, '0')} น.` 
+                            : 'เลือกเวลาเริ่ม'}
+                        </span>
+                        <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
+                      </div>
+
+                      {isStartHourOpen && (
+                        <>
+                          <div onClick={() => setIsStartHourOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                          <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, minWidth: '110px', zIndex: 2000, borderRadius: '12px', padding: '4px', maxHeight: '200px', overflowY: 'auto' }}>
+                            {TIME_SLOT_OPTIONS.map(t => {
+                              const [h, m] = t.split(':');
+                              const isSelected = roomSchedule.startHour === h && roomSchedule.startMinute === m;
+                              return (
+                                <div
+                                  key={`start-${t}`}
+                                  onClick={() => {
+                                    const newSchedule = { ...roomSchedule, startHour: h, startMinute: m };
+                                    const startMins = parseInt(h, 10) * 60 + parseInt(m, 10);
+                                    const endMins = parseInt(roomSchedule.endHour || '0', 10) * 60 + parseInt(roomSchedule.endMinute || '0', 10);
+                                    if (endMins <= startMins) {
+                                      const nextMins = Math.min(startMins + 60, 18 * 60);
+                                      newSchedule.endHour = String(Math.floor(nextMins / 60)).padStart(2, '0');
+                                      newSchedule.endMinute = String(nextMins % 60).padStart(2, '0');
+                                    }
+                                    setRoomSchedule(newSchedule);
+                                    setIsStartHourOpen(false);
+                                  }}
+                                  style={{
+                                    padding: '6px 8px',
+                                    borderRadius: '8px',
+                                    cursor: 'pointer',
+                                    fontSize: '0.825rem',
+                                    fontWeight: isSelected ? 'bold' : 'normal',
+                                    color: isSelected ? 'var(--primary-color)' : 'var(--text-main)',
+                                    background: isSelected ? 'rgba(37, 99, 235, 0.15)' : 'transparent',
+                                    textAlign: 'center',
+                                    marginBottom: '2px'
+                                  }}
+                                >
+                                  {t} น.
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
                     </div>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>ถึง</span>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '2px', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '4px 6px', backgroundColor: 'var(--bg-color)', height: '40px', width: '90px' }}>
-                      <input 
-                        type="text" placeholder="HH" maxLength={2}
-                        style={{ border: 'none', background: 'transparent', textAlign: 'center', width: '22px', color: 'var(--text-main)', fontSize: '0.9rem', fontWeight: 'bold', outline: 'none' }}
-                        value={roomSchedule.endHour || ''}
-                        onChange={e => setRoomSchedule({ ...roomSchedule, endHour: e.target.value.replace(/\D/g, '') })}
-                      />
-                      <span style={{ fontWeight: 'bold', color: 'var(--text-muted)' }}>:</span>
-                      <input 
-                        type="text" placeholder="MM" maxLength={2}
-                        style={{ border: 'none', background: 'transparent', textAlign: 'center', width: '22px', color: 'var(--text-main)', fontSize: '0.9rem', fontWeight: 'bold', outline: 'none' }}
-                        value={roomSchedule.endMinute || ''}
-                        onChange={e => setRoomSchedule({ ...roomSchedule, endMinute: e.target.value.replace(/\D/g, '') })}
-                      />
+
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, flexShrink: 0 }}>ถึง</span>
+
+                    {/* End Time Dropdown */}
+                    <div style={{ flex: 1, position: 'relative' }}>
+                      <div 
+                        className="form-control"
+                        onClick={() => { setIsEndHourOpen(!isEndHourOpen); setIsStartHourOpen(false); }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          height: '40px',
+                          fontSize: '0.85rem',
+                          borderRadius: '12px',
+                          cursor: 'pointer',
+                          background: 'rgba(255, 255, 255, 0.05)',
+                          border: '1px solid var(--border-color)',
+                          padding: '0 8px',
+                          fontWeight: 700,
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        <span>
+                          {roomSchedule.endHour 
+                            ? `${String(roomSchedule.endHour).padStart(2, '0')}:${String(roomSchedule.endMinute || '00').padStart(2, '0')} น.` 
+                            : 'เลือกเวลาสิ้นสุด'}
+                        </span>
+                        <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
+                      </div>
+
+                      {isEndHourOpen && (
+                        <>
+                          <div onClick={() => setIsEndHourOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                          <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, minWidth: '110px', zIndex: 2000, borderRadius: '12px', padding: '4px', maxHeight: '200px', overflowY: 'auto' }}>
+                            {TIME_SLOT_OPTIONS.map(t => {
+                              const [h, m] = t.split(':');
+                              const isSelected = roomSchedule.endHour === h && roomSchedule.endMinute === m;
+                              const startMins = parseInt(roomSchedule.startHour || '0', 10) * 60 + parseInt(roomSchedule.startMinute || '0', 10);
+                              const currentMins = parseInt(h, 10) * 60 + parseInt(m, 10);
+                              const isBeforeStart = currentMins <= startMins;
+                              return (
+                                <div
+                                  key={`end-${t}`}
+                                  onClick={() => {
+                                    if (isBeforeStart) return;
+                                    setRoomSchedule({ ...roomSchedule, endHour: h, endMinute: m });
+                                    setIsEndHourOpen(false);
+                                  }}
+                                  style={{
+                                    padding: '6px 8px',
+                                    borderRadius: '8px',
+                                    cursor: isBeforeStart ? 'not-allowed' : 'pointer',
+                                    fontSize: '0.825rem',
+                                    fontWeight: isSelected ? 'bold' : 'normal',
+                                    color: isSelected ? 'var(--primary-color)' : isBeforeStart ? 'var(--text-muted)' : 'var(--text-main)',
+                                    opacity: isBeforeStart ? 0.35 : 1,
+                                    background: isSelected ? 'rgba(37, 99, 235, 0.15)' : 'transparent',
+                                    textAlign: 'center',
+                                    marginBottom: '2px'
+                                  }}
+                                >
+                                  {t} น.
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1845,6 +2332,96 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               );
             })()}
 
+            {/* Realtime Room Availability Status Banner */}
+            {currentSlotOverlap.isOverlap ? (
+              <div style={{
+                backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                border: '1.5px solid rgba(239, 68, 68, 0.45)',
+                borderRadius: '12px',
+                padding: '12px 14px',
+                fontSize: '0.85rem',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '10px',
+                marginTop: '-4px',
+                marginBottom: '4px',
+                boxShadow: '0 4px 14px rgba(239, 68, 68, 0.12)'
+              }}>
+                <AlertTriangle size={18} style={{ color: '#ef4444', flexShrink: 0, marginTop: '2px' }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 800, color: '#ef4444', marginBottom: '2px', fontSize: '0.875rem' }}>
+                    ⛔ ช่วงเวลานี้มีผู้จองใช้งานแล้ว (ห้องไม่ว่าง)
+                  </div>
+                  <div style={{ color: 'var(--text-main)', fontSize: '0.8rem', lineHeight: 1.5 }}>
+                    ผู้เข้าใช้: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong> · ช่วงเวลา:{' '}
+                    <strong>
+                      {new Date(currentSlotOverlap.booking.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(currentSlotOverlap.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            ) : currentSlotOverlap.isValid ? (
+              <div style={{
+                backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+                borderRadius: '12px',
+                padding: '10px 14px',
+                fontSize: '0.825rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                marginTop: '-4px',
+                marginBottom: '4px',
+                color: '#10b981'
+              }}>
+                <CheckCircle2 size={16} style={{ color: '#10b981', flexShrink: 0 }} />
+                <span style={{ fontWeight: 700 }}>
+                  ห้องว่าง พร้อมทำการจองในช่วงเวลานี้
+                </span>
+              </div>
+            ) : null}
+
+            {/* Day Bookings Timeline / Existing Slots */}
+            {dayRoomBookings.length > 0 && (
+              <div style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '12px',
+                padding: '10px 14px',
+                fontSize: '0.78rem',
+                marginTop: '-4px',
+                marginBottom: '4px'
+              }}>
+                <div style={{ fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Clock size={13} />
+                  <span>รายการที่จองแล้วในวันที่ {roomSchedule.date ? new Date(roomSchedule.date).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }) : 'วันนี้'} ({dayRoomBookings.length} รายการ):</span>
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {dayRoomBookings.map((b, idx) => {
+                    const sT = new Date(b.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                    const eT = new Date(b.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                    const isNowExpired = new Date(b.end_time) < new Date();
+                    return (
+                      <span 
+                        key={idx}
+                        style={{
+                          padding: '3px 8px',
+                          borderRadius: '8px',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          backgroundColor: isNowExpired ? 'rgba(239, 68, 68, 0.12)' : 'rgba(37, 99, 235, 0.12)',
+                          color: isNowExpired ? '#dc2626' : 'var(--primary-color)',
+                          border: `1px solid ${isNowExpired ? 'rgba(239, 68, 68, 0.25)' : 'rgba(37, 99, 235, 0.25)'}`
+                        }}
+                      >
+                        {sT} - {eT} น. · {b.customer_name || 'ลูกค้า'}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Row 2: Customer Name & Contact */}
             <div className="grid-cols-2" style={{ gap: '16px' }}>
               <div className="form-group">
@@ -1916,7 +2493,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                         ยังไม่เลือก
                       </div>
                       <div 
-                        onClick={() => { setPaymentStatus('paid'); setIsPaymentStatusOpen(false); }}
+                        onClick={() => { setPaymentStatus('paid'); if (!paymentMethod) setPaymentMethod('cash'); setIsPaymentStatusOpen(false); }}
                         style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentStatus === 'paid' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentStatus === 'paid' ? 'bold' : 'normal', background: paymentStatus === 'paid' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
                       >
                         ชำระเงินแล้ว
@@ -1992,8 +2569,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               fontSize: '0.825rem', 
               padding: '10px 14px', 
               borderRadius: '12px', 
-              backgroundColor: bookingType === 'daily' ? 'rgba(245, 158, 11, 0.08)' : 'rgba(99, 102, 241, 0.08)',
-              border: `1px solid ${bookingType === 'daily' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(99, 102, 241, 0.15)'}`,
+              backgroundColor: bookingType === 'daily' ? 'rgba(245, 158, 11, 0.08)' : bookingType === 'halfday' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(99, 102, 241, 0.08)',
+              border: `1px solid ${bookingType === 'daily' ? 'rgba(245, 158, 11, 0.2)' : bookingType === 'halfday' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(99, 102, 241, 0.15)'}`,
               display: 'flex',
               alignItems: 'center',
               gap: '8px'
@@ -2003,7 +2580,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   <Calendar size={14} style={{ color: '#f59e0b', flexShrink: 0 }} />
                   <span style={{ color: 'var(--text-main)' }}>
                     <strong style={{ color: '#f59e0b' }}>รายวัน ({layoutType === 'classroom' ? 'Classroom' : 'Standard'})</strong> — อัตราค่าบริการ <strong>{Number(layoutType === 'classroom' ? selectedRoom.classroom_daily_rate || 0 : selectedRoom.daily_rate || 0).toLocaleString()}</strong> บาท / วัน
-                    {dailyTimeSlot === '08-17' ? ' (08:00 - 17:00 น.)' : ' (09:00 - 18:00 น.)'}
+                    {dailyTimeSlot === '09-18' ? ' (09:00 - 18:00 น.)' : ' (08:00 - 17:00 น.)'}
+                  </span>
+                </>
+              ) : bookingType === 'halfday' ? (
+                <>
+                  <Clock size={14} style={{ color: '#10b981', flexShrink: 0 }} />
+                  <span style={{ color: 'var(--text-main)' }}>
+                    <strong style={{ color: '#10b981' }}>รายครึ่งวัน ({layoutType === 'classroom' ? 'Classroom' : 'Standard'})</strong> — อัตราค่าบริการ <strong>{Number(selectedRoom.half_day_rate || 0).toLocaleString()}</strong> บาท / ครึ่งวัน
+                    {dailyTimeSlot === '13-17' ? ' (13:00 - 17:00 น. ครึ่งวันบ่าย)' : ' (08:00 - 12:00 น. ครึ่งวันเช้า)'}
                   </span>
                 </>
               ) : (
@@ -2018,7 +2603,20 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
             <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
               <button className="btn btn-secondary" style={{ flex: 1, borderRadius: '12px' }} onClick={closeRoomModal}>ยกเลิก</button>
-              <button className="btn btn-primary" style={{ flex: 2, borderRadius: '12px' }} onClick={addRoomToCart}>เพิ่มลงตะกร้า</button>
+              <button 
+                className="btn btn-primary" 
+                style={{ 
+                  flex: 2, 
+                  borderRadius: '12px',
+                  backgroundColor: currentSlotOverlap.isOverlap ? '#ef4444' : undefined,
+                  opacity: currentSlotOverlap.isOverlap ? 0.65 : 1,
+                  cursor: currentSlotOverlap.isOverlap ? 'not-allowed' : 'pointer'
+                }} 
+                onClick={addRoomToCart}
+                disabled={currentSlotOverlap.isOverlap}
+              >
+                {currentSlotOverlap.isOverlap ? '⛔ ช่วงเวลานี้ไม่ว่าง' : 'เพิ่มลงตะกร้า'}
+              </button>
             </div>
           </div>
         </div>
@@ -2251,6 +2849,20 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   return `${hoursRounded} ชั่วโมง`;
                 })()}</div>
                 <div><strong>รูปแบบการจัดห้อง:</strong> {viewedEvent.layout === 'classroom' ? 'Classroom (CR)' : 'Standard (Std)'}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <strong>ช่องทางการจอง:</strong>
+                  <span style={{
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    padding: '2px 10px',
+                    borderRadius: '99px',
+                    backgroundColor: viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                    color: viewedEvent.booking_source === 'online' ? '#0ea5e9' : '#10b981',
+                    border: `1px solid ${viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.25)' : 'rgba(16, 185, 129, 0.25)'}`
+                  }}>
+                    {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
+                  </span>
+                </div>
               </div>
 
               {/* Price Details */}
@@ -2278,6 +2890,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     }}>
                       {viewedEvent.payment_status === 'paid' ? 'จ่ายแล้ว' : 'ค้างชำระ'}
                     </span>
+                    {new Date() > new Date(viewedEvent.end_time) && (
+                      <span style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 'bold',
+                        padding: '2px 8px',
+                        borderRadius: '99px',
+                        backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                        color: '#ef4444',
+                        border: '1px solid rgba(239, 68, 68, 0.25)'
+                      }}>
+                        ใช้งานเสร็จแล้ว
+                      </span>
+                    )}
                   </div>
                 </div>
                 
@@ -2291,14 +2916,16 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
             </div>
 
-            <button 
-              type="button" 
-              className="btn btn-primary" 
-              style={{ width: '100%', height: '44px', borderRadius: '14px', marginTop: '8px' }} 
-              onClick={() => setViewedEvent(null)}
-            >
-              ปิดหน้าต่าง
-            </button>
+            <div style={{ marginTop: '8px' }}>
+              <button 
+                type="button" 
+                className="btn btn-secondary" 
+                style={{ width: '100%', height: '44px', borderRadius: '14px', fontWeight: 700 }} 
+                onClick={() => setViewedEvent(null)}
+              >
+                ปิดหน้าต่าง
+              </button>
+            </div>
           </div>
         </div>
       )}

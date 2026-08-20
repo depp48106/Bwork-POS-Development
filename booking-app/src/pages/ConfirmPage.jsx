@@ -52,24 +52,70 @@ export default function ConfirmPage() {
     fetchData();
   }, [bookingId]);
 
-  // Handle file selection for slip
-  const handleFileChange = (e) => {
+// Helper to compress/scale large camera images & screenshots before upload to Cloudflare D1
+const compressImage = (file, maxWidth = 1000, maxHeight = 1000, quality = 0.75) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Convert to high-clarity lightweight JPEG (typically 60KB - 120KB)
+        const compressedBase64 = canvas.toDataURL('image/jpeg', quality);
+        resolve(compressedBase64);
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+};
+
+  // Handle file selection for slip with automatic compression
+  const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    if (file.size > 5 * 1024 * 1024) {
-      setUploadError('ขนาดรูปภาพเกิน 5MB');
+    if (file.size > 20 * 1024 * 1024) {
+      setUploadError('ขนาดรูปภาพเกิน 20MB กรุณาเลือกรูปอื่น');
       return;
     }
 
     setSlipFile(file);
     setUploadError('');
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setSlipPreview(reader.result);
-    };
-    reader.readAsDataURL(file);
+    try {
+      // Compress automatically on mobile/desktop
+      const compressedData = await compressImage(file, 1000, 1000, 0.75);
+      setSlipPreview(compressedData);
+    } catch (err) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSlipPreview(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   // Handle slip upload submit
@@ -215,55 +261,134 @@ export default function ConfirmPage() {
         </div>
       </div>
 
-      {/* Slip Upload Section */}
-      <div className="glass-card" style={{ padding: '1.75rem', marginBottom: '2rem' }}>
-        <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem' }}>แนบสลิปการโอนเงิน (Upload Payment Slip)</h3>
-
-        {uploadSuccess || booking.slip_image_url || booking.payment_status === 'reviewing' || booking.payment_status === 'paid' ? (
-          <div style={{ textAlign: 'center', padding: '1.5rem', background: '#f0fdf4', borderRadius: '10px', border: '1px solid #bbf7d0' }}>
-            <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: '#166534', marginBottom: '0.5rem' }}>
-              &check; ส่งสลิปการชำระเงินเรียบร้อยแล้ว
+      {/* Booking Status & Slip / PIN Code Section */}
+      {booking.payment_status === 'paid' ? (
+        <div className="glass-card" style={{ padding: '1.75rem', marginBottom: '2rem', background: '#f0fdf4', border: '1.5px solid #86efac' }}>
+          <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+            <div style={{ fontSize: '1.3rem', fontWeight: 'bold', color: '#166534', marginBottom: '0.25rem' }}>
+              ✅ ได้รับการยืนยันและชำระเงินเรียบร้อยแล้ว!
             </div>
-            <p style={{ fontSize: '0.85rem', color: '#15803d', margin: 0 }}>
-              เจ้าหน้าที่กำลังดำเนินการตรวจสอบ เจ้าหน้าที่จะส่งการยืนยันการจองให้คุณ
-            </p>
+            <div style={{ fontSize: '0.875rem', color: '#15803d' }}>
+              เจ้าหน้าที่ได้ตรวจสอบสลิปและยืนยันการจองของคุณในระบบแล้ว
+            </div>
           </div>
-        ) : (
-          <form onSubmit={handleUploadSlip}>
-            {uploadError && (
-              <div style={{ background: '#fee2e2', color: '#991b1b', padding: '0.75rem', borderRadius: '8px', fontSize: '0.85rem', marginBottom: '1rem' }}>
-                {uploadError}
-              </div>
-            )}
 
-            <div className="form-group" style={{ marginBottom: '1rem' }}>
-              <label className="form-label" style={{ fontSize: '0.85rem' }}>เลือกไฟล์สลิปการโอนเงิน (PNG, JPG)</label>
-              <input 
-                type="file" 
-                accept="image/*" 
-                className="form-control" 
-                onChange={handleFileChange} 
-                style={{ padding: '0.5rem' }}
-              />
+          {/* Door Access PIN Code Display */}
+          <div style={{
+            background: 'white',
+            borderRadius: '16px',
+            padding: '1.25rem',
+            border: '2px dashed #10b981',
+            textAlign: 'center',
+            marginBottom: '1.25rem',
+            boxShadow: '0 4px 14px rgba(16, 185, 129, 0.12)'
+          }}>
+            <div style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#15803d', marginBottom: '0.25rem' }}>
+              🔑 รหัสผ่านปลดล็อกประตูหน้าห้อง (Door PIN Code)
             </div>
+            <div style={{ fontSize: '2.5rem', fontWeight: 900, color: '#166534', letterSpacing: '4px', margin: '4px 0' }}>
+              {booking.pin_code || '------'}
+            </div>
+            <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
+              กดรหัส PIN 6 หลักนี้ที่หน้าจอแท็บเล็ตหน้าห้องประชุมเพื่อปลดล็อกประตูเข้าใช้งาน<br />
+              (สามารถกดรหัสเข้าใช้งานได้ล่วงหน้า 15 นาทีก่อนเริ่มเวลา)
+            </div>
+          </div>
 
-            {slipPreview && (
-              <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
-                <img src={slipPreview} alt="Slip Preview" style={{ maxHeight: '200px', borderRadius: '8px', border: '1px solid var(--border)' }} />
+          {/* LINE OA Confirmation Simulated Card */}
+          <div style={{
+            background: '#ffffff',
+            borderRadius: '16px',
+            border: '1px solid #cbd5e1',
+            overflow: 'hidden',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.05)'
+          }}>
+            <div style={{ background: '#10b981', color: 'white', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '1.2rem' }}>📲</span>
+              <div>
+                <div style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>B-WORK LINE OFFICIAL ACCOUNT</div>
+                <div style={{ fontSize: '0.9rem', fontWeight: 'bold' }}>การ์ดแจ้งเตือนยืนยันการจองใน LINE OA</div>
               </div>
-            )}
+            </div>
+            <div style={{ padding: '16px', fontSize: '0.875rem', lineHeight: 1.6, color: '#334155' }}>
+              <div>👤 <strong>ชื่อผู้จอง:</strong> {booking.customer_name}</div>
+              <div>🚪 <strong>ห้องประชุม:</strong> {booking.room?.name || 'ห้องประชุม B-WORK'}</div>
+              <div>📅 <strong>วันที่ใช้งาน:</strong> {booking.booking_date || booking.created_at?.split('T')[0]}</div>
+              <div>⏰ <strong>เวลา:</strong> {booking.start_time} - {booking.end_time} น.</div>
+              <div>🧾 <strong>เลขที่ใบเสร็จ:</strong> {booking.receipt_number || bookingCode}</div>
+              <div style={{ marginTop: '10px', padding: '8px 12px', background: '#f0fdf4', borderRadius: '8px', color: '#166534', fontWeight: 700, textAlign: 'center' }}>
+                🔑 รหัสผ่านเข้าห้อง: <span style={{ fontSize: '1.1rem', letterSpacing: '2px' }}>{booking.pin_code || '------'}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="glass-card" style={{ padding: '1.75rem', marginBottom: '2rem' }}>
+          <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem' }}>แนบสลิปการโอนเงิน (Upload Payment Slip)</h3>
 
-            <button 
-              type="submit" 
-              className="btn btn-primary" 
-              disabled={!slipPreview || uploading}
-              style={{ width: '100%', padding: '0.85rem', fontSize: '0.95rem', fontWeight: 'bold' }}
-            >
-              {uploading ? 'กำลังส่งสลิป...' : 'ส่งสลิปยืนยันการชำระเงิน'}
-            </button>
-          </form>
-        )}
-      </div>
+          {uploadSuccess || booking.slip_image_url || booking.payment_status === 'reviewing' ? (
+            <div style={{ textAlign: 'center', padding: '1.5rem', background: '#f0fdf4', borderRadius: '10px', border: '1px solid #bbf7d0' }}>
+              <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: '#166534', marginBottom: '0.5rem' }}>
+                &check; ส่งสลิปการชำระเงินเรียบร้อยแล้ว
+              </div>
+              <p style={{ fontSize: '0.85rem', color: '#15803d', margin: 0, marginBottom: '1rem' }}>
+                สถานะปัจจุบัน: <strong>📑 รอเจ้าหน้าที่ Bwork-POS ตรวจสอบสลิปและยืนยันการจอง</strong><br />
+                เมื่อเจ้าหน้าที่ยืนยันแล้ว รหัสผ่านประตูและข้อมูลยืนยันจะส่งเข้า LINE OA ของคุณ
+              </p>
+              <button 
+                type="button" 
+                className="btn btn-outline"
+                style={{ fontSize: '0.825rem', padding: '0.45rem 0.9rem' }}
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`${API_BASE}/api/public/bookings/${bookingId}`);
+                    if (res.ok) {
+                      const updated = await res.json();
+                      setBooking(updated);
+                    }
+                  } catch (e) {}
+                }}
+              >
+                🔄 รีเฟรชตรวจสอบสถานะการอนุมัติ
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleUploadSlip}>
+              {uploadError && (
+                <div style={{ background: '#fee2e2', color: '#991b1b', padding: '0.75rem', borderRadius: '8px', fontSize: '0.85rem', marginBottom: '1rem' }}>
+                  {uploadError}
+                </div>
+              )}
+
+              <div className="form-group" style={{ marginBottom: '1rem' }}>
+                <label className="form-label" style={{ fontSize: '0.85rem' }}>เลือกไฟล์สลิปการโอนเงิน (PNG, JPG)</label>
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  className="form-control" 
+                  onChange={handleFileChange} 
+                  style={{ padding: '0.5rem' }}
+                />
+              </div>
+
+              {slipPreview && (
+                <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
+                  <img src={slipPreview} alt="Slip Preview" style={{ maxHeight: '200px', borderRadius: '8px', border: '1px solid var(--border)' }} />
+                </div>
+              )}
+
+              <button 
+                type="submit" 
+                className="btn btn-primary" 
+                disabled={!slipPreview || uploading}
+                style={{ width: '100%', padding: '0.85rem', fontSize: '0.95rem', fontWeight: 'bold' }}
+              >
+                {uploading ? 'กำลังส่งสลิป...' : 'ส่งสลิปยืนยันการชำระเงิน'}
+              </button>
+            </form>
+          )}
+        </div>
+      )}
 
       {/* Done Button */}
       <div style={{ textAlign: 'center' }}>

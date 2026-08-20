@@ -15,6 +15,20 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
   const [viewedEvent, setViewedEvent] = useState(null);
   const monthNames = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 
+  const getLocalDateStr = (timeVal) => {
+    if (!timeVal) return '';
+    if (typeof timeVal === 'string') {
+      if (timeVal.includes('T')) return timeVal.split('T')[0];
+      if (timeVal.includes(' ')) return timeVal.split(' ')[0];
+    }
+    const d = new Date(timeVal);
+    if (isNaN(d.getTime())) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
   // Update clock every second
   useEffect(() => {
     const timer = setInterval(() => {
@@ -657,10 +671,10 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                     padding: '2px 8px', 
                     borderRadius: '99px',
                     fontWeight: 'bold',
-                    backgroundColor: roomBookings.some(b => new Date(b.start_time).toLocaleDateString('en-CA') === selectedDate) ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)',
-                    color: roomBookings.some(b => new Date(b.start_time).toLocaleDateString('en-CA') === selectedDate) ? 'var(--danger-color)' : 'var(--success-color)'
+                    backgroundColor: roomBookings.some(b => getLocalDateStr(b.start_time) === selectedDate) ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                    color: roomBookings.some(b => getLocalDateStr(b.start_time) === selectedDate) ? 'var(--danger-color)' : 'var(--success-color)'
                   }}>
-                    {roomBookings.some(b => new Date(b.start_time).toLocaleDateString('en-CA') === selectedDate) ? 'มีคิวจอง' : 'ว่างไม่มีคิว'}
+                    {roomBookings.some(b => getLocalDateStr(b.start_time) === selectedDate) ? 'มีคิวจอง' : 'ว่างไม่มีคิว'}
                   </span>
                 </div>
 
@@ -677,7 +691,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                   {(() => {
                     const dayBookings = roomBookings.filter(b => {
                       try {
-                        const localDate = new Date(b.start_time).toLocaleDateString('en-CA');
+                        const localDate = getLocalDateStr(b.start_time);
                         return localDate === selectedDate;
                       } catch (e) {
                         return false;
@@ -828,7 +842,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                         // Check booking status for this specific calendar day
                         const dayBks = roomBookings.filter(b => {
                           try {
-                            return new Date(b.start_time).toLocaleDateString('en-CA') === targetStr;
+                            return getLocalDateStr(b.start_time) === targetStr;
                           } catch (e) {
                             return false;
                           }
@@ -952,7 +966,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                 color: viewedEvent.booking_source === 'online' ? '#0ea5e9' : '#10b981',
                 border: `1px solid ${viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`
               }}>
-                {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'}
+                {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
               </span>
             </div>
 
@@ -984,10 +998,10 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                     color: viewedEvent.booking_source === 'online' ? '#0ea5e9' : '#10b981',
                     border: `1px solid ${viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`
                   }}>
-                    {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'}
+                    {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
                   </span>
                 </div>
-                <div><strong>ช่องทางการจอง:</strong> {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์ผ่านเว็บ' : '🏬 Walk-in ผ่าน POS หน้าร้าน'}</div>
+                <div><strong>ช่องทางการจอง:</strong> {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์ผ่านเว็บ' : '🏬 Walk-in'}</div>
                 <div><strong>วันที่จอง:</strong> {(() => {
                   const d = new Date(viewedEvent.start_time);
                   return `${d.getDate()} ${monthNames[d.getMonth()]} ${d.getFullYear() + 543}`;
@@ -1037,7 +1051,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                       color: viewedEvent.booking_source === 'online' ? '#0ea5e9' : '#10b981',
                       border: `1px solid ${viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`
                     }}>
-                      {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'}
+                      {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
                     </span>
                     <span style={{
                       fontSize: '0.7rem',

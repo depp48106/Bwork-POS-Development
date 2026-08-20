@@ -172,12 +172,35 @@ function DoorAccessSettings({ sysAlert }) {
               <input
                 type="text"
                 className="form-control"
-                placeholder="ตัวอย่าง: 1657891234-AbCdEfGh"
+                placeholder="ตัวอย่าง: 2011049416-AbCdEfGh (ไม่บังคับ)"
                 value={configs.line_liff_id || ''}
                 onChange={e => setConfigs({ ...configs, line_liff_id: e.target.value })}
                 style={{ height: '42px', fontSize: '0.85rem', padding: '0 12px', borderRadius: '12px' }}
               />
             </div>
+
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={saving}
+              style={{
+                height: '42px',
+                borderRadius: '12px',
+                fontWeight: 700,
+                fontSize: '0.875rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                cursor: 'pointer',
+                backgroundColor: '#10b981',
+                border: 'none',
+                marginTop: '4px'
+              }}
+            >
+              <Save size={16} />
+              <span>{saving ? 'กำลังบันทึก...' : 'บันทึกการตั้งค่า LINE OA'}</span>
+            </button>
           </div>
 
           {/* Section 2: Google Sheets Configuration */}
@@ -338,30 +361,34 @@ function DoorAccessSettings({ sysAlert }) {
             )}
           </div>
 
+        </div>
+
+        {/* Full-width Save Button Footer spanning both columns */}
+        <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
           <button
             type="submit"
             className="btn btn-primary"
             disabled={saving}
             style={{
-              height: '46px',
-              borderRadius: '14px',
+              height: '50px',
+              padding: '0 32px',
+              borderRadius: '16px',
               fontWeight: 800,
-              fontSize: '0.95rem',
+              fontSize: '1rem',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '8px',
+              gap: '10px',
               cursor: 'pointer',
-              boxShadow: '0 6px 20px rgba(16, 185, 129, 0.3)',
+              boxShadow: '0 8px 24px rgba(16, 185, 129, 0.35)',
               backgroundColor: '#10b981',
               border: 'none',
-              marginTop: '4px'
+              width: '100%'
             }}
           >
-            <Save size={18} />
-            <span>{saving ? 'กำลังบันทึก...' : 'บันทึกการตั้งค่าระบบจอง LINE OA & รหัสเข้าห้อง'}</span>
+            <Save size={20} />
+            <span>{saving ? 'กำลังบันทึกข้อมูล...' : '💾 บันทึกการตั้งค่าระบบจอง LINE OA & รหัสเข้าห้อง (Save Settings)'}</span>
           </button>
-
         </div>
       </form>
     </div>

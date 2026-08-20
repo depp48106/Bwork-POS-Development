@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone } from 'lucide-react';
+import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone, CreditCard, Building2 } from 'lucide-react';
 import DoorAccessSettings from './DoorAccessSettings';
 
-function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPrompt, onClearHistory }) {
+function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, sysAlert, sysConfirm, sysPrompt, onClearHistory }) {
   // Config Settings
   const [configs, setConfigs] = useState({
     company_name: '',
@@ -15,7 +15,12 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
     quotation_terms: '',
     quotation_signer: '',
     quotation_valid_days: '',
-    room_alert_minutes: '15'
+    room_alert_minutes: '15',
+    promptpay_id: '',
+    payment_bank_name: '',
+    payment_bank_account: '',
+    payment_bank_account_name: '',
+    payment_deadline_hours: '24'
   });
 
   // DB Backup logs
@@ -306,7 +311,7 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
         <div>
           <h1 className="tab-title">
             {viewMode === 'users' && 'จัดการสิทธิ์บัญชีผู้ใช้'}
-            {viewMode === 'system' && 'ตั้งค่าใบเสร็จ'}
+            {viewMode === 'system' && 'ตั้งค่าใบเสร็จ & บัญชีรับเงิน'}
             {viewMode === 'backup' && 'จัดการฐานข้อมูล'}
             {viewMode === 'quotation' && 'แก้ไขใบเสนอราคา'}
             {viewMode === 'dooraccess' && 'ระบบจอง LINE OA & รหัสเข้าห้อง'}
@@ -314,7 +319,7 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
             {viewMode === 'users' && 'บริหารบัญชีพนักงานต้อนรับและแอดมิน เพื่อสิทธิ์การเปิดบิลและจัดการฐานข้อมูล'}
-            {viewMode === 'system' && 'ตั้งค่าข้อมูลบริษัท ข้อความหัวใบเสร็จ และส่วนท้ายใบเสร็จพร้อมดูตัวอย่างจริง'}
+            {viewMode === 'system' && 'ตั้งค่าข้อมูลบริษัท ข้อความใบเสร็จ และข้อมูลบัญชีธนาคาร/พร้อมเพย์ สำหรับรับชำระเงินระบบออนไลน์'}
             {viewMode === 'backup' && 'จัดการการสำรองข้อมูล คัดลอกฐานข้อมูล และล้างข้อมูลประวัติการทำรายการเพื่อรีเซ็ตระบบ'}
             {viewMode === 'quotation' && 'กำหนดเงื่อนไขเริ่มต้น วันหมดอายุ และชื่อผู้ลงนามบนเอกสารใบเสนอราคา'}
             {viewMode === 'dooraccess' && 'กำหนดการเชื่อมต่อ LINE Messaging API, Google Sheets Sync และสิทธิ์เวลาการเช็คอินรหัส PIN'}
@@ -349,7 +354,7 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
             }}>
               <h2 style={{ fontSize: '1.2rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--primary-color)' }}>
                 <Settings size={22} />
-                ตั้งค่าข้อมูลใบเสร็จ
+                ตั้งค่าข้อมูลใบเสร็จ & บัญชีรับเงิน
               </h2>
               <form onSubmit={handleSaveConfigs} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                 
@@ -451,9 +456,102 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
                   />
                 </div>
 
+                {/* Bank Account & Payment Settings Section */}
+                <div style={{
+                  borderTop: '1.5px solid var(--border-color)',
+                  paddingTop: '20px',
+                  marginTop: '10px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '16px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <CreditCard size={20} className="text-primary" />
+                    <h3 style={{ fontSize: '1.05rem', fontWeight: 800, margin: 0, color: 'var(--primary-color)' }}>
+                      ข้อมูลบัญชีรับเงิน & พร้อมเพย์ (ระบบจองออนไลน์ & สลิป)
+                    </h3>
+                  </div>
+
+                  {/* Bank Name */}
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>
+                      ชื่อธนาคาร
+                    </label>
+                    <input 
+                      type="text" 
+                      className="form-control" 
+                      value={configs.payment_bank_name || ''}
+                      onChange={e => setConfigs({ ...configs, payment_bank_name: e.target.value })}
+                      placeholder="เช่น ธนาคารกรุงศรีอยุธยา (Krungsri)"
+                      style={{ height: '42px', padding: '10px 14px', borderRadius: '12px', fontSize: '0.875rem' }}
+                    />
+                  </div>
+
+                  {/* Bank Account Number */}
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>
+                      เลขที่บัญชีธนาคาร
+                    </label>
+                    <input 
+                      type="text" 
+                      className="form-control" 
+                      value={configs.payment_bank_account || ''}
+                      onChange={e => setConfigs({ ...configs, payment_bank_account: e.target.value })}
+                      placeholder="เช่น 329-1-38429-0"
+                      style={{ height: '42px', padding: '10px 14px', borderRadius: '12px', fontSize: '0.875rem' }}
+                    />
+                  </div>
+
+                  {/* Bank Account Name */}
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>
+                      ชื่อบัญชีธนาคาร
+                    </label>
+                    <input 
+                      type="text" 
+                      className="form-control" 
+                      value={configs.payment_bank_account_name || ''}
+                      onChange={e => setConfigs({ ...configs, payment_bank_account_name: e.target.value })}
+                      placeholder="เช่น บริษัท บิลท์ ฮาร์ท จำกัด"
+                      style={{ height: '42px', padding: '10px 14px', borderRadius: '12px', fontSize: '0.875rem' }}
+                    />
+                  </div>
+
+                  {/* PromptPay ID */}
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>
+                      หมายเลขพร้อมเพย์ (PromptPay ID / เลขผู้เสียภาษี 13 หลัก / เบอร์โทรศัพท์)
+                    </label>
+                    <input 
+                      type="text" 
+                      className="form-control" 
+                      value={configs.promptpay_id || ''}
+                      onChange={e => setConfigs({ ...configs, promptpay_id: e.target.value })}
+                      placeholder="เช่น 0125554000401"
+                      style={{ height: '42px', padding: '10px 14px', borderRadius: '12px', fontSize: '0.875rem' }}
+                    />
+                  </div>
+
+                  {/* Payment Deadline Hours */}
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>
+                      กำหนดเวลาให้ลูกค้าชำระเงินและแนบสลิปหลังทำการจอง (ชั่วโมง)
+                    </label>
+                    <input 
+                      type="number" 
+                      className="form-control" 
+                      value={configs.payment_deadline_hours || '24'}
+                      onChange={e => setConfigs({ ...configs, payment_deadline_hours: e.target.value })}
+                      placeholder="24"
+                      min="1"
+                      style={{ height: '42px', padding: '10px 14px', borderRadius: '12px', fontSize: '0.875rem' }}
+                    />
+                  </div>
+                </div>
+
                 <button type="submit" className="btn btn-primary" style={{ width: '100%', height: '44px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '10px', fontSize: '0.9rem', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 20px rgba(99, 102, 241, 0.3)' }}>
                   <Save size={18} />
-                  บันทึกการตั้งค่าใบเสร็จ
+                  บันทึกการตั้งค่าทั้งหมด
                 </button>
               </form>
             </div>
@@ -1249,7 +1347,7 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
                   className="form-control" 
                   value={configs.company_name || ''} 
                   onChange={e => setConfigs({ ...configs, company_name: e.target.value })} 
-                  placeholder="เช่น บริษัท ดีพมายด์ โซลูชั่น จำกัด..."
+                  placeholder="เช่น บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)..."
                 />
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>ชื่อบริษัทที่แสดงส่วนหัวของใบเสร็จรับเงิน/สลิปหน้าร้าน</span>
               </div>
@@ -1777,14 +1875,15 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', maxHeight: '220px', overflowY: 'auto', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '12px', backgroundColor: 'rgba(0,0,0,0.1)' }}>
                             {[
                               { key: 'pos', label: 'จุดขาย POS' },
-                              { key: 'dashboard', label: 'Dashboard สรุปยอด' },
-                              { key: 'pending', label: 'รายการรอชำระเงิน' },
-                              { key: 'layout', label: 'แผนผังห้องประชุม' },
-                              { key: 'manage', label: 'คลังสินค้า & ห้องประชุม' },
-                              { key: 'history', label: 'ประวัติการจองย้อนหลัง' },
+                              { key: 'dashboard', label: 'Dashboard' },
+                              { key: 'pending', label: 'รายการจองห้อง' },
+                              { key: 'layout', label: 'แผนผังห้อง' },
+                              { key: 'history', label: 'ประวัติย้อนหลัง' },
                               { key: 'quotations', label: 'ใบเสนอราคา' },
+                              { key: 'manage', label: 'จัดการคลังสินค้า' },
                               { key: 'admin-users', label: 'จัดการผู้ใช้ & บทบาท' },
                               { key: 'admin-system', label: 'ตั้งค่าระบบ & ใบเสร็จ' },
+                              { key: 'admin-quotation', label: 'ตั้งค่าใบเสนอราคา' },
                               { key: 'admin-backup', label: 'สำรองข้อมูล (Backup)' }
                             ].map(menu => {
                               const checked = Array.isArray(roleForm.permissions) && roleForm.permissions.includes(menu.key);
@@ -1858,6 +1957,11 @@ function SettingsPanel({ viewMode, onSettingsUpdate, sysAlert, sysConfirm, sysPr
 
                                 if (res.ok) {
                                   sysAlert(editingRole ? 'บันทึกบทบาทสำเร็จ' : 'สร้างบทบาทใหม่สำเร็จแล้ว');
+                                  if (currentUser && currentUser.role === roleForm.name.trim()) {
+                                    const updatedUser = { ...currentUser, permissions: permStr };
+                                    localStorage.setItem('pos_user', JSON.stringify(updatedUser));
+                                    if (typeof onUserUpdate === 'function') onUserUpdate(updatedUser);
+                                  }
                                   setEditingRole(null);
                                   setRoleMode(null);
                                   setRoleForm({ name: '', label: '', permissions: ['pos', 'layout', 'pending', 'history'] });

@@ -1,11 +1,46 @@
+import React, { useEffect } from 'react';
 import { Routes, Route, Link } from 'react-router-dom';
 import HomePage from './pages/HomePage';
 import RoomListPage from './pages/RoomListPage';
 import BookingFormPage from './pages/BookingFormPage';
 import ConfirmPage from './pages/ConfirmPage';
 import StatusPage from './pages/StatusPage';
+import { API_BASE } from './apiConfig';
 
 function App() {
+  // Safe LIFF initialization on app launch
+  useEffect(() => {
+    const initLiff = async () => {
+      try {
+        if (window.liff) {
+          const liffId = '2011136579-c1TeSWNs';
+          await window.liff.init({ liffId, withLoginOnExternalBrowser: false });
+          if (window.liff.isLoggedIn()) {
+            const profile = await window.liff.getProfile();
+            if (profile && profile.userId) {
+              sessionStorage.setItem('line_user_id', profile.userId);
+              localStorage.setItem('line_user_id', profile.userId);
+              if (profile.displayName) {
+                sessionStorage.setItem('line_user_name', profile.displayName);
+                localStorage.setItem('line_user_name', profile.displayName);
+              }
+              if (profile.pictureUrl) {
+                sessionStorage.setItem('line_user_pic', profile.pictureUrl);
+                localStorage.setItem('line_user_pic', profile.pictureUrl);
+              }
+            }
+          } else {
+            if (window.liff.isInClient && window.liff.isInClient()) {
+              window.liff.login();
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('LIFF init warning:', err?.message || err);
+      }
+    };
+    initLiff();
+  }, []);
   return (
     <div className="app-container">
       <header className="app-header">

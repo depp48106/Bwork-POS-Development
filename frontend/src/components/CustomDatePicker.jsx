@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { ChevronLeft, ChevronRight, Calendar, Clock, MapPin } from 'lucide-react';
 
-function CustomDatePicker({ value, onChange, placeholder = 'เลือกวันที่', className, style, showHistory = false }) {
+function CustomDatePicker({ value, onChange, placeholder = 'เลือกวันที่', className, style, showHistory = false, align = 'left', selectedDate, onChangeDate, minDate }) {
+  const actualValue = value !== undefined ? value : selectedDate;
+  const actualOnChange = onChange || onChangeDate || (() => {});
   // value represents 'YYYY-MM-DD'
   const [isOpen, setIsOpen] = useState(false);
   const [hoveredDay, setHoveredDay] = useState(null);
@@ -10,13 +12,13 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
   const containerRef = useRef(null);
   
   // Date parsing
-  const dateObj = value ? new Date(value) : new Date();
+  const dateObj = actualValue ? new Date(actualValue) : new Date();
   const [currentYear, setCurrentYear] = useState(isNaN(dateObj.getTime()) ? new Date().getFullYear() : dateObj.getFullYear());
   const [currentMonth, setCurrentMonth] = useState(isNaN(dateObj.getTime()) ? new Date().getMonth() : dateObj.getMonth()); // 0-11
   
   useEffect(() => {
-    if (value) {
-      const d = new Date(value);
+    if (actualValue) {
+      const d = new Date(actualValue);
       if (!isNaN(d.getTime())) {
         setCurrentYear(d.getFullYear());
         setCurrentMonth(d.getMonth());
@@ -49,7 +51,19 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
         const data = await res.json();
         // Filter bookings for the specific date
         const filtered = data.filter(ev => {
-          const evDate = new Date(ev.start_time).toISOString().split('T')[0];
+          let evDate = '';
+          if (typeof ev.start_time === 'string') {
+            // Extract YYYY-MM-DD directly from the string to avoid timezone shifts
+            if (ev.start_time.includes('T')) {
+              evDate = ev.start_time.split('T')[0];
+            } else if (ev.start_time.includes(' ')) {
+              evDate = ev.start_time.split(' ')[0];
+            } else {
+              evDate = ev.start_time.substring(0, 10);
+            }
+          } else {
+            evDate = new Date(ev.start_time).toLocaleDateString('en-CA');
+          }
           return evDate === dateStr;
         });
         setDailyBookings(filtered);
@@ -89,7 +103,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
     const yyyy = currentYear;
     const mm = String(currentMonth + 1).padStart(2, '0');
     const dd = String(day).padStart(2, '0');
-    onChange(`${yyyy}-${mm}-${dd}`);
+    actualOnChange(`${yyyy}-${mm}-${dd}`);
     setIsOpen(false);
   };
 
@@ -118,7 +132,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
     const yyyy = today.getFullYear();
     const mm = String(today.getMonth() + 1).padStart(2, '0');
     const dd = String(today.getDate()).padStart(2, '0');
-    onChange(`${yyyy}-${mm}-${dd}`);
+    actualOnChange(`${yyyy}-${mm}-${dd}`);
     setIsOpen(false);
   };
 
@@ -148,7 +162,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
   // Previous month empty slots
   for (let i = 0; i < firstDay; i++) {
     daysGrid.push(
-      <div key={`empty-${i}`} style={{ width: '38px', height: '38px' }}></div>
+      <div key={`empty-${i}`} style={{ width: '100%', height: '34px' }}></div>
     );
   }
   
@@ -166,35 +180,35 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
         onMouseEnter={() => setHoveredDay(day)}
         onMouseLeave={() => setHoveredDay(null)}
         style={{
-          width: '38px',
-          height: '38px',
+          width: '100%',
+          maxWidth: '34px',
+          height: '34px',
           borderRadius: '8px',
           border: isSelected
             ? '2px solid var(--primary-color)'
             : isHovered
-              ? '2px solid var(--primary-color)'
+              ? '1.5px solid var(--primary-color)'
               : isToday
-                ? '2px dashed var(--primary-color)'
-                : '2px solid transparent',
+                ? '1.5px dashed var(--primary-color)'
+                : '1px solid transparent',
           backgroundColor: isSelected
             ? 'var(--primary-color)'
             : isHovered
-              ? 'rgba(37, 99, 235, 0.05)'
+              ? 'var(--bg-hover)'
               : 'transparent',
           color: isSelected 
             ? '#ffffff' 
             : isToday 
               ? 'var(--primary-color)' 
               : 'var(--text-main)',
-          fontSize: '0.85rem',
-          fontWeight: isSelected || isToday || isHovered ? 800 : 500,
+          fontSize: '0.82rem',
+          fontWeight: isSelected || isToday || isHovered ? 800 : 600,
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           transition: 'all 0.15s ease',
-          boxShadow: isSelected ? '0 4px 12px rgba(37, 99, 235, 0.25)' : 'none',
-          transform: isHovered && !isSelected ? 'scale(1.05)' : 'scale(1)'
+          boxShadow: isSelected ? '0 3px 8px rgba(37, 99, 235, 0.3)' : 'none'
         }}
       >
         {day}
@@ -219,8 +233,8 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
         }}
       >
         <Calendar size={15} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
-        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: value ? 'var(--text-main)' : 'var(--text-muted)' }}>
-          {value ? formatDateDisplay(value) : placeholder}
+        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: actualValue ? 'var(--text-main)' : 'var(--text-muted)' }}>
+          {actualValue ? formatDateDisplay(actualValue) : placeholder}
         </span>
       </div>
 
@@ -230,18 +244,18 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
           className="custom-datepicker-popover"
           style={{
             position: 'absolute',
-            top: 'calc(100% + 8px)',
-            left: 0,
+            top: 'calc(100% + 6px)',
+            ...(align === 'right' ? { right: 0 } : { left: 0 }),
             backgroundColor: 'var(--bg-card)',
             border: '1px solid var(--border-color)',
-            borderRadius: '20px',
-            boxShadow: '0 20px 40px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.02)',
-            padding: '16px',
-            zIndex: 9999,
-            width: '302px',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
-            animation: 'fadeIn 0.2s ease-out'
+            borderRadius: '16px',
+            boxShadow: '0 20px 40px rgba(0,0,0,0.3), 0 0 0 1px var(--border-color)',
+            padding: '12px',
+            zIndex: 10000,
+            width: '280px',
+            maxWidth: '90vw',
+            boxSizing: 'border-box',
+            animation: 'fadeIn 0.15s ease-out'
           }}
         >
           {/* Header */}
@@ -324,7 +338,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
           </div>
 
           {/* Days Grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '2px', justifyItems: 'center', marginBottom: '10px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px', justifyItems: 'center', alignItems: 'center', marginBottom: '10px', width: '100%' }}>
             {daysGrid}
           </div>
 
@@ -358,7 +372,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
           </button>
 
           {/* Daily Booking History Panel */}
-          {showHistory && value && (
+          {showHistory && actualValue && (
             <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '10px' }}>
               <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 📋 ประวัติจองวันที่ {formatDateDisplay(value)}

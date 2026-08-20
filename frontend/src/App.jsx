@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu, Trash2, Package, Bell } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu, Trash2, Package, Bell, CheckCircle2, Calendar, AlertCircle } from 'lucide-react';
 import BookingPOS from './components/BookingPOS';
 import Dashboard from './components/Dashboard';
 import HistoryLog from './components/History';
@@ -66,14 +66,10 @@ function App() {
 
   // Check if current user has permission to view tab/menu
   const hasPermission = (tabKey) => {
-    if (user && user.username === 'admin') return true;
     if (!user) return false;
-    const permString = (user.permissions && user.permissions.trim()) 
-      ? user.permissions 
-      : (user.role === 'admin' 
-          ? 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation' 
-          : 'pos,pending,layout,manage,history,quotations');
-    const perms = permString.split(',').map(p => p.trim());
+    if (user.username === 'admin') return true;
+    const permString = typeof user.permissions === 'string' ? user.permissions : '';
+    const perms = permString.split(',').map(p => p.trim()).filter(Boolean);
     if (tabKey === 'admin-management') {
       return perms.includes('admin-management') || perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage');
     }
@@ -123,10 +119,55 @@ function App() {
   }, [activeTab]);
 
   // Upcoming Room Booking Notifications & Alerts
+  const [upcomingAlerts, setUpcomingAlerts] = useState([]);
+  const [todayBookings, setTodayBookings] = useState([]);
+  const [incomingBookings, setIncomingBookings] = useState([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [reviewingCount, setReviewingCount] = useState(0);
   const [toasts, setToasts] = useState([]);
-  const [activeAlerts, setActiveAlerts] = useState([]);
   const [isBellOpen, setIsBellOpen] = useState(false);
-  const notifiedIdsRef = useRef(new Set());
+  const [bellTab, setBellTab] = useState('incoming');
+  const [readAlertKeys, setReadAlertKeys] = useState(() => {
+    try {
+      const saved = localStorage.getItem('bwork_read_alerts');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch (e) {
+      return new Set();
+    }
+  });
+
+  // Count unread alerts (upcoming + incoming) for badge display
+  const unreadAlerts = useMemo(() => {
+    const unreadUpcoming = upcomingAlerts.filter(item => !readAlertKeys.has(`${item.booking_id}-${item.start_time}`));
+    const unreadIncoming = incomingBookings.filter(item => !readAlertKeys.has(`incoming-${item.booking_id}-${item.payment_status}`));
+    return [...unreadUpcoming, ...unreadIncoming];
+  }, [upcomingAlerts, incomingBookings, readAlertKeys]);
+
+  const handleToggleBell = () => {
+    if (!isBellOpen) {
+      // Mark all current alerts as read when opening dropdown
+      setReadAlertKeys(prev => {
+        const next = new Set(prev);
+        upcomingAlerts.forEach(item => {
+          next.add(`${item.booking_id}-${item.start_time}`);
+        });
+        incomingBookings.forEach(item => {
+          next.add(`incoming-${item.booking_id}-${item.payment_status}`);
+        });
+        try {
+          localStorage.setItem('bwork_read_alerts', JSON.stringify(Array.from(next)));
+        } catch (e) {}
+        return next;
+      });
+      setIsBellOpen(true);
+    } else {
+      setIsBellOpen(false);
+    }
+  };
+
+  const removeToast = (id) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -135,34 +176,90 @@ function App() {
       try {
         const res = await fetch('/api/bookings/upcoming-alerts');
         if (!res.ok) return;
-        const alerts = await res.json();
+        const data = await res.json();
         
-        setActiveAlerts(alerts);
+        const upcomingList = Array.isArray(data) ? data : (data.upcoming || []);
+        const todayList = data.todayBookings || [];
+        const incomingList = data.incomingBookings || [];
 
-        alerts.forEach(alert => {
-          const alertKey = `${alert.booking_id}-${alert.start_time}`;
-          if (!notifiedIdsRef.current.has(alertKey)) {
-            notifiedIdsRef.current.add(alertKey);
+        setUpcomingAlerts(upcomingList);
+        setTodayBookings(todayList);
+        setIncomingBookings(incomingList);
+        setPendingCount(data.pendingCount || 0);
+        setReviewingCount(data.reviewingCount || 0);
 
-            const startT = new Date(alert.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-            const endT = new Date(alert.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+        // Get persistent notified toasts from localStorage
+        let notifiedSet = new Set();
+        try {
+          const savedNotified = localStorage.getItem('bwork_notified_toasts');
+          if (savedNotified) {
+            notifiedSet = new Set(JSON.parse(savedNotified));
+          }
+        } catch (e) {}
+
+        let updatedNotified = false;
+
+        // 1. Pop up toast for incoming LINE / Online bookings & slips
+        incomingList.forEach(item => {
+          const incomingKey = `toast-incoming-${item.booking_id}-${item.payment_status}-${item.slip_image_url ? 'slip' : 'noslip'}`;
+          if (!notifiedSet.has(incomingKey)) {
+            notifiedSet.add(incomingKey);
+            updatedNotified = true;
+
+            const isSlip = item.payment_status === 'reviewing' || !!item.slip_image_url;
+            const toastId = Date.now() + Math.random().toString(36).substr(2, 9);
+            const newToast = {
+              id: toastId,
+              type: 'incoming',
+              isSlip,
+              booking_id: item.booking_id,
+              room_name: item.room_name || 'ห้องประชุม',
+              customer_name: item.customer_name || 'ลูกค้า LINE OA',
+              total_amount: item.total_amount,
+              booking_source: item.booking_source
+            };
+
+            setToasts(prev => [newToast, ...prev]);
+
+            setTimeout(() => {
+              setToasts(prev => prev.filter(t => t.id !== toastId));
+            }, 15000);
+          }
+        });
+
+        // 2. Pop up toast for upcoming bookings nearing start time (<= 15 minutes)
+        upcomingList.forEach(item => {
+          const alertKey = `toast-upcoming-${item.booking_id}-${item.start_time}`;
+          if (!notifiedSet.has(alertKey)) {
+            notifiedSet.add(alertKey);
+            updatedNotified = true;
+
+            const startT = new Date(item.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+            const endT = new Date(item.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
 
             const toastId = Date.now() + Math.random().toString(36).substr(2, 9);
             const newToast = {
               id: toastId,
-              room_name: alert.room_name,
-              customer_name: alert.customer_name,
+              type: 'upcoming',
+              room_name: item.room_name,
+              customer_name: item.customer_name,
               start_time_formatted: startT,
               end_time_formatted: endT
             };
 
-            setToasts(prev => [...prev, newToast]);
+            setToasts(prev => [newToast, ...prev]);
 
             setTimeout(() => {
               setToasts(prev => prev.filter(t => t.id !== toastId));
             }, 12000);
           }
         });
+
+        if (updatedNotified) {
+          try {
+            localStorage.setItem('bwork_notified_toasts', JSON.stringify(Array.from(notifiedSet)));
+          } catch (e) {}
+        }
       } catch (err) {
         console.error('Failed to fetch upcoming booking alerts:', err);
       }
@@ -170,13 +267,9 @@ function App() {
 
     checkUpcomingAlerts();
 
-    const interval = setInterval(checkUpcomingAlerts, 30000);
+    const interval = setInterval(checkUpcomingAlerts, 15000);
     return () => clearInterval(interval);
   }, [user]);
-
-  const removeToast = (id) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
-  };
 
   const handleChangePassword = async (e) => {
     e.preventDefault();
@@ -208,28 +301,58 @@ function App() {
     }
   };
 
+
   const [settings, setSettings] = useState({
-    company_name: 'บริษัท ดีพมายด์ โซลูชั่น จำกัด',
+    company_name: 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)',
     receipt_header: 'ใบเสร็จรับเงิน / ใบรับจองบริการ',
     receipt_footer: 'ขอบคุณที่ใช้บริการห้องประชุมของเรา'
   });
 
-  // Load user from localStorage
+  // Verify session with backend /api/auth/me on initial load
   useEffect(() => {
-    const savedUser = localStorage.getItem('pos_user');
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-      triggerTransition(); // Transition on initial load
+    const initAuthAndSettings = async () => {
+      const savedUser = localStorage.getItem('pos_user');
+      const savedToken = localStorage.getItem('pos_token');
       const savedTheme = localStorage.getItem('pos_theme') || 'light';
       setTheme(savedTheme);
       document.documentElement.setAttribute('data-theme', savedTheme);
-    } else {
-      // Default to Lightmode always on login page
-      setTheme('light');
-      document.documentElement.setAttribute('data-theme', 'light');
-    }
-    fetchSettings();
+
+      if (savedUser && savedToken) {
+        try {
+          const res = await fetch('/api/auth/me', {
+            headers: { 'Authorization': `Bearer ${savedToken}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.user) {
+              setUser(data.user);
+              localStorage.setItem('pos_user', JSON.stringify(data.user));
+              triggerTransition();
+            } else {
+              // Token invalid or user no longer exists
+              handleForceLogout();
+            }
+          } else {
+            // Token expired or invalid
+            handleForceLogout();
+          }
+        } catch (err) {
+          // If server offline, keep local user
+          setUser(JSON.parse(savedUser));
+        }
+      }
+      fetchSettings();
+    };
+
+    initAuthAndSettings();
   }, []);
+
+  const handleForceLogout = () => {
+    setUser(null);
+    localStorage.removeItem('pos_user');
+    localStorage.removeItem('pos_token');
+    setIsTransitioning(false);
+  };
 
   // Fetch settings from API
   const fetchSettings = async () => {
@@ -280,7 +403,8 @@ function App() {
         setActiveTab('pos');
         setActiveSettingsSubTab(getFirstAllowedSettingsTab(data.user));
         localStorage.setItem('pos_user', JSON.stringify(data.user));
-        triggerTransition(); // Trigger loading screen after successful login
+        if (data.token) localStorage.setItem('pos_token', data.token);
+        triggerTransition();
       } else {
         setLoginError(data.error || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
       }
@@ -289,6 +413,7 @@ function App() {
     }
   };
 
+
   const handleLogout = async () => {
     const confirm = await customConfirm("คุณต้องการออกจากระบบใช่หรือไม่?");
     if (confirm) {
@@ -296,6 +421,7 @@ function App() {
       setActiveTab('pos');
       setActiveSettingsSubTab('manage');
       localStorage.removeItem('pos_user');
+      localStorage.removeItem('pos_token');
       setIsTransitioning(false);
       
       // Force theme to light on logout
@@ -407,21 +533,21 @@ function App() {
         <div className="bg-glow-orb-2" style={{ zIndex: 3 }}></div>
 
         {/* Centered Login Card */}
-        <div className="login-card" style={{ zIndex: 4, border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-shadow)', maxWidth: '440px', width: '100%', padding: '44px 36px' }}>
+        <div className="login-card" style={{ zIndex: 4, border: '1px solid var(--glass-border)', boxShadow: 'var(--glass-shadow)', maxWidth: '440px', width: '100%', padding: '36px 32px' }}>
           <div className="login-logo-container">
-            <img src="/BWORK-LOGO.png" alt="Bwork Logo" style={{ width: '90px', height: '90px', borderRadius: '22px', objectFit: 'contain', backgroundColor: '#ffffff', padding: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }} />
+            <img src="/BWORK-LOGO.png" alt="Bwork Logo" style={{ width: '80px', height: '80px', borderRadius: '20px', objectFit: 'contain', backgroundColor: '#ffffff', padding: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }} />
           </div>
-          <h2 className="login-title" style={{ marginTop: '20px', fontSize: '1.75rem', fontWeight: 800 }}>Bwork POS</h2>
-          <p className="login-subtitle">ระบบบริหารจัดการจุดขายและห้องประชุม</p>
+          <h2 className="login-title" style={{ marginTop: '16px', fontSize: '1.65rem', fontWeight: 800 }}>Bwork POS</h2>
+          <p className="login-subtitle" style={{ marginBottom: '18px' }}>ระบบบริหารจัดการจุดขายและห้องประชุม</p>
 
           {loginError && (
             <div style={{
               backgroundColor: 'var(--danger-bg)',
               color: 'var(--danger-color)',
-              padding: '14px 18px',
-              borderRadius: '18px',
-              fontSize: '0.85rem',
-              marginBottom: '20px',
+              padding: '12px 16px',
+              borderRadius: '14px',
+              fontSize: '0.825rem',
+              marginBottom: '18px',
               fontWeight: 650,
               width: '100%',
               border: '1px solid rgba(239, 68, 68, 0.2)',
@@ -437,7 +563,7 @@ function App() {
                 id="username"
                 type="text"
                 className="login-input"
-                placeholder="ชื่อผู้ใช้งาน"
+                placeholder="ชื่อผู้ใช้งาน (Username)"
                 required
                 value={loginForm.username}
                 onChange={e => setLoginForm({ ...loginForm, username: e.target.value })}
@@ -445,12 +571,12 @@ function App() {
               <User size={18} className="login-input-icon" />
             </div>
 
-            <div className="login-input-group" style={{ marginBottom: '28px' }}>
+            <div className="login-input-group" style={{ marginBottom: '24px' }}>
               <input
                 id="password"
                 type="password"
                 className="login-input"
-                placeholder="รหัสผ่าน"
+                placeholder="รหัสผ่าน (Password)"
                 required
                 value={loginForm.password}
                 onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
@@ -460,7 +586,7 @@ function App() {
 
             <button type="submit" className="login-button">
               <Key size={18} />
-              <span>Login</span>
+              <span>เข้าสู่ระบบ (Login)</span>
             </button>
           </form>
         </div>
@@ -545,9 +671,24 @@ function App() {
                 type="button"
                 className={`top-menu-item ${activeTab === 'pending' ? 'active' : ''}`}
                 onClick={() => setActiveTab('pending')}
+                style={{ position: 'relative' }}
               >
                 <Clock size={15} />
-                <span>รอชำระเงิน</span>
+                <span>รายการจองห้อง</span>
+                {pendingCount > 0 && (
+                  <span style={{
+                    backgroundColor: reviewingCount > 0 ? '#ef4444' : '#f59e0b',
+                    color: '#ffffff',
+                    fontSize: '0.68rem',
+                    fontWeight: 800,
+                    padding: '1px 6px',
+                    borderRadius: '999px',
+                    marginLeft: '4px',
+                    boxShadow: '0 2px 6px rgba(0,0,0,0.2)'
+                  }}>
+                    {pendingCount}
+                  </span>
+                )}
               </button>
             )}
             {hasPermission('layout') && (
@@ -607,14 +748,42 @@ function App() {
             </button>
           )}
 
-          {/* User Info Text */}
-          <span 
-            className="navbar-user-container"
-            style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginRight: '6px' }} 
+          {/* User Info Badge */}
+          <div 
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '8px', 
+              padding: '4px 10px', 
+              borderRadius: '12px', 
+              background: 'rgba(255, 255, 255, 0.05)', 
+              border: '1px solid var(--border-color)',
+              marginRight: '4px'
+            }}
           >
-            <span className="navbar-user-label">ผู้ใช้งาน: </span>
-            <span style={{ color: 'var(--primary-color)', fontWeight: 800 }}>{user.username}</span>
-          </span>
+            <div style={{
+              width: '28px',
+              height: '28px',
+              borderRadius: '8px',
+              background: user.role === 'admin' ? 'linear-gradient(135deg, #3b82f6, #6366f1)' : 'linear-gradient(135deg, #10b981, #059669)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#ffffff',
+              fontSize: '0.8rem',
+              fontWeight: 800
+            }}>
+              {(user.fullname || user.username || 'U').charAt(0).toUpperCase()}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'left', lineHeight: 1.15 }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                {user.fullname || user.username}
+              </span>
+              <span style={{ fontSize: '0.675rem', fontWeight: 700, color: user.role === 'admin' ? '#3b82f6' : '#10b981' }}>
+                {user.role === 'admin' ? 'ผู้ดูแลระบบ (Admin)' : 'พนักงานต้อนรับ (Staff)'}
+              </span>
+            </div>
+          </div>
 
           {/* Cart Toggle Icon Button with Red Badge (Only on POS tab) */}
           {activeTab === 'pos' && (
@@ -655,6 +824,274 @@ function App() {
             </button>
           )}
 
+          {/* Upcoming Meeting Alert Notification Bell */}
+          <div style={{ position: 'relative' }}>
+            <button 
+              onClick={handleToggleBell}
+              type="button"
+              className="hamburger-btn"
+              style={{
+                position: 'relative',
+                background: isBellOpen ? 'var(--primary-color)' : 'transparent',
+                color: isBellOpen ? '#ffffff' : (unreadAlerts.length > 0 ? '#ef4444' : 'var(--text-main)'),
+                width: '38px',
+                height: '38px',
+                borderRadius: '10px'
+              }}
+              title="การแจ้งเตือนห้องประชุม"
+            >
+              <Bell size={18} />
+              {unreadAlerts.length > 0 && (
+                <span style={{
+                  position: 'absolute',
+                  top: '-4px',
+                  right: '-4px',
+                  backgroundColor: '#ef4444',
+                  color: '#ffffff',
+                  fontSize: '0.6rem',
+                  fontWeight: 'bold',
+                  borderRadius: '50%',
+                  width: '16px',
+                  height: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 0 8px rgba(239,68,68,0.7)'
+                }}>
+                  {unreadAlerts.length}
+                </span>
+              )}
+            </button>
+
+            {/* Notification Dropdown Box (Top-Right) */}
+            {isBellOpen && (
+              <>
+                <div 
+                  style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }}
+                  onClick={() => setIsBellOpen(false)} 
+                />
+                <div 
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 8px)',
+                    right: 0,
+                    width: '360px',
+                    maxWidth: '92vw',
+                    backgroundColor: 'var(--bg-card)',
+                    backdropFilter: 'blur(25px)',
+                    WebkitBackdropFilter: 'blur(25px)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '18px',
+                    boxShadow: '0 16px 50px rgba(0, 0, 0, 0.3)',
+                    padding: '16px',
+                    zIndex: 2000,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px',
+                    animation: 'fadeIn 0.2s ease-out'
+                  }}
+                >
+                  {/* Header & Tabs */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 800, fontSize: '0.9rem', color: 'var(--text-main)' }}>
+                      <Bell size={16} className="text-primary" />
+                      <span>ศูนย์การแจ้งเตือน</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '3px', background: 'var(--bg-color)', padding: '2px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                      <button
+                        type="button"
+                        onClick={() => setBellTab('incoming')}
+                        style={{
+                          border: 'none',
+                          background: bellTab === 'incoming' ? 'var(--primary-color)' : 'transparent',
+                          color: bellTab === 'incoming' ? '#ffffff' : 'var(--text-muted)',
+                          fontSize: '0.7rem',
+                          fontWeight: 700,
+                          padding: '4px 6px',
+                          borderRadius: '6px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        จองใหม่ ({incomingBookings.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBellTab('upcoming')}
+                        style={{
+                          border: 'none',
+                          background: bellTab === 'upcoming' ? 'var(--primary-color)' : 'transparent',
+                          color: bellTab === 'upcoming' ? '#ffffff' : 'var(--text-muted)',
+                          fontSize: '0.7rem',
+                          fontWeight: 700,
+                          padding: '4px 6px',
+                          borderRadius: '6px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ใกล้เริ่ม ({upcomingAlerts.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBellTab('today')}
+                        style={{
+                          border: 'none',
+                          background: bellTab === 'today' ? 'var(--primary-color)' : 'transparent',
+                          color: bellTab === 'today' ? '#ffffff' : 'var(--text-muted)',
+                          fontSize: '0.7rem',
+                          fontWeight: 700,
+                          padding: '4px 6px',
+                          borderRadius: '6px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        วันนี้ ({todayBookings.length})
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Body Content */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '340px', overflowY: 'auto' }}>
+                    {bellTab === 'incoming' ? (
+                      incomingBookings.length === 0 ? (
+                        <div style={{ textAlign: 'center', padding: '24px 8px', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                          <CheckCircle2 size={26} style={{ color: '#10b981', margin: '0 auto 8px auto', display: 'block' }} />
+                          ไม่มีรายการจองใหม่ค้างตรวจสอบ
+                        </div>
+                      ) : (
+                        incomingBookings.map((b, idx) => {
+                          const isSlip = b.payment_status === 'reviewing' || !!b.slip_image_url;
+                          return (
+                            <div 
+                              key={idx}
+                              onClick={() => {
+                                setIsBellOpen(false);
+                                setActiveTab('pending');
+                              }}
+                              style={{
+                                padding: '10px 12px',
+                                borderRadius: '12px',
+                                backgroundColor: isSlip ? 'rgba(14, 165, 233, 0.08)' : 'rgba(245, 158, 11, 0.08)',
+                                border: `1px solid ${isSlip ? 'rgba(14, 165, 233, 0.25)' : 'rgba(245, 158, 11, 0.25)'}`,
+                                borderLeft: `4px solid ${isSlip ? '#0ea5e9' : '#f59e0b'}`,
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '3px',
+                                textAlign: 'left',
+                                cursor: 'pointer',
+                                transition: 'all 0.15s ease'
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ fontWeight: 800, fontSize: '0.85rem', color: 'var(--text-main)' }}>
+                                  #{b.booking_id} · {b.room_name || 'ห้องประชุม'}
+                                </span>
+                                <span style={{ 
+                                  fontSize: '0.7rem', 
+                                  fontWeight: 800, 
+                                  color: isSlip ? '#0ea5e9' : '#f59e0b', 
+                                  backgroundColor: isSlip ? 'rgba(14,165,233,0.15)' : 'rgba(245,158,11,0.15)', 
+                                  padding: '2px 6px', 
+                                  borderRadius: '4px' 
+                                }}>
+                                  {isSlip ? '📎 แนบสลิปแล้ว' : '⚠️ รอชำระเงิน'}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{b.customer_name || 'ลูกค้า LINE OA'}</strong> · ยอด <strong style={{ color: 'var(--primary-color)' }}>฿{Number(b.total_amount || 0).toLocaleString()}</strong>
+                              </div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--primary-color)', marginTop: '2px', fontWeight: 600 }}>
+                                👉 คลิกเพื่อไปที่หน้าตรวจสลิป / รับชำระ
+                              </div>
+                            </div>
+                          );
+                        })
+                      )
+                    ) : bellTab === 'upcoming' ? (
+                      upcomingAlerts.length === 0 ? (
+                        <div style={{ textAlign: 'center', padding: '24px 8px', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                          <CheckCircle2 size={26} style={{ color: '#10b981', margin: '0 auto 8px auto', display: 'block' }} />
+                          ขณะนี้ไม่มีห้องประชุมที่ใกล้ถึงเวลาใช้งาน
+                        </div>
+                      ) : (
+                        upcomingAlerts.map((alert, idx) => {
+                          const startT = new Date(alert.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                          const endT = new Date(alert.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                          return (
+                            <div 
+                              key={idx}
+                              style={{
+                                padding: '10px 12px',
+                                borderRadius: '12px',
+                                backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                                border: '1px solid rgba(239, 68, 68, 0.25)',
+                                borderLeft: '4px solid #ef4444',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '3px',
+                                textAlign: 'left'
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ fontWeight: 800, fontSize: '0.85rem', color: 'var(--text-main)' }}>{alert.room_name}</span>
+                                <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.15)', padding: '2px 6px', borderRadius: '4px' }}>
+                                  ใกล้เริ่มใช้งาน
+                                </span>
+                              </div>
+                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                เวลา: <strong style={{ color: 'var(--text-main)' }}>{startT} - {endT} น.</strong>
+                              </div>
+                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{alert.customer_name || 'ลูกค้า'}</strong>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )
+                    ) : (
+                      todayBookings.length === 0 ? (
+                        <div style={{ textAlign: 'center', padding: '24px 8px', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                          <Calendar size={26} style={{ color: 'var(--text-muted)', margin: '0 auto 8px auto', display: 'block' }} />
+                          วันนี้ยังไม่มีรายการจองห้องประชุม
+                        </div>
+                      ) : (
+                        todayBookings.map((item, idx) => {
+                          const startT = new Date(item.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                          const endT = new Date(item.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                          const isExpired = new Date() > new Date(item.end_time);
+                          return (
+                            <div 
+                              key={idx}
+                              style={{
+                                padding: '10px 12px',
+                                borderRadius: '12px',
+                                backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                                border: '1px solid var(--border-color)',
+                                borderLeft: `4px solid ${isExpired ? '#94a3b8' : (item.payment_status === 'paid' ? '#10b981' : '#f59e0b')}`,
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '3px',
+                                textAlign: 'left',
+                                opacity: isExpired ? 0.65 : 1
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span style={{ fontWeight: 800, fontSize: '0.85rem', color: 'var(--text-main)' }}>{item.room_name}</span>
+                                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--primary-color)' }}>{startT} - {endT} น.</span>
+                              </div>
+                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                                ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{item.customer_name || 'ลูกค้า'}</strong> · {isExpired ? 'ใช้งานเสร็จแล้ว' : (item.payment_status === 'paid' ? 'ชำระแล้ว' : 'รอชำระ')}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
           {/* Theme display switcher */}
           <button 
             onClick={toggleTheme} 
@@ -664,14 +1101,12 @@ function App() {
             {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
           </button>
 
-
-
-          {/* Logout button */}
+          {/* Switch User / Logout button */}
           <button 
             className="hamburger-btn"
             onClick={handleLogout}
             style={{ width: '38px', height: '38px', borderRadius: '10px', color: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.08)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
-            title="ออกจากระบบ"
+            title="สลับผู้ใช้ / ออกจากระบบ"
           >
             <LogOut size={18} />
           </button>
@@ -705,7 +1140,7 @@ function App() {
                   <div className="menu-card-icon-wrapper">
                     <Clock size={20} />
                   </div>
-                  <span>รายการรอชำระเงิน</span>
+                  <span>รายการจองห้อง</span>
                 </div>
               )}
               {hasPermission('layout') && (
@@ -761,18 +1196,21 @@ function App() {
       <main className="main-content" style={{ 
         marginLeft: 0, 
         marginTop: 0, 
-        paddingTop: '100px', 
-        paddingBottom: '24px', 
-        height: '100vh', 
+        paddingTop: activeTab === 'pos' ? '66px' : '78px', 
+        paddingBottom: activeTab === 'pos' ? '6px' : '24px', 
+        paddingLeft: activeTab === 'pos' ? '12px' : '16px',
+        paddingRight: activeTab === 'pos' ? '12px' : '16px',
+        height: activeTab === 'pos' ? '100vh' : 'auto',
+        minHeight: '100vh',
         boxSizing: 'border-box', 
-        overflow: 'auto', 
+        overflow: activeTab === 'pos' ? 'hidden' : 'auto', 
         display: 'flex', 
         flexDirection: 'column' 
       }}>
         {activeTab === 'pos' && <BookingPOS user={user} settings={settings} sysAlert={customAlert} preselectedRoom={preselectedRoom} clearPreselectedRoom={() => setPreselectedRoom(null)} onNavigate={setActiveTab} onExportToQuotation={handleExportToQuotation} showCartSidebar={showCartSidebar} setShowCartSidebar={setShowCartSidebar} onCartCountChange={setCartCount} />}
         {activeTab === 'layout' && <RoomLayout sysAlert={customAlert} onNavigateToBook={(room) => { setPreselectedRoom(room); setActiveTab('pos'); }} />}
         {activeTab === 'pending' && <PendingBookings settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
-        {user.role === 'admin' && activeTab === 'dashboard' && <Dashboard />}
+        {activeTab === 'dashboard' && <Dashboard />}
         {activeTab === 'history' && <HistoryLog settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
         {activeTab === 'quotations' && <Quotations user={user} settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} quotationCartData={quotationCartData} clearQuotationCartData={() => setQuotationCartData(null)} onNavigate={setActiveTab} />}
         
@@ -835,7 +1273,7 @@ function App() {
                     }}
                   >
                     <Users size={16} />
-                    <span>จัดการสิทธิการใช้งาน</span>
+                    <span>จัดการผู้ใช้ & บทบาท</span>
                   </button>
                 )}
 
@@ -855,7 +1293,7 @@ function App() {
                     }}
                   >
                     <Receipt size={16} />
-                    <span>ตั้งค่าใบเสร็จรับเงิน</span>
+                    <span>ตั้งค่าระบบ & ใบเสร็จ</span>
                   </button>
                 )}
 
@@ -895,7 +1333,7 @@ function App() {
                     }}
                   >
                     <Database size={16} />
-                    <span>จัดการฐานข้อมูล</span>
+                    <span>สำรองข้อมูล (Backup)</span>
                   </button>
                 )}
 
@@ -945,13 +1383,13 @@ function App() {
               display: 'flex',
               flexDirection: 'column'
             }}>
-              {activeSettingsSubTab === 'users' && hasPermission('admin-users') && <SettingsPanel viewMode="users" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'users' && hasPermission('admin-users') && <SettingsPanel viewMode="users" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
               {activeSettingsSubTab === 'manage' && hasPermission('manage') && <ManagementPanel sysAlert={customAlert} sysConfirm={customConfirm} />}
-              {activeSettingsSubTab === 'system' && hasPermission('admin-system') && <SettingsPanel viewMode="system" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
-              {activeSettingsSubTab === 'quotation' && hasPermission('admin-quotation') && <SettingsPanel viewMode="quotation" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
-              {activeSettingsSubTab === 'backup' && hasPermission('admin-backup') && <SettingsPanel viewMode="backup" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} onClearHistory={handleClearHistory} />}
-              {activeSettingsSubTab === 'dooraccess' && <SettingsPanel viewMode="dooraccess" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
-              {activeSettingsSubTab === 'general' && <SettingsPanel viewMode="general" onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'system' && hasPermission('admin-system') && <SettingsPanel viewMode="system" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'quotation' && hasPermission('admin-quotation') && <SettingsPanel viewMode="quotation" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'backup' && hasPermission('admin-backup') && <SettingsPanel viewMode="backup" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} onClearHistory={handleClearHistory} />}
+              {activeSettingsSubTab === 'dooraccess' && <SettingsPanel viewMode="dooraccess" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'general' && <SettingsPanel viewMode="general" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
             </div>
           </div>
         )}
@@ -1132,92 +1570,132 @@ function App() {
         </div>
       )}
 
-      {/* Toast Notifications Container (Line Style at Bottom Right) */}
-      <div style={{
-        position: 'fixed',
-        bottom: '24px',
-        right: '24px',
-        zIndex: 11000,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '12px',
-        maxWidth: '380px',
-        width: 'calc(100% - 48px)',
-        pointerEvents: 'none'
-      }}>
-        {toasts.map(toast => (
-          <div 
-            key={toast.id}
-            style={{
-              pointerEvents: 'auto',
-              background: 'var(--bg-glass-modal)',
-              borderLeft: '5px solid #06c755', // Line Green accent border
-              borderTop: '1px solid var(--border-color)',
-              borderRight: '1px solid var(--border-color)',
-              borderBottom: '1px solid var(--border-color)',
-              borderRadius: '12px',
-              padding: '12px 16px',
-              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.25)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px',
-              position: 'relative',
-              animation: 'slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards',
-              backdropFilter: 'blur(25px)',
-              WebkitBackdropFilter: 'blur(25px)'
-            }}
-          >
-            {/* Left side: Circular Icon Container (Line Green style) */}
-            <div style={{
-              width: '42px',
-              height: '42px',
-              borderRadius: '50%',
-              backgroundColor: 'rgba(6, 199, 85, 0.15)',
-              border: '1px solid rgba(6, 199, 85, 0.3)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0
-            }}>
-              <Bell size={20} style={{ color: '#06c755' }} />
-            </div>
+      {/* Toast Notification Container (Pops up at screen edge only when booking is <= 15 mins before start) */}
+      {toasts.length > 0 && (
+        <div style={{
+          position: 'fixed',
+          bottom: '24px',
+          right: '24px',
+          zIndex: 11000,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '12px',
+          maxWidth: '380px',
+          width: 'calc(100% - 48px)',
+          pointerEvents: 'none'
+        }}>
+          {toasts.map(toast => {
+            const isIncoming = toast.type === 'incoming';
+            const borderColor = isIncoming ? (toast.isSlip ? '#0ea5e9' : '#f59e0b') : '#ef4444';
+            const iconBg = isIncoming ? (toast.isSlip ? 'rgba(14, 165, 233, 0.15)' : 'rgba(245, 158, 11, 0.15)') : 'rgba(239, 68, 68, 0.15)';
+            const iconColor = isIncoming ? (toast.isSlip ? '#0ea5e9' : '#f59e0b') : '#ef4444';
 
-            {/* Middle: Content text */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px', textAlign: 'left', minWidth: 0 }}>
-              <div style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                ห้องประชุมใกล้เริ่มใช้งาน
-              </div>
-              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                คุณ <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>{toast.customer_name}</span> กำลังจะเข้าใช้ <span style={{ fontWeight: 700, color: 'var(--primary-color)' }}>{toast.room_name}</span> (เวลา {toast.start_time_formatted} - {toast.end_time_formatted} น.)
-              </div>
-            </div>
+            return (
+              <div 
+                key={toast.id}
+                onClick={() => {
+                  if (isIncoming) {
+                    setActiveTab('pending');
+                    removeToast(toast.id);
+                  }
+                }}
+                style={{
+                  pointerEvents: 'auto',
+                  background: 'var(--bg-card)',
+                  borderLeft: `5px solid ${borderColor}`,
+                  borderTop: '1px solid var(--border-color)',
+                  borderRight: '1px solid var(--border-color)',
+                  borderBottom: '1px solid var(--border-color)',
+                  borderRadius: '14px',
+                  padding: '14px 16px',
+                  boxShadow: '0 14px 45px rgba(0, 0, 0, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  position: 'relative',
+                  animation: 'slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards',
+                  backdropFilter: 'blur(25px)',
+                  WebkitBackdropFilter: 'blur(25px)',
+                  cursor: isIncoming ? 'pointer' : 'default'
+                }}
+              >
+                {/* Icon */}
+                <div style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '50%',
+                  backgroundColor: iconBg,
+                  border: `1px solid ${borderColor}40`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0
+                }}>
+                  {isIncoming ? (
+                    <Bell size={20} style={{ color: iconColor }} />
+                  ) : (
+                    <AlertCircle size={20} style={{ color: iconColor }} />
+                  )}
+                </div>
 
-            {/* Right: Close button */}
-            <button 
-              onClick={() => removeToast(toast.id)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                color: 'var(--text-muted)',
-                padding: '4px',
-                borderRadius: '6px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                transition: 'all 0.2s',
-                alignSelf: 'flex-start',
-                marginTop: '-4px',
-                marginRight: '-8px'
-              }}
-              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.08)'}
-              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        ))}
-      </div>
+                {/* Text */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px', textAlign: 'left', minWidth: 0 }}>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 800, color: iconColor, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    {isIncoming ? (
+                      toast.isSlip ? (
+                        <span>📎 สลิปโอนเงินใหม่จาก LINE OA!</span>
+                      ) : (
+                        <span>📥 การจองใหม่จาก LINE OA!</span>
+                      )
+                    ) : (
+                      <span>⚠️ ห้องประชุมใกล้เริ่ม (อีก 15 นาที)</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-main)', fontWeight: 700 }}>
+                    {isIncoming ? (
+                      `#${toast.booking_id} · ${toast.room_name}`
+                    ) : (
+                      toast.room_name
+                    )}
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    {isIncoming ? (
+                      `คุณ ${toast.customer_name} · ยอด ฿${Number(toast.total_amount || 0).toLocaleString()} (คลิกเพื่อตรวจสลิป)`
+                    ) : (
+                      `คุณ ${toast.customer_name} (${toast.start_time_formatted} - ${toast.end_time_formatted} น.)`
+                    )}
+                  </div>
+                </div>
+
+                {/* Close button */}
+                <button 
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeToast(toast.id);
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'var(--text-muted)',
+                    padding: '4px',
+                    borderRadius: '6px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    alignSelf: 'flex-start',
+                    marginTop: '-4px',
+                    marginRight: '-6px'
+                  }}
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

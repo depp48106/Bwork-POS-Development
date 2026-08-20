@@ -2,13 +2,13 @@ import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import StepProgress from '../components/StepProgress';
 
-// Helper to generate 30-min time options
+// Helper to generate 30-min time options (08:00 - 18:00)
 const generateTimeOptions = () => {
   const options = [];
-  for (let i = 8; i <= 20; i++) {
+  for (let i = 8; i <= 18; i++) {
     const h = i.toString().padStart(2, '0');
     options.push(`${h}:00`);
-    if (i < 20) options.push(`${h}:30`);
+    if (i < 18) options.push(`${h}:30`);
   }
   return options;
 };
@@ -20,6 +20,19 @@ const formatLocalDateIso = (year, monthIndex, day) => {
   const m = String(monthIndex + 1).padStart(2, '0');
   const d = String(day).padStart(2, '0');
   return `${year}-${m}-${d}`;
+};
+
+// Helper to check if a time slot is in the past for the selected date
+const isPastTime = (slotTime, selectedDateStr) => {
+  if (!selectedDateStr || !slotTime) return false;
+  const now = new Date();
+  const todayStr = formatLocalDateIso(now.getFullYear(), now.getMonth(), now.getDate());
+  if (selectedDateStr !== todayStr) return false;
+  
+  const [sh, sm] = slotTime.split(':').map(Number);
+  const slotMinutes = sh * 60 + (sm || 0);
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  return slotMinutes <= nowMinutes;
 };
 
 const getTodayIso = () => {
@@ -49,6 +62,10 @@ export default function HomePage() {
     }
     if (endTime <= startTime) {
       setTimeError('เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น');
+      return;
+    }
+    if (isPastTime(startTime, dateStr)) {
+      setTimeError('เวลาเริ่มต้นที่เลือกได้ผ่านไปแล้ว กรุณาเลือกช่วงเวลาใหม่');
       return;
     }
 
@@ -158,13 +175,17 @@ export default function HomePage() {
                 <line x1="3" y1="10" x2="21" y2="10"></line>
               </svg>
 
-              {/* Native Hidden Date Input */}
+              {/* Native Date Input Overlay - perfectly receives touch on iOS without blocking visual UI */}
               <input 
                 ref={dateInputRef}
                 type="date"
                 value={dateStr}
                 min={todayIso}
-                onChange={(e) => e.target.value && setDateStr(e.target.value)}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    setDateStr(e.target.value);
+                  }
+                }}
                 style={{
                   position: 'absolute',
                   top: 0,
@@ -172,7 +193,9 @@ export default function HomePage() {
                   width: '100%',
                   height: '100%',
                   opacity: 0,
-                  pointerEvents: 'none'
+                  zIndex: 5,
+                  cursor: 'pointer',
+                  fontSize: '16px'
                 }}
               />
             </div>
@@ -197,31 +220,50 @@ export default function HomePage() {
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
               <div>
-                <label style={{ fontSize: '0.75rem', color: '#64748b', display: 'block', marginBottom: '2px' }}>เวลาเริ่มต้น:</label>
+                <label style={{ fontSize: '0.8rem', color: '#64748b', display: 'block', marginBottom: '4px', fontWeight: 600 }}>เวลาเริ่มต้น:</label>
                 <select
+                  id="home-select-start-time"
                   className="form-control"
                   value={startTime}
                   onChange={(e) => {
-                    setStartTime(e.target.value);
+                    const newStart = e.target.value;
+                    setStartTime(newStart);
                     setTimeError('');
+                    if (newStart && (!endTime || endTime <= newStart)) {
+                      const startHour = parseInt(newStart.split(':')[0], 10);
+                      const nextHour = (startHour + 1).toString().padStart(2, '0') + ':00';
+                      if (TIME_OPTIONS.includes(nextHour)) {
+                        setEndTime(nextHour);
+                      }
+                    }
                   }}
                   style={{ 
-                    fontSize: '0.9rem', 
-                    padding: '0.65rem', 
-                    borderRadius: '8px', 
                     fontWeight: startTime ? 'bold' : 'normal',
-                    color: startTime ? 'var(--primary)' : '#94a3b8',
-                    border: !startTime && timeError ? '1.5px solid #ef4444' : '1px solid var(--border)'
+                    color: startTime ? 'var(--primary)' : '#0f172a',
+                    border: !startTime && timeError ? '1.5px solid #ef4444' : '1.5px solid var(--border)'
                   }}
                 >
                   <option value="">-- เลือกเวลาเริ่ม --</option>
-                  {TIME_OPTIONS.map(t => <option key={`hs-${t}`} value={t}>{t} น.</option>)}
+                  {TIME_OPTIONS.filter(t => t < '18:00').map(t => {
+                    const isPast = isPastTime(t, dateStr);
+                    return (
+                      <option 
+                        key={`hs-${t}`} 
+                        value={t} 
+                        disabled={isPast}
+                        style={{ color: isPast ? '#94a3b8' : 'inherit' }}
+                      >
+                        {t} น.
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
               <div>
-                <label style={{ fontSize: '0.75rem', color: '#64748b', display: 'block', marginBottom: '2px' }}>เวลาสิ้นสุด:</label>
+                <label style={{ fontSize: '0.8rem', color: '#64748b', display: 'block', marginBottom: '4px', fontWeight: 600 }}>เวลาสิ้นสุด:</label>
                 <select
+                  id="home-select-end-time"
                   className="form-control"
                   value={endTime}
                   onChange={(e) => {
@@ -229,16 +271,27 @@ export default function HomePage() {
                     setTimeError('');
                   }}
                   style={{ 
-                    fontSize: '0.9rem', 
-                    padding: '0.65rem', 
-                    borderRadius: '8px', 
                     fontWeight: endTime ? 'bold' : 'normal',
-                    color: endTime ? 'var(--primary)' : '#94a3b8',
-                    border: !endTime && timeError ? '1.5px solid #ef4444' : '1px solid var(--border)'
+                    color: endTime ? 'var(--primary)' : '#0f172a',
+                    border: !endTime && timeError ? '1.5px solid #ef4444' : '1.5px solid var(--border)'
                   }}
                 >
                   <option value="">-- เลือกเวลาสิ้นสุด --</option>
-                  {TIME_OPTIONS.filter(t => !startTime || t > startTime).map(t => <option key={`he-${t}`} value={t}>{t} น.</option>)}
+                  {TIME_OPTIONS.filter(t => t > '08:00').map(t => {
+                    const isPast = isPastTime(t, dateStr);
+                    const isBeforeStart = startTime ? t <= startTime : false;
+                    const isDisabled = isPast || isBeforeStart;
+                    return (
+                      <option 
+                        key={`he-${t}`} 
+                        value={t}
+                        disabled={isDisabled}
+                        style={{ color: isDisabled ? '#94a3b8' : 'inherit' }}
+                      >
+                        {t} น.
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             </div>

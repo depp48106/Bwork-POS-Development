@@ -393,13 +393,13 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
           : (selectedItemObj.daily_rate || standardRate * 9);
         rate = (price !== '' && !isNaN(Number(price))) ? Number(price) : dailyRate;
         qty = Number(quantity) || 1;
-        total = rate * qty;
+        total = Math.round(rate * qty * 100) / 100;
         desc = `รายวัน (ทั้งวัน) ${qty} วัน`;
       } else if (bookingType === 'halfday') {
         const halfdayRate = selectedItemObj.half_day_rate || standardRate * 4;
         rate = (price !== '' && !isNaN(Number(price))) ? Number(price) : halfdayRate;
         qty = Number(quantity) || 1;
-        total = rate * qty;
+        total = Math.round(rate * qty * 100) / 100;
         desc = `ครึ่งวัน ${qty} ครั้ง`;
       } else {
         let hourCount = 1;
@@ -413,13 +413,13 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
         }
         qty = Number(quantity) > 1 ? Number(quantity) : hourCount;
         rate = (price !== '' && !isNaN(Number(price))) ? Number(price) : standardRate;
-        total = rate * qty;
+        total = Math.round(rate * qty * 100) / 100;
         desc = `รายชั่วโมง ${qty} ชั่วโมง`;
       }
     } else {
       rate = (price !== '' && !isNaN(Number(price))) ? Number(price) : (selectedItemObj.price || 0);
       qty = Number(quantity) || 1;
-      total = rate * qty;
+      total = Math.round(rate * qty * 100) / 100;
       desc = `บริการเสริม ${qty} ชิ้น`;
     }
 
@@ -748,7 +748,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
                 if (item.discount) {
                   const discVal = Number(item.discount) || 0;
                   if (item.discount_type === 'percent') {
-                    const rawSub = (item.quantity || 1) * (Number(item.price) || 0);
+                    const rawSub = Math.round((item.quantity || 1) * (Number(item.price) || 0) * 100) / 100;
                     const discAmt = (rawSub * discVal) / 100;
                     discountStr = `${discVal}% (${discAmt.toLocaleString('th-TH', {minimumFractionDigits:2, maximumFractionDigits:2})})`;
                   } else {

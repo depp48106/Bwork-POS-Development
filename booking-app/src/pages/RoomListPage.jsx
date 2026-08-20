@@ -3,18 +3,39 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 
-// Helper to generate 30-min time options
+// Helper to generate 30-min time options (08:00 - 18:00)
 const generateTimeOptions = () => {
   const options = [];
-  for (let i = 8; i <= 20; i++) {
+  for (let i = 8; i <= 18; i++) {
     const h = i.toString().padStart(2, '0');
     options.push(`${h}:00`);
-    if (i < 20) options.push(`${h}:30`);
+    if (i < 18) options.push(`${h}:30`);
   }
   return options;
 };
 
 const TIME_OPTIONS = generateTimeOptions();
+
+// Helper to format local date as YYYY-MM-DD
+const formatLocalDateIso = (year, monthIndex, day) => {
+  const m = String(monthIndex + 1).padStart(2, '0');
+  const d = String(day).padStart(2, '0');
+  return `${year}-${m}-${d}`;
+};
+
+// Helper to check if a time slot is in the past for the selected date
+const isPastTime = (slotTime, selectedDateStr) => {
+  if (!selectedDateStr || !slotTime) return false;
+  const now = new Date();
+  const todayStr = formatLocalDateIso(now.getFullYear(), now.getMonth(), now.getDate());
+  if (selectedDateStr !== todayStr) return false;
+  
+  const [sh, sm] = slotTime.split(':').map(Number);
+  const slotMinutes = sh * 60 + (sm || 0);
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  return slotMinutes <= nowMinutes;
+};
+
 
 // Subcomponent for each Room Card with Smart Option Selection & Offer Badges
 function RoomCard({ 
@@ -111,8 +132,8 @@ function RoomCard({
     const reqEndMs = new Date(`${date}T${activeEnd}:00`).getTime();
 
     return bookingsForRoom.some(b => {
-      const bStartMs = new Date(b.start_time).getTime();
-      const bEndMs = new Date(b.end_time).getTime();
+      const bStartMs = new Date(String(b.start_time).replace(' ', 'T')).getTime();
+      const bEndMs = new Date(String(b.end_time).replace(' ', 'T')).getTime();
       return bStartMs < reqEndMs && bEndMs > reqStartMs;
     });
   };
@@ -393,27 +414,53 @@ function RoomCard({
                 <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#0f172a', marginBottom: '0.25rem' }}>
                   ระบุช่วงเวลาจอง (รายชั่วโมง):
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
                   <div>
-                    <label style={{ fontSize: '0.675rem', color: '#64748b', display: 'block', marginBottom: '1px' }}>เริ่ม:</label>
+                    <label style={{ fontSize: '0.75rem', color: '#64748b', display: 'block', marginBottom: '2px', fontWeight: 600 }}>เริ่ม:</label>
                     <select
                       className="form-control"
                       value={startTime}
                       onChange={(e) => handleStartTimeChange(e.target.value)}
-                      style={{ fontSize: '0.8rem', padding: '0.35rem 0.5rem', borderRadius: '6px' }}
+                      style={{ padding: '0.45rem 0.6rem', borderRadius: '8px', fontWeight: 600, color: 'var(--primary)' }}
                     >
-                      {TIME_OPTIONS.map(t => <option key={`s-${t}`} value={t}>{t} น.</option>)}
+                      {TIME_OPTIONS.filter(t => t < '18:00').map(t => {
+                        const isPast = isPastTime(t, date);
+                        return (
+                          <option 
+                            key={`s-${t}`} 
+                            value={t} 
+                            disabled={isPast}
+                            style={{ color: isPast ? '#94a3b8' : 'inherit' }}
+                          >
+                            {t} น.
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
                   <div>
-                    <label style={{ fontSize: '0.675rem', color: '#64748b', display: 'block', marginBottom: '1px' }}>สิ้นสุด:</label>
+                    <label style={{ fontSize: '0.75rem', color: '#64748b', display: 'block', marginBottom: '2px', fontWeight: 600 }}>สิ้นสุด:</label>
                     <select
                       className="form-control"
                       value={endTime}
                       onChange={(e) => setEndTime(e.target.value)}
-                      style={{ fontSize: '0.8rem', padding: '0.35rem 0.5rem', borderRadius: '6px' }}
+                      style={{ padding: '0.45rem 0.6rem', borderRadius: '8px', fontWeight: 600, color: 'var(--primary)' }}
                     >
-                      {TIME_OPTIONS.filter(t => t > startTime).map(t => <option key={`e-${t}`} value={t}>{t} น.</option>)}
+                      {TIME_OPTIONS.filter(t => t > '08:00').map(t => {
+                        const isPast = isPastTime(t, date);
+                        const isBefore = startTime ? t <= startTime : false;
+                        const isDisabled = isPast || isBefore;
+                        return (
+                          <option 
+                            key={`e-${t}`} 
+                            value={t}
+                            disabled={isDisabled}
+                            style={{ color: isDisabled ? '#94a3b8' : 'inherit' }}
+                          >
+                            {t} น.
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
                 </div>
@@ -429,10 +476,14 @@ function RoomCard({
                   className="form-control"
                   value={halfDaySlot}
                   onChange={(e) => setHalfDaySlot(e.target.value)}
-                  style={{ fontSize: '0.825rem', padding: '0.4rem 0.5rem', borderRadius: '6px', fontWeight: 600, color: 'var(--primary)' }}
+                  style={{ padding: '0.45rem 0.6rem', borderRadius: '8px', fontWeight: 600, color: 'var(--primary)' }}
                 >
-                  <option value="08:00-12:00">รอบเช้า (08:00 - 12:00 น.)</option>
-                  <option value="13:00-17:00">รอบบ่าย (13:00 - 17:00 น.)</option>
+                  <option value="08:00-12:00" disabled={isPastTime('08:00', date)} style={{ color: isPastTime('08:00', date) ? '#94a3b8' : 'inherit' }}>
+                    รอบเช้า (08:00 - 12:00 น.)
+                  </option>
+                  <option value="13:00-17:00" disabled={isPastTime('13:00', date)} style={{ color: isPastTime('13:00', date) ? '#94a3b8' : 'inherit' }}>
+                    รอบบ่าย (13:00 - 17:00 น.)
+                  </option>
                 </select>
               </div>
             )}
@@ -446,7 +497,7 @@ function RoomCard({
                   className="form-control"
                   value={fullDaySlot}
                   onChange={(e) => setFullDaySlot(e.target.value)}
-                  style={{ fontSize: '0.825rem', padding: '0.4rem 0.5rem', borderRadius: '6px', fontWeight: 600, color: 'var(--primary)' }}
+                  style={{ padding: '0.45rem 0.6rem', borderRadius: '8px', fontWeight: 600, color: 'var(--primary)' }}
                 >
                   <option value="08:00-17:00">รอบ 08:00 - 17:00 น.</option>
                   <option value="09:00-18:00">รอบ 09:00 - 18:00 น.</option>
@@ -530,7 +581,7 @@ export default function RoomListPage() {
       setError('');
       try {
         const [roomsRes, schedRes] = await Promise.all([
-          fetch(`${API_BASE}/api/rooms`),
+          fetch(`${API_BASE}/api/public/rooms`),
           fetch(`${API_BASE}/api/public/rooms/schedule?date=${date}`)
         ]);
 
@@ -560,6 +611,11 @@ export default function RoomListPage() {
   }, [date, navigate]);
 
   const handleSelectRoom = (selectedData) => {
+    try {
+      sessionStorage.setItem('current_booking_selection', JSON.stringify(selectedData));
+    } catch (e) {
+      console.warn('SessionStorage error:', e);
+    }
     navigate('/booking', {
       state: selectedData
     });

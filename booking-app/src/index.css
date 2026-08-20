@@ -233,25 +233,55 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 700;
   margin-bottom: 0.4rem;
   color: #0f172a;
-  font-size: 0.875rem;
+  font-size: 0.9rem;
 }
 
 .form-control {
   width: 100%;
   padding: 0.7rem 0.85rem;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1.5px solid #cbd5e1;
   background: #ffffff;
   color: #0f172a;
   font-family: inherit;
-  font-size: 16px;
+  font-size: 16px !important;
+  min-height: 44px;
   transition: all 0.2s;
   outline: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .form-control:focus {
   border-color: #1e3a8a;
   box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.15);
+}
+
+/* iOS & Mobile Select Fixes */
+select.form-control {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231e3a8a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 0.85rem center;
+  background-size: 1.1rem;
+  padding-right: 2.5rem;
+  background-color: #ffffff;
+  color: #0f172a;
+  cursor: pointer;
+}
+
+select.form-control option {
+  background-color: #ffffff;
+  color: #0f172a;
+  font-size: 16px;
+  padding: 8px 12px;
+}
+
+select.form-control option:disabled {
+  color: #94a3b8;
+  background-color: #f1f5f9;
 }
 
 /* Mobile Responsiveness Fine-Tuning */

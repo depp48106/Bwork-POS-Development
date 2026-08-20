@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Calendar, Eye, DollarSign, Printer, X, Filter, FileText, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2, Trash2 } from 'lucide-react';
+import { Search, ChevronDown, RotateCcw, Ban, Clock, Calendar, Eye, DollarSign, Printer, X, Filter, FileText, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2, Trash2 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
 
@@ -8,12 +8,18 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [filters, setFilters] = useState({
     startDate: '',
     endDate: '',
-    search: ''
+    search: '',
+    searchType: 'all', // 'all', 'receipt', 'customer', 'contact', 'room'
+    status: 'all'      // 'all', 'paid', 'cancelled'
   });
   const [loading, setLoading] = useState(false);
+  const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
+  const [isSearchTypeDropdownOpen, setIsSearchTypeDropdownOpen] = useState(false);
 
   // Selected booking details modal
   const [selectedBooking, setSelectedBooking] = useState(null);
+  const [selectedTaxBooking, setSelectedTaxBooking] = useState(null);
+  const [taxCopied, setTaxCopied] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
 
   // Pagination state
@@ -28,11 +34,11 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const columns = [
     { key: 'id', label: 'เลขที่ใบเสร็จ' },
     { key: 'created_at', label: 'วันที่ทำรายการ' },
-    { key: 'booking_source', label: 'ช่องทางจอง' },
+    { key: 'booking_source', label: 'ช่องทางการจอง' },
     { key: 'customer_name', label: 'ชื่อผู้จอง' },
     { key: 'contact', label: 'เบอร์ติดต่อ' },
     { key: 'total_amount', label: 'ยอดชำระสุทธิ' },
-    { key: 'payment_status', label: 'สถานะการชำระ' },
+    { key: 'payment_status', label: 'สถานะการจอง' },
     { key: 'payment_method', label: 'ช่องทางชำระ' },
     { key: 'actions', label: 'จัดการ' }
   ];
@@ -40,7 +46,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   // Fetch bookings list (strictly paid ones)
   useEffect(() => {
     fetchBookings();
-  }, [filters.startDate, filters.endDate]); // trigger auto on date change
+  }, [filters.startDate, filters.endDate, filters.status]); // trigger auto on date change
 
   // Reset page to 1 when filters or search change
   useEffect(() => {
@@ -51,7 +57,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     setLoading(true);
     try {
       const { startDate, endDate, search } = filters;
-      let url = `/api/bookings?payment_status=paid&start_date=${startDate}&end_date=${endDate}`;
+      let url = `/api/bookings?start_date=${startDate}&end_date=${endDate}`;
+      if (filters.status && filters.status !== 'all') {
+        url += `&payment_status=${filters.status}`;
+      }
       if (search) {
         url += `&search=${encodeURIComponent(search)}`;
       }
@@ -128,28 +137,48 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     });
   };
 
-  const handleDeleteBooking = async (id, customerName, receiptNo) => {
+  const handleDeleteBooking = async (id, customerName, receiptNo, e) => {
+    if (e && e.stopPropagation) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
     const confirmMessage = `คุณต้องการลบ/ยกเลิกรายการจองของ ${customerName || ''} (${receiptNo || '#' + id}) ใช่หรือไม่?\n\n* ข้อมูลการจองและรายการในบิลนี้จะถูกลบออกจากระบบถาวร`;
     
+    let ok = false;
     if (sysConfirm) {
-      const ok = await sysConfirm(confirmMessage);
-      if (!ok) return;
-    } else if (!window.confirm(confirmMessage)) {
-      return;
+      ok = await sysConfirm(confirmMessage);
+    } else {
+      ok = window.confirm(confirmMessage);
     }
+    if (!ok) return;
 
     try {
-      const res = await fetch(`/api/bookings/${id}`, { method: 'DELETE' });
-      if (res.ok) {
+      let res = null;
+      if (id) {
+        res = await fetch(`/api/bookings/${id}`, { method: 'DELETE' });
+      }
+      
+      if ((!res || !res.ok) && receiptNo) {
+        res = await fetch(`/api/bookings/${encodeURIComponent(receiptNo)}`, { method: 'DELETE' });
+      }
+
+      if (res && res.ok) {
         if (sysAlert) sysAlert('ลบรายการจองเรียบร้อยแล้ว');
-        if (selectedBooking && selectedBooking.id === id) {
+        setBookings(prev => prev.filter(b => String(b.id) !== String(id) && String(b.receipt_number) !== String(receiptNo)));
+        if (selectedBooking && (String(selectedBooking.id) === String(id) || selectedBooking.receipt_number === receiptNo)) {
           setShowDetailsModal(false);
           setSelectedBooking(null);
         }
         fetchBookings();
       } else {
-        const errData = await res.json();
-        if (sysAlert) sysAlert(errData.error || 'เกิดข้อผิดพลาดในการลบรายการจอง');
+        let errMessage = 'เกิดข้อผิดพลาดในการลบรายการจอง';
+        if (res) {
+          try {
+            const errData = await res.json();
+            errMessage = errData.error || errMessage;
+          } catch(errJson) {}
+        }
+        if (sysAlert) sysAlert(errMessage);
       }
     } catch (err) {
       console.error('Delete booking error:', err);
@@ -158,16 +187,24 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   };
 
   const formatDate = (dateStr) => {
+    if (!dateStr) return '-';
     try {
-      const d = new Date(dateStr);
-      return d.toLocaleDateString('th-TH', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric'
-      }) + ' ' + d.toLocaleTimeString('th-TH', {
-        hour: '2-digit',
-        minute: '2-digit'
-      }) + ' น.';
+      let str = String(dateStr).trim();
+      if (!str.includes('T') && str.includes(' ')) {
+        str = str.replace(' ', 'T');
+      }
+      if (!str.endsWith('Z') && !/\+\d{2}:?\d{2}$/.test(str)) {
+        str = str + 'Z';
+      }
+      const d = new Date(str);
+      if (isNaN(d.getTime())) return dateStr;
+      const year = d.getFullYear() + 543;
+      const monthNames = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+      const month = monthNames[d.getMonth()];
+      const day = d.getDate();
+      const hours = String(d.getHours()).padStart(2, '0');
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      return `${day} ${month} ${year} ${hours}:${minutes} น.`;
     } catch (e) {
       return dateStr;
     }
@@ -187,9 +224,37 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const totalAmountPaid = bookings.reduce((sum, b) => sum + b.total_amount, 0);
   const paidCount = bookings.length;
 
+  // Filtering by searchType & status on frontend for instant responsiveness
+  const filteredBookings = bookings.filter(b => {
+    // Status filter
+    if (filters.status === 'paid' && b.payment_status !== 'paid') return false;
+    if (filters.status === 'cancelled' && b.payment_status !== 'cancelled') return false;
+
+    // Search filter
+    if (!filters.search) return true;
+    const q = filters.search.toLowerCase().trim();
+    const receipt = (b.receipt_number || '#' + b.id).toLowerCase();
+    const idStr = String(b.id);
+    const customer = (b.customer_name || '').toLowerCase();
+    const contact = (b.contact || '').toLowerCase();
+    const room = (b.items?.[0]?.room_name || b.room_name || '').toLowerCase();
+
+    if (filters.searchType === 'receipt') {
+      return receipt.includes(q) || idStr.includes(q);
+    } else if (filters.searchType === 'customer') {
+      return customer.includes(q);
+    } else if (filters.searchType === 'contact') {
+      return contact.includes(q);
+    } else if (filters.searchType === 'room') {
+      return room.includes(q);
+    } else {
+      return receipt.includes(q) || idStr.includes(q) || customer.includes(q) || contact.includes(q) || room.includes(q);
+    }
+  });
+
   // Sorting
   const getSortedBookings = () => {
-    const sorted = [...bookings];
+    const sorted = [...filteredBookings];
     sorted.sort((a, b) => {
       let valA = a[sortKey];
       let valB = b[sortKey];
@@ -266,110 +331,308 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
         </div>
       </div>
 
-      {/* Filter and Search Bar Card (Redesigned Compact Layout) */}
-      <div className="card" style={{ padding: '12px 18px', position: 'relative', zIndex: 10 }}>
-        <form onSubmit={handleSearchSubmit} style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+      {/* Filter and Search Bar Card (Single Row Layout) */}
+      <div className="card" style={{ padding: '12px 16px', position: 'relative', zIndex: 10, borderRadius: '16px' }}>
+        <form onSubmit={handleSearchSubmit} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', flex: 1 }}>
-            {/* Futuristic Compact Search Input */}
-            <div className="futuristic-search-container">
-              <Search size={14} style={{ color: 'var(--primary-color)' }} />
-              <input 
-                type="text" 
-                style={{ border: 'none', background: 'transparent', outline: 'none', color: 'var(--text-main)', fontSize: '0.8rem', width: '100%' }}
-                placeholder="ค้นหาใบเสร็จ / ชื่อผู้จอง..."
-                value={filters.search}
-                onChange={e => setFilters({ ...filters, search: e.target.value })}
-              />
-              {filters.search && (
-                <button 
-                  type="button"
-                  onClick={() => setFilters({ ...filters, search: '' })}
-                  style={{ 
-                    position: 'absolute', 
-                    right: '12px', 
-                    background: 'transparent', 
-                    border: 'none', 
-                    color: 'var(--text-muted)', 
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: 0
-                  }}
-                >
-                  <X size={14} />
-                </button>
-              )}
+          {/* 1. Search Category Type Dropdown */}
+          <div style={{ position: 'relative', width: '130px', flexShrink: 0 }}>
+            <div 
+              className="form-control"
+              onClick={() => { setIsSearchTypeDropdownOpen(!isSearchTypeDropdownOpen); setIsStatusDropdownOpen(false); }}
+              style={{
+                height: '38px',
+                borderRadius: '10px',
+                fontSize: '0.82rem',
+                border: '1px solid var(--border-color)',
+                background: 'var(--bg-card)',
+                padding: '0 10px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                cursor: 'pointer',
+                fontWeight: 700,
+                color: 'var(--text-main)'
+              }}
+            >
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {filters.searchType === 'receipt' ? 'เลขที่ใบเสร็จ' :
+                 filters.searchType === 'customer' ? 'ชื่อผู้จอง' :
+                 filters.searchType === 'contact' ? 'เบอร์ติดต่อ' :
+                 filters.searchType === 'room' ? 'ห้องประชุม' : 'ค้นหาทั้งหมด'}
+              </span>
+              <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
             </div>
 
-            {/* Custom Modern Calendar Date Picker (Pill-shaped) */}
-            <div style={{ 
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              border: '1px solid var(--border-color)',
-              padding: '8px 18px',
-              borderRadius: '99px',
-              background: 'var(--bg-hover)',
-              position: 'relative',
-              cursor: 'pointer',
-              userSelect: 'none',
-              transition: 'all 0.3s ease',
-              height: '40px'
-            }}>
-              <Calendar size={13} style={{ color: 'var(--primary-color)' }} />
+            {isSearchTypeDropdownOpen && (
+              <>
+                <div onClick={() => setIsSearchTypeDropdownOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                <div className="action-dropdown-menu" style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 4px)',
+                  left: 0,
+                  width: '150px',
+                  zIndex: 2000,
+                  borderRadius: '12px',
+                  padding: '4px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '2px'
+                }}>
+                  {[
+                    { id: 'all', label: 'ค้นหาทั้งหมด' },
+                    { id: 'receipt', label: 'เลขที่ใบเสร็จ' },
+                    { id: 'customer', label: 'ชื่อผู้จอง' },
+                    { id: 'contact', label: 'เบอร์ติดต่อ' },
+                    { id: 'room', label: 'ห้องประชุม' }
+                  ].map(item => (
+                    <div
+                      key={item.id}
+                      onClick={() => {
+                        setFilters(prev => ({ ...prev, searchType: item.id }));
+                        setIsSearchTypeDropdownOpen(false);
+                      }}
+                      style={{
+                        padding: '7px 10px',
+                        borderRadius: '8px',
+                        fontSize: '0.8rem',
+                        fontWeight: (filters.searchType || 'all') === item.id ? 800 : 500,
+                        color: (filters.searchType || 'all') === item.id ? 'var(--primary-color)' : 'var(--text-main)',
+                        cursor: 'pointer',
+                        background: (filters.searchType || 'all') === item.id ? 'var(--bg-hover)' : 'transparent',
+                        transition: 'background 0.15s'
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = (filters.searchType || 'all') === item.id ? 'var(--bg-hover)' : 'transparent'}
+                    >
+                      {item.label}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* 2. Search Input */}
+          <div style={{
+            position: 'relative',
+            flex: '1 1 180px',
+            minWidth: '160px',
+            display: 'flex',
+            alignItems: 'center'
+          }}>
+            <Search size={14} style={{ position: 'absolute', left: '12px', color: 'var(--text-muted)' }} />
+            <input 
+              type="text" 
+              className="form-control"
+              style={{
+                width: '100%',
+                paddingLeft: '34px',
+                paddingRight: filters.search ? '30px' : '10px',
+                height: '38px',
+                borderRadius: '10px',
+                fontSize: '0.82rem',
+                border: '1px solid var(--border-color)',
+                background: 'var(--bg-card)'
+              }}
+              placeholder={
+                filters.searchType === 'receipt' ? 'พิมพ์เลขที่ใบเสร็จ...' :
+                filters.searchType === 'customer' ? 'พิมพ์ชื่อผู้จอง...' :
+                filters.searchType === 'contact' ? 'พิมพ์เบอร์ติดต่อ...' :
+                filters.searchType === 'room' ? 'พิมพ์ชื่อห้องประชุม...' :
+                'พิมพ์คำค้นหา...'
+              }
+              value={filters.search}
+              onChange={e => setFilters({ ...filters, search: e.target.value })}
+            />
+            {filters.search && (
+              <button 
+                type="button"
+                onClick={() => setFilters({ ...filters, search: '' })}
+                style={{ 
+                  position: 'absolute', 
+                  right: '8px', 
+                  background: 'transparent', 
+                  border: 'none', 
+                  color: 'var(--text-muted)', 
+                  cursor: 'pointer',
+                  padding: '2px',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+
+          {/* 3. Status Dropdown */}
+          <div style={{ position: 'relative', width: '125px', flexShrink: 0 }}>
+            <div 
+              className="form-control"
+              onClick={() => { setIsStatusDropdownOpen(!isStatusDropdownOpen); setIsSearchTypeDropdownOpen(false); }}
+              style={{
+                height: '38px',
+                borderRadius: '10px',
+                fontSize: '0.82rem',
+                border: '1px solid var(--border-color)',
+                background: 'var(--bg-card)',
+                padding: '0 10px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                cursor: 'pointer',
+                fontWeight: 700,
+                color: filters.status === 'paid' ? '#10b981' : filters.status === 'cancelled' ? '#ef4444' : 'var(--text-main)'
+              }}
+            >
+              <span>
+                {filters.status === 'paid' ? 'สำเร็จ' : filters.status === 'cancelled' ? 'ยกเลิก' : 'สถานะทั้งหมด'}
+              </span>
+              <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+            </div>
+
+            {isStatusDropdownOpen && (
+              <>
+                <div onClick={() => setIsStatusDropdownOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                <div className="action-dropdown-menu" style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 4px)',
+                  left: 0,
+                  width: '100%',
+                  zIndex: 2000,
+                  borderRadius: '12px',
+                  padding: '4px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '2px'
+                }}>
+                  {[
+                    { id: 'all', label: 'สถานะทั้งหมด', color: 'var(--text-main)' },
+                    { id: 'paid', label: 'สำเร็จ', color: '#10b981' },
+                    { id: 'cancelled', label: 'ยกเลิก', color: '#ef4444' }
+                  ].map(item => (
+                    <div
+                      key={item.id}
+                      onClick={() => {
+                        setFilters(prev => ({ ...prev, status: item.id }));
+                        setIsStatusDropdownOpen(false);
+                      }}
+                      style={{
+                        padding: '7px 10px',
+                        borderRadius: '8px',
+                        fontSize: '0.8rem',
+                        fontWeight: (filters.status || 'all') === item.id ? 800 : 500,
+                        color: item.color,
+                        cursor: 'pointer',
+                        background: (filters.status || 'all') === item.id ? 'var(--bg-hover)' : 'transparent',
+                        transition: 'background 0.15s'
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = (filters.status || 'all') === item.id ? 'var(--bg-hover)' : 'transparent'}
+                    >
+                      {item.label}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* 4. Date Range: 2 Separate Clean Input Boxes */}
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+            <div style={{ width: '135px' }}>
               <CustomDatePicker 
                 value={filters.startDate}
                 onChange={val => setFilters({ ...filters, startDate: val })}
                 placeholder="วันเริ่มต้น"
+                className="form-control"
+                style={{
+                  height: '38px',
+                  borderRadius: '10px',
+                  fontSize: '0.82rem',
+                  border: '1px solid var(--border-color)',
+                  background: 'var(--bg-card)',
+                  padding: '0 10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  cursor: 'pointer'
+                }}
               />
-              <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', padding: '0 4px' }}>ถึง</span>
+            </div>
+            
+            <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 600 }}>-</span>
+
+            <div style={{ width: '135px' }}>
               <CustomDatePicker 
                 value={filters.endDate}
                 onChange={val => setFilters({ ...filters, endDate: val })}
                 placeholder="วันสิ้นสุด"
+                className="form-control"
+                style={{
+                  height: '38px',
+                  borderRadius: '10px',
+                  fontSize: '0.82rem',
+                  border: '1px solid var(--border-color)',
+                  background: 'var(--bg-card)',
+                  padding: '0 10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  cursor: 'pointer'
+                }}
               />
             </div>
-
-            <button 
-              type="submit" 
-              className="btn btn-primary" 
-              style={{ 
-                padding: '10px 22px', 
-                borderRadius: '99px', 
-                fontSize: '0.875rem', 
-                height: '40px', 
-                gap: '6px', 
-                display: 'flex', 
-                alignItems: 'center', 
-                cursor: 'pointer' 
-              }}
-            >
-              <Filter size={14} /> <span>ค้นหา</span>
-            </button>
           </div>
+
+          {/* 5. Action Buttons: Search & Clear (Compact) */}
+          <button 
+            type="submit" 
+            className="btn btn-primary" 
+            style={{ 
+              padding: '0 14px', 
+              borderRadius: '10px', 
+              fontSize: '0.82rem', 
+              fontWeight: 700,
+              height: '38px', 
+              gap: '5px', 
+              display: 'inline-flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(37, 99, 235, 0.25)',
+              flexShrink: 0
+            }}
+          >
+            <Search size={13} />
+            <span>ค้นหา</span>
+          </button>
 
           <button 
             type="button" 
             className="btn btn-secondary" 
             style={{ 
-              padding: '10px 22px', 
-              borderRadius: '99px', 
-              fontSize: '0.875rem', 
-              height: '40px', 
-              gap: '6px',
+              padding: '0 12px', 
+              borderRadius: '10px', 
+              fontSize: '0.82rem', 
+              fontWeight: 600,
+              height: '38px', 
+              gap: '4px',
               backgroundColor: 'var(--bg-hover)',
               border: '1px solid var(--border-color)',
-              color: 'var(--text-main)',
-              display: 'flex',
+              color: 'var(--text-muted)',
+              display: 'inline-flex',
               alignItems: 'center',
-              cursor: 'pointer'
+              justifyContent: 'center',
+              cursor: 'pointer',
+              flexShrink: 0
             }}
-            onClick={() => setFilters({ startDate: '', endDate: '', search: '' })}
+            onClick={() => setFilters({ startDate: '', endDate: '', search: '', searchType: 'all', status: 'all' })}
+            title="ล้างค่าตัวกรองทั้งหมด"
           >
-            ล้างตัวกรอง
+            <RotateCcw size={12} />
+            <span>ล้างค่า</span>
           </button>
+
         </form>
       </div>
 
@@ -385,188 +648,260 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '6px' }}>กรุณาลองปรับการเลือกช่วงวันที่หรือคำค้นหา</p>
         </div>
       ) : (
-        <div className="table-container">
-          <table className="custom-table" style={{ fontSize: '0.85rem' }}>
-            <thead>
-              <tr>
-                {columns.map(col => {
-                  const isSortable = col.key !== 'actions';
-                  let align = 'left';
-                  if (col.key === 'total_amount') align = 'right';
-                  else if (col.key === 'payment_status' || col.key === 'payment_method' || col.key === 'actions') align = 'center';
+        <div className="card" style={{ padding: 0, overflow: 'hidden', border: '1px solid var(--glass-border)', borderRadius: '24px' }}>
+          <div className="table-container">
+            <table className="custom-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border-color)', backgroundColor: 'rgba(255, 255, 255, 0.02)' }}>
+                  {columns.map(col => {
+                    const isSortable = col.key !== 'actions';
+                    let align = 'left';
+                    if (col.key === 'total_amount') align = 'right';
+                    else if (col.key === 'booking_source' || col.key === 'payment_status' || col.key === 'payment_method' || col.key === 'actions') align = 'center';
 
-                  const padding = (col.key === 'id' || col.key === 'actions') ? '14px 18px' : '14px 10px';
+                    const padding = (col.key === 'id' || col.key === 'actions') ? '14px 16px' : '14px 12px';
 
+                    return (
+                      <th 
+                        key={col.key} 
+                        onClick={() => isSortable && handleSort(col.key)}
+                        style={{ 
+                          textAlign: align,
+                          cursor: isSortable ? 'pointer' : 'default',
+                          padding: padding,
+                          userSelect: 'none',
+                          fontSize: '0.78rem',
+                          fontWeight: 700,
+                          color: 'var(--text-muted)',
+                          verticalAlign: 'middle',
+                          whiteSpace: 'nowrap'
+                        }}
+                        className={isSortable ? 'sortable-header' : ''}
+                      >
+                        <div style={{ 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: '6px',
+                          justifyContent: align === 'center' ? 'center' : (align === 'right' ? 'flex-end' : 'flex-start'),
+                          width: '100%'
+                        }}>
+                          <span>{col.label}</span>
+                          {isSortable && (
+                            <span style={{ display: 'inline-flex', opacity: sortKey === col.key ? 1 : 0.3 }}>
+                              {sortKey === col.key ? (
+                                sortOrder === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />
+                              ) : (
+                                <ArrowUpDown size={12} />
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedBookings.map((b) => {
                   return (
-                    <th 
-                      key={col.key} 
-                      onClick={() => isSortable && handleSort(col.key)}
-                      style={{ 
-                        textAlign: align,
-                        cursor: isSortable ? 'pointer' : 'default',
-                        padding: padding,
-                        userSelect: 'none'
-                      }}
-                      className={isSortable ? 'sortable-header' : ''}
-                    >
-                      <div style={{ 
-                        display: 'inline-flex', 
-                        alignItems: 'center', 
-                        gap: '6px',
-                        justifyContent: align === 'center' ? 'center' : (align === 'right' ? 'flex-end' : 'flex-start'),
-                        width: '100%'
-                      }}>
-                        <span>{col.label}</span>
-                        {isSortable && (
-                          <span style={{ display: 'inline-flex', opacity: sortKey === col.key ? 1 : 0.3 }}>
-                            {sortKey === col.key ? (
-                              sortOrder === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />
-                            ) : (
-                              <ArrowUpDown size={12} />
-                            )}
-                          </span>
-                        )}
-                      </div>
-                    </th>
+                    <tr key={b.id} style={{ borderBottom: '1px solid var(--border-color)', transition: 'background-color 0.15s' }}>
+                      {columns.map(col => {
+                        const key = col.key;
+                        const cellPadding = (key === 'id' || key === 'actions') ? '14px 16px' : '14px 12px';
+
+                        if (key === 'id') {
+                          return (
+                            <td key={key} style={{ fontWeight: 800, color: 'var(--primary-color)', padding: cellPadding, whiteSpace: 'nowrap', verticalAlign: 'middle', fontSize: '0.88rem' }}>
+                              {b.receipt_number || `#${String(b.id).padStart(6, '0')}`}
+                            </td>
+                          );
+                        }
+                        if (key === 'created_at') {
+                          return (
+                            <td key={key} style={{ color: 'var(--text-muted)', padding: cellPadding, fontSize: '0.82rem', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                              {formatDate(b.created_at)}
+                            </td>
+                          );
+                        }
+                        if (key === 'booking_source') {
+                          const isOnline = b.booking_source === 'online';
+                          return (
+                            <td key={key} style={{ textAlign: 'center', padding: cellPadding, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '4px 10px',
+                                borderRadius: '99px',
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                backgroundColor: isOnline ? 'rgba(14, 165, 233, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+                                color: isOnline ? '#0ea5e9' : '#10b981',
+                                border: `1px solid ${isOnline ? 'rgba(14, 165, 233, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`
+                              }}>
+                                {isOnline ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
+                              </span>
+                            </td>
+                          );
+                        }
+                        if (key === 'customer_name') {
+                          return (
+                            <td key={key} style={{ padding: cellPadding, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                              <div style={{ fontWeight: 700, color: 'var(--text-main)', fontSize: '0.88rem' }}>{b.customer_name || '-'}</div>
+                              {b.tax_invoice_required === 1 && (
+                                <div style={{ marginTop: '3px' }}>
+                                  <span 
+                                    onClick={(e) => { e.stopPropagation(); setSelectedTaxBooking(b); }}
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '3px',
+                                      padding: '2px 7px',
+                                      borderRadius: '6px',
+                                      fontSize: '0.7rem',
+                                      fontWeight: 700,
+                                      backgroundColor: 'rgba(59, 130, 246, 0.12)',
+                                      color: '#2563eb',
+                                      border: '1px solid rgba(59, 130, 246, 0.25)',
+                                      cursor: 'pointer'
+                                    }}
+                                    title="คลิกดูข้อมูลใบกำกับภาษี"
+                                  >
+                                    <FileText size={11} />
+                                    <span>ขอใบกำกับภาษี</span>
+                                  </span>
+                                </div>
+                              )}
+                            </td>
+                          );
+                        }
+                        if (key === 'contact') {
+                          return (
+                            <td key={key} style={{ padding: cellPadding, whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: '0.82rem', verticalAlign: 'middle' }}>
+                              {b.contact || '-'}
+                            </td>
+                          );
+                        }
+                        if (key === 'total_amount') {
+                          return (
+                            <td key={key} style={{ textAlign: 'right', fontWeight: 800, color: 'var(--primary-color)', padding: cellPadding, whiteSpace: 'nowrap', fontSize: '0.92rem', verticalAlign: 'middle' }}>
+                              ฿{Number(b.total_amount || 0).toLocaleString()}
+                            </td>
+                          );
+                        }
+                        if (key === 'payment_status') {
+                          const isCancelled = b.payment_status === 'cancelled';
+
+                          return (
+                            <td key={key} style={{ textAlign: 'center', padding: cellPadding, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                              {isCancelled ? (
+                                <span style={{ 
+                                  padding: '4px 12px', 
+                                  borderRadius: '999px', 
+                                  fontSize: '0.75rem', 
+                                  fontWeight: 800, 
+                                  backgroundColor: 'rgba(239, 68, 68, 0.15)', 
+                                  color: '#ef4444',
+                                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}>
+                                  <Ban size={12} />
+                                  <span>ยกเลิก</span>
+                                </span>
+                              ) : (
+                                <span style={{ 
+                                  padding: '4px 12px', 
+                                  borderRadius: '999px', 
+                                  fontSize: '0.75rem', 
+                                  fontWeight: 800, 
+                                  backgroundColor: 'rgba(16, 185, 129, 0.15)', 
+                                  color: '#10b981',
+                                  border: '1px solid rgba(16, 185, 129, 0.3)',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}>
+                                  <CheckCircle2 size={12} />
+                                  <span>สำเร็จ</span>
+                                </span>
+                              )}
+                            </td>
+                          );
+                        }
+                        if (key === 'payment_method') {
+                          return (
+                            <td key={key} style={{ textAlign: 'center', padding: cellPadding, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '3px 8px',
+                                borderRadius: '6px',
+                                fontSize: '0.75rem',
+                                fontWeight: 600,
+                                backgroundColor: 'var(--bg-hover)',
+                                border: '1px solid var(--border-color)',
+                                color: 'var(--text-muted)'
+                              }}>
+                                {b.payment_method === 'cash' ? '💵 เงินสด' : b.payment_method === 'transfer' ? '📱 โอนเงิน' : (b.payment_method || '-')}
+                              </span>
+                            </td>
+                          );
+                        }
+                        if (key === 'actions') {
+                          return (
+                            <td key={key} style={{ textAlign: 'center', padding: cellPadding, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                              <div style={{ display: 'inline-flex', gap: '6px', justifyContent: 'center', alignItems: 'center' }}>
+                                <button 
+                                  className="btn-modern-receipt"
+                                  style={{ 
+                                    padding: '6px 12px', 
+                                    fontSize: '0.8rem', 
+                                    borderRadius: '8px', 
+                                    gap: '5px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    cursor: 'pointer',
+                                    fontWeight: 600
+                                  }}
+                                  onClick={() => openBookingDetails(b.id)}
+                                  title="ดูรายละเอียดใบจอง / ใบเสร็จ"
+                                >
+                                  <Printer size={13} />
+                                  <span>ใบเสร็จ</span>
+                                </button>
+                                <button 
+                                  className="btn btn-danger" 
+                                  style={{ 
+                                    padding: '6px 12px', 
+                                    fontSize: '0.8rem', 
+                                    borderRadius: '8px', 
+                                    gap: '4px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    cursor: 'pointer',
+                                    fontWeight: 600
+                                  }}
+                                  onClick={() => handleDeleteBooking(b.id)}
+                                  title="ลบรายการจองนี้"
+                                >
+                                  <Trash2 size={13} />
+                                  <span>ลบ</span>
+                                </button>
+                              </div>
+                            </td>
+                          );
+                        }
+                        return null;
+                      })}
+                    </tr>
                   );
                 })}
-              </tr>
-            </thead>
-            <tbody>
-              {paginatedBookings.map((b) => {
-                const padding = '14px 10px';
-                return (
-                  <tr key={b.id}>
-                    {columns.map(col => {
-                      const key = col.key;
-                      const cellPadding = (key === 'id' || key === 'actions') ? '14px 18px' : padding;
-
-                      if (key === 'id') {
-                        return (
-                          <td key={key} style={{ fontWeight: 'bold', padding: cellPadding }}>
-                            {b.receipt_number || `#${String(b.id).padStart(6, '0')}`}
-                          </td>
-                        );
-                      }
-                      if (key === 'created_at') {
-                        return (
-                          <td key={key} style={{ color: 'var(--text-muted)', padding: cellPadding }}>
-                            {formatDate(b.created_at)}
-                          </td>
-                        );
-                      }
-                      if (key === 'booking_source') {
-                        const isOnline = b.booking_source === 'online';
-                        return (
-                          <td key={key} style={{ textAlign: 'center', padding: cellPadding }}>
-                            <span style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              padding: '4px 10px',
-                              borderRadius: '99px',
-                              fontSize: '0.75rem',
-                              fontWeight: 700,
-                              backgroundColor: isOnline ? 'rgba(14, 165, 233, 0.12)' : 'rgba(16, 185, 129, 0.12)',
-                              color: isOnline ? '#0ea5e9' : '#10b981',
-                              border: `1px solid ${isOnline ? 'rgba(14, 165, 233, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`
-                            }}>
-                              {isOnline ? '🌐 จองออนไลน์' : '🏬 Walk-in หน้าร้าน'}
-                            </span>
-                          </td>
-                        );
-                      }
-                      if (key === 'customer_name') {
-                        return (
-                          <td key={key} style={{ fontWeight: '700', padding: cellPadding }}>
-                            {b.customer_name}
-                          </td>
-                        );
-                      }
-                      if (key === 'contact') {
-                        return (
-                          <td key={key} style={{ padding: cellPadding }}>
-                            {b.contact || '-'}
-                          </td>
-                        );
-                      }
-                      if (key === 'total_amount') {
-                        return (
-                          <td key={key} style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--primary-color)', padding: cellPadding }}>
-                            {b.total_amount.toLocaleString()}.-
-                          </td>
-                        );
-                      }
-                      if (key === 'payment_status') {
-                        return (
-                          <td key={key} style={{ textAlign: 'center', padding: cellPadding }}>
-                            <span className="badge badge-success" style={{ padding: '4px 10px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700 }}>
-                              จ่ายแล้ว
-                            </span>
-                          </td>
-                        );
-                      }
-                      if (key === 'payment_method') {
-                        return (
-                          <td key={key} style={{ textAlign: 'center', fontSize: '0.8rem', color: 'var(--text-muted)', padding: cellPadding }}>
-                            {b.payment_method === 'cash' ? 'เงินสด' : b.payment_method === 'transfer' ? 'โอนเงิน' : '-'}
-                          </td>
-                        );
-                      }
-                      if (key === 'actions') {
-                        return (
-                          <td key={key} style={{ textAlign: 'center', padding: cellPadding }}>
-                            <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', alignItems: 'center' }}>
-                              <button 
-                                className="btn btn-secondary" 
-                                style={{ 
-                                  padding: '6px 12px', 
-                                  fontSize: '0.8rem', 
-                                  borderRadius: '8px', 
-                                  gap: '4px',
-                                  backgroundColor: 'var(--bg-hover)',
-                                  border: '1px solid var(--border-color)',
-                                  color: 'var(--text-main)',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  cursor: 'pointer'
-                                }}
-                                onClick={() => openBookingDetails(b.id)}
-                                title="พิมพ์ใบเสร็จ"
-                              >
-                                <Printer size={12} /> <span>พิมพ์ใบเสร็จ</span>
-                              </button>
-                              <button 
-                                type="button"
-                                className="btn btn-danger" 
-                                style={{ 
-                                  padding: '6px 10px', 
-                                  fontSize: '0.8rem', 
-                                  borderRadius: '8px', 
-                                  gap: '4px',
-                                  backgroundColor: 'rgba(239, 68, 68, 0.12)',
-                                  border: '1px solid rgba(239, 68, 68, 0.3)',
-                                  color: 'var(--danger-color)',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  cursor: 'pointer'
-                                }}
-                                onClick={() => handleDeleteBooking(b.id, b.customer_name, b.receipt_number)}
-                                title="ลบรายการจองนี้"
-                              >
-                                <Trash2 size={12} /> <span>ลบ</span>
-                              </button>
-                            </div>
-                          </td>
-                        );
-                      }
-                      return null;
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
 
           {/* Pagination Controls */}
           {totalPages > 1 && (
@@ -763,6 +1098,205 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
           </div>
         </div>
       )}
+      
+      {/* TAX INVOICE DETAILS & PRINT MODAL */}
+      {selectedTaxBooking && (() => {
+        const total = Number(selectedTaxBooking.total_amount || 0);
+        const subtotalBeforeVat = (total / 1.07);
+        const vatAmount = total - subtotalBeforeVat;
+        const firstItem = selectedTaxBooking.items?.[0] || {};
+        const roomName = firstItem.room_name || selectedTaxBooking.room_name || 'ห้องประชุม';
+
+        const handleCopyAllTaxFields = () => {
+          let lines = [];
+          if (selectedTaxBooking.tax_name) lines.push(`ชื่อผู้เสียภาษี: ${selectedTaxBooking.tax_name}`);
+          if (selectedTaxBooking.tax_id) lines.push(`เลขประจำตัวผู้เสียภาษี: ${selectedTaxBooking.tax_id}`);
+          if (selectedTaxBooking.tax_address) lines.push(`ที่อยู่: ${selectedTaxBooking.tax_address}`);
+          if (selectedTaxBooking.tax_phone || selectedTaxBooking.contact) lines.push(`เบอร์โทรศัพท์: ${selectedTaxBooking.tax_phone || selectedTaxBooking.contact}`);
+          
+          const deliveryText = selectedTaxBooking.tax_delivery_method === 'postal' 
+            ? `จัดส่งทางไปรษณีย์ / จดหมาย (ที่อยู่จัดส่ง: ${selectedTaxBooking.tax_postal_address || selectedTaxBooking.tax_address || '-'})` 
+            : (selectedTaxBooking.tax_delivery_method === 'pickup' ? 'รับด้วยตนเองที่หน้าร้าน' : 'จัดส่งทางอีเมล (e-Tax)');
+          lines.push(`ช่องทางการจัดส่ง: ${deliveryText}`);
+
+          const fullText = lines.join('\n');
+          navigator.clipboard.writeText(fullText);
+          setTaxCopied(true);
+          setTimeout(() => setTaxCopied(false), 2500);
+          if (sysAlert) {
+            sysAlert('คัดลอกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว');
+          }
+        };
+
+        return (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.85)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '16px'
+          }}>
+            <div className="card" style={{
+              width: '100%',
+              maxWidth: '560px',
+              padding: '24px',
+              borderRadius: '20px',
+              backgroundColor: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+              position: 'relative',
+              maxHeight: '92vh',
+              overflowY: 'auto'
+            }}>
+              <button 
+                style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
+                onClick={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
+              >
+                <X size={20} />
+              </button>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: '46px', height: '46px', borderRadius: '14px', backgroundColor: 'rgba(37, 99, 235, 0.15)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <FileText size={24} />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 850, margin: 0, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span>ข้อมูลใบกำกับภาษี</span>
+                    <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(37, 99, 235, 0.15)', color: '#2563eb', fontWeight: 800 }}>Tax Invoice</span>
+                  </h3>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    ใบจอง <strong>{selectedTaxBooking.receipt_number || ('#' + selectedTaxBooking.id)}</strong> · ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{selectedTaxBooking.customer_name || '-'}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Tax Payer Info Box */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
+                <div style={{ padding: '14px 16px', borderRadius: '14px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ชื่อบุคคล / นิติบุคคล (ตาม ภ.พ.20):</span>
+                    <div style={{ fontWeight: 850, color: 'var(--text-main)', fontSize: '1rem', marginTop: '2px' }}>
+                      {selectedTaxBooking.tax_name || '-'}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px' }}>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>เลขประจำตัวผู้เสียภาษี (13 หลัก):</span>
+                      <div style={{ fontWeight: 900, color: 'var(--primary-color)', letterSpacing: '1.2px', marginTop: '2px', fontSize: '0.95rem' }}>
+                        {selectedTaxBooking.tax_id || '-'}
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>เบอร์โทรศัพท์:</span>
+                      <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                        {selectedTaxBooking.tax_phone || selectedTaxBooking.contact || '-'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ที่อยู่สำหรับออกใบกำกับภาษี:</span>
+                    <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.45 }}>
+                      {selectedTaxBooking.tax_address || '-'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Delivery details box */}
+                <div style={{ padding: '12px 16px', borderRadius: '14px', backgroundColor: 'rgba(59, 130, 246, 0.06)', border: '1px solid rgba(59, 130, 246, 0.25)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ color: '#2563eb', fontWeight: 800 }}>ช่องทางการจัดส่งเอกสาร:</span>
+                    <span style={{ fontWeight: 800, color: 'var(--text-main)', backgroundColor: 'rgba(255,255,255,0.8)', padding: '2px 8px', borderRadius: '6px', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                      {selectedTaxBooking.tax_delivery_method === 'postal' ? '📮 จัดส่งทางไปรษณีย์ / จดหมาย' : (selectedTaxBooking.tax_delivery_method === 'pickup' ? '🏢 รับด้วยตนเองที่หน้าร้าน' : '✉️ อีเมล / e-Tax')}
+                    </span>
+                  </div>
+
+                  {selectedTaxBooking.tax_delivery_method === 'postal' && (
+                    <div style={{ marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed rgba(59, 130, 246, 0.25)' }}>
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ที่อยู่จัดส่งเอกสารทางไปรษณีย์:</span>
+                      <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.4 }}>
+                        {selectedTaxBooking.tax_postal_address || selectedTaxBooking.tax_address || '-'}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    flex: 1.1,
+                    height: '44px',
+                    borderRadius: '12px',
+                    fontWeight: 700,
+                    fontSize: '0.85rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    backgroundColor: taxCopied ? '#10b981' : 'var(--bg-hover)',
+                    color: taxCopied ? '#ffffff' : 'var(--text-main)',
+                    border: taxCopied ? '1.5px solid #10b981' : '1px solid var(--border-color)',
+                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                    cursor: 'pointer'
+                  }}
+                  onClick={handleCopyAllTaxFields}
+                >
+                  {taxCopied ? (
+                    <>
+                      <CheckCircle2 size={16} />
+                      <span>คัดลอกเรียบร้อยแล้ว!</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileText size={16} />
+                      <span>คัดลอกข้อมูลใบกำกับ</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ flex: 1.2, height: '44px', borderRadius: '12px', fontWeight: 800, fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                  onClick={() => {
+                    openBookingDetails(selectedTaxBooking.id);
+                    setSelectedTaxBooking(null);
+                    setTaxCopied(false);
+                  }}
+                >
+                  <Printer size={16} />
+                  <span>ดูใบเสร็จ / พิมพ์</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ width: '44px', height: '44px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}
+                  onClick={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
+                  title="ปิดหน้าต่าง"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

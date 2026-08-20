@@ -202,7 +202,7 @@ body {
   top: 0;
   left: 0;
   right: 0;
-  height: 76px;
+  height: 64px;
   background: rgba(255, 255, 255, 0.15);
   backdrop-filter: blur(28px) saturate(190%);
   -webkit-backdrop-filter: blur(28px) saturate(190%);
@@ -211,7 +211,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 28px;
+  padding: 0 20px;
   z-index: 1000;
   box-shadow: 0 4px 30px rgba(0, 0, 0, 0.02);
   transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
@@ -266,6 +266,201 @@ body {
   background: rgba(30, 30, 30, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.08);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .hamburger-btn:hover {
+  background: rgba(56, 189, 248, 0.1);
+  border-color: rgba(56, 189, 248, 0.25);
+}
+
+/* ═══════════════════════════════════════════════════════════════ */
+/* 🔮 LIQUID GLASS HAMBURGER DROPDOWN MENU OVERLAY               */
+/* ═══════════════════════════════════════════════════════════════ */
+.menu-overlay {
+  position: fixed;
+  top: 76px;
+  left: 0;
+  right: 0;
+  z-index: 999;
+  padding: 28px 32px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(35px) saturate(220%);
+  -webkit-backdrop-filter: blur(35px) saturate(220%);
+  border-bottom: 1px solid rgba(226, 232, 240, 0.5);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.06);
+  animation: slide-down-fade 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+
+[data-theme="dark"] .menu-overlay {
+  background: rgba(8, 8, 12, 0.7);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+}
+
+@keyframes slide-down-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(120%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.menu-section-title {
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+  padding-left: 6px;
+}
+
+.menu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+  gap: 10px;
+}
+
+.menu-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(226, 232, 240, 0.45);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.menu-card:hover {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.25);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(37, 99, 235, 0.1);
+}
+
+.menu-card.active {
+  background: var(--primary-color);
+  color: #ffffff;
+  border-color: var(--primary-color);
+  box-shadow: 0 4px 16px var(--primary-light);
+}
+
+[data-theme="dark"] .menu-card {
+  background: rgba(20, 20, 28, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .menu-card:hover {
+  background: rgba(56, 189, 248, 0.1);
+  border-color: rgba(56, 189, 248, 0.2);
+}
+
+.menu-card-icon-wrapper {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--primary-color);
+  flex-shrink: 0;
+}
+
+.menu-card.active .menu-card-icon-wrapper {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.15rem;
+  font-weight: 900;
+  margin-bottom: 18px;
+  padding: 0 6px;
+  color: var(--sidebar-brand-text);
+  letter-spacing: 0.5px;
+}
+
+.nav-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--border-radius-sm);
+  color: var(--sidebar-text);
+  text-decoration: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid transparent;
+}
+
+/* Thin Elegant Scrollbar for Sidebar nav wrapper */
+.sidebar nav::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar nav::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 99px;
+}
+.sidebar nav::-webkit-scrollbar-thumb:hover {
+  background: var(--primary-color);
+}
+
+.nav-item:hover {
+  background: var(--sidebar-item-hover-bg);
+  color: var(--sidebar-text-hover);
+}
+
+.nav-item.active {
+  background: var(--sidebar-item-active-bg);
+  color: var(--sidebar-text-hover);
+  border: 1px solid var(--sidebar-item-active-border);
+  /* Replaced standard shadow with a premium fluid glass neon glow */
+  box-shadow: 0 0 12px rgba(37, 99, 235, 0.18), inset 0 0 6px rgba(37, 99, 235, 0.06);
+}
+
+[data-theme="dark"] .nav-item.active {
+  box-shadow: 0 0 15px rgba(56, 189, 248, 0.28), inset 0 0 8px rgba(56, 189, 248, 0.1);
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 10px 4px 0 4px;
+box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 [data-theme="dark"] .hamburger-btn:hover {
@@ -558,15 +753,17 @@ body {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-}/* Logo animation in Loading screen - Rounded square card style */
+}
+
+/* Logo animation in Loading screen - Rounded square card style */
 .liquid-logo-container {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 150px;
   height: 150px;
-  border-radius: 28px; /* High quality rounded square app icon */
-  background: #ffffff; /* Crisp white card background */
+  border-radius: 28px;
+  background: #ffffff;
   padding: 12px;
   box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
   border: 1px solid rgba(255, 255, 255, 0.7);
@@ -595,6 +792,7 @@ body {
     filter: drop-shadow(0 0 28px rgba(37, 99, 235, 0.6));
   }
 }
+
 /* Animations */
 @keyframes floatUpDown {
   0% { transform: translateY(0px); }
@@ -611,7 +809,6 @@ body {
     transform: scale(1.04);
   }
 }
-
 /* Grids */
 .grid-cols-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 28px; }
 .grid-cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; }
@@ -822,6 +1019,7 @@ body {
 [data-theme="dark"] .custom-table tr:hover td {
   background-color: rgba(255, 255, 255, 0.02);
 }
+
 /* Calendar Booking View */
 .calendar-container {
   display: flex;
@@ -913,28 +1111,37 @@ body {
 
 .calendar-grid-wrapper {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border-radius: 16px;
   border: 1px solid var(--glass-border);
   background: var(--bg-glass-card, rgba(255, 255, 255, 0.03));
   backdrop-filter: blur(20px);
   box-shadow: var(--glass-shadow);
+  min-height: 0;
+  height: 100%;
 }
 
 .calendar-weekday-row {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   border-bottom: 1px solid var(--border-color);
+  height: 28px;
+  flex-shrink: 0;
 }
 
 .calendar-weekday-cell {
-  padding: 10px 6px;
+  padding: 4px;
   text-align: center;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--text-main);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .calendar-weekday-cell:nth-child(1) {
@@ -949,19 +1156,23 @@ body {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   grid-auto-rows: 1fr;
-  height: calc(100% - 42px);
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 
 .calendar-cell {
   border-right: 1px solid var(--border-color);
   border-bottom: 1px solid var(--border-color);
-  padding: 4px 6px;
+  padding: 2px 4px;
   min-height: 0;
+  height: 100%;
   overflow: hidden;
   cursor: pointer;
   transition: background-color 0.15s;
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
 }
 
 .calendar-cell:nth-child(7n) {
@@ -996,96 +1207,222 @@ body {
   border: 2px solid #38bdf8 !important;
 }
 
+.calendar-day-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 .calendar-day-number {
-  font-size: 0.88rem;
-  font-weight: 700;
+  font-size: 0.78rem;
+  font-weight: 800;
   color: var(--text-main);
-  margin-bottom: 2px;
-  width: 26px;
-  height: 26px;
+  margin-bottom: 0;
+  width: 21px;
+  height: 21px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
   flex-shrink: 0;
+  background-color: rgba(56, 189, 248, 0.12);
 }
 
 .calendar-cell.today .calendar-day-number {
-  background-color: var(--primary-color);
-  color: #fff;
-  font-weight: 800;
+  background: linear-gradient(135deg, var(--primary-color), #0284c7);
+  color: #ffffff;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3);
+}
+
+[data-theme="dark"] .calendar-cell.today .calendar-day-number {
+  background: linear-gradient(135deg, #38bdf8, #0284c7);
+  color: #0f172a;
+}
+
+.calendar-day-count-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.04);
+  padding: 1px 6px;
+  border-radius: 99px;
+  letter-spacing: -0.2px;
+}
+
+[data-theme="dark"] .calendar-day-count-badge {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
 }
 
 .calendar-events-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  overflow: hidden;
+  gap: 2.5px;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+  width: 100%;
 }
 
 .calendar-event-chip {
-  padding: 3px 6px;
-  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px;
+  border-radius: 5px;
   font-size: 0.72rem;
-  font-weight: 700;
+  height: 19px;
+  min-height: 19px;
+  max-height: 19px;
+  line-height: 19px;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.5;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid transparent;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .calendar-event-chip:hover {
-  transform: translateY(-1.5px) scale(1.015);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
-  filter: brightness(1.1);
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.12);
+  z-index: 5;
 }
 
-[data-theme="dark"] .calendar-event-chip:hover {
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
-  filter: brightness(1.2);
+.event-chip-time {
+  font-weight: 800;
+  font-size: 0.66rem;
+  padding: 0 4px;
+  border-radius: 3.5px;
+  background: rgba(0, 0, 0, 0.07);
+  color: inherit;
+  flex-shrink: 0;
+  line-height: 13px;
+  height: 13px;
+  display: inline-flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
 }
 
+[data-theme="dark"] .event-chip-time {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.event-chip-room {
+  font-weight: 800;
+  font-size: 0.73rem;
+  color: inherit;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.event-chip-divider {
+  opacity: 0.4;
+  margin: 0 1px;
+  font-size: 0.7rem;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.event-chip-customer {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 0.70rem;
+  opacity: 0.92;
+}
+
+/* Status variants */
 .calendar-event-chip.paid {
-  background-color: rgba(34, 197, 94, 0.22);
-  color: #10b981;
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.16), rgba(16, 185, 129, 0.08));
+  color: #065f46;
+  border-color: rgba(16, 185, 129, 0.38);
+  box-shadow: 0 1px 2px rgba(16, 185, 129, 0.06);
 }
 
 [data-theme="dark"] .calendar-event-chip.paid {
-  background-color: rgba(34, 197, 94, 0.25);
-  color: #4ade80;
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.26), rgba(16, 185, 129, 0.14));
+  color: #6ee7b7;
+  border-color: rgba(16, 185, 129, 0.5);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .calendar-event-chip.pending {
-  background-color: rgba(245, 158, 11, 0.22);
-  color: #ea580c;
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.16), rgba(245, 158, 11, 0.08));
+  color: #92400e;
+  border-color: rgba(245, 158, 11, 0.4);
+  box-shadow: 0 1px 2px rgba(245, 158, 11, 0.06);
 }
 
 [data-theme="dark"] .calendar-event-chip.pending {
-  background-color: rgba(245, 158, 11, 0.25);
-  color: #fbbf24;
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.26), rgba(245, 158, 11, 0.14));
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, 0.5);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .calendar-event-chip.expired {
-  background-color: rgba(239, 68, 68, 0.22) !important;
-  color: #ef4444 !important;
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.16), rgba(239, 68, 68, 0.08));
+  color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.38);
+  box-shadow: 0 1px 2px rgba(239, 68, 68, 0.06);
 }
 
 [data-theme="dark"] .calendar-event-chip.expired {
-  background-color: rgba(239, 68, 68, 0.25) !important;
-  color: #fca5a5 !important;
-  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.26), rgba(239, 68, 68, 0.14));
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .calendar-more-label {
-  font-size: 0.6rem;
-  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 16px;
+  min-height: 16px;
+  font-size: 0.68rem;
   font-weight: 700;
+  color: var(--primary-color);
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(56, 189, 248, 0.06));
+  border: 1px solid rgba(37, 99, 235, 0.25);
+  border-radius: 4px;
+  cursor: pointer;
   padding: 0 4px;
+  line-height: 1;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-sizing: border-box;
+}
+
+.calendar-more-label:hover {
+  background: linear-gradient(135deg, var(--primary-color), #0284c7);
+  color: #ffffff;
+  border-color: var(--primary-color);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+  transform: translateY(-1px);
+}
+
+[data-theme="dark"] .calendar-more-label {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.14), rgba(37, 99, 235, 0.08));
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+[data-theme="dark"] .calendar-more-label:hover {
+  background: linear-gradient(135deg, #38bdf8, #0284c7);
+  color: #0f172a;
+  border-color: #38bdf8;
 }
 
 /* POS Layout Grid */
@@ -1483,18 +1820,25 @@ body {
   margin: 0 auto;
   background-color: #ffffff !important;
   color: #000000 !important;
-  font-family: var(--font-sarabun);
+  font-family: 'Sarabun', 'Prompt', 'Noto Sans Thai', 'Segoe UI', Tahoma, sans-serif !important;
   border: none !important;
   border-radius: 0 !important;
   box-shadow: none !important;
-  padding: 4mm;
+  padding: 3mm 4mm !important;
   font-weight: 600;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  -webkit-font-smoothing: antialiased !important;
+  -moz-osx-font-smoothing: grayscale !important;
+  text-rendering: geometricPrecision !important;
 }
 
-/* Force all text inside receipt wrapper to be black and transparent background for preview visibility */
+/* Force 100% Solid Pure Black on every child for crisp thermal transfer */
 .receipt-wrapper * {
   color: #000000 !important;
   background-color: transparent !important;
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
 }
 
 .receipt-header {
@@ -2144,22 +2488,24 @@ body {
   color: #38bdf8 !important;
 }
 
-/* Premium Liquidglass Dropdown Container */
-.liquidglass-dropdown {
-  background: rgba(255, 255, 255, 0.25) !important;
-  backdrop-filter: blur(28px) saturate(190%) !important;
-  -webkit-backdrop-filter: blur(28px) saturate(190%) !important;
-  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+/* Premium Dropdown & Popover Container */
+.liquidglass-dropdown,
+.action-dropdown-menu {
+  background: #ffffff !important;
+  border: 1px solid var(--border-color, #cbd5e1) !important;
   border-radius: 14px !important;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.2), 0 4px 12px rgba(15, 23, 42, 0.08) !important;
   padding: 6px !important;
-  animation: fadeIn 0.2s ease-out !important;
+  animation: fadeIn 0.15s ease-out !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
 }
 
-[data-theme="dark"] .liquidglass-dropdown {
-  background: rgba(15, 23, 42, 0.35) !important;
-  border: 1px solid rgba(255, 255, 255, 0.05) !important;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.03) !important;
+[data-theme="dark"] .liquidglass-dropdown,
+[data-theme="dark"] .action-dropdown-menu {
+  background: #1e293b !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.65), 0 4px 14px rgba(0, 0, 0, 0.35) !important;
 }
 
 /* Native select custom liquidglass focus glow */

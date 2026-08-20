@@ -199,10 +199,12 @@ async function initDatabase() {
     console.log('Migration: Added category column to rooms table.');
   } catch (e) {}
 
-  // Migration: Add pin_code column to rooms if not exists
+  // Migration: Add pin_code column to users if not exists
   try {
-    await dbQuery.run("ALTER TABLE rooms ADD COLUMN pin_code TEXT");
-    console.log('Migration: Added pin_code column to rooms table.');
+    await dbQuery.run("ALTER TABLE users ADD COLUMN pin_code TEXT");
+    await dbQuery.run("UPDATE users SET pin_code = '1234' WHERE username = 'admin' AND (pin_code IS NULL OR pin_code = '')");
+    await dbQuery.run("UPDATE users SET pin_code = '5678' WHERE username != 'admin' AND (pin_code IS NULL OR pin_code = '')");
+    console.log('Migration: Added pin_code column to users table.');
   } catch (e) {}
 
   // Update existing users who have null permissions or fullnames
