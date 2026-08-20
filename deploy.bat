@@ -10,6 +10,8 @@ call npm run build --prefix booking-app
 echo.
 echo 2/3 Deploying Cloudflare Worker API (bwork-pos-api)...
 cd backend
+echo - Executing D1 database schema migrations...
+call npx wrangler d1 execute bworkpos_db --remote --file=migrations.sql
 call npx wrangler deploy
 cd ..
 echo.
