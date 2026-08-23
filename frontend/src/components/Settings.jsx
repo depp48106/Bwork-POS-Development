@@ -16,6 +16,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     quotation_signer: '',
     quotation_valid_days: '',
     room_alert_minutes: '15',
+    cleaning_buffer_minutes: '30',
     promptpay_id: '',
     payment_bank_name: '',
     payment_bank_account: '',
@@ -1399,6 +1400,29 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                 </div>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', display: 'block', lineHeight: 1.4 }}>
                   ระบุจำนวนนาทีล่วงหน้าที่จะแสดงป๊อปอัปแจ้งเตือนสไตล์ LINE บริเวณมุมขวา-ล่างของหน้าจอ เมื่อคิวการจองของห้องต่าง ๆ ใกล้เริ่มใช้งาน
+                </span>
+              </div>
+
+              <div className="form-group" style={{ margin: 0 }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  🧹 ระยะเวลาทำความสะอาด / เตรียมห้อง (Buffer Time ระหว่างคิว)
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <input 
+                    type="number" 
+                    className="form-control" 
+                    required
+                    min="0"
+                    max="120"
+                    step="5"
+                    style={{ width: '120px', height: '40px', borderRadius: '10px', textAlign: 'center', fontWeight: 'bold' }}
+                    value={configs.cleaning_buffer_minutes !== undefined ? configs.cleaning_buffer_minutes : '30'} 
+                    onChange={e => setConfigs({ ...configs, cleaning_buffer_minutes: e.target.value })} 
+                  />
+                  <span style={{ fontSize: '0.875rem', color: 'var(--text-main)' }}>นาที</span>
+                </div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', display: 'block', lineHeight: 1.4 }}>
+                  ระยะเวลาที่ระบบจะล็อกห้องพักอัตโนมัติหลังจากการใช้งานแต่ละรายการเสร็จสิ้น เพื่อให้แม่บ้านทำความสะอาดและจัดเตรียมห้องสำหรับคิวถัดไป (เช่น 30 นาที, 0 คือไม่เว้นเวลา)
                 </span>
               </div>
 

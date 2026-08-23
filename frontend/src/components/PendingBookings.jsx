@@ -44,10 +44,17 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   const [bookings, setBookings] = useState([]);
   const [roomsList, setRoomsList] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [dateFilterType, setDateFilterType] = useState('usage_date'); // 'usage_date' (วันที่จอง/ใช้งาน) or 'created_at' (วันที่ทำรายการ)
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  // 1. Search & Filter Input State (Form controls before clicking Search)
+  const [searchQueryInput, setSearchQueryInput] = useState('');
+  const [dateFilterTypeInput, setDateFilterTypeInput] = useState('usage_date'); // 'usage_date' (วันที่จอง/ใช้งาน) or 'created_at' (วันที่ทำรายการ)
+  const [startDateInput, setStartDateInput] = useState('');
+  const [endDateInput, setEndDateInput] = useState('');
+
+  // 2. Applied Search & Filter State (Active filters after clicking Search)
+  const [appliedSearchQuery, setAppliedSearchQuery] = useState('');
+  const [appliedDateFilterType, setAppliedDateFilterType] = useState('usage_date');
+  const [appliedStartDate, setAppliedStartDate] = useState('');
+  const [appliedEndDate, setAppliedEndDate] = useState('');
   const [isDateTypeDropdownOpen, setIsDateTypeDropdownOpen] = useState(false);
   
   // Selection and payment states
@@ -138,10 +145,52 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     }
   };
 
-  // Reset page to 1 when search, date, or status filter changes
+  // Reset page to 1 when tab filter or applied search changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, activeTabFilter, startDate, endDate, dateFilterType]);
+  }, [appliedSearchQuery, activeTabFilter, appliedStartDate, appliedEndDate, appliedDateFilterType]);
+
+    // Explicit Search Trigger
+  const handleSearchSubmit = (e) => {
+    if (e) e.preventDefault();
+    setAppliedSearchQuery(searchQueryInput);
+    setAppliedDateFilterType(dateFilterTypeInput);
+    setAppliedStartDate(startDateInput);
+    setAppliedEndDate(endDateInput);
+    if (searchQueryInput && searchQueryInput.trim()) {
+      setActiveTabFilter('all');
+    }
+    setCurrentPage(1);
+    fetchBookings();
+  };
+
+  // Explicit Clear All Filters
+  const handleClearFilters = () => {
+    setSearchQueryInput('');
+    setDateFilterTypeInput('usage_date');
+    setStartDateInput('');
+    setEndDateInput('');
+
+    setAppliedSearchQuery('');
+    setAppliedDateFilterType('usage_date');
+    setAppliedStartDate('');
+    setAppliedEndDate('');
+    setCurrentPage(1);
+  };
+
+  // Quick Today Button
+  const handleQuickToday = () => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    const todayStr = `${year}-${month}-${day}`;
+    setStartDateInput(todayStr);
+    setEndDateInput(todayStr);
+    setAppliedStartDate(todayStr);
+    setAppliedEndDate(todayStr);
+    setCurrentPage(1);
+  };
 
   const fetchBookings = async (isBackground = false) => {
     if (!isBackground) setLoading(true);
@@ -645,18 +694,73 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     }
   };
 
-  // Stats calculation
-  const pendingBookingsList = bookings.filter(b => b.payment_status !== 'paid' && b.payment_status !== 'cancelled');
-  const paidBookingsList = bookings.filter(b => b.payment_status === 'paid');
-  const cancelledBookingsList = bookings.filter(b => b.payment_status === 'cancelled');
+  // 1. Base Filter (Date range & Search query using APPLIED filters)
+  const baseFilteredList = useMemo(() => {
+    return bookings.filter(b => {
+      // Date Filtering (Start Date & End Date Range)
+      if (appliedStartDate || appliedEndDate) {
+        if (appliedDateFilterType === 'created_at') {
+          const createdDateStr = getLocalDateString(b.created_at);
+          if (!createdDateStr) return false;
+          if (appliedStartDate && createdDateStr < appliedStartDate) return false;
+          if (appliedEndDate && createdDateStr > appliedEndDate) return false;
+        } else {
+          // usage_date
+          let matches = false;
+          if (b.items && b.items.length) {
+            matches = b.items.some(it => {
+              const dStr = it.start_time ? it.start_time.split('T')[0].split(' ')[0] : '';
+              if (!dStr) return false;
+              if (appliedStartDate && dStr < appliedStartDate) return false;
+              if (appliedEndDate && dStr > appliedEndDate) return false;
+              return true;
+            });
+          }
+          if (!matches) {
+            const usageDateStr = getBookingUsageDateStr(b);
+            if (usageDateStr) {
+              if (appliedStartDate && usageDateStr < appliedStartDate) matches = false;
+              else if (appliedEndDate && usageDateStr > appliedEndDate) matches = false;
+              else matches = true;
+            }
+          }
+          if (!matches) return false;
+        }
+      }
+
+      if (!appliedSearchQuery) return true;
+
+      const searchLower = appliedSearchQuery.toLowerCase().trim();
+      const customer = (b.customer_name || '').toLowerCase();
+      const contact = (b.contact || '');
+      const receipt = (b.receipt_number || '').toLowerCase();
+      const idStr = String(b.id);
+      const pin = (b.pin_code || '');
+      const roomName = (b.items?.[0]?.room_name || b.room_name || '').toLowerCase();
+
+      return (
+        idStr.includes(searchLower) ||
+        receipt.includes(searchLower) ||
+        customer.includes(searchLower) ||
+        contact.includes(searchLower) ||
+        pin.includes(searchLower) ||
+        roomName.includes(searchLower)
+      );
+    });
+  }, [bookings, appliedStartDate, appliedEndDate, appliedDateFilterType, appliedSearchQuery]);
+
+  // 2. Status counts derived from filtered bookings
+  const pendingBookingsList = useMemo(() => baseFilteredList.filter(b => b.payment_status !== 'paid' && b.payment_status !== 'cancelled'), [baseFilteredList]);
+  const paidBookingsList = useMemo(() => baseFilteredList.filter(b => b.payment_status === 'paid'), [baseFilteredList]);
+  const cancelledBookingsList = useMemo(() => baseFilteredList.filter(b => b.payment_status === 'cancelled'), [baseFilteredList]);
   
   const reviewingCount = pendingBookingsList.filter(b => b.payment_status === 'reviewing' || !!b.slip_image_url).length;
   const pendingCount = pendingBookingsList.length;
   const paidCount = paidBookingsList.length;
   const cancelledCount = cancelledBookingsList.length;
-  const totalCount = bookings.length;
+  const totalCount = baseFilteredList.length;
 
-  const taxInvoiceList = bookings.filter(b => b.tax_invoice_required === 1);
+  const taxInvoiceList = useMemo(() => baseFilteredList.filter(b => b.tax_invoice_required === 1), [baseFilteredList]);
   const taxInvoiceCount = taxInvoiceList.length;
   const taxInvoicePaidCount = taxInvoiceList.filter(b => b.payment_status === 'paid').length;
   const taxInvoicePendingCount = taxInvoiceList.filter(b => b.payment_status !== 'paid' && b.payment_status !== 'cancelled').length;
@@ -664,68 +768,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   const totalAmountPending = pendingBookingsList.reduce((sum, b) => sum + (Number(b.total_amount) || 0), 0);
   const totalAmountPaid = paidBookingsList.reduce((sum, b) => sum + (Number(b.total_amount) || 0), 0);
 
-  // Filtering
-  const filteredBookings = bookings.filter(b => {
-    if (activeTabFilter === 'pending') {
-      if (b.payment_status === 'paid' || b.payment_status === 'cancelled') return false;
-    } else if (activeTabFilter === 'paid') {
-      if (b.payment_status !== 'paid') return false;
-    } else if (activeTabFilter === 'cancelled') {
-      if (b.payment_status !== 'cancelled') return false;
-    } else if (activeTabFilter === 'tax_invoice') {
-      if (b.tax_invoice_required !== 1) return false;
-    }
-
-    // Date Filtering (Start Date & End Date Range)
-    if (startDate || endDate) {
-      if (dateFilterType === 'created_at') {
-        const createdDateStr = getLocalDateString(b.created_at);
-        if (!createdDateStr) return false;
-        if (startDate && createdDateStr < startDate) return false;
-        if (endDate && createdDateStr > endDate) return false;
-      } else {
-        // usage_date
-        let matches = false;
-        if (b.items && b.items.length) {
-          matches = b.items.some(it => {
-            const dStr = it.start_time ? it.start_time.split('T')[0].split(' ')[0] : '';
-            if (!dStr) return false;
-            if (startDate && dStr < startDate) return false;
-            if (endDate && dStr > endDate) return false;
-            return true;
-          });
-        }
-        if (!matches) {
-          const usageDateStr = getBookingUsageDateStr(b);
-          if (usageDateStr) {
-            if (startDate && usageDateStr < startDate) matches = false;
-            else if (endDate && usageDateStr > endDate) matches = false;
-            else matches = true;
-          }
-        }
-        if (!matches) return false;
-      }
-    }
-
-    if (!searchQuery) return true;
-
-    const searchLower = searchQuery.toLowerCase();
-    const customer = (b.customer_name || '').toLowerCase();
-    const contact = (b.contact || '');
-    const receipt = (b.receipt_number || '').toLowerCase();
-    const idStr = String(b.id);
-    const pin = (b.pin_code || '');
-    const roomName = (b.items?.[0]?.room_name || b.room_name || '').toLowerCase();
-
-    return (
-      idStr.includes(searchLower) ||
-      receipt.includes(searchLower) ||
-      customer.includes(searchLower) ||
-      contact.includes(searchLower) ||
-      pin.includes(searchLower) ||
-      roomName.includes(searchLower)
-    );
-  });
+  // 3. Final tab-filtered list for table display
+  const filteredBookings = useMemo(() => {
+    if (activeTabFilter === 'pending') return pendingBookingsList;
+    if (activeTabFilter === 'paid') return paidBookingsList;
+    if (activeTabFilter === 'cancelled') return cancelledBookingsList;
+    if (activeTabFilter === 'tax_invoice') return taxInvoiceList;
+    return baseFilteredList;
+  }, [activeTabFilter, pendingBookingsList, paidBookingsList, cancelledBookingsList, taxInvoiceList, baseFilteredList]);
 
   // Sorting
   const getSortedBookings = () => {
@@ -736,11 +786,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
       
       if (sortKey === 'id') {
         valA = Number(a.id);
-        valB = Number(b.id);
-      } else if (sortKey === 'created_at') {
-        valA = new Date(a.created_at).getTime();
-        valB = new Date(b.created_at).getTime();
-      } else if (sortKey === 'usage_date') {
+} else if (sortKey === 'usage_date') {
         const getTs = (item) => {
           const s = item.items?.[0]?.start_time || item.start_time || item.booking_date;
           if (!s) return 0;
@@ -798,16 +844,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
             ศูนย์ตรวจสลิปโอนเงิน ยืนยันการชำระเงิน และกดส่งรหัสผ่านเปิดห้องประชุม (Door PIN) ให้ลูกค้าหน้าเคาน์เตอร์
           </p>
         </div>
-        
+
         <button 
           className="btn btn-secondary" 
           onClick={() => fetchBookings(false)} 
           disabled={loading || isRefreshing}
           style={{ 
-            display: 'inline-flex', 
+            display: 'flex', 
             alignItems: 'center', 
             gap: '8px', 
-            fontSize: '0.85rem', 
+            fontSize: '0.85rem',
             fontWeight: 700,
             padding: '8px 16px',
             borderRadius: '12px'
@@ -818,18 +864,18 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
         </button>
       </div>
 
-      {/* Interactive Stat-Tabs (3 ขั้นตอนการจัดการการจอง) */}
-      <div className="grid-cols-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+      {/* Interactive Stat-Tabs (4 ขั้นตอนการจัดการการจอง) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
         
         {/* Tab 1: ตรวจสอบการชำระเงิน */}
         <div 
           className="card" 
           onClick={() => { setActiveTabFilter('pending'); setCurrentPage(1); }}
           style={{ 
-            padding: '18px 22px', 
+            padding: '16px 18px', 
             display: 'flex', 
             alignItems: 'center', 
-            gap: '16px', 
+            gap: '14px', 
             border: activeTabFilter === 'pending' ? '2px solid #f59e0b' : '1px solid var(--border-color)', 
             background: activeTabFilter === 'pending' 
               ? 'linear-gradient(135deg, var(--bg-card) 0%, rgba(245, 158, 11, 0.12) 100%)' 
@@ -841,16 +887,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
             transform: activeTabFilter === 'pending' ? 'translateY(-2px)' : 'none'
           }}
         >
-          <div style={{ backgroundColor: activeTabFilter === 'pending' ? '#f59e0b' : 'rgba(245, 158, 11, 0.15)', color: activeTabFilter === 'pending' ? '#ffffff' : '#f59e0b', width: '52px', height: '52px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
-            <AlertCircle size={26} />
+          <div style={{ backgroundColor: activeTabFilter === 'pending' ? '#f59e0b' : 'rgba(245, 158, 11, 0.15)', color: activeTabFilter === 'pending' ? '#ffffff' : '#f59e0b', width: '48px', height: '48px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
+            <AlertCircle size={24} />
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '0.85rem', color: activeTabFilter === 'pending' ? '#d97706' : 'var(--text-muted)', fontWeight: 800 }}>ตรวจสอบการชำระเงิน</div>
-            <div style={{ fontSize: '1.5rem', fontWeight: 900, color: '#f59e0b', margin: '2px 0' }}>
-              {pendingCount} <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>รายการ</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.82rem', color: activeTabFilter === 'pending' ? '#d97706' : 'var(--text-muted)', fontWeight: 800 }}>ตรวจสอบชำระเงิน</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#f59e0b', margin: '2px 0' }}>
+              {pendingCount} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>รายการ</span>
             </div>
-            <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-              ยอดค้าง <strong style={{ color: '#f59e0b' }}>฿{totalAmountPending.toLocaleString()}</strong> {reviewingCount > 0 && <span style={{ color: '#ef4444', fontWeight: 800 }}>(รอตรวจสลิป {reviewingCount})</span>}
+            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              ยอดค้าง <strong style={{ color: '#f59e0b' }}>฿{totalAmountPending.toLocaleString()}</strong>
             </div>
           </div>
         </div>
@@ -860,10 +906,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
           className="card" 
           onClick={() => { setActiveTabFilter('paid'); setCurrentPage(1); }}
           style={{ 
-            padding: '18px 22px', 
+            padding: '16px 18px', 
             display: 'flex', 
             alignItems: 'center', 
-            gap: '16px', 
+            gap: '14px', 
             border: activeTabFilter === 'paid' ? '2px solid #10b981' : '1px solid var(--border-color)', 
             background: activeTabFilter === 'paid' 
               ? 'linear-gradient(135deg, var(--bg-card) 0%, rgba(16, 185, 129, 0.12) 100%)' 
@@ -875,16 +921,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
             transform: activeTabFilter === 'paid' ? 'translateY(-2px)' : 'none'
           }}
         >
-          <div style={{ backgroundColor: activeTabFilter === 'paid' ? '#10b981' : 'rgba(16, 185, 129, 0.15)', color: activeTabFilter === 'paid' ? '#ffffff' : '#10b981', width: '52px', height: '52px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
-            <ShieldCheck size={26} />
+          <div style={{ backgroundColor: activeTabFilter === 'paid' ? '#10b981' : 'rgba(16, 185, 129, 0.15)', color: activeTabFilter === 'paid' ? '#ffffff' : '#10b981', width: '48px', height: '48px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
+            <ShieldCheck size={24} />
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '0.85rem', color: activeTabFilter === 'paid' ? '#059669' : 'var(--text-muted)', fontWeight: 800 }}>ชำระเงินสำเร็จ</div>
-            <div style={{ fontSize: '1.5rem', fontWeight: 900, color: '#10b981', margin: '2px 0' }}>
-              {paidCount} <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>รายการ</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.82rem', color: activeTabFilter === 'paid' ? '#059669' : 'var(--text-muted)', fontWeight: 800 }}>ชำระเงินสำเร็จ</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#10b981', margin: '2px 0' }}>
+              {paidCount} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>รายการ</span>
             </div>
-            <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-              ยอดรับชำระแล้ว <strong style={{ color: '#10b981' }}>฿{totalAmountPaid.toLocaleString()}</strong>
+            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              ยอดรับ <strong style={{ color: '#10b981' }}>฿{totalAmountPaid.toLocaleString()}</strong>
             </div>
           </div>
         </div>
@@ -894,10 +940,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
           className="card" 
           onClick={() => { setActiveTabFilter('cancelled'); setCurrentPage(1); }}
           style={{ 
-            padding: '18px 22px', 
+            padding: '16px 18px', 
             display: 'flex', 
             alignItems: 'center', 
-            gap: '16px', 
+            gap: '14px', 
             border: activeTabFilter === 'cancelled' ? '2px solid #ef4444' : '1px solid var(--border-color)', 
             background: activeTabFilter === 'cancelled' 
               ? 'linear-gradient(135deg, var(--bg-card) 0%, rgba(239, 68, 68, 0.12) 100%)' 
@@ -909,15 +955,47 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
             transform: activeTabFilter === 'cancelled' ? 'translateY(-2px)' : 'none'
           }}
         >
-          <div style={{ backgroundColor: activeTabFilter === 'cancelled' ? '#ef4444' : 'rgba(239, 68, 68, 0.15)', color: activeTabFilter === 'cancelled' ? '#ffffff' : '#ef4444', width: '52px', height: '52px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
-            <Ban size={26} />
+          <div style={{ backgroundColor: activeTabFilter === 'cancelled' ? '#ef4444' : 'rgba(239, 68, 68, 0.15)', color: activeTabFilter === 'cancelled' ? '#ffffff' : '#ef4444', width: '48px', height: '48px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
+            <Ban size={24} />
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '0.85rem', color: activeTabFilter === 'cancelled' ? '#dc2626' : 'var(--text-muted)', fontWeight: 800 }}>รายการยกเลิก</div>
-            <div style={{ fontSize: '1.5rem', fontWeight: 900, color: '#ef4444', margin: '2px 0' }}>
-              {cancelledCount} <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>รายการ</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.82rem', color: activeTabFilter === 'cancelled' ? '#dc2626' : 'var(--text-muted)', fontWeight: 800 }}>รายการยกเลิก</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#ef4444', margin: '2px 0' }}>
+              {cancelledCount} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>รายการ</span>
             </div>
-            <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>รายการที่ถูกยกเลิกการจอง</div>
+            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>ยกเลิกการจอง</div>
+          </div>
+        </div>
+
+        {/* Tab 4: รายการทั้งหมด */}
+        <div 
+          className="card" 
+          onClick={() => { setActiveTabFilter('all'); setCurrentPage(1); }}
+          style={{ 
+            padding: '16px 18px', 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '14px', 
+            border: activeTabFilter === 'all' ? '2px solid #3b82f6' : '1px solid var(--border-color)', 
+            background: activeTabFilter === 'all' 
+              ? 'linear-gradient(135deg, var(--bg-card) 0%, rgba(59, 130, 246, 0.12) 100%)' 
+              : 'linear-gradient(135deg, var(--bg-card) 0%, rgba(59, 130, 246, 0.03) 100%)',
+            cursor: 'pointer',
+            borderRadius: '16px',
+            boxShadow: activeTabFilter === 'all' ? '0 6px 20px rgba(59, 130, 246, 0.2)' : 'none',
+            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+            transform: activeTabFilter === 'all' ? 'translateY(-2px)' : 'none'
+          }}
+        >
+          <div style={{ backgroundColor: activeTabFilter === 'all' ? '#3b82f6' : 'rgba(59, 130, 246, 0.15)', color: activeTabFilter === 'all' ? '#ffffff' : '#3b82f6', width: '48px', height: '48px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
+            <Clock size={24} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.82rem', color: activeTabFilter === 'all' ? '#2563eb' : 'var(--text-muted)', fontWeight: 800 }}>รายการทั้งหมด</div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#3b82f6', margin: '2px 0' }}>
+              {totalCount} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>รายการ</span>
+            </div>
+            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>รวมทุกสถานะ</div>
           </div>
         </div>
 
@@ -935,7 +1013,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
         position: 'relative',
         zIndex: 100
       }}>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <form onSubmit={handleSearchSubmit} style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
           
           {/* 1. Search Input */}
           <div style={{
@@ -952,7 +1030,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
               style={{
                 width: '100%',
                 paddingLeft: '34px',
-                paddingRight: searchQuery ? '30px' : '10px',
+                paddingRight: searchQueryInput ? '30px' : '10px',
                 height: '38px',
                 borderRadius: '10px',
                 fontSize: '0.82rem',
@@ -960,13 +1038,13 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                 background: 'var(--bg-card)'
               }}
               placeholder="ค้นหาเบอร์โทร, ชื่อผู้จอง, เลขใบจอง, PIN..."
-              value={searchQuery}
-              onChange={e => { setSearchQuery(e.target.value); setCurrentPage(1); }}
+              value={searchQueryInput}
+              onChange={e => setSearchQueryInput(e.target.value)}
             />
-            {searchQuery && (
+            {searchQueryInput && (
               <button 
                 type="button"
-                onClick={() => { setSearchQuery(''); setCurrentPage(1); }}
+                onClick={() => setSearchQueryInput('')}
                 style={{ 
                   position: 'absolute', 
                   right: '8px', 
@@ -1007,7 +1085,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 <Calendar size={15} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
                 <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                  {dateFilterType === 'usage_date' ? 'วันที่ใช้งาน' : 'วันที่ทำรายการ'}
+                  {dateFilterTypeInput === 'usage_date' ? 'วันที่ใช้งาน' : 'วันที่ทำรายการ'}
                 </span>
               </div>
               <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
@@ -1037,21 +1115,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                     <div
                       key={item.id}
                       onClick={() => {
-                        setDateFilterType(item.id);
+                        setDateFilterTypeInput(item.id);
                         setIsDateTypeDropdownOpen(false);
                       }}
                       style={{
                         padding: '7px 10px',
                         borderRadius: '8px',
                         fontSize: '0.8rem',
-                        fontWeight: dateFilterType === item.id ? 800 : 500,
-                        color: dateFilterType === item.id ? 'var(--primary-color)' : 'var(--text-main)',
+                        fontWeight: dateFilterTypeInput === item.id ? 800 : 500,
+                        color: dateFilterTypeInput === item.id ? 'var(--primary-color)' : 'var(--text-main)',
                         cursor: 'pointer',
-                        background: dateFilterType === item.id ? 'var(--bg-hover)' : 'transparent',
+                        background: dateFilterTypeInput === item.id ? 'var(--bg-hover)' : 'transparent',
                         transition: 'background 0.15s'
                       }}
                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = dateFilterType === item.id ? 'var(--bg-hover)' : 'transparent'}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = dateFilterTypeInput === item.id ? 'var(--bg-hover)' : 'transparent'}
                     >
                       {item.label}
                     </div>
@@ -1065,8 +1143,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
             <div style={{ width: '135px' }}>
               <CustomDatePicker 
-                value={startDate}
-                onChange={val => { setStartDate(val); setCurrentPage(1); }}
+                value={startDateInput}
+                onChange={val => setStartDateInput(val)}
                 placeholder="วันเริ่มต้น"
                 className="form-control"
                 style={{
@@ -1087,8 +1165,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
 
             <div style={{ width: '135px' }}>
               <CustomDatePicker 
-                value={endDate}
-                onChange={val => { setEndDate(val); setCurrentPage(1); }}
+                value={endDateInput}
+                onChange={val => setEndDateInput(val)}
                 placeholder="วันสิ้นสุด"
                 className="form-control"
                 style={{
@@ -1109,16 +1187,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
           {/* 4. [วันนี้] Quick Button */}
           <button 
             type="button" 
-            onClick={() => {
-              const today = new Date();
-              const year = today.getFullYear();
-              const month = String(today.getMonth() + 1).padStart(2, '0');
-              const day = String(today.getDate()).padStart(2, '0');
-              const todayStr = `${year}-${month}-${day}`;
-              setStartDate(todayStr);
-              setEndDate(todayStr);
-              setCurrentPage(1);
-            }}
+            onClick={handleQuickToday}
             className="btn btn-secondary"
             style={{ 
               padding: '0 12px', 
@@ -1136,35 +1205,57 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
             วันนี้
           </button>
 
-          {/* 5. [ล้างค่า] Button */}
-          {(searchQuery || startDate || endDate) && (
-            <button 
-              type="button" 
-              onClick={() => {
-                setSearchQuery('');
-                setStartDate('');
-                setEndDate('');
-                setCurrentPage(1);
-              }}
-              className="btn btn-danger"
-              style={{ 
-                padding: '0 12px', 
-                borderRadius: '10px', 
-                fontSize: '0.8rem', 
-                fontWeight: 600,
-                height: '38px', 
-                display: 'inline-flex', 
-                alignItems: 'center',
-                gap: '4px'
-              }}
-              title="ล้างตัวกรองทั้งหมด"
-            >
-              <X size={13} />
-              <span>ล้างค่า</span>
-            </button>
-          )}
+          {/* 5. [ค้นหา] Action Button */}
+          <button 
+            type="submit" 
+            className="btn btn-primary" 
+            style={{ 
+              padding: '0 14px', 
+              borderRadius: '10px', 
+              fontSize: '0.82rem', 
+              fontWeight: 700,
+              height: '38px', 
+              gap: '5px', 
+              display: 'inline-flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(37, 99, 235, 0.25)',
+              flexShrink: 0
+            }}
+          >
+            <Search size={13} />
+            <span>ค้นหา</span>
+          </button>
 
-        </div>
+          {/* 6. [ล้างค่า] Button */}
+          <button 
+            type="button" 
+            onClick={handleClearFilters}
+            className="btn btn-secondary"
+            style={{ 
+              padding: '0 12px', 
+              borderRadius: '10px', 
+              fontSize: '0.82rem', 
+              fontWeight: 600,
+              height: '38px', 
+              gap: '4px',
+              backgroundColor: 'var(--bg-hover)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-muted)',
+              display: 'inline-flex', 
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              flexShrink: 0
+            }}
+            title="ล้างค่าตัวกรองทั้งหมด"
+          >
+            <RotateCcw size={12} />
+            <span>ล้างค่า</span>
+          </button>
+
+        </form>
       </div>
 
       {/* Bookings Table View */}
@@ -1231,7 +1322,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                 <tr>
                   <td colSpan={columns.length} style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)' }}>
                     <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>
-                      {searchQuery ? 'ไม่พบรายการจองที่ตรงกับคำค้นหา' : activeTabFilter === 'pending' ? 'ไม่มีรายการรอตรวจสอบการชำระเงินในขณะนี้' : activeTabFilter === 'paid' ? 'ไม่มีรายการชำระเงินสำเร็จ' : activeTabFilter === 'cancelled' ? 'ไม่มีรายการยกเลิก' : 'ไม่มีประวัติรายการจองห้องในระบบ'}
+                      {appliedSearchQuery || appliedStartDate || appliedEndDate ? 'ไม่พบรายการจองที่ตรงกับคำค้นหา' : activeTabFilter === 'pending' ? 'ไม่มีรายการรอตรวจสอบการชำระเงินในขณะนี้' : activeTabFilter === 'paid' ? 'ไม่มีรายการชำระเงินสำเร็จ' : activeTabFilter === 'cancelled' ? 'ไม่มีรายการยกเลิก' : 'ไม่มีประวัติรายการจองห้องในระบบ'}
                     </div>
                   </td>
                 </tr>

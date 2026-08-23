@@ -1,285 +1,152 @@
-import React, { useState } from 'react';
-import { useLocation, useNavigate, Navigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { 
+  User, Phone, Mail, Building, FileText, CheckCircle2, 
+  ArrowLeft, ChevronRight, ChevronDown, AlertCircle, ShieldCheck, CheckSquare, Square, MessageSquare, Send, Truck 
+} from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 
 export default function BookingFormPage() {
-  const location = useLocation();
   const navigate = useNavigate();
-  
-  // Safe state retrieval from location or persistent sessionStorage
-  const savedState = (() => {
-    try {
-      return JSON.parse(sessionStorage.getItem('current_booking_selection') || 'null');
-    } catch (e) {
-      return null;
-    }
-  })();
+  const [bookingData, setBookingData] = useState(null);
 
-  const bookingState = location.state || savedState;
+  // Customer Form State
+  const [name, setName] = useState('');
+  const [contact, setContact] = useState('');
+  const [email, setEmail] = useState('');
+  const [company, setCompany] = useState('');
+  const [notes, setNotes] = useState('');
 
-  if (!bookingState || !bookingState.room) {
-    return <Navigate to="/" />;
-  }
-
-  const { room, date, startTime, endTime, guests, hours, bookingType, layoutType } = bookingState;
-  const isHalfDay = bookingType === 'halfday';
-  const isDaily = bookingType === 'daily';
-
-  const [formData, setFormData] = useState({
-    name: localStorage.getItem('line_user_name') || sessionStorage.getItem('line_user_name') || '',
-    phone: '',
-    email: '',
-    company: '',
-    notes: ''
-  });
-  const [lineUserId, setLineUserId] = useState(
-    localStorage.getItem('line_user_id') || sessionStorage.getItem('line_user_id') || ''
-  );
-  const [lineUserName, setLineUserName] = useState(
-    localStorage.getItem('line_user_name') || sessionStorage.getItem('line_user_name') || ''
-  );
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
+  // LINE Profile State
+  const [lineUserId, setLineUserId] = useState('');
+  const [lineUserName, setLineUserName] = useState('');
+  const [lineUserPic, setLineUserPic] = useState('');
 
   // Tax Invoice State
-  const [requireTaxInvoice, setRequireTaxInvoice] = useState(false);
-  const [taxData, setTaxData] = useState({
-    taxName: '',
-    taxAddress: '',
-    taxId: '',
-    taxPhone: '',
-    taxDeliveryMethod: 'email', // 'email' | 'postal' | 'pickup'
-    taxPostalAddress: '',
-    sameAsBillingAddress: false
-  });
+  const [needTaxInvoice, setNeedTaxInvoice] = useState(false);
+  const [taxName, setTaxName] = useState('');
+  const [taxAddress, setTaxAddress] = useState('');
+  const [taxId, setTaxId] = useState('');
+  const [taxPhone, setTaxPhone] = useState('');
+  const [taxDeliveryMethod, setTaxDeliveryMethod] = useState('online'); // 'online' | 'postal'
+  const [taxPostalAddress, setTaxPostalAddress] = useState('');
 
-  const handleTaxChange = (e) => {
-    const { name, value, type, checked } = e.target;
-    if (type === 'checkbox' && name === 'sameAsBillingAddress') {
-      setTaxData(prev => ({
-        ...prev,
-        sameAsBillingAddress: checked,
-        taxPostalAddress: checked ? prev.taxAddress : ''
-      }));
-    } else {
-      setTaxData(prev => {
-        const next = { ...prev, [name]: value };
-        if (name === 'taxAddress' && prev.sameAsBillingAddress) {
-          next.taxPostalAddress = value;
-        }
-        return next;
-      });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // Load payload and LIFF profile from sessionStorage / localStorage
+  useEffect(() => {
+    const raw = sessionStorage.getItem('current_booking_payload');
+    if (!raw) {
+      navigate('/');
+      return;
     }
-  };
+    try {
+      const parsed = JSON.parse(raw);
+      setBookingData(parsed);
+    } catch (e) {
+      navigate('/');
+      return;
+    }
 
-  // Sync LIFF profile on mount or when LIFF becomes ready
-  React.useEffect(() => {
-    const syncProfile = async () => {
-      try {
-        const storedId = localStorage.getItem('line_user_id') || sessionStorage.getItem('line_user_id');
-        const storedName = localStorage.getItem('line_user_name') || sessionStorage.getItem('line_user_name');
-        if (storedId) setLineUserId(storedId);
-        if (storedName) {
-          setLineUserName(storedName);
-          setFormData(prev => ({ ...prev, name: prev.name || storedName }));
-        }
+    // Check LINE LIFF Profile
+    const savedLineId = sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id') || '';
+    const savedLineName = sessionStorage.getItem('line_user_name') || localStorage.getItem('line_user_name') || '';
+    const savedLinePic = sessionStorage.getItem('line_user_pic') || localStorage.getItem('line_user_pic') || '';
 
-        if (window.liff) {
-          if (!window.liff.isLoggedIn()) {
-            // If inside LINE client, trigger login automatically
-            if (window.liff.isInClient && window.liff.isInClient()) {
-              window.liff.login();
-            }
-          } else {
-            const profile = await window.liff.getProfile();
-            if (profile && profile.userId) {
-              setLineUserId(profile.userId);
-              localStorage.setItem('line_user_id', profile.userId);
-              sessionStorage.setItem('line_user_id', profile.userId);
-              if (profile.displayName) {
-                setLineUserName(profile.displayName);
-                localStorage.setItem('line_user_name', profile.displayName);
-                sessionStorage.setItem('line_user_name', profile.displayName);
-                setFormData(prev => ({ ...prev, name: prev.name || profile.displayName }));
-              }
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('LIFF sync error:', e);
+    if (savedLineId) {
+      setLineUserId(savedLineId);
+      setLineUserName(savedLineName);
+      setLineUserPic(savedLinePic);
+      if (savedLineName && !name) {
+        setName(savedLineName);
       }
-    };
-    syncProfile();
+    }
   }, []);
 
   const handleLineLogin = () => {
-    if (window.liff) {
-      window.liff.login();
-    } else {
-      window.location.href = 'https://liff.line.me/2011136579-c1TeSWNs';
-    }
-  };
-
-  const calcHours = () => {
-    if (hours) return hours;
-    const [h1, m1] = startTime.split(':').map(Number);
-    const [h2, m2] = endTime.split(':').map(Number);
-    return Math.max(1, Math.ceil(((h2 * 60 + m2) - (h1 * 60 + m1)) / 60));
-  };
-  
-  const duration = calcHours();
-  const totalPrice = location.state.totalPrice || (isHalfDay
-    ? (room.half_day_rate > 0 ? room.half_day_rate : (room.hourly_rate * 4))
-    : isDaily
-      ? (room.daily_rate > 0 ? room.daily_rate : (room.hourly_rate * 9))
-      : (duration * room.hourly_rate));
-
-  const getBookingTypeLabel = () => {
-    if (isHalfDay) return `เหมาครึ่งวัน (${startTime} - ${endTime} น.)`;
-    if (isDaily) return `เหมาเต็มวัน (${startTime} - ${endTime} น.)`;
-    return `รายชั่วโมง (${startTime} - ${endTime} น.) (${duration} ชม.)`;
-  };
-
-  const formatDateDisplay = (dStr) => {
-    if (!dStr) return '';
-    const [y, m, d] = dStr.split('-').map(Number);
-    const dateObj = new Date(y, m - 1, d);
-    const dayStr = String(d).padStart(2, '0');
-    const monthStr = String(m).padStart(2, '0');
-    const thaiYear = y + 543;
-    const fullText = dateObj.toLocaleDateString('th-TH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    return `${dayStr}/${monthStr}/${thaiYear} (${fullText})`;
-  };
-
-  const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-  };
-
-  const handleBackToRooms = () => {
-    navigate(`/rooms?date=${date}&guests=${guests}`);
-  };
-
-  const handleToggleTax = (e) => {
-    const isChecked = e.target.checked;
-    setRequireTaxInvoice(isChecked);
-    if (isChecked) {
-      setTaxData(prev => ({
-        ...prev,
-        taxName: prev.taxName || formData.company || formData.name || '',
-        taxPhone: prev.taxPhone || formData.phone || ''
-      }));
+    try {
+      if (window.liff) {
+        if (!window.liff.isLoggedIn()) {
+          window.liff.login();
+        } else {
+          window.liff.getProfile().then(p => {
+            if (p) {
+              setLineUserId(p.userId);
+              setLineUserName(p.displayName);
+              setLineUserPic(p.pictureUrl);
+              setName(p.displayName);
+            }
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('LINE login error:', err);
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setSubmitting(true);
-    setSubmitError('');
-    
-    // Validate past time before submitting
-    const now = new Date();
-    const [by, bm, bd] = date.split('-').map(Number);
-    const [bsh, bsm] = startTime.split(':').map(Number);
-    const bookingStart = new Date(by, bm - 1, bd, bsh, bsm);
-    if (bookingStart.getTime() < now.getTime() - 2 * 60 * 1000) {
-      setSubmitError('ขออภัย ช่วงเวลาที่คุณเลือกได้ผ่านไปแล้ว กรุณากลับไปเลือกช่วงเวลาใหม่');
-      setSubmitting(false);
+    setError('');
+
+    if (!name.trim()) {
+      setError('กรุณาระบุชื่อ-นามสกุล ผู้จอง');
+      return;
+    }
+    if (!contact.trim()) {
+      setError('กรุณาระบุเบอร์โทรศัพท์สำหรับติดต่อและรับรหัสผ่าน');
       return;
     }
 
-    // Re-check availability before submitting
-    try {
-      const schedRes = await fetch(`${API_BASE}/api/public/rooms/schedule?date=${date}`);
-      if (schedRes.ok) {
-        const schedData = await schedRes.json();
-        const roomBookings = (schedData.rooms || []).find(r => r.id === room.id);
-        if (roomBookings && roomBookings.bookings) {
-          const reqStartMs = new Date(`${date}T${startTime}:00`).getTime();
-          const reqEndMs = new Date(`${date}T${endTime}:00`).getTime();
-          const hasOverlap = roomBookings.bookings.some(b => {
-            const bStartMs = new Date(String(b.start_time).replace(' ', 'T')).getTime();
-            const bEndMs = new Date(String(b.end_time).replace(' ', 'T')).getTime();
-            return bStartMs < reqEndMs && bEndMs > reqStartMs;
-          });
-          if (hasOverlap) {
-            setSubmitError('ขออภัย ห้องนี้ถูกจองไปแล้วในช่วงเวลาดังกล่าว กรุณากลับไปเลือกห้องและเวลาใหม่');
-            setSubmitting(false);
-            return;
-          }
-        }
+    if (needTaxInvoice) {
+      if (!taxName.trim()) {
+        setError('กรุณาระบุชื่อผู้เสียภาษี / ชื่อบริษัท');
+        return;
       }
-    } catch (checkErr) {
-      // If re-check fails, proceed with submission (server will catch overlap)
-      console.warn('Re-check availability failed, proceeding:', checkErr);
+      if (!taxAddress.trim()) {
+        setError('กรุณาระบุที่อยู่ตาม ภ.พ.20');
+        return;
+      }
+      if (!taxId.trim()) {
+        setError('กรุณาระบุเลขประจำตัวผู้เสียภาษี 13 หลัก');
+        return;
+      }
+      if (!taxPhone.trim() && !contact.trim()) {
+        setError('กรุณาระบุเบอร์โทรศัพท์สำหรับใบกำกับภาษี');
+        return;
+      }
+      if (taxDeliveryMethod === 'postal' && !taxPostalAddress.trim()) {
+        setError('กรุณาระบุที่อยู่สำหรับจัดส่งเอกสารทางจดหมาย');
+        return;
+      }
     }
 
+    setLoading(true);
+
     try {
-      let effectiveLineUserId = lineUserId || localStorage.getItem('line_user_id') || sessionStorage.getItem('line_user_id') || '';
-      if (!effectiveLineUserId && window.liff) {
-        try {
-          if (window.liff.isLoggedIn()) {
-            const profile = await window.liff.getProfile();
-            if (profile && profile.userId) {
-              effectiveLineUserId = profile.userId;
-              localStorage.setItem('line_user_id', profile.userId);
-            }
-          }
-        } catch (liffErr) {
-          console.warn('Direct LIFF fetch in submit:', liffErr);
-        }
-      }
-
-      // Validate Tax Invoice if requested
-      if (requireTaxInvoice) {
-        if (!taxData.taxName.trim()) {
-          setSubmitError('กรุณาระบุ ชื่อ-นามสกุล หรือชื่อบริษัท สำหรับออกใบกำกับภาษี');
-          setSubmitting(false);
-          return;
-        }
-        if (!taxData.taxAddress.trim()) {
-          setSubmitError('กรุณาระบุ ที่อยู่สำหรับออกใบกำกับภาษี');
-          setSubmitting(false);
-          return;
-        }
-        if (!taxData.taxId.trim()) {
-          setSubmitError('กรุณาระบุ เลขประจำตัวผู้เสียภาษี 13 หลัก');
-          setSubmitting(false);
-          return;
-        }
-        if (!taxData.taxPhone.trim()) {
-          setSubmitError('กรุณาระบุ เบอร์โทรศัพท์สำหรับใบกำกับภาษี');
-          setSubmitting(false);
-          return;
-        }
-        if (taxData.taxDeliveryMethod === 'postal' && !taxData.taxPostalAddress.trim()) {
-          setSubmitError('กรุณาระบุ ที่อยู่สำหรับจัดส่งเอกสารทางไปรษณีย์/จดหมาย');
-          setSubmitting(false);
-          return;
-        }
-      }
-
       const payload = {
-        customer_name: formData.name,
-        contact: formData.phone,
-        email: formData.email,
-        department: formData.company,
-        note: formData.notes,
-        room_id: room.id,
-        booking_date: date,
-        start_time: startTime,
-        end_time: endTime,
-        booking_type: bookingType || 'hourly',
-        layout: layoutType || 'standard',
-        total_amount: totalPrice,
-        line_user_id: effectiveLineUserId || null,
-        tax_invoice_required: requireTaxInvoice ? 1 : 0,
-        tax_name: requireTaxInvoice ? taxData.taxName.trim() : null,
-        tax_address: requireTaxInvoice ? taxData.taxAddress.trim() : null,
-        tax_id: requireTaxInvoice ? taxData.taxId.trim() : null,
-        tax_phone: requireTaxInvoice ? taxData.taxPhone.trim() : null,
-        tax_delivery_method: requireTaxInvoice ? taxData.taxDeliveryMethod : null,
-        tax_postal_address: (requireTaxInvoice && taxData.taxDeliveryMethod === 'postal') ? (taxData.taxPostalAddress.trim() || taxData.taxAddress.trim()) : null
+        room_id: bookingData.room_id,
+        customer_name: name.trim(),
+        contact: contact.trim(),
+        email: email.trim(),
+        department: company.trim(),
+        booking_date: bookingData.date,
+        start_time: bookingData.start_time,
+        end_time: bookingData.end_time,
+        booking_type: bookingData.booking_type || (bookingData.duration >= 8 ? 'daily' : (bookingData.duration === 4 && bookingData.half_day_rate > 0 ? 'halfday' : 'hourly')),
+        layout: bookingData.layout || 'standard',
+        guest_count: bookingData.guests || 1,
+        total_amount: bookingData.total_amount || 0,
+        note: notes.trim(),
+        line_user_id: lineUserId,
+        tax_invoice_required: needTaxInvoice ? 1 : 0,
+        tax_name: needTaxInvoice ? taxName.trim() : null,
+        tax_address: needTaxInvoice ? taxAddress.trim() : null,
+        tax_id: needTaxInvoice ? taxId.trim() : null,
+        tax_phone: needTaxInvoice ? (taxPhone.trim() || contact.trim()) : null,
+        tax_delivery_method: needTaxInvoice ? taxDeliveryMethod : null,
+        tax_postal_address: needTaxInvoice && taxDeliveryMethod === 'postal' ? taxPostalAddress.trim() : null
       };
 
       const res = await fetch(`${API_BASE}/api/public/bookings`, {
@@ -287,403 +154,467 @@ export default function BookingFormPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      
+
       const data = await res.json();
-      
+
       if (res.ok && data.success) {
-        navigate(`/confirm/${data.bookingId}`, { 
-          state: { 
-            booking: { 
-              ...payload, 
-              room, 
-              id: data.bookingId,
-              bookingCode: data.bookingCode,
-              receiptNumber: data.receiptNumber,
-              totalAmount: data.totalAmount,
-              paymentDeadline: data.paymentDeadline
-            } 
-          } 
-        });
+        // Save current booking confirmation
+        sessionStorage.setItem('completed_booking_result', JSON.stringify({
+          ...bookingData,
+          booking_id: data.booking_id || data.id,
+          customer_name: name.trim(),
+          customer_contact: contact.trim(),
+          line_user_id: lineUserId
+        }));
+        navigate(`/confirm?id=${data.booking_id || data.id}`);
       } else {
-        setSubmitError(data.error || 'เกิดข้อผิดพลาดในการจอง กรุณาลองใหม่อีกครั้ง');
+        setError(data.error || 'ไม่สามารถทำรายการจองได้ กรุณาลองใหม่อีกครั้ง');
       }
     } catch (err) {
-      setSubmitError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาตรวจสอบการเชื่อมต่อ');
+      setError('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์: ' + err.message);
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
   };
 
+  if (!bookingData) return null;
+
   return (
-    <div className="page-transition" style={{ maxWidth: '800px', margin: '0 auto' }}>
-      
-      {/* Top Back Navigation Bar */}
-      <div style={{ marginBottom: '1.25rem' }}>
-        <button 
-          onClick={handleBackToRooms} 
-          className="btn btn-outline"
-          style={{ 
-            display: 'inline-flex', 
-            alignItems: 'center', 
-            gap: '0.4rem', 
-            fontSize: '0.875rem', 
-            padding: '0.5rem 0.9rem',
-            borderRadius: '8px'
-          }}
-        >
-          &larr; ย้อนกลับไปเลือกห้องประชุม
-        </button>
-      </div>
-
-      {/* Hero Header */}
-      <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-        <h1 style={{ color: 'var(--primary)', fontSize: '2.2rem', margin: '0 0 0.25rem 0', fontWeight: 'bold' }}>B-WORK</h1>
-        <h2 style={{ margin: '0 0 0.4rem 0', fontSize: '1.25rem' }}>กรอกข้อมูลผู้จอง / Customer Information</h2>
-      </div>
-
-      {/* Progress Step Indicator (Step 3 Active) */}
+    <div className="main-content">
       <StepProgress currentStep={3} />
 
-      {/* Form Error Banner */}
-      {submitError && (
-        <div className="glass-card" style={{ background: '#fee2e2', border: '1px solid #fecaca', color: '#991b1b', padding: '1rem', marginBottom: '1.5rem', borderRadius: '10px' }}>
-          <strong>เกิดข้อผิดพลาด:</strong> {submitError}
-        </div>
-      )}
+      <div className="booking-form-grid">
+        {/* LEFT COLUMN: STICKY BOOKING SUMMARY CARD */}
+        <div className="booking-card" style={{ position: 'sticky', top: '80px' }}>
+          <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--primary)', textTransform: 'uppercase', marginBottom: '8px' }}>
+            สรุปรายการจอง
+          </div>
 
-      <div className="booking-form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: '1.5rem' }}>
-        
-        {/* Left Column: Summary Card */}
-        <div>
-          <div className="glass-card" style={{ padding: '1.5rem', position: 'sticky', top: '20px' }}>
-            <h3 style={{ margin: '0 0 1rem 0', fontSize: '1.1rem', color: 'var(--primary)', borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem' }}>
-              สรุปรายการจอง / Summary
-            </h3>
+          {bookingData.image_url && (
+            <div style={{ borderRadius: '12px', overflow: 'hidden', height: '140px', marginBottom: '12px' }}>
+              <img src={bookingData.image_url} alt={bookingData.room_name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            </div>
+          )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', fontSize: '0.9rem' }}>
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>ห้องประชุม:</span>
-                <div style={{ fontWeight: 'bold', fontSize: '1.05rem', color: 'var(--text-dark)' }}>{room.name}</div>
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 6px 0' }}>
+            {bookingData.room_name}
+          </h3>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.84rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: '12px', marginTop: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>วันที่:</span>
+              <strong style={{ color: 'var(--text-main)' }}>
+                {bookingData.date ? bookingData.date.split('-').reverse().join('/') : '-'}
+              </strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>ช่วงเวลา:</span>
+              <strong style={{ color: 'var(--text-main)' }}>{bookingData.start_time} - {bookingData.end_time} น.</strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>ระยะเวลา:</span>
+              <strong style={{ color: 'var(--primary)' }}>
+                {bookingData.duration} ชั่วโมง {bookingData.booking_type === 'hourly' && bookingData.duration % 1 !== 0 ? `(คิดราคา ${Math.ceil(bookingData.duration)} ชม.)` : ''} ({bookingData.rate_label || 'รายชั่วโมง'})
+              </strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>จำนวนผู้เข้าใช้:</span>
+              <strong style={{ color: 'var(--text-main)' }}>{bookingData.guests} ท่าน</strong>
+            </div>
+            {bookingData.layout && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>รูปแบบจัดโต๊ะ:</span>
+                <strong style={{ color: 'var(--text-main)', textTransform: 'capitalize' }}>{bookingData.layout}</strong>
               </div>
+            )}
+          </div>
 
-              {layoutType && room.has_classroom === 1 && (
-                <div>
-                  <span style={{ color: 'var(--text-muted)' }}>รูปแบบจัดห้อง:</span>
-                  <div style={{ fontWeight: 600, color: layoutType === 'classroom' ? '#ec4899' : 'var(--primary)' }}>
-                    {layoutType === 'classroom' ? 'Classroom (แบบห้องเรียน)' : 'Standard (แบบมาตรฐาน)'}
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>วันที่ใช้งาน:</span>
-                <div style={{ fontWeight: 600 }}>{formatDateDisplay(date)}</div>
-              </div>
-
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>รูปแบบ &amp; เวลา:</span>
-                <div style={{ fontWeight: 600 }}>
-                  {getBookingTypeLabel()}
-                </div>
-              </div>
-
-              <div>
-                <span style={{ color: 'var(--text-muted)' }}>จำนวนผู้เข้าประชุม:</span>
-                <div style={{ fontWeight: 600 }}>{guests} ท่าน</div>
-              </div>
-
-              <div style={{ marginTop: '0.5rem', paddingTop: '1rem', borderTop: '1.5px dashed #cbd5e1', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <span style={{ fontWeight: 'bold', fontSize: '0.95rem' }}>ยอดชำระสุทธิ:</span>
-                <span style={{ fontSize: '1.5rem', fontWeight: 'bold', color: 'var(--primary)' }}>
-                  ฿{totalPrice.toLocaleString()}
-                </span>
+          {/* Total Amount Box */}
+          <div style={{
+            marginTop: '16px',
+            padding: '12px 14px',
+            borderRadius: '12px',
+            backgroundColor: 'var(--bg-page)',
+            border: '1.5px solid var(--border)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center'
+          }}>
+            <div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดชำระสุทธิ</div>
+              <div style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--primary)' }}>
+                ฿{Number(bookingData.total_amount).toLocaleString()}
               </div>
             </div>
+            <span style={{ fontSize: '0.72rem', fontWeight: 700, backgroundColor: 'rgba(37,99,235,0.1)', color: 'var(--primary)', padding: '2px 8px', borderRadius: '6px' }}>
+              รวมภาษีแล้ว
+            </span>
           </div>
         </div>
 
-        {/* Right Column: Customer Details Form */}
-        <div>
-          <div className="glass-card" style={{ padding: '1.5rem' }}>
-            <h3 style={{ margin: '0 0 1.25rem 0', fontSize: '1.1rem', color: 'var(--text-dark)', borderBottom: '1px solid var(--border)', paddingBottom: '0.5rem' }}>
-              ข้อมูลผู้ติดต่อ / Customer Details
-            </h3>
+        {/* RIGHT COLUMN: CUSTOMER DETAILS FORM */}
+        <div className="booking-card">
+          <div style={{ marginBottom: '18px', borderBottom: '1px solid var(--border)', paddingBottom: '12px' }}>
+            <h2 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+              3. ข้อมูลผู้จองและช่องทางติดต่อ
+            </h2>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+              กรุณากรอกข้อมูลสำหรับยืนยันและรับรหัสผ่านเข้าห้องประชุม
+            </p>
+          </div>
 
-            {/* LINE OA Connection Status Banner */}
-            {lineUserId ? (
-              <div style={{ background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '10px', padding: '0.8rem 1rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <div style={{ background: '#06C755', color: '#fff', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '0.8rem', flexShrink: 0 }}>
-                  L
+          {/* LINE 1-CLICK AUTOFILL BANNER */}
+          <div style={{
+            padding: '14px',
+            borderRadius: '14px',
+            backgroundColor: 'rgba(6, 199, 85, 0.08)',
+            border: '1.5px solid rgba(6, 199, 85, 0.3)',
+            marginBottom: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '10px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              {lineUserPic ? (
+                <img src={lineUserPic} alt="LINE" style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover' }} />
+              ) : (
+                <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#06c755', color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900 }}>
+                  <MessageSquare size={20} />
                 </div>
+              )}
+              <div>
+                <div style={{ fontSize: '0.88rem', fontWeight: 800, color: '#047857' }}>
+                  {lineUserName ? `ซิงค์กับ LINE: ${lineUserName}` : 'เชื่อมต่อด้วย LINE Official Account'}
+                </div>
+                <div style={{ fontSize: '0.74rem', color: '#065f46' }}>
+                  {lineUserName ? '✓ ระบบจะส่งรหัสผ่านเปิดประตูเข้า LINE OA นี้อัตโนมัติ' : 'เพื่อรับรหัสผ่านเปิดประตูเข้าห้องประชุมอัตโนมัติ'}
+                </div>
+              </div>
+            </div>
+
+            {!lineUserName && (
+              <button
+                type="button"
+                onClick={handleLineLogin}
+                style={{
+                  padding: '8px 14px',
+                  borderRadius: '10px',
+                  backgroundColor: '#06c755',
+                  color: '#ffffff',
+                  border: 'none',
+                  fontSize: '0.82rem',
+                  fontWeight: 800,
+                  cursor: 'pointer',
+                  boxShadow: '0 2px 8px rgba(6,199,85,0.3)'
+                }}
+              >
+                + ล็อกอินด้วย LINE
+              </button>
+            )}
+          </div>
+
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Full Name */}
+            <div>
+              <label className="form-label">
+                ชื่อ - นามสกุล ผู้จอง <span style={{ color: 'var(--danger)' }}>*</span>
+              </label>
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  required
+                  placeholder="เช่น คุณสมชาย ใจดี"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  className="form-input"
+                />
+              </div>
+            </div>
+
+            {/* Phone Number */}
+            <div>
+              <label className="form-label">
+                เบอร์โทรศัพท์ (สำหรับติดต่อ & ส่ง SMS รหัสผ่าน) <span style={{ color: 'var(--danger)' }}>*</span>
+              </label>
+              <input
+                type="tel"
+                required
+                placeholder="08x-xxx-xxxx"
+                value={contact}
+                onChange={e => {
+                  setContact(e.target.value);
+                  if (!taxPhone) setTaxPhone(e.target.value);
+                }}
+                className="form-input"
+              />
+            </div>
+
+            {/* Email & Company (2 columns) */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div>
+                <label className="form-label">อีเมล (Email) - ไม่บังคับ</label>
+                <input
+                  type="email"
+                  placeholder="example@company.com"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  className="form-input"
+                />
+              </div>
+              <div>
+                <label className="form-label">บริษัท / องค์กร - ไม่บังคับ</label>
+                <input
+                  type="text"
+                  placeholder="ชื่อหน่วยงาน / บริษัท"
+                  value={company}
+                  onChange={e => {
+                    setCompany(e.target.value);
+                    if (!taxName) setTaxName(e.target.value);
+                  }}
+                  className="form-input"
+                />
+              </div>
+            </div>
+
+            {/* Notes */}
+            <div>
+              <label className="form-label">หมายเหตุเพิ่มเติม / ข้อความถึงเจ้าหน้าที่</label>
+              <textarea
+                rows="2"
+                placeholder="เช่น ขอสาย HDMI เพิ่มเติม, เตรียมแก้วน้ำ 6 ใบ ฯลฯ"
+                value={notes}
+                onChange={e => setNotes(e.target.value)}
+                className="form-input"
+                style={{ height: 'auto', padding: '10px 14px', resize: 'vertical' }}
+              />
+            </div>
+
+            {/* TAX INVOICE ACCORDION */}
+            <div style={{
+              border: '1.5px solid var(--border)',
+              borderRadius: '14px',
+              padding: '14px',
+              backgroundColor: needTaxInvoice ? '#ffffff' : 'var(--bg-page)',
+              boxShadow: needTaxInvoice ? 'var(--shadow-sm)' : 'none',
+              transition: 'all 0.2s ease'
+            }}>
+              <div 
+                onClick={() => setNeedTaxInvoice(!needTaxInvoice)}
+                style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none' }}
+              >
+                {needTaxInvoice ? (
+                  <CheckSquare size={20} style={{ color: 'var(--primary)', flexShrink: 0 }} />
+                ) : (
+                  <Square size={20} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                )}
                 <div>
-                  <div style={{ color: '#166534', fontWeight: 'bold', fontSize: '0.88rem' }}>
-                    🟢 เชื่อมต่อ LINE สำเร็จ {lineUserName ? `(${lineUserName})` : ''}
-                  </div>
-                  <div style={{ color: '#15803d', fontSize: '0.75rem', marginTop: '2px' }}>
-                    คุณจะได้รับข้อความยืนยันการจอง และรหัสผ่านเข้าห้องทาง LINE OA อัตโนมัติ
+                  <span style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                    ต้องการขอใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบ
+                  </span>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    (ออกในนามนิติบุคคล บริษัท หรือบุคคลธรรมดา)
                   </div>
                 </div>
               </div>
-            ) : (
-              <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '10px', padding: '0.8rem 1rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
-                <div>
-                  <div style={{ color: '#1e40af', fontWeight: 'bold', fontSize: '0.85rem' }}>
-                    📲 ต้องการรับรหัสผ่านทาง LINE หรือไม่?
+
+              {needTaxInvoice && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '14px', paddingTop: '14px', borderTop: '1px solid var(--border)' }}>
+                  {/* 1. Tax Name / Company */}
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '4px' }}>
+                      ชื่อผู้เสียภาษี / ชื่อบริษัท <span style={{ color: 'var(--danger)' }}>*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required={needTaxInvoice}
+                      placeholder="เช่น บริษัท ตัวอย่าง จำกัด หรือ นายสมชาย ใจดี"
+                      value={taxName}
+                      onChange={e => setTaxName(e.target.value)}
+                      className="form-input"
+                      style={{ height: '44px', fontSize: '0.88rem' }}
+                    />
                   </div>
-                  <div style={{ color: '#3b82f6', fontSize: '0.72rem', marginTop: '2px' }}>
-                    เข้าสู่ระบบเพื่อรับการแจ้งเตือนยืนยันและรหัส PIN ผ่านแชท LINE OA
+
+                  {/* 2. Tax ID */}
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '4px' }}>
+                      เลขประจำตัวผู้เสียภาษี (13 หลัก) <span style={{ color: 'var(--danger)' }}>*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required={needTaxInvoice}
+                      maxLength="13"
+                      placeholder="01055xxxxxxxx"
+                      value={taxId}
+                      onChange={e => setTaxId(e.target.value)}
+                      className="form-input"
+                      style={{ height: '44px', fontSize: '0.88rem', letterSpacing: '0.5px' }}
+                    />
                   </div>
+
+                  {/* 3. Address according to PP.20 */}
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '4px' }}>
+                      ที่อยู่ตาม ภ.พ.20 / ทะเบียนภาษี <span style={{ color: 'var(--danger)' }}>*</span>
+                    </label>
+                    <textarea
+                      rows="2"
+                      required={needTaxInvoice}
+                      placeholder="ระบุที่อยู่จดทะเบียนภาษีมูลค่าเพิ่ม เลขที่ อาคาร ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์"
+                      value={taxAddress}
+                      onChange={e => setTaxAddress(e.target.value)}
+                      className="form-input"
+                      style={{ height: 'auto', padding: '8px 12px', fontSize: '0.86rem', resize: 'vertical' }}
+                    />
+                  </div>
+
+                  {/* 4. Phone Number for Tax Invoice */}
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', flexWrap: 'wrap', gap: '4px' }}>
+                      <label className="form-label" style={{ fontSize: '0.8rem', margin: 0 }}>
+                        เบอร์โทรศัพท์สำหรับใบกำกับภาษี <span style={{ color: 'var(--danger)' }}>*</span>
+                      </label>
+                      {contact && (
+                        <button
+                          type="button"
+                          onClick={() => setTaxPhone(contact)}
+                          style={{
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                            border: '1px solid var(--primary)',
+                            backgroundColor: '#ffffff',
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            color: 'var(--primary)',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '3px'
+                          }}
+                        >
+                          📋 ใช้เบอร์เดียวกับผู้จอง
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      type="tel"
+                      required={needTaxInvoice}
+                      placeholder="เช่น 081-234-5678"
+                      value={taxPhone}
+                      onChange={e => setTaxPhone(e.target.value)}
+                      className="form-input"
+                      style={{ height: '46px', fontSize: '0.92rem' }}
+                    />
+                  </div>
+
+                  {/* 5. Delivery Method Dropdown */}
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '4px' }}>
+                      รูปแบบการจัดส่งใบกำกับภาษี <span style={{ color: 'var(--danger)' }}>*</span>
+                    </label>
+                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                      <select
+                        value={taxDeliveryMethod}
+                        onChange={e => setTaxDeliveryMethod(e.target.value)}
+                        className="form-input"
+                        style={{ height: '46px', fontSize: '0.88rem', fontWeight: 700, cursor: 'pointer', paddingRight: '28px' }}
+                      >
+                        <option value="online">📧 จัดส่งออนไลน์ (E-Tax / อีเมล / LINE)</option>
+                        <option value="postal">📮 จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)</option>
+                      </select>
+                      <ChevronDown size={15} style={{ position: 'absolute', right: '12px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+                    </div>
+                  </div>
+
+                  {/* 6. Postal Delivery Address (Appears ONLY if 'postal' is selected) */}
+                  {taxDeliveryMethod === 'postal' && (
+                    <div style={{
+                      backgroundColor: 'rgba(37, 99, 235, 0.04)',
+                      border: '1.5px dashed var(--primary)',
+                      borderRadius: '12px',
+                      padding: '14px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                        <label className="form-label" style={{ fontSize: '0.82rem', margin: 0, color: 'var(--primary)', fontWeight: 800 }}>
+                          📮 ที่อยู่สำหรับจัดส่งทางไปรษณีย์ <span style={{ color: 'var(--danger)' }}>*</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (taxAddress && taxAddress.trim()) {
+                              setTaxPostalAddress(taxAddress.trim());
+                            }
+                          }}
+                          style={{
+                            padding: '4px 10px',
+                            borderRadius: '8px',
+                            border: '1.5px solid var(--primary)',
+                            backgroundColor: '#ffffff',
+                            fontSize: '0.74rem',
+                            fontWeight: 800,
+                            color: 'var(--primary)',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            boxShadow: '0 2px 6px rgba(37, 99, 235, 0.08)'
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.08)'}
+                          onMouseLeave={e => e.currentTarget.style.backgroundColor = '#ffffff'}
+                        >
+                          📋 ใช้ที่อยู่เดียวกับที่อยู่บริษัท
+                        </button>
+                      </div>
+                      <textarea
+                        rows="3"
+                        required={taxDeliveryMethod === 'postal'}
+                        placeholder="ระบุชื่อผู้รับ แผนก/ฝ่าย อาคาร เลขที่ ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์ ให้ชัดเจน"
+                        value={taxPostalAddress}
+                        onChange={e => setTaxPostalAddress(e.target.value)}
+                        className="form-input"
+                        style={{ height: 'auto', padding: '10px 12px', fontSize: '0.88rem', backgroundColor: '#ffffff', resize: 'vertical' }}
+                      />
+                    </div>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={handleLineLogin}
-                  style={{
-                    background: '#06C755',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: '8px',
-                    padding: '0.45rem 0.85rem',
-                    fontSize: '0.8rem',
-                    fontWeight: 'bold',
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.4rem',
-                    boxShadow: '0 2px 4px rgba(6,199,85,0.2)'
-                  }}
-                >
-                  เข้าสู่ระบบด้วย LINE
-                </button>
+              )}
+            </div>
+
+            {/* ERROR ALERT */}
+            {error && (
+              <div style={{
+                padding: '10px 14px',
+                borderRadius: '12px',
+                backgroundColor: 'var(--danger-light)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: 'var(--danger)',
+                fontSize: '0.84rem',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <AlertCircle size={16} />
+                <span>{error}</span>
               </div>
             )}
 
-            <form onSubmit={handleSubmit}>
-              <div className="form-group" style={{ marginBottom: '1rem' }}>
-                <label className="form-label">ชื่อ-นามสกุล / Full Name <span style={{ color: 'red' }}>*</span></label>
-                <input 
-                  type="text" 
-                  name="name" 
-                  className="form-control" 
-                  required 
-                  value={formData.name} 
-                  onChange={handleChange}
-                  placeholder="เช่น สมชาย ใจดี"
-                />
-              </div>
-
-              <div className="form-group" style={{ marginBottom: '1rem' }}>
-                <label className="form-label">เบอร์โทรศัพท์ / Phone Number <span style={{ color: 'red' }}>*</span></label>
-                <input 
-                  type="tel" 
-                  name="phone" 
-                  className="form-control" 
-                  required 
-                  value={formData.phone} 
-                  onChange={handleChange}
-                  placeholder="เช่น 0812345678"
-                />
-              </div>
-
-              <div className="form-group" style={{ marginBottom: '1rem' }}>
-                <label className="form-label">อีเมล / Email (ถ้ามี)</label>
-                <input 
-                  type="email" 
-                  name="email" 
-                  className="form-control" 
-                  value={formData.email} 
-                  onChange={handleChange}
-                  placeholder="name@company.com"
-                />
-              </div>
-
-              <div className="form-group" style={{ marginBottom: '1rem' }}>
-                <label className="form-label">บริษัท/แผนก / Company (ถ้ามี)</label>
-                <input 
-                  type="text" 
-                  name="company" 
-                  className="form-control" 
-                  value={formData.company} 
-                  onChange={handleChange}
-                  placeholder="เช่น บริษัท บิลท์ ฮาร์ท จำกัด"
-                />
-              </div>
-
-              <div className="form-group" style={{ marginBottom: '1.25rem' }}>
-                <label className="form-label">หมายเหตุเพิ่มเติม / Notes (ถ้ามี)</label>
-                <textarea 
-                  name="notes" 
-                  className="form-control" 
-                  rows="2" 
-                  value={formData.notes} 
-                  onChange={handleChange}
-                  placeholder="เช่น ต้องการเก้าอี้เพิ่ม หรือจัดห้องพิเศษ"
-                ></textarea>
-              </div>
-
-              {/* Tax Invoice Request Card */}
-              <div style={{
-                marginBottom: '1.5rem',
-                border: '1.5px solid ' + (requireTaxInvoice ? 'var(--primary)' : 'var(--border)'),
-                borderRadius: '12px',
-                padding: '1rem',
-                backgroundColor: requireTaxInvoice ? 'rgba(37, 99, 235, 0.03)' : '#f8fafc',
-                transition: 'all 0.2s'
-              }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', cursor: 'pointer', userSelect: 'none', margin: 0 }}>
-                  <input 
-                    type="checkbox"
-                    checked={requireTaxInvoice}
-                    onChange={handleToggleTax}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
-                  />
-                  <div>
-                    <strong style={{ fontSize: '0.95rem', color: requireTaxInvoice ? 'var(--primary)' : 'var(--text-dark)' }}>
-                      📄 ต้องการขอใบกำกับภาษี (Tax Invoice)
-                    </strong>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                      เลือกเมื่อต้องการใบกำกับภาษีเต็มรูปแบบในนามบุคคลหรือนิติบุคคล
-                    </div>
-                  </div>
-                </label>
-
-                {requireTaxInvoice && (
-                  <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                    
-                    {/* Tax Name */}
-                    <div className="form-group" style={{ margin: 0 }}>
-                      <label className="form-label" style={{ fontSize: '0.825rem' }}>
-                        ชื่อ-นามสกุล / ชื่อบริษัท (ตาม ภ.พ.20) <span style={{ color: 'red' }}>*</span>
-                      </label>
-                      <input 
-                        type="text"
-                        name="taxName"
-                        className="form-control"
-                        required={requireTaxInvoice}
-                        value={taxData.taxName}
-                        onChange={handleTaxChange}
-                        placeholder="เช่น บริษัท ตัวอย่าง จำกัด หรือ นายสมชาย ใจดี"
-                      />
-                    </div>
-
-                    {/* Tax ID & Phone (Side by Side) */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '0.75rem' }}>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label className="form-label" style={{ fontSize: '0.825rem' }}>
-                          เลขประจำตัวผู้เสียภาษี (13 หลัก) <span style={{ color: 'red' }}>*</span>
-                        </label>
-                        <input 
-                          type="text"
-                          name="taxId"
-                          maxLength="13"
-                          className="form-control"
-                          required={requireTaxInvoice}
-                          value={taxData.taxId}
-                          onChange={handleTaxChange}
-                          placeholder="เลข 13 หลัก"
-                        />
-                      </div>
-                      <div className="form-group" style={{ margin: 0 }}>
-                        <label className="form-label" style={{ fontSize: '0.825rem' }}>
-                          เบอร์โทรศัพท์ <span style={{ color: 'red' }}>*</span>
-                        </label>
-                        <input 
-                          type="tel"
-                          name="taxPhone"
-                          className="form-control"
-                          required={requireTaxInvoice}
-                          value={taxData.taxPhone}
-                          onChange={handleTaxChange}
-                          placeholder="เช่น 0812345678"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Tax Address */}
-                    <div className="form-group" style={{ margin: 0 }}>
-                      <label className="form-label" style={{ fontSize: '0.825rem' }}>
-                        ที่อยู่สำหรับออกใบกำกับภาษี (ที่อยู่ตาม ภ.พ.20) <span style={{ color: 'red' }}>*</span>
-                      </label>
-                      <textarea 
-                        name="taxAddress"
-                        className="form-control"
-                        rows="2"
-                        required={requireTaxInvoice}
-                        value={taxData.taxAddress}
-                        onChange={handleTaxChange}
-                        placeholder="เลขที่, อาคาร/หมู่บ้าน, ถนน, ตำบล/แขวง, อำเภอ/เขต, จังหวัด, รหัสไปรษณีย์"
-                      ></textarea>
-                    </div>
-
-                    {/* Delivery Method Dropdown */}
-                    <div className="form-group" style={{ margin: 0 }}>
-                      <label className="form-label" style={{ fontSize: '0.825rem' }}>
-                        ช่องทางการจัดส่งใบกำกับภาษี <span style={{ color: 'red' }}>*</span>
-                      </label>
-                      <select
-                        name="taxDeliveryMethod"
-                        className="form-control"
-                        value={taxData.taxDeliveryMethod}
-                        onChange={handleTaxChange}
-                        style={{ fontWeight: 600, color: 'var(--primary)' }}
-                      >
-                        <option value="email">✉️ อีเมล / e-Tax Invoice (จัดส่งทางอีเมล)</option>
-                        <option value="postal">📮 จัดส่งทางไปรษณีย์ / จดหมาย</option>
-                        <option value="pickup">🏢 รับด้วยตนเองที่หน้าร้าน / สาขา</option>
-                      </select>
-                    </div>
-
-                    {/* Conditional Postal Address */}
-                    {taxData.taxDeliveryMethod === 'postal' && (
-                      <div style={{
-                        padding: '0.75rem',
-                        borderRadius: '8px',
-                        backgroundColor: '#ffffff',
-                        border: '1px dashed #3b82f6',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '0.5rem'
-                      }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <label className="form-label" style={{ margin: 0, fontSize: '0.8rem', color: '#1e40af', fontWeight: 'bold' }}>
-                            ที่อยู่จัดส่งเอกสารทางไปรษณีย์ / จดหมาย <span style={{ color: 'red' }}>*</span>
-                          </label>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', color: 'var(--primary)', cursor: 'pointer', margin: 0 }}>
-                            <input 
-                              type="checkbox"
-                              name="sameAsBillingAddress"
-                              checked={taxData.sameAsBillingAddress}
-                              onChange={handleTaxChange}
-                              style={{ width: '14px', height: '14px', accentColor: 'var(--primary)' }}
-                            />
-                            <span>ใช้ที่อยู่เดียวกับใบกำกับภาษี</span>
-                          </label>
-                        </div>
-                        <textarea 
-                          name="taxPostalAddress"
-                          className="form-control"
-                          rows="2"
-                          required={taxData.taxDeliveryMethod === 'postal'}
-                          value={taxData.taxPostalAddress}
-                          onChange={handleTaxChange}
-                          placeholder="ระบุชื่อผู้รับ และที่อยู่จัดส่งไปรษณีย์อย่างละเอียด..."
-                        ></textarea>
-                      </div>
-                    )}
-
-                  </div>
-                )}
-              </div>
-              
-              <button 
-                type="submit" 
-                className="btn btn-primary" 
-                disabled={submitting}
-                style={{ width: '100%', padding: '0.9rem', fontSize: '1rem', fontWeight: 'bold' }}
-              >
-                {submitting ? 'กำลังบันทึกข้อมูล...' : 'ยืนยันการจอง & ไปชำระเงิน'}
-              </button>
-            </form>
-          </div>
+            {/* SUBMIT BUTTON */}
+            <button
+              type="submit"
+              disabled={loading}
+              className="btn-primary"
+              style={{ marginTop: '8px' }}
+            >
+              <span>{loading ? 'กำลังบันทึกข้อมูล...' : 'ถัดไป: ไปยังหน้าชำระเงิน (Next to Payment)'}</span>
+              {!loading && <ChevronRight size={20} />}
+            </button>
+          </form>
         </div>
       </div>
     </div>

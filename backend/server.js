@@ -443,35 +443,72 @@ function normalizeToLocalISO(dateStr, timeStr) {
   return `${year}-${month}-${day}T${hours}:${minutes}:00`;
 }
 
-// Helper: Check if a room has overlapping bookings (cross-system safe)
-async function checkRoomOverlap(roomId, startISO, endISO) {
+// Helper: Get cleaning buffer minutes from settings (defaults to 30 mins)
+async function getCleaningBufferMinutes() {
+  try {
+    const row = await dbQuery.get("SELECT value FROM settings WHERE key = 'cleaning_buffer_minutes'");
+    if (row && row.value !== undefined && row.value !== null && !isNaN(row.value)) {
+      return Math.max(0, parseInt(row.value, 10));
+    }
+  } catch (e) {}
+  return 30;
+}
+
+// Helper: Check if a room has overlapping bookings or conflicts with cleaning buffer (cross-system safe)
+async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = null) {
   const normStart = normalizeToLocalISO(startISO);
   const normEnd = normalizeToLocalISO(endISO);
+  const bufferMins = await getCleaningBufferMinutes();
+  const bufferMs = bufferMins * 60 * 1000;
 
-  const bookings = await dbQuery.all(
-    `SELECT bi.id, bi.start_time, bi.end_time 
-     FROM booking_items bi
-     JOIN bookings b ON bi.booking_id = b.id
-     WHERE bi.room_id = ?
-       AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')`,
-    [roomId]
-  );
+  const reqStartMs = new Date(normStart.replace(' ', 'T')).getTime();
+  const reqEndMs = new Date(normEnd.replace(' ', 'T')).getTime();
+  const reqEndBufferedMs = reqEndMs + bufferMs;
+
+  let query = `
+    SELECT bi.id, bi.booking_id, bi.start_time, bi.end_time, b.customer_name, b.payment_status
+    FROM booking_items bi
+    JOIN bookings b ON bi.booking_id = b.id
+    WHERE bi.room_id = ?
+      AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')
+  `;
+  const params = [roomId];
+  if (excludeBookingId) {
+    query += ' AND b.id != ?';
+    params.push(excludeBookingId);
+  }
+
+  const bookings = await dbQuery.all(query, params);
 
   for (const b of bookings) {
     if (!b.start_time || !b.end_time) continue;
-    const bStartNorm = normalizeToLocalISO(b.start_time);
-    const bEndNorm = normalizeToLocalISO(b.end_time);
+    const bStartMs = new Date(normalizeToLocalISO(b.start_time).replace(' ', 'T')).getTime();
+    const bEndMs = new Date(normalizeToLocalISO(b.end_time).replace(' ', 'T')).getTime();
+    const bEndBufferedMs = bEndMs + bufferMs;
 
-    // Overlap condition: (StartA < EndB) AND (EndA > StartB)
-    if (bStartNorm < normEnd && bEndNorm > normStart) {
-      return true;
+    // Overlap condition taking 30-min cleaning buffer into account:
+    // (Requested Start < Existing End + Buffer) AND (Requested End + Buffer > Existing Start)
+    if (reqStartMs < bEndBufferedMs && reqEndBufferedMs > bStartMs) {
+      // Determine if overlap is with actual customer usage or with the cleaning buffer
+      const isDirectUsage = (reqStartMs < bEndMs && reqEndMs > bStartMs);
+      return {
+        hasOverlap: true,
+        isCleaningBuffer: !isDirectUsage,
+        bufferMinutes: bufferMins,
+        booking: {
+          ...b,
+          start_time: normalizeToLocalISO(b.start_time),
+          end_time: normalizeToLocalISO(b.end_time),
+          end_buffered_time: normalizeToLocalISO(new Date(bEndBufferedMs))
+        }
+      };
     }
   }
-  return false;
+  return { hasOverlap: false, bufferMinutes: bufferMins };
 }
 
 app.post('/api/bookings', async (req, res) => {
-  const { customer_name, department, contact, total_amount, payment_status, payment_method, items, line_user_id } = req.body;
+  const { customer_name, department, contact, total_amount, payment_status, payment_method, items, line_user_id, guest_count } = req.body;
 
   if (!customer_name || !items || !items.length) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลผู้จองและเลือกรายการอย่างน้อย 1 รายการ' });
@@ -495,10 +532,18 @@ app.post('/api/bookings', async (req, res) => {
             return res.status(400).json({ error: `เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น (${normStart} - ${normEnd})` });
           }
 
-          const hasOverlap = await checkRoomOverlap(item.room_id, normStart, normEnd);
-          if (hasOverlap) {
+          const overlapResult = await checkRoomOverlap(item.room_id, normStart, normEnd);
+          if (overlapResult.hasOverlap) {
             await dbQuery.run('ROLLBACK');
-            return res.status(409).json({ error: `ห้องนี้ถูกจองในช่วงเวลาดังกล่าวแล้ว กรุณาเลือกเวลาอื่น` });
+            const roomObj = await dbQuery.get('SELECT name FROM rooms WHERE id = ?', [item.room_id]);
+            const roomName = roomObj ? roomObj.name : `ID: ${item.room_id}`;
+            const sTime = new Date(overlapResult.booking.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+            const eTime = new Date(overlapResult.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+            const nextAvail = new Date(overlapResult.booking.end_buffered_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+            const msg = overlapResult.isCleaningBuffer
+              ? `ห้อง "${roomName}" ติดช่วงทำความสะอาดห้อง (${overlapResult.bufferMinutes} นาที) ต่อจากคุณ ${overlapResult.booking.customer_name} (เลิก ${eTime} น.) สามารถจองได้ตั้งแต่ ${nextAvail} น. เป็นต้นไป`
+              : `ห้อง "${roomName}" ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: คุณ ${overlapResult.booking.customer_name} ช่วง ${sTime} - ${eTime} น.)`;
+            return res.status(409).json({ error: msg });
           }
         }
       }
@@ -549,22 +594,28 @@ app.post('/api/bookings', async (req, res) => {
         }
       }
 
-      // Insert master booking
+      // Extract optional guest count for Walk-in
+      const effectiveGuestCount = (guest_count !== undefined && guest_count !== null && guest_count !== '')
+        ? parseInt(guest_count, 10)
+        : (items.find(it => it.guest_count)?.guest_count ? parseInt(items.find(it => it.guest_count).guest_count, 10) : null);
+
+      // Insert master booking (with optional guest_count)
       const bookingResult = await dbQuery.run(
-        'INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, checkin_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [customer_name, department || '', contact || '', verifiedTotal, payment_status || 'pending', payment_method || 'cash', receiptNumber, pinCode, line_user_id || null, 'pending', normalizeToLocalISO(new Date())]
+        'INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [customer_name, department || '', contact || '', verifiedTotal, payment_status || 'pending', payment_method || 'cash', receiptNumber, pinCode, line_user_id || null, effectiveGuestCount, 'pending', normalizeToLocalISO(new Date())]
       );
       const bookingId = bookingResult.id;
 
-      // Insert booking items with normalized timestamps
+      // Insert booking items with normalized timestamps & guest_count
       for (const item of items) {
         const normStart = (item.room_id && item.start_time) ? normalizeToLocalISO(item.start_time) : null;
         const normEnd = (item.room_id && item.end_time) ? normalizeToLocalISO(item.end_time) : null;
+        const itemGuestCount = item.guest_count ? parseInt(item.guest_count, 10) : effectiveGuestCount;
 
         await dbQuery.run(
           `INSERT INTO booking_items 
-           (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code, checkin_status) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             bookingId,
             item.room_id || null,
@@ -576,6 +627,7 @@ app.post('/api/bookings', async (req, res) => {
             item.subtotal,
             item.layout || 'standard',
             item.booking_type || 'hourly',
+            itemGuestCount,
             item.room_id ? pinCode : null,
             'pending'
           ]
@@ -601,35 +653,84 @@ app.post('/api/bookings', async (req, res) => {
 });
 
 app.get('/api/bookings', async (req, res) => {
-    const { start_date, end_date, search, payment_status } = req.query;
-    try {
-      let sql = 'SELECT * FROM bookings WHERE 1=1';
-      const params = [];
+  const { start_date, end_date, search, payment_status } = req.query;
+  try {
+    let sql = `
+      SELECT DISTINCT b.* 
+      FROM bookings b
+      LEFT JOIN booking_items bi ON b.id = bi.booking_id
+      LEFT JOIN rooms r ON bi.room_id = r.id
+      WHERE 1=1
+    `;
+    const params = [];
 
-      if (start_date) {
-        sql += ' AND datetime(created_at) >= datetime(?)';
-        params.push(start_date + ' 00:00:00');
+    if (start_date) {
+      sql += ' AND (datetime(b.created_at) >= datetime(?) OR bi.start_time >= ? OR b.booking_date >= ?)';
+      params.push(start_date + ' 00:00:00', start_date, start_date);
+    }
+    if (end_date) {
+      sql += ' AND (datetime(b.created_at) <= datetime(?) OR bi.start_time <= ? OR b.booking_date <= ?)';
+      params.push(end_date + ' 23:59:59', end_date + ' 23:59:59', end_date);
+    }
+    if (search) {
+      const q = `%${search}%`;
+      sql += ` AND (
+        b.customer_name LIKE ? OR 
+        b.contact LIKE ? OR 
+        b.department LIKE ? OR 
+        b.receipt_number LIKE ? OR 
+        CAST(b.id AS TEXT) LIKE ? OR 
+        b.pin_code LIKE ? OR 
+        r.name LIKE ? OR 
+        r.category LIKE ? OR
+        bi.room_name LIKE ?
+      )`;
+      params.push(q, q, q, q, q, q, q, q, q);
+    }
+    if (payment_status) {
+      if (payment_status === 'pending' || payment_status === 'unpaid') {
+        sql += " AND (b.payment_status = 'pending' OR b.payment_status = 'reviewing' OR b.payment_status = 'unpaid' OR b.payment_status IS NULL)";
+      } else if (payment_status !== 'all') {
+        sql += ' AND b.payment_status = ?';
+        params.push(payment_status);
       }
-      if (end_date) {
-        sql += ' AND datetime(created_at) <= datetime(?)';
-        params.push(end_date + ' 23:59:59');
-      }
-      if (search) {
-        sql += ' AND (customer_name LIKE ? OR department LIKE ? OR receipt_number LIKE ? OR CAST(id AS TEXT) LIKE ?)';
-        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
-      }
-      if (payment_status) {
-        if (payment_status === 'pending' || payment_status === 'unpaid') {
-          sql += " AND (payment_status = 'pending' OR payment_status = 'reviewing' OR payment_status = 'unpaid' OR payment_status IS NULL)";
-        } else if (payment_status !== 'all') {
-          sql += ' AND payment_status = ?';
-          params.push(payment_status);
-        }
-      }
+    }
 
-    sql += ' ORDER BY created_at DESC';
+    sql += ' ORDER BY b.created_at DESC';
 
     const bookings = await dbQuery.all(sql, params);
+
+    // Fetch all booking items with room info for the retrieved bookings
+    if (bookings.length > 0) {
+      const bookingIds = bookings.map(b => b.id);
+      const placeholders = bookingIds.map(() => '?').join(',');
+      const items = await dbQuery.all(
+        `SELECT bi.*, r.name as room_name, r.category as room_category, r.capacity as room_capacity
+         FROM booking_items bi
+         LEFT JOIN rooms r ON bi.room_id = r.id
+         WHERE bi.booking_id IN (${placeholders})
+         ORDER BY bi.id ASC`,
+        bookingIds
+      );
+
+      const itemsByBookingId = {};
+      items.forEach(it => {
+        if (!itemsByBookingId[it.booking_id]) itemsByBookingId[it.booking_id] = [];
+        itemsByBookingId[it.booking_id].push(it);
+      });
+
+      bookings.forEach(b => {
+        b.items = itemsByBookingId[b.id] || [];
+        if (b.items.length > 0) {
+          const first = b.items[0];
+          b.start_time = first.start_time;
+          b.end_time = first.end_time;
+          b.room_name = first.room_name;
+          b.room_id = first.room_id;
+        }
+      });
+    }
+
     res.json(bookings);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -650,8 +751,9 @@ app.get('/api/bookings/calendar', async (req, res) => {
 
     const items = await dbQuery.all(
       `SELECT bi.start_time, bi.end_time, bi.room_id, bi.subtotal, bi.price, bi.quantity, bi.layout, bi.booking_type,
+              bi.guest_count as item_guest_count,
               r.name as room_name,
-              b.id as booking_id, b.customer_name, b.payment_status, b.booking_source, b.department, b.contact
+              b.id as booking_id, b.customer_name, b.payment_status, b.booking_source, b.department, b.contact, b.guest_count
        FROM booking_items bi
        JOIN bookings b ON bi.booking_id = b.id
        LEFT JOIN rooms r ON bi.room_id = r.id
@@ -667,7 +769,7 @@ app.get('/api/bookings/calendar', async (req, res) => {
   }
 });
 
-// Get upcoming booking alerts (with customizable warning time)
+// Get upcoming booking alerts (with incoming online bookings, today bookings, and customizable warning time)
 app.get('/api/bookings/upcoming-alerts', async (req, res) => {
   try {
     const settingRow = await dbQuery.get('SELECT value FROM settings WHERE key = ?', ['room_alert_minutes']);
@@ -678,7 +780,12 @@ app.get('/api/bookings/upcoming-alerts', async (req, res) => {
     const nowISO = now.toISOString();
     const futureISO = futureLimit.toISOString();
 
-    const alerts = await dbQuery.all(
+    const todayStr = normalizeToLocalISO(now).split('T')[0];
+    const todayStart = `${todayStr}T00:00:00`;
+    const todayEnd = `${todayStr}T23:59:59`;
+
+    // 1. Upcoming alerts (starting soon)
+    const upcoming = await dbQuery.all(
       `SELECT bi.start_time, bi.end_time, bi.room_id, bi.layout, bi.booking_type,
               r.name as room_name,
               b.id as booking_id, b.customer_name, b.payment_status
@@ -688,10 +795,47 @@ app.get('/api/bookings/upcoming-alerts', async (req, res) => {
        WHERE bi.room_id IS NOT NULL
          AND bi.start_time >= ?
          AND bi.start_time <= ?
+         AND b.payment_status != 'cancelled'
        ORDER BY bi.start_time ASC`,
       [nowISO, futureISO]
     );
-    res.json(alerts);
+
+    // 2. Incoming online bookings (Pending or Reviewing slip)
+    const incomingBookings = await dbQuery.all(
+      `SELECT b.id as booking_id, b.customer_name, b.payment_status, b.total_amount, b.booking_source, b.created_at, b.slip_image_url,
+              bi.start_time, bi.end_time, r.name as room_name
+       FROM bookings b
+       LEFT JOIN booking_items bi ON bi.booking_id = b.id
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE b.payment_status IN ('pending', 'reviewing')
+       ORDER BY b.id DESC
+       LIMIT 30`
+    );
+
+    // 3. Today's bookings
+    const todayBookings = await dbQuery.all(
+      `SELECT bi.start_time, bi.end_time, bi.room_id, bi.layout, bi.booking_type,
+              r.name as room_name,
+              b.id as booking_id, b.customer_name, b.payment_status, b.total_amount, b.contact
+       FROM booking_items bi
+       JOIN bookings b ON bi.booking_id = b.id
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE bi.start_time >= ? AND bi.start_time <= ?
+         AND b.payment_status != 'cancelled'
+       ORDER BY bi.start_time ASC`,
+      [todayStart, todayEnd]
+    );
+
+    const pendingRow = await dbQuery.get("SELECT COUNT(*) as count FROM bookings WHERE payment_status = 'pending'");
+    const reviewingRow = await dbQuery.get("SELECT COUNT(*) as count FROM bookings WHERE payment_status = 'reviewing'");
+
+    res.json({
+      upcoming,
+      incomingBookings,
+      todayBookings,
+      pendingCount: pendingRow ? pendingRow.count : 0,
+      reviewingCount: reviewingRow ? reviewingRow.count : 0
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -699,49 +843,33 @@ app.get('/api/bookings/upcoming-alerts', async (req, res) => {
 
 // Check if room has an overlapping booking during the requested time range
 app.get('/api/bookings/check-overlap', async (req, res) => {
-  const { room_id, start_time, end_time } = req.query;
+  const { room_id, start_time, end_time, exclude_booking_id } = req.query;
   if (!room_id || !start_time || !end_time) {
     return res.status(400).json({ error: 'กรุณาระบุข้อมูลห้องและเวลาเริ่มต้น/สิ้นสุดเพื่อตรวจสอบ' });
   }
 
   try {
-    const normStart = normalizeToLocalISO(start_time);
-    const normEnd = normalizeToLocalISO(end_time);
-
-    const bookings = await dbQuery.all(
-      `SELECT b.id, b.customer_name, bi.start_time, bi.end_time, b.payment_status
-       FROM booking_items bi
-       JOIN bookings b ON bi.booking_id = b.id
-       WHERE bi.room_id = ?
-         AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')`,
-      [room_id]
-    );
-
-    let overlap = null;
-    for (const b of bookings) {
-      if (!b.start_time || !b.end_time) continue;
-      const bStartNorm = normalizeToLocalISO(b.start_time);
-      const bEndNorm = normalizeToLocalISO(b.end_time);
-
-      if (bStartNorm < normEnd && bEndNorm > normStart) {
-        overlap = {
-          ...b,
-          start_time: bStartNorm,
-          end_time: bEndNorm
-        };
-        break;
-      }
+    const overlapResult = await checkRoomOverlap(room_id, start_time, end_time, exclude_booking_id);
+    if (overlapResult.hasOverlap) {
+      res.json({
+        overlap: true,
+        is_cleaning_buffer: overlapResult.isCleaningBuffer,
+        buffer_minutes: overlapResult.bufferMinutes,
+        booking: {
+          id: overlapResult.booking.booking_id || overlapResult.booking.id,
+          customer_name: overlapResult.booking.customer_name,
+          start_time: overlapResult.booking.start_time,
+          end_time: overlapResult.booking.end_time,
+          end_buffered_time: overlapResult.booking.end_buffered_time
+        }
+      });
+    } else {
+      res.json({
+        overlap: false,
+        buffer_minutes: overlapResult.bufferMinutes,
+        booking: null
+      });
     }
-
-    res.json({
-      overlap: !!overlap,
-      booking: overlap ? {
-        id: overlap.id,
-        customer_name: overlap.customer_name,
-        start_time: overlap.start_time,
-        end_time: overlap.end_time
-      } : null
-    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2017,6 +2145,7 @@ app.get('/api/public/rooms/schedule', async (req, res) => {
        FROM rooms WHERE status = 'active'`
     );
     const rooms = sortRoomsByNumber(rawRooms);
+    const bufferMins = await getCleaningBufferMinutes();
 
     const startOfDay = `${targetDate}T00:00:00`;
     const endOfDay = `${targetDate}T23:59:59`;
@@ -2049,6 +2178,7 @@ app.get('/api/public/rooms/schedule', async (req, res) => {
 
     res.json({
       date: targetDate,
+      cleaning_buffer_minutes: bufferMins,
       rooms: roomsWithSchedule
     });
   } catch (err) {
@@ -2064,9 +2194,13 @@ app.get('/api/public/rooms/available', async (req, res) => {
   }
 
   try {
+    const bufferMins = await getCleaningBufferMinutes();
+    const bufferMs = bufferMins * 60 * 1000;
+
     // Parse requested time to timestamps (handles ISO UTC / Local strings seamlessly)
     const reqStartMs = new Date(`${date}T${start_time}:00`).getTime();
     const reqEndMs = new Date(`${date}T${end_time}:00`).getTime();
+    const reqEndBufferedMs = reqEndMs + bufferMs;
     const guestCount = parseInt(guests) || 1;
 
     // Get all active rooms with sufficient capacity
@@ -2100,9 +2234,10 @@ app.get('/api/public/rooms/available', async (req, res) => {
         const bEndMs = new Date(b.end_time).getTime();
 
         if (isNaN(bStartMs) || isNaN(bEndMs)) continue;
+        const bEndBufferedMs = bEndMs + bufferMs;
 
-        // Overlap: bStartMs < reqEndMs AND bEndMs > reqStartMs
-        if (bStartMs < reqEndMs && bEndMs > reqStartMs) {
+        // Overlap: bStartMs < reqEndBufferedMs AND bEndBufferedMs > reqStartMs
+        if (bStartMs < reqEndBufferedMs && bEndBufferedMs > reqStartMs) {
           isOverlapped = true;
           break;
         }
@@ -2125,11 +2260,17 @@ app.post('/api/public/bookings', async (req, res) => {
     customer_name, contact, email, department, note, room_id, booking_date, 
     start_time, end_time, booking_type, layout, total_amount, line_user_id,
     tax_invoice_required, tax_name, tax_address, tax_id, tax_phone,
-    tax_delivery_method, tax_postal_address
+    tax_delivery_method, tax_postal_address, guest_count, guests
   } = req.body;
 
   if (!customer_name || !contact || !room_id || !booking_date || !start_time || !end_time) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน (ชื่อ, เบอร์โทร, ห้อง, วันที่, เวลา)' });
+  }
+
+  // Mandatory guest_count validation for online bookings
+  const parsedGuests = parseInt(guest_count || guests, 10);
+  if (isNaN(parsedGuests) || parsedGuests < 1) {
+    return res.status(400).json({ error: 'กรุณาระบุจำนวนผู้เข้าใช้งาน (อย่างน้อย 1 ท่าน)' });
   }
 
   // Validate time order
@@ -2137,12 +2278,18 @@ app.post('/api/public/bookings', async (req, res) => {
     return res.status(400).json({ error: 'เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น' });
   }
 
-  // Validate not past date
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const bookDate = new Date(booking_date + 'T00:00:00');
-  if (bookDate < today) {
+  // Validate not past date or past time based on real clock
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  if (booking_date < todayStr) {
     return res.status(400).json({ error: 'ไม่สามารถจองวันที่ผ่านมาแล้วได้' });
+  }
+  if (booking_date === todayStr) {
+    const currentMins = now.getHours() * 60 + now.getMinutes();
+    const [sH, sM] = start_time.split(':').map(Number);
+    if ((sH * 60 + sM) < currentMins) {
+      return res.status(400).json({ error: 'ไม่สามารถจองเวลาย้อนหลังได้ กรุณาเลือกเวลาปัจจุบันเป็นต้นไป' });
+    }
   }
 
   try {
@@ -2161,11 +2308,16 @@ app.post('/api/public/bookings', async (req, res) => {
       const fullStart = normalizeToLocalISO(booking_date, start_time);
       const fullEnd = normalizeToLocalISO(booking_date, end_time);
 
-      // Check for overlap (cross-system safe)
-      const hasOverlap = await checkRoomOverlap(room_id, fullStart, fullEnd);
-      if (hasOverlap) {
+      // Check for overlap (cross-system safe including 30-min cleaning buffer)
+      const overlapResult = await checkRoomOverlap(room_id, fullStart, fullEnd);
+      if (overlapResult.hasOverlap) {
         await dbQuery.run('ROLLBACK');
-        return res.status(409).json({ error: 'ห้องนี้ถูกจองในช่วงเวลาดังกล่าวแล้ว กรุณาเลือกเวลาอื่น' });
+        const eTime = new Date(overlapResult.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+        const nextAvail = new Date(overlapResult.booking.end_buffered_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+        const msg = overlapResult.isCleaningBuffer
+          ? `ห้องนี้ติดช่วงเวลาทำความสะอาดห้อง (${overlapResult.bufferMinutes} นาที) ต่อจากคิวเดิมที่เลิก ${eTime} น. สามารถจองได้ตั้งแต่ ${nextAvail} น. เป็นต้นไป`
+          : 'ห้องนี้ถูกจองในช่วงเวลาดังกล่าวแล้ว กรุณาเลือกเวลาอื่น';
+        return res.status(409).json({ error: msg });
       }
 
       // Calculate price
@@ -2200,31 +2352,33 @@ app.post('/api/public/bookings', async (req, res) => {
         pinCode = await generateUniquePinCode();
       }
 
-      // Insert master booking
+      // Insert master booking (with mandatory guest_count)
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings (
           customer_name, department, contact, total_amount, payment_status, payment_method, 
           receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
           tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
+          guest_count,
           created_at
         ) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customer_name, department || note || '', contact, subtotal, 'pending', 'transfer', 
           receiptNumber, pinCode, 'online', email || null, 'pending', line_user_id || null,
           tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
           tax_delivery_method || null, tax_postal_address || null,
+          parsedGuests,
           normalizeToLocalISO(new Date())
         ]
       );
       const bookingId = bookingResult.id;
 
-      // Insert booking item
+      // Insert booking item (with guest_count)
       await dbQuery.run(
         `INSERT INTO booking_items 
-         (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code, checkin_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [bookingId, room_id, quantity, price, fullStart, fullEnd, subtotal, bLayout, bType, pinCode, 'pending']
+         (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [bookingId, room_id, quantity, price, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode, 'pending']
       );
 
       await dbQuery.run('COMMIT');
@@ -2481,7 +2635,8 @@ app.get('/api/public/settings/payment', async (req, res) => {
       bank_name: settingsMap.payment_bank_name || 'ธนาคารกรุงศรีอยุธยา (Krungsri)',
       bank_account: settingsMap.payment_bank_account || '329-1-38429-0',
       bank_account_name: settingsMap.payment_bank_account_name || 'บริษัท บิลท์ ฮาร์ท จำกัด',
-      payment_deadline_hours: parseInt(settingsMap.payment_deadline_hours || '24')
+      payment_deadline_hours: parseInt(settingsMap.payment_deadline_hours || '24', 10),
+      cleaning_buffer_minutes: parseInt(settingsMap.cleaning_buffer_minutes || '30', 10)
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

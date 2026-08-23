@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { 
+  Phone, Search, ArrowLeft, CheckCircle2, Clock, 
+  AlertCircle, Key, Calendar, Building, ChevronRight, Upload 
+} from 'lucide-react';
 import { API_BASE } from '../apiConfig';
 
 export default function StatusPage() {
@@ -13,7 +17,7 @@ export default function StatusPage() {
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState('');
 
-  // Auto-search if phone number is provided in URL
+  // Auto-search if phone number is provided
   useEffect(() => {
     if (initialPhone) {
       fetchBookingsByPhone(initialPhone);
@@ -57,201 +61,206 @@ export default function StatusPage() {
   const getStatusBadge = (status, hasSlip) => {
     if (status === 'paid') {
       return (
-        <span style={{ background: '#dcfce7', color: '#15803d', padding: '0.35rem 0.85rem', borderRadius: '999px', fontSize: '0.85rem', fontWeight: 700, border: '1px solid #86efac' }}>
-          ✅ ยืนยันการจองแล้ว
+        <span style={{ backgroundColor: 'rgba(16, 185, 129, 0.12)', color: '#10b981', padding: '4px 10px', borderRadius: '20px', fontSize: '0.74rem', fontWeight: 800, border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+          ✅ อนุมัติ & ชำระแล้ว
         </span>
       );
     }
     if (status === 'reviewing' || hasSlip) {
       return (
-        <span style={{ background: '#e0f2fe', color: '#0369a1', padding: '0.35rem 0.85rem', borderRadius: '999px', fontSize: '0.85rem', fontWeight: 700, border: '1px solid #bae6fd' }}>
-          ⏳ รอพนักงานตรวจสอบสลิป
+        <span style={{ backgroundColor: 'rgba(14, 165, 233, 0.12)', color: '#0284c7', padding: '4px 10px', borderRadius: '20px', fontSize: '0.74rem', fontWeight: 800, border: '1px solid rgba(14, 165, 233, 0.3)' }}>
+          ⏳ รอตรวจสอบสลิป
         </span>
       );
     }
     if (status === 'cancelled') {
       return (
-        <span style={{ background: '#fee2e2', color: '#b91c1c', padding: '0.35rem 0.85rem', borderRadius: '999px', fontSize: '0.85rem', fontWeight: 700, border: '1px solid #fecaca' }}>
+        <span style={{ backgroundColor: 'rgba(239, 68, 68, 0.12)', color: '#ef4444', padding: '4px 10px', borderRadius: '20px', fontSize: '0.74rem', fontWeight: 800, border: '1px solid rgba(239, 68, 68, 0.3)' }}>
           ❌ ยกเลิกการจอง
         </span>
       );
     }
     return (
-      <span style={{ background: '#fef3c7', color: '#b45309', padding: '0.35rem 0.85rem', borderRadius: '999px', fontSize: '0.85rem', fontWeight: 700, border: '1px solid #fde68a' }}>
-        ⚠️ รอชำระเงิน / แนบสลิป
+      <span style={{ backgroundColor: 'rgba(245, 158, 11, 0.12)', color: '#d97706', padding: '4px 10px', borderRadius: '20px', fontSize: '0.74rem', fontWeight: 800, border: '1px solid rgba(245, 158, 11, 0.3)' }}>
+        ⚠️ รอชำระเงิน
       </span>
     );
   };
 
-  const formatThaiDate = (dateStr) => {
-    if (!dateStr) return '-';
-    try {
-      const clean = dateStr.replace(' ', 'T').split('T')[0];
-      const [y, m, d] = clean.split('-').map(Number);
-      const months = [
-        'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
-        'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'
-      ];
-      return `${d} ${months[m - 1]} ${y + 543}`;
-    } catch (e) {
-      return dateStr;
-    }
-  };
-
   return (
-    <div className="page-transition" style={{ maxWidth: '580px', margin: '0 auto' }}>
-      
-      {/* Top Back Navigation Bar */}
-      <div style={{ marginBottom: '1.25rem' }}>
-        <button 
-          onClick={() => navigate('/')} 
-          className="btn btn-outline"
-          style={{ 
-            display: 'inline-flex', 
-            alignItems: 'center', 
-            gap: '0.4rem', 
-            fontSize: '0.875rem', 
-            padding: '0.5rem 0.9rem',
-            borderRadius: '8px'
-          }}
-        >
-          &larr; กลับหน้าหลักจองห้องประชุม
-        </button>
-      </div>
+    <div className="main-content" style={{ maxWidth: '680px' }}>
+      {/* Top Back Navigation */}
+      <button
+        type="button"
+        onClick={() => navigate('/')}
+        className="btn-secondary"
+        style={{ width: 'auto', marginBottom: '16px', height: '40px', fontSize: '0.84rem' }}
+      >
+        <ArrowLeft size={16} />
+        <span>กลับหน้าหลักจองห้องประชุม</span>
+      </button>
 
       {/* Header */}
-      <div style={{ textAlign: 'center', marginBottom: '1.75rem' }}>
-        <h2 style={{ margin: '0 0 0.25rem 0', fontSize: '1.6rem', color: 'var(--text-dark)', fontWeight: 800 }}>
-          ตรวจสอบสถานะการจอง
+      <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+        <h2 style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--text-main)', margin: 0 }}>
+          🔍 ตรวจสอบสถานะการจองห้องประชุม
         </h2>
-        <p style={{ color: 'var(--text-muted)', margin: 0, fontSize: '0.9rem' }}>
-          กรอกเบอร์โทรศัพท์ที่ใช้จอง เพื่อเช็คข้อมูลและสถานะใบจองของคุณ
+        <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '4px 0 0 0' }}>
+          กรอกเบอร์โทรศัพท์ที่ใช้ทำการจอง เพื่อตรวจสอบสถานะและดูรหัสผ่านเปิดห้อง
         </p>
       </div>
 
-      {/* Check Form Card - Only Phone Input */}
-      <div className="glass-card" style={{ padding: '1.5rem', borderRadius: '16px' }}>
-        <form onSubmit={handleCheck}>
-          <div className="form-group" style={{ marginBottom: '1.25rem' }}>
-            <label className="form-label" style={{ fontSize: '0.9rem', fontWeight: 'bold', color: '#0f172a' }}>
+      {/* Search Input Card */}
+      <div className="booking-card" style={{ padding: '20px' }}>
+        <form onSubmit={handleCheck} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div>
+            <label className="form-label">
               📱 เบอร์โทรศัพท์มือถือที่ใช้ทำการจอง
             </label>
-            <input 
-              type="tel" 
+            <input
+              type="tel"
               inputMode="numeric"
-              className="form-control" 
-              value={phone} 
-              onChange={(e) => {
-                setPhone(e.target.value);
-                setError('');
-              }}
-              placeholder="กรอกเบอร์โทรศัพท์ เช่น 0812345678"
-              style={{ fontSize: '1.05rem', padding: '0.75rem 0.9rem', borderRadius: '10px' }}
-              autoFocus
+              required
+              placeholder="เช่น 0812345678"
+              value={phone}
+              onChange={e => setPhone(e.target.value)}
+              className="form-input"
             />
           </div>
-          
+
           {error && (
-            <div style={{ color: '#ef4444', marginBottom: '1.25rem', textAlign: 'center', fontSize: '0.875rem', fontWeight: 600, backgroundColor: '#fef2f2', padding: '0.75rem', borderRadius: '10px', border: '1px solid #fecaca' }}>
-              {error}
+            <div style={{
+              padding: '10px 14px',
+              borderRadius: '12px',
+              backgroundColor: 'var(--danger-light)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: 'var(--danger)',
+              fontSize: '0.84rem',
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <AlertCircle size={16} />
+              <span>{error}</span>
             </div>
           )}
-          
-          <button 
-            type="submit" 
-            className="btn btn-primary" 
+
+          <button
+            type="submit"
             disabled={loading}
-            style={{ width: '100%', padding: '0.85rem', fontSize: '1rem', fontWeight: 'bold', borderRadius: '10px' }}
+            className="btn-primary"
           >
-            {loading ? 'กำลังตรวจสอบข้อมูล...' : '🔍 ตรวจสอบสถานะการจอง'}
+            <Search size={18} />
+            <span>{loading ? 'กำลังตรวจสอบข้อมูล...' : 'ตรวจสอบสถานะ'}</span>
           </button>
         </form>
       </div>
 
-      {/* Bookings Results List */}
+      {/* Results List */}
       {hasSearched && bookings.length > 0 && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <div style={{ fontSize: '0.9rem', fontWeight: 'bold', color: '#475569', marginBottom: '0.75rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--text-muted)' }}>
             พบรายการจองทั้งหมด {bookings.length} รายการ:
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {bookings.map((booking) => {
-              const bookingCode = booking.bookingCode || `BK-${String(booking.id).padStart(6, '0')}`;
-              const isPaid = booking.payment_status === 'paid';
-              const isPending = booking.payment_status === 'pending' || booking.payment_status === 'unpaid';
-              const isReviewing = booking.payment_status === 'reviewing' || !!booking.slip_image_url;
+          {bookings.map(item => {
+            const bookingCode = item.bookingCode || `BK-${String(item.id).padStart(6, '0')}`;
+            const isPaid = item.payment_status === 'paid';
+            const isPending = item.payment_status === 'pending' || item.payment_status === 'unpaid';
 
-              return (
-                <div key={booking.id} className="glass-card page-transition" style={{ padding: '1.35rem', borderRadius: '16px', border: isPaid ? '1.5px solid #86efac' : '1.5px solid #cbd5e1' }}>
-                  
-                  {/* Top Header of Card */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid #f1f5f9', paddingBottom: '0.75rem', flexWrap: 'wrap', gap: '6px' }}>
-                    <div>
-                      <span style={{ fontSize: '1.15rem', fontWeight: 'bold', color: 'var(--primary)' }}>{bookingCode}</span>
-                      {booking.receipt_number && booking.receipt_number !== bookingCode && (
-                        <span style={{ fontSize: '0.75rem', color: '#64748b', marginLeft: '6px' }}>({booking.receipt_number})</span>
-                      )}
-                    </div>
-                    {getStatusBadge(booking.payment_status, !!booking.slip_image_url)}
+            return (
+              <div 
+                key={item.id} 
+                className="booking-card"
+                style={{
+                  padding: '20px',
+                  borderLeft: `5px solid ${isPaid ? '#10b981' : isPending ? '#f59e0b' : '#0284c7'}`
+                }}
+              >
+                {/* Header */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '12px', marginBottom: '12px' }}>
+                  <div>
+                    <span style={{ fontSize: '1.05rem', fontWeight: 900, color: 'var(--primary)' }}>
+                      #{bookingCode}
+                    </span>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: '8px' }}>
+                      ({item.room_name})
+                    </span>
                   </div>
-                  
-                  {/* Details Grid */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.5rem', marginBottom: '1.1rem', fontSize: '0.9rem' }}>
-                    <div><strong>ผู้จอง:</strong> <span style={{ color: '#0f172a' }}>{booking.customer_name || '-'}</span></div>
-                    <div><strong>ห้องประชุม:</strong> <span style={{ color: 'var(--primary)', fontWeight: 'bold' }}>{booking.room_name || booking.items?.[0]?.room_name || '-'}</span></div>
-                    <div><strong>วันที่ใช้งาน:</strong> <span style={{ color: '#0f172a', fontWeight: 600 }}>{formatThaiDate(booking.booking_date || booking.items?.[0]?.start_time)}</span></div>
-                    <div><strong>ช่วงเวลา:</strong> <span style={{ color: '#0f172a', fontWeight: 600 }}>{booking.start_time || booking.items?.[0]?.start_time?.split('T')?.[1]?.substring(0,5) || '-'} - {booking.end_time || booking.items?.[0]?.end_time?.split('T')?.[1]?.substring(0,5) || '-'} น.</span></div>
-                    <div><strong>ยอดสุทธิ:</strong> <span style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '1.05rem' }}>฿{Number(booking.total_amount || 0).toLocaleString()}</span></div>
-                  </div>
-
-                  {/* Tax Invoice Info Badge */}
-                  {booking.tax_invoice_required === 1 && (
-                    <div style={{ padding: '0.65rem 0.85rem', backgroundColor: '#eff6ff', borderRadius: '10px', border: '1px solid #bfdbfe', fontSize: '0.8rem', color: '#1e40af', marginBottom: '1rem' }}>
-                      <div style={{ fontWeight: 'bold', marginBottom: '2px' }}>📄 ขอใบกำกับภาษี:</div>
-                      <div><strong>ชื่อผู้เสียภาษี:</strong> {booking.tax_name} (เลขผู้เสียภาษี: {booking.tax_id})</div>
-                      <div style={{ fontSize: '0.75rem', marginTop: '2px', color: '#3b82f6' }}>
-                        <strong>ช่องทางจัดส่ง:</strong> {booking.tax_delivery_method === 'postal' ? `ส่งไปรษณีย์/จดหมาย (${booking.tax_postal_address || booking.tax_address})` : (booking.tax_delivery_method === 'pickup' ? 'รับด้วยตนเองที่หน้าร้าน' : 'จัดส่งทางอีเมล')}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Notice Box */}
-                  <div style={{
-                    backgroundColor: isPaid ? '#f0fdf4' : '#f8fafc',
-                    border: isPaid ? '1px solid #86efac' : '1px solid #cbd5e1',
-                    borderRadius: '10px',
-                    padding: '0.85rem 1rem',
-                    marginBottom: isPending ? '1rem' : '0',
-                    textAlign: 'center'
-                  }}>
-                    <div style={{ fontSize: '0.875rem', fontWeight: 'bold', color: isPaid ? '#15803d' : '#0f172a', marginBottom: '0.2rem' }}>
-                      {isPaid ? '✅ การจองได้รับการยืนยันเรียบร้อยแล้ว' : isReviewing ? '⏳ พนักงานกำลังตรวจสอบสลิปโอนเงิน' : '⚠️ ยังไม่ได้ชำระเงินหรือยังไม่ได้แนบสลิป'}
-                    </div>
-                    <div style={{ fontSize: '0.8rem', color: '#64748b', lineHeight: 1.4 }}>
-                      {isPaid 
-                        ? 'เมื่อเดินทางมาถึงสถานที่ กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์ เจ้าหน้าที่จะกดส่งรหัสผ่านเปิดประตูห้อง (Door PIN) เข้า LINE OA ของท่านทันทีค่ะ'
-                        : isReviewing 
-                          ? 'ระบบได้รับข้อมูลแล้ว เมื่อพนักงานตรวจสอบยอดเงินสำเร็จ ระบบจะส่งข้อความยืนยันการจองเข้า LINE OA ค่ะ'
-                          : 'กรุณากดปุ่มด้านล่างเพื่อชำระเงินและอัปโหลดสลิปโอนเงิน เพื่อให้พนักงานทำการตรวจสอบค่ะ'}
-                    </div>
-                  </div>
-
-                  {/* Button to Upload Slip if Pending */}
-                  {isPending && !booking.slip_image_url && (
-                    <Link 
-                      to={`/confirm/${booking.id}`} 
-                      state={{ booking }} 
-                      className="btn btn-primary" 
-                      style={{ display: 'block', textAlign: 'center', padding: '0.75rem', fontWeight: 'bold', borderRadius: '10px', marginTop: '0.85rem' }}
-                    >
-                      ไปหน้าชำระเงิน & แนบสลิป &rarr;
-                    </Link>
-                  )}
+                  {getStatusBadge(item.payment_status, !!item.slip_image_url)}
                 </div>
-              );
-            })}
-          </div>
+
+                {/* Details */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+                  <div>
+                    วันที่: <strong style={{ color: 'var(--text-main)' }}>{item.start_time?.split('T')[0] || item.start_time?.split(' ')[0]}</strong>
+                  </div>
+                  <div>
+                    เวลา: <strong style={{ color: 'var(--text-main)' }}>
+                      {new Date(item.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(item.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+                    </strong>
+                  </div>
+                  <div>
+                    ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{item.customer_name}</strong> ({item.customer_contact})
+                  </div>
+                  <div>
+                    ยอดเงิน: <strong style={{ color: 'var(--primary)' }}>฿{Number(item.total_amount || 0).toLocaleString()}</strong>
+                  </div>
+                </div>
+
+                {/* PIN Code Box (if paid) */}
+                {isPaid && item.door_pin && (
+                  <div style={{
+                    marginTop: '14px',
+                    padding: '12px 16px',
+                    borderRadius: '12px',
+                    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Key size={18} style={{ color: '#10b981' }} />
+                      <span style={{ fontSize: '0.84rem', fontWeight: 800, color: '#047857' }}>
+                        รหัสผ่านเปิดประตูห้อง (Door PIN):
+                      </span>
+                    </div>
+                    <span style={{ fontSize: '1.25rem', fontWeight: 900, color: '#047857', letterSpacing: '2px', fontFamily: 'monospace' }}>
+                      {item.door_pin}
+                    </span>
+                  </div>
+                )}
+
+                {/* Action to go to payment if pending */}
+                {isPending && !item.slip_image_url && (
+                  <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/confirm?id=${item.id}`)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 14px',
+                        borderRadius: '8px',
+                        backgroundColor: 'var(--primary)',
+                        color: '#ffffff',
+                        border: 'none',
+                        fontSize: '0.8rem',
+                        fontWeight: 800,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      <Upload size={14} />
+                      <span>แนบสลิปชำระเงิน</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

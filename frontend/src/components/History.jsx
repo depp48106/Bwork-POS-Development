@@ -1,18 +1,32 @@
 import React, { useState, useEffect } from 'react';
-import { Search, ChevronDown, RotateCcw, Ban, Clock, Calendar, Eye, DollarSign, Printer, X, Filter, FileText, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2, Trash2 } from 'lucide-react';
+import { Search, ChevronDown, RotateCcw, Ban, Clock, Calendar, Eye, DollarSign, Printer, X, Filter, FileText, ArrowUpDown, ArrowUp, ArrowDown, CheckCircle2, Trash2, Download, FileSpreadsheet } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
 
 function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [bookings, setBookings] = useState([]);
-  const [filters, setFilters] = useState({
+  
+  // 1. Form Inputs State (UI controls state before clicking Search)
+  const [filterInputs, setFilterInputs] = useState({
     startDate: '',
     endDate: '',
     search: '',
     searchType: 'all', // 'all', 'receipt', 'customer', 'contact', 'room'
     status: 'all'      // 'all', 'paid', 'cancelled'
   });
+
+  // 2. Applied Filters State (Active filters after clicking Search)
+  const [appliedFilters, setAppliedFilters] = useState({
+    startDate: '',
+    endDate: '',
+    search: '',
+    searchType: 'all',
+    status: 'all'
+  });
+
   const [loading, setLoading] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
   const [isSearchTypeDropdownOpen, setIsSearchTypeDropdownOpen] = useState(false);
 
@@ -30,10 +44,12 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [sortKey, setSortKey] = useState('id');
   const [sortOrder, setSortOrder] = useState('desc'); // default: newest first
 
-  // Static Column Definitions
+  // Static Column Definitions (with usage_date & separate room_name)
   const columns = [
     { key: 'id', label: 'เลขที่ใบเสร็จ' },
     { key: 'created_at', label: 'วันที่ทำรายการ' },
+    { key: 'usage_date', label: 'วัน/เวลาที่ใช้งาน' },
+    { key: 'room_name', label: 'ห้องประชุม' },
     { key: 'booking_source', label: 'ช่องทางการจอง' },
     { key: 'customer_name', label: 'ชื่อผู้จอง' },
     { key: 'contact', label: 'เบอร์ติดต่อ' },
@@ -43,23 +59,18 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     { key: 'actions', label: 'จัดการ' }
   ];
 
-  // Fetch bookings list (strictly paid ones)
+  // Initial fetch on mount
   useEffect(() => {
-    fetchBookings();
-  }, [filters.startDate, filters.endDate, filters.status]); // trigger auto on date change
+    fetchBookings(appliedFilters);
+  }, []);
 
-  // Reset page to 1 when filters or search change
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [filters.startDate, filters.endDate, filters.search]);
-
-  const fetchBookings = async () => {
+  const fetchBookings = async (activeFilters = appliedFilters) => {
     setLoading(true);
     try {
-      const { startDate, endDate, search } = filters;
-      let url = `/api/bookings?start_date=${startDate}&end_date=${endDate}`;
-      if (filters.status && filters.status !== 'all') {
-        url += `&payment_status=${filters.status}`;
+      const { startDate, endDate, search, status } = activeFilters;
+      let url = `/api/bookings?start_date=${startDate || ''}&end_date=${endDate || ''}`;
+      if (status && status !== 'all') {
+        url += `&payment_status=${status}`;
       }
       if (search) {
         url += `&search=${encodeURIComponent(search)}`;
@@ -68,7 +79,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
-        setBookings(data);
+        setBookings(data || []);
       }
     } catch (err) {
       console.error('Failed to fetch bookings:', err);
@@ -77,9 +88,21 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     }
   };
 
+  // Explicit Search Trigger on Form Submit / Button Click
   const handleSearchSubmit = (e) => {
-    e.preventDefault();
-    fetchBookings();
+    if (e) e.preventDefault();
+    setAppliedFilters({ ...filterInputs });
+    setCurrentPage(1);
+    fetchBookings(filterInputs);
+  };
+
+  // Explicit Clear All Filters
+  const handleClearFilters = () => {
+    const defaultFilters = { startDate: '', endDate: '', search: '', searchType: 'all', status: 'all' };
+    setFilterInputs(defaultFilters);
+    setAppliedFilters(defaultFilters);
+    setCurrentPage(1);
+    fetchBookings(defaultFilters);
   };
 
   // Open details modal
@@ -210,6 +233,53 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     }
   };
 
+  // Format Usage Date & Time
+  const formatUsageDate = (booking) => {
+    if (!booking) return { dateStr: '-', timeStr: '', roomName: '' };
+    const item = booking.items?.[0] || booking;
+    const startStr = item?.start_time || booking.start_time;
+    const endStr = item?.end_time || booking.end_time;
+    if (!startStr) return { dateStr: '-', timeStr: '', roomName: '' };
+
+    try {
+      let str = String(startStr).trim();
+      if (!str.includes('T') && str.includes(' ')) str = str.replace(' ', 'T');
+      if (!str.endsWith('Z') && !/\+\d{2}:?\d{2}$/.test(str)) str = str + 'Z';
+      const s = new Date(str);
+      if (isNaN(s.getTime())) return { dateStr: '-', timeStr: '', roomName: '' };
+
+      const year = s.getFullYear() + 543;
+      const monthNames = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+      const month = monthNames[s.getMonth()];
+      const day = s.getDate();
+      const sHours = String(s.getHours()).padStart(2, '0');
+      const sMins = String(s.getMinutes()).padStart(2, '0');
+
+      let timeText = `${sHours}:${sMins} น.`;
+      if (endStr) {
+        let eStr = String(endStr).trim();
+        if (!eStr.includes('T') && eStr.includes(' ')) eStr = eStr.replace(' ', 'T');
+        if (!eStr.endsWith('Z') && !/\+\d{2}:?\d{2}$/.test(eStr)) eStr = eStr + 'Z';
+        const e = new Date(eStr);
+        if (!isNaN(e.getTime())) {
+          const eHours = String(e.getHours()).padStart(2, '0');
+          const eMins = String(e.getMinutes()).padStart(2, '0');
+          timeText = `${sHours}:${sMins} - ${eHours}:${eMins} น.`;
+        }
+      }
+
+      const roomName = item?.room_name || booking.room_name || '';
+
+      return {
+        dateStr: `${day} ${month} ${year}`,
+        timeStr: timeText,
+        roomName
+      };
+    } catch (e) {
+      return { dateStr: '-', timeStr: '', roomName: '' };
+    }
+  };
+
   const handleSort = (key) => {
     if (key === 'actions') return;
     if (sortKey === key) {
@@ -221,31 +291,31 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   };
 
   // Stats calculation
-  const totalAmountPaid = bookings.reduce((sum, b) => sum + b.total_amount, 0);
+  const totalAmountPaid = bookings.reduce((sum, b) => sum + (b.payment_status === 'cancelled' ? 0 : Number(b.total_amount || 0)), 0);
   const paidCount = bookings.length;
 
-  // Filtering by searchType & status on frontend for instant responsiveness
+  // Filtering by searchType & status on frontend using appliedFilters
   const filteredBookings = bookings.filter(b => {
     // Status filter
-    if (filters.status === 'paid' && b.payment_status !== 'paid') return false;
-    if (filters.status === 'cancelled' && b.payment_status !== 'cancelled') return false;
+    if (appliedFilters.status === 'paid' && b.payment_status !== 'paid') return false;
+    if (appliedFilters.status === 'cancelled' && b.payment_status !== 'cancelled') return false;
 
     // Search filter
-    if (!filters.search) return true;
-    const q = filters.search.toLowerCase().trim();
+    if (!appliedFilters.search) return true;
+    const q = appliedFilters.search.toLowerCase().trim();
     const receipt = (b.receipt_number || '#' + b.id).toLowerCase();
     const idStr = String(b.id);
     const customer = (b.customer_name || '').toLowerCase();
     const contact = (b.contact || '').toLowerCase();
     const room = (b.items?.[0]?.room_name || b.room_name || '').toLowerCase();
 
-    if (filters.searchType === 'receipt') {
+    if (appliedFilters.searchType === 'receipt') {
       return receipt.includes(q) || idStr.includes(q);
-    } else if (filters.searchType === 'customer') {
+    } else if (appliedFilters.searchType === 'customer') {
       return customer.includes(q);
-    } else if (filters.searchType === 'contact') {
+    } else if (appliedFilters.searchType === 'contact') {
       return contact.includes(q);
-    } else if (filters.searchType === 'room') {
+    } else if (appliedFilters.searchType === 'room') {
       return room.includes(q);
     } else {
       return receipt.includes(q) || idStr.includes(q) || customer.includes(q) || contact.includes(q) || room.includes(q);
@@ -265,6 +335,14 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       } else if (sortKey === 'created_at') {
         valA = new Date(a.created_at).getTime();
         valB = new Date(b.created_at).getTime();
+      } else if (sortKey === 'usage_date') {
+        valA = a.start_time ? new Date(a.start_time).getTime() : (a.created_at ? new Date(a.created_at).getTime() : 0);
+        valB = b.start_time ? new Date(b.start_time).getTime() : (b.created_at ? new Date(b.created_at).getTime() : 0);
+      } else if (sortKey === 'room_name') {
+        valA = a.items?.[0]?.room_name || a.room_name || '';
+        valB = b.items?.[0]?.room_name || b.room_name || '';
+        valA = String(valA).toLowerCase();
+        valB = String(valB).toLowerCase();
       } else if (sortKey === 'total_amount') {
         valA = Number(a.total_amount);
         valB = Number(b.total_amount);
@@ -282,6 +360,130 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
   const sortedBookings = getSortedBookings();
 
+  // Export to genuine Excel (.xlsx) file
+  const exportToExcel = () => {
+    if (sortedBookings.length === 0) {
+      if (sysAlert) sysAlert('ไม่มีข้อมูลสำหรับการส่งออก Excel');
+      return;
+    }
+
+    const data = sortedBookings.map((b, idx) => {
+      const usage = formatUsageDate(b);
+      const usageDateStr = usage && usage.dateStr !== '-' ? usage.dateStr : '-';
+      const usageTimeStr = usage && usage.timeStr ? usage.timeStr : '-';
+      const roomName = (b.items?.[0]?.room_name || b.room_name || '-');
+      const source = b.booking_source === 'online' ? 'จองออนไลน์' : 'Walk-in';
+      const status = b.payment_status === 'paid' ? 'สำเร็จ' : (b.payment_status === 'cancelled' ? 'ยกเลิก' : (b.payment_status || 'รอชำระ'));
+      const method = b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : (b.payment_method || '-'));
+      const taxReq = b.tax_invoice_required === 1 ? 'ขอใบกำกับภาษี' : 'ไม่ขอ';
+
+      return {
+        'ลำดับ': idx + 1,
+        'เลขที่ใบเสร็จ': b.receipt_number || `#${String(b.id).padStart(6, '0')}`,
+        'วันที่ทำรายการ': formatDate(b.created_at),
+        'วันที่ใช้งาน': usageDateStr,
+        'เวลาที่ใช้งาน': usageTimeStr,
+        'ห้อง/บริการ': roomName,
+        'ช่องทางการจอง': source,
+        'ชื่อผู้จอง': b.customer_name || '-',
+        'เบอร์ติดต่อ': b.contact || '-',
+        'หน่วยงาน/บริษัท': b.department || '-',
+        'ยอดชำระสุทธิ (บาท)': Number(b.total_amount || 0),
+        'สถานะการชำระ': status,
+        'ช่องทางชำระเงิน': method,
+        'ขอใบกำกับภาษี': taxReq,
+        'ชื่อผู้เสียภาษี': b.tax_name || '-',
+        'เลขประจำตัวผู้เสียภาษี': b.tax_id || '-',
+        'ที่อยู่ใบกำกับภาษี': b.tax_address || '-',
+        'ที่อยู่จัดส่งจดหมาย': b.tax_postal_address || '-'
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(data);
+
+    // Set custom column widths for clear formatting in Excel
+    worksheet['!cols'] = [
+      { wch: 6 },  // ลำดับ
+      { wch: 16 }, // เลขที่ใบเสร็จ
+      { wch: 20 }, // วันที่ทำรายการ
+      { wch: 16 }, // วันที่ใช้งาน
+      { wch: 20 }, // เวลาที่ใช้งาน
+      { wch: 24 }, // ห้อง/บริการ
+      { wch: 14 }, // ช่องทาง
+      { wch: 22 }, // ชื่อผู้จอง
+      { wch: 14 }, // เบอร์ติดต่อ
+      { wch: 22 }, // หน่วยงาน/บริษัท
+      { wch: 16 }, // ยอดชำระสุทธิ
+      { wch: 12 }, // สถานะ
+      { wch: 14 }, // ช่องทางชำระ
+      { wch: 14 }, // ขอใบกำกับภาษี
+      { wch: 26 }, // ชื่อผู้เสียภาษี
+      { wch: 18 }, // เลขผู้เสียภาษี
+      { wch: 35 }, // ที่อยู่ภาษี
+      { wch: 35 }  // ที่อยู่จัดส่ง
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'ประวัติการใช้งาน');
+
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+    XLSX.writeFile(workbook, `bwork_history_${dateStr}.xlsx`);
+  };
+
+  // Export to PDF Report (A4 Landscape)
+  const exportToPDF = async () => {
+    if (sortedBookings.length === 0) {
+      if (sysAlert) sysAlert('ไม่มีข้อมูลสำหรับการส่งออก PDF');
+      return;
+    }
+
+    if (!window.html2pdf) {
+      if (sysAlert) sysAlert('ระบบพิมพ์ PDF ยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง');
+      return;
+    }
+
+    setIsExportingPdf(true);
+
+    try {
+      const element = document.getElementById('history-pdf-report-container');
+      if (!element) {
+        if (sysAlert) sysAlert('ไม่พบโครงสร้างรายงาน PDF');
+        return;
+      }
+
+      // Temporarily reveal container for canvas capture
+      element.style.display = 'block';
+
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+
+      const opt = {
+        margin: [8, 8, 8, 8],
+        filename: `bwork_history_report_${dateStr}.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { 
+          scale: 2, 
+          useCORS: true, 
+          letterRendering: false,
+          scrollY: 0,
+          logging: false
+        },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+      };
+
+      await window.html2pdf().from(element).set(opt).save();
+    } catch (err) {
+      console.error('PDF export error:', err);
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการส่งออก PDF: ' + err.message);
+    } finally {
+      const element = document.getElementById('history-pdf-report-container');
+      if (element) element.style.display = 'none';
+      setIsExportingPdf(false);
+    }
+  };
+
   // Pagination Calculations
   const totalRows = sortedBookings.length;
   const totalPages = Math.ceil(totalRows / rowsPerPage);
@@ -295,7 +497,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
         <div>
           <h1 className="tab-title">ประวัติการใช้บริการย้อนหลัง (พิมพ์ใบเสร็จ)</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
-            ค้นหาประวัติธุรกรรมที่บันทึกชำระเงินแล้ว และกดเลือกพิมพ์ใบเสร็จรับเงินย้อนหลัง
+            ค้นหาประวัติธุรกรรมที่บันทึกชำระเงินแล้ว ตรวจสอบวันที่ใช้งาน และกดเลือกพิมพ์ใบเสร็จรับเงินย้อนหลัง
           </p>
         </div>
       </div>
@@ -356,10 +558,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
               }}
             >
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {filters.searchType === 'receipt' ? 'เลขที่ใบเสร็จ' :
-                 filters.searchType === 'customer' ? 'ชื่อผู้จอง' :
-                 filters.searchType === 'contact' ? 'เบอร์ติดต่อ' :
-                 filters.searchType === 'room' ? 'ห้องประชุม' : 'ค้นหาทั้งหมด'}
+                {filterInputs.searchType === 'receipt' ? 'เลขที่ใบเสร็จ' :
+                 filterInputs.searchType === 'customer' ? 'ชื่อผู้จอง' :
+                 filterInputs.searchType === 'contact' ? 'เบอร์ติดต่อ' :
+                 filterInputs.searchType === 'room' ? 'ห้องประชุม' : 'ค้นหาทั้งหมด'}
               </span>
               <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
             </div>
@@ -389,21 +591,21 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     <div
                       key={item.id}
                       onClick={() => {
-                        setFilters(prev => ({ ...prev, searchType: item.id }));
+                        setFilterInputs(prev => ({ ...prev, searchType: item.id }));
                         setIsSearchTypeDropdownOpen(false);
                       }}
                       style={{
                         padding: '7px 10px',
                         borderRadius: '8px',
                         fontSize: '0.8rem',
-                        fontWeight: (filters.searchType || 'all') === item.id ? 800 : 500,
-                        color: (filters.searchType || 'all') === item.id ? 'var(--primary-color)' : 'var(--text-main)',
+                        fontWeight: (filterInputs.searchType || 'all') === item.id ? 800 : 500,
+                        color: (filterInputs.searchType || 'all') === item.id ? 'var(--primary-color)' : 'var(--text-main)',
                         cursor: 'pointer',
-                        background: (filters.searchType || 'all') === item.id ? 'var(--bg-hover)' : 'transparent',
+                        background: (filterInputs.searchType || 'all') === item.id ? 'var(--bg-hover)' : 'transparent',
                         transition: 'background 0.15s'
                       }}
                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = (filters.searchType || 'all') === item.id ? 'var(--bg-hover)' : 'transparent'}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = (filterInputs.searchType || 'all') === item.id ? 'var(--bg-hover)' : 'transparent'}
                     >
                       {item.label}
                     </div>
@@ -428,7 +630,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
               style={{
                 width: '100%',
                 paddingLeft: '34px',
-                paddingRight: filters.search ? '30px' : '10px',
+                paddingRight: filterInputs.search ? '30px' : '10px',
                 height: '38px',
                 borderRadius: '10px',
                 fontSize: '0.82rem',
@@ -436,19 +638,19 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 background: 'var(--bg-card)'
               }}
               placeholder={
-                filters.searchType === 'receipt' ? 'พิมพ์เลขที่ใบเสร็จ...' :
-                filters.searchType === 'customer' ? 'พิมพ์ชื่อผู้จอง...' :
-                filters.searchType === 'contact' ? 'พิมพ์เบอร์ติดต่อ...' :
-                filters.searchType === 'room' ? 'พิมพ์ชื่อห้องประชุม...' :
+                filterInputs.searchType === 'receipt' ? 'พิมพ์เลขที่ใบเสร็จ...' :
+                filterInputs.searchType === 'customer' ? 'พิมพ์ชื่อผู้จอง...' :
+                filterInputs.searchType === 'contact' ? 'พิมพ์เบอร์ติดต่อ...' :
+                filterInputs.searchType === 'room' ? 'พิมพ์ชื่อห้องประชุม...' :
                 'พิมพ์คำค้นหา...'
               }
-              value={filters.search}
-              onChange={e => setFilters({ ...filters, search: e.target.value })}
+              value={filterInputs.search}
+              onChange={e => setFilterInputs({ ...filterInputs, search: e.target.value })}
             />
-            {filters.search && (
+            {filterInputs.search && (
               <button 
                 type="button"
-                onClick={() => setFilters({ ...filters, search: '' })}
+                onClick={() => setFilterInputs({ ...filterInputs, search: '' })}
                 style={{ 
                   position: 'absolute', 
                   right: '8px', 
@@ -483,11 +685,11 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 justifyContent: 'space-between',
                 cursor: 'pointer',
                 fontWeight: 700,
-                color: filters.status === 'paid' ? '#10b981' : filters.status === 'cancelled' ? '#ef4444' : 'var(--text-main)'
+                color: filterInputs.status === 'paid' ? '#10b981' : filterInputs.status === 'cancelled' ? '#ef4444' : 'var(--text-main)'
               }}
             >
               <span>
-                {filters.status === 'paid' ? 'สำเร็จ' : filters.status === 'cancelled' ? 'ยกเลิก' : 'สถานะทั้งหมด'}
+                {filterInputs.status === 'paid' ? 'สำเร็จ' : filterInputs.status === 'cancelled' ? 'ยกเลิก' : 'สถานะทั้งหมด'}
               </span>
               <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
             </div>
@@ -515,21 +717,21 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     <div
                       key={item.id}
                       onClick={() => {
-                        setFilters(prev => ({ ...prev, status: item.id }));
+                        setFilterInputs(prev => ({ ...prev, status: item.id }));
                         setIsStatusDropdownOpen(false);
                       }}
                       style={{
                         padding: '7px 10px',
                         borderRadius: '8px',
                         fontSize: '0.8rem',
-                        fontWeight: (filters.status || 'all') === item.id ? 800 : 500,
+                        fontWeight: (filterInputs.status || 'all') === item.id ? 800 : 500,
                         color: item.color,
                         cursor: 'pointer',
-                        background: (filters.status || 'all') === item.id ? 'var(--bg-hover)' : 'transparent',
+                        background: (filterInputs.status || 'all') === item.id ? 'var(--bg-hover)' : 'transparent',
                         transition: 'background 0.15s'
                       }}
                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = (filters.status || 'all') === item.id ? 'var(--bg-hover)' : 'transparent'}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = (filterInputs.status || 'all') === item.id ? 'var(--bg-hover)' : 'transparent'}
                     >
                       {item.label}
                     </div>
@@ -543,8 +745,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
             <div style={{ width: '135px' }}>
               <CustomDatePicker 
-                value={filters.startDate}
-                onChange={val => setFilters({ ...filters, startDate: val })}
+                value={filterInputs.startDate}
+                onChange={val => setFilterInputs({ ...filterInputs, startDate: val })}
                 placeholder="วันเริ่มต้น"
                 className="form-control"
                 style={{
@@ -565,8 +767,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
             <div style={{ width: '135px' }}>
               <CustomDatePicker 
-                value={filters.endDate}
-                onChange={val => setFilters({ ...filters, endDate: val })}
+                value={filterInputs.endDate}
+                onChange={val => setFilterInputs({ ...filterInputs, endDate: val })}
                 placeholder="วันสิ้นสุด"
                 className="form-control"
                 style={{
@@ -626,11 +828,72 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
               cursor: 'pointer',
               flexShrink: 0
             }}
-            onClick={() => setFilters({ startDate: '', endDate: '', search: '', searchType: 'all', status: 'all' })}
+            onClick={handleClearFilters}
             title="ล้างค่าตัวกรองทั้งหมด"
           >
             <RotateCcw size={12} />
             <span>ล้างค่า</span>
+          </button>
+
+          {/* Divider */}
+          <div style={{ width: '1px', height: '24px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
+
+          {/* Export to Excel (.xlsx) */}
+          <button
+            type="button"
+            onClick={exportToExcel}
+            className="btn"
+            style={{
+              height: '38px',
+              padding: '0 14px',
+              borderRadius: '10px',
+              fontSize: '0.82rem',
+              fontWeight: 800,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: '#059669',
+              color: '#ffffff',
+              border: 'none',
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(5, 150, 105, 0.25)',
+              transition: 'all 0.15s ease',
+              flexShrink: 0
+            }}
+            title="ส่งออกรายงานเป็นไฟล์ Excel (.xlsx)"
+          >
+            <Download size={14} />
+            <span>Export Excel</span>
+          </button>
+
+          {/* Export to PDF */}
+          <button
+            type="button"
+            onClick={exportToPDF}
+            disabled={isExportingPdf}
+            className="btn"
+            style={{
+              height: '38px',
+              padding: '0 14px',
+              borderRadius: '10px',
+              fontSize: '0.82rem',
+              fontWeight: 800,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: '#dc2626',
+              color: '#ffffff',
+              border: 'none',
+              cursor: isExportingPdf ? 'not-allowed' : 'pointer',
+              opacity: isExportingPdf ? 0.7 : 1,
+              boxShadow: '0 2px 8px rgba(220, 38, 38, 0.25)',
+              transition: 'all 0.15s ease',
+              flexShrink: 0
+            }}
+            title="ส่งออกรายงานเป็นไฟล์ PDF"
+          >
+            <Printer size={14} />
+            <span>{isExportingPdf ? 'กำลังสร้าง...' : 'Export PDF'}</span>
           </button>
 
         </form>
@@ -720,6 +983,72 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                           return (
                             <td key={key} style={{ color: 'var(--text-muted)', padding: cellPadding, fontSize: '0.82rem', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
                               {formatDate(b.created_at)}
+                            </td>
+                          );
+                        }
+                        if (key === 'usage_date') {
+                          const usage = formatUsageDate(b);
+                          if (!usage || usage.dateStr === '-') {
+                            return (
+                              <td key={key} style={{ padding: cellPadding, whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: '0.82rem', verticalAlign: 'middle' }}>
+                                -
+                              </td>
+                            );
+                          }
+                          return (
+                            <td key={key} style={{ padding: cellPadding, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                              <div style={{ fontWeight: 700, color: 'var(--text-main)', fontSize: '0.84rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                <Calendar size={13} style={{ color: 'var(--primary-color)' }} />
+                                <span>{usage.dateStr}</span>
+                              </div>
+                              {usage.timeStr && (
+                                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <Clock size={11} />
+                                  <span>{usage.timeStr}</span>
+                                </div>
+                              )}
+                            </td>
+                          );
+                        }
+                        if (key === 'room_name') {
+                          const firstItem = b.items?.[0] || {};
+                          const roomName = firstItem.room_name || b.room_name || 'ห้องประชุม';
+                          const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom' : 'Standard';
+                          const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาวัน' : firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง';
+                          const isMultiple = (b.items?.length || 0) > 1;
+
+                          return (
+                            <td key={key} style={{ padding: cellPadding, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                              <div style={{ fontWeight: 800, color: 'var(--text-main)', fontSize: '0.86rem' }}>
+                                {roomName}
+                              </div>
+                              <div style={{ display: 'flex', gap: '4px', marginTop: '3px', alignItems: 'center' }}>
+                                <span style={{
+                                  fontSize: '0.68rem',
+                                  padding: '1px 6px',
+                                  borderRadius: '4px',
+                                  backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                  color: 'var(--primary-color)',
+                                  fontWeight: 600
+                                }}>
+                                  {typeLabel}
+                                </span>
+                                <span style={{
+                                  fontSize: '0.68rem',
+                                  padding: '1px 6px',
+                                  borderRadius: '4px',
+                                  backgroundColor: 'var(--bg-hover)',
+                                  color: 'var(--text-muted)',
+                                  fontWeight: 600
+                                }}>
+                                  {layoutLabel}
+                                </span>
+                                {isMultiple && (
+                                  <span style={{ fontSize: '0.68rem', color: '#f59e0b', fontWeight: 700 }}>
+                                    +{b.items.length - 1} รายการ
+                                  </span>
+                                )}
+                              </div>
                             </td>
                           );
                         }
@@ -1023,6 +1352,12 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     <strong style={{ color: 'var(--text-main)' }}>{selectedBooking.contact}</strong>
                   </div>
                 )}
+                {selectedBooking.guest_count && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>จำนวนผู้เข้าใช้:</span>
+                    <strong style={{ color: 'var(--text-main)' }}>{selectedBooking.guest_count} ท่าน</strong>
+                  </div>
+                )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
                   <span style={{ color: 'var(--text-muted)' }}>ยอดรวมสุทธิ:</span>
                   <strong style={{ color: 'var(--primary-color)', fontSize: '1rem', fontWeight: 800 }}>
@@ -1297,6 +1632,138 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
           </div>
         );
       })()}
+
+      {/* HIDDEN PRINTABLE PDF REPORT CONTAINER (Rendered during exportToPDF) */}
+      <div
+        id="history-pdf-report-container"
+        style={{
+          display: 'none',
+          backgroundColor: '#ffffff',
+          color: '#0f172a',
+          padding: '24px 28px',
+          fontFamily: "'Sarabun', 'Noto Sans Thai', 'Prompt', sans-serif",
+          width: '1020px',
+          boxSizing: 'border-box',
+          lineHeight: '1.4'
+        }}
+      >
+        {/* Report Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2.5px solid #1e293b', paddingBottom: '14px', marginBottom: '14px' }}>
+          <div>
+            <h1 style={{ fontSize: '1.25rem', fontWeight: 900, color: '#0f172a', margin: 0 }}>
+              {settings?.company_name || settings?.quotation_company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)'}
+            </h1>
+            <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: '2px' }}>
+              {settings?.company_address || settings?.quotation_company_address || '98 หมู่ 2 อาคารบีเวิร์ค ยูนิต 602 ซอยแจ้งวัฒนะ-ปากเกร็ด 35 ต.คลองเกลือ อ.ปากเกร็ด จ.นนทบุรี 11120'}
+              {(settings?.company_tax_id || settings?.quotation_company_tax_id) && (
+                <span> • เลขประจำตัวผู้เสียภาษี: {settings?.company_tax_id || settings?.quotation_company_tax_id}</span>
+              )}
+            </div>
+            <h2 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#2563eb', margin: '8px 0 0 0' }}>
+              รายงานประวัติการใช้บริการและรายรับ (Service & Revenue History Report)
+            </h2>
+            <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '3px' }}>
+              {appliedFilters.startDate || appliedFilters.endDate ? (
+                <span>ช่วงวันที่ค้นหา: <strong>{appliedFilters.startDate || 'ทั้งหมด'}</strong> ถึง <strong>{appliedFilters.endDate || 'ปัจจุบัน'}</strong></span>
+              ) : (
+                <span>ช่วงวันที่ค้นหา: <strong>ข้อมูลทั้งหมดในระบบ</strong></span>
+              )}
+              {appliedFilters.status && appliedFilters.status !== 'all' && (
+                <span style={{ marginLeft: '12px' }}>สถานะ: <strong>{appliedFilters.status === 'paid' ? 'สำเร็จ (Paid)' : 'ยกเลิก (Cancelled)'}</strong></span>
+              )}
+            </div>
+          </div>
+
+          <div style={{ textAlign: 'right', fontSize: '0.78rem', color: '#64748b', flexShrink: 0 }}>
+            <div>วันที่ออกรายงาน: <strong>{new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} น.</strong></div>
+            <div style={{ marginTop: '2px' }}>จำนวนรายการ: <strong>{sortedBookings.length} รายการ</strong></div>
+            <div style={{ marginTop: '3px', fontSize: '1.05rem', fontWeight: 900, color: '#059669' }}>
+              ยอดรวมสุทธิ: ฿{sortedBookings.reduce((sum, b) => sum + (b.payment_status === 'cancelled' ? 0 : Number(b.total_amount || 0)), 0).toLocaleString()}
+            </div>
+          </div>
+        </div>
+
+        {/* Report Table with Fixed Columns */}
+        <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.76rem', border: '1px solid #cbd5e1' }}>
+          <colgroup>
+            <col style={{ width: '4%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '11%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '7%' }} />
+            <col style={{ width: '15%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '5%' }} />
+          </colgroup>
+          <thead>
+            <tr style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
+              <th style={{ padding: '7px 4px', textAlign: 'center', fontWeight: 800, border: '1px solid #334155' }}>#</th>
+              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>เลขที่ใบเสร็จ</th>
+              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>วันที่ทำรายการ</th>
+              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>วันที่ใช้งาน</th>
+              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>เวลาใช้งาน</th>
+              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>ห้อง / บริการ</th>
+              <th style={{ padding: '7px 4px', textAlign: 'center', fontWeight: 800, border: '1px solid #334155' }}>ช่องทาง</th>
+              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>ชื่อผู้จอง / บริษัท</th>
+              <th style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 800, border: '1px solid #334155' }}>ยอดเงิน (฿)</th>
+              <th style={{ padding: '7px 4px', textAlign: 'center', fontWeight: 800, border: '1px solid #334155' }}>สถานะ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedBookings.map((b, idx) => {
+              const usage = formatUsageDate(b);
+              const roomName = (b.items?.[0]?.room_name || b.room_name || '-');
+              const isCancelled = b.payment_status === 'cancelled';
+
+              return (
+                <tr key={b.id} style={{ backgroundColor: idx % 2 === 1 ? '#f8fafc' : '#ffffff' }}>
+                  <td style={{ padding: '5px 4px', textAlign: 'center', color: '#64748b', border: '1px solid #e2e8f0', verticalAlign: 'middle' }}>{idx + 1}</td>
+                  <td style={{ padding: '5px 6px', fontWeight: 800, color: '#2563eb', border: '1px solid #e2e8f0', verticalAlign: 'middle', wordBreak: 'break-all' }}>{b.receipt_number || `#${String(b.id).padStart(6, '0')}`}</td>
+                  <td style={{ padding: '5px 6px', color: '#475569', border: '1px solid #e2e8f0', verticalAlign: 'middle', fontSize: '0.73rem' }}>{formatDate(b.created_at)}</td>
+                  <td style={{ padding: '5px 6px', fontWeight: 700, color: '#0f172a', border: '1px solid #e2e8f0', verticalAlign: 'middle', fontSize: '0.73rem' }}>{usage.dateStr !== '-' ? usage.dateStr : '-'}</td>
+                  <td style={{ padding: '5px 6px', color: '#64748b', border: '1px solid #e2e8f0', verticalAlign: 'middle', fontSize: '0.72rem' }}>{usage.timeStr || '-'}</td>
+                  <td style={{ padding: '5px 6px', fontWeight: 600, color: '#0f172a', border: '1px solid #e2e8f0', verticalAlign: 'middle', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{roomName}</td>
+                  <td style={{ padding: '5px 4px', textAlign: 'center', border: '1px solid #e2e8f0', verticalAlign: 'middle' }}>
+                    <span style={{ fontSize: '0.68rem', padding: '2px 4px', borderRadius: '4px', backgroundColor: b.booking_source === 'online' ? '#e0f2fe' : '#dcfce7', color: b.booking_source === 'online' ? '#0369a1' : '#15803d', fontWeight: 700 }}>
+                      {b.booking_source === 'online' ? 'ออนไลน์' : 'Walk-in'}
+                    </span>
+                  </td>
+                  <td style={{ padding: '5px 6px', color: '#0f172a', border: '1px solid #e2e8f0', verticalAlign: 'middle' }}>
+                    <div style={{ fontWeight: 700, fontSize: '0.74rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.customer_name || '-'}</div>
+                    {b.department && <div style={{ fontSize: '0.68rem', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.department}</div>}
+                  </td>
+                  <td style={{ padding: '5px 6px', textAlign: 'right', fontWeight: 800, color: isCancelled ? '#94a3b8' : '#0f172a', border: '1px solid #e2e8f0', verticalAlign: 'middle', fontSize: '0.76rem' }}>
+                    {Number(b.total_amount || 0).toLocaleString()}
+                  </td>
+                  <td style={{ padding: '5px 4px', textAlign: 'center', border: '1px solid #e2e8f0', verticalAlign: 'middle' }}>
+                    <span style={{ fontSize: '0.68rem', fontWeight: 800, color: isCancelled ? '#dc2626' : '#16a34a' }}>
+                      {isCancelled ? 'ยกเลิก' : 'สำเร็จ'}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr style={{ backgroundColor: '#f1f5f9', borderTop: '2px solid #1e293b', fontWeight: 900 }}>
+              <td colSpan={8} style={{ padding: '8px 8px', textAlign: 'right', fontSize: '0.82rem', border: '1px solid #cbd5e1' }}>
+                ยอดรวมสุทธิทั้งสิ้น ({sortedBookings.filter(b => b.payment_status !== 'cancelled').length} รายการ):
+              </td>
+              <td style={{ padding: '8px 6px', textAlign: 'right', fontSize: '0.88rem', color: '#059669', border: '1px solid #cbd5e1' }}>
+                ฿{sortedBookings.reduce((sum, b) => sum + (b.payment_status === 'cancelled' ? 0 : Number(b.total_amount || 0)), 0).toLocaleString()}
+              </td>
+              <td style={{ border: '1px solid #cbd5e1' }}></td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem', color: '#94a3b8', borderTop: '1px solid #e2e8f0', paddingTop: '8px' }}>
+          <div>{settings?.company_name || settings?.quotation_company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)'} • B-WORK Management POS System</div>
+          <div>พิมพ์รายงานเมื่อ: {new Date().toLocaleString('th-TH')}</div>
+        </div>
+      </div>
     </div>
   );
 }

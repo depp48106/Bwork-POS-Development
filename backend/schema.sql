@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   tax_phone TEXT,
   tax_delivery_method TEXT,
   tax_postal_address TEXT,
+  guest_count INTEGER,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS booking_items (
   subtotal REAL NOT NULL,
   layout TEXT DEFAULT 'standard',
   booking_type TEXT DEFAULT 'hourly',
+  guest_count INTEGER,
   pin_code TEXT,
   checkin_status TEXT DEFAULT 'pending',
   checkin_at DATETIME

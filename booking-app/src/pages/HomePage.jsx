@@ -1,190 +1,222 @@
-import React, { useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Calendar, Users, ChevronRight, AlertCircle, Building } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 
-// Helper to generate 30-min time options (08:00 - 18:00)
-const generateTimeOptions = () => {
-  const options = [];
-  for (let i = 8; i <= 18; i++) {
-    const h = i.toString().padStart(2, '0');
-    options.push(`${h}:00`);
-    if (i < 18) options.push(`${h}:30`);
-  }
-  return options;
+const THAI_MONTHS = [
+  'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+  'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'
+];
+const THAI_DAYS = ['วันอาทิตย์', 'วันจันทร์', 'วันอังคาร', 'วันพุธ', 'วันพฤหัสบดี', 'วันศุกร์', 'วันเสาร์'];
+
+const formatToIso = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 };
 
-const TIME_OPTIONS = generateTimeOptions();
-
-// Helper to format local date as YYYY-MM-DD
-const formatLocalDateIso = (year, monthIndex, day) => {
-  const m = String(monthIndex + 1).padStart(2, '0');
-  const d = String(day).padStart(2, '0');
-  return `${year}-${m}-${d}`;
+const formatToDdMmYyyy = (isoStr) => {
+  if (!isoStr) return '';
+  const [y, m, d] = isoStr.split('-');
+  return `${d}/${m}/${y}`;
 };
 
-// Helper to check if a time slot is in the past for the selected date
-const isPastTime = (slotTime, selectedDateStr) => {
-  if (!selectedDateStr || !slotTime) return false;
-  const now = new Date();
-  const todayStr = formatLocalDateIso(now.getFullYear(), now.getMonth(), now.getDate());
-  if (selectedDateStr !== todayStr) return false;
-  
-  const [sh, sm] = slotTime.split(':').map(Number);
-  const slotMinutes = sh * 60 + (sm || 0);
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  return slotMinutes <= nowMinutes;
-};
-
-const getTodayIso = () => {
-  const now = new Date();
-  return formatLocalDateIso(now.getFullYear(), now.getMonth(), now.getDate());
+const formatThaiDateDesc = (isoStr) => {
+  if (!isoStr) return '';
+  const [y, m, d] = isoStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  const dayName = THAI_DAYS[date.getDay()];
+  const monthName = THAI_MONTHS[m - 1];
+  const thaiYear = y + 543;
+  return `${dayName}ที่ ${d} ${monthName} ${thaiYear}`;
 };
 
 export default function HomePage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const query = new URLSearchParams(location.search);
   const dateInputRef = useRef(null);
-  const todayIso = getTodayIso();
 
-  const [dateStr, setDateStr] = useState(todayIso);
-  const [startTime, setStartTime] = useState('');
-  const [endTime, setEndTime] = useState('');
-  const [guests, setGuests] = useState(1);
-  const [timeError, setTimeError] = useState('');
+  const today = new Date();
+  const todayIso = formatToIso(today);
+  const currentMins = today.getHours() * 60 + today.getMinutes();
 
-  const handleSearch = (e) => {
-    e.preventDefault();
-    setTimeError('');
-
-    if (!dateStr) return;
-    if (!startTime || !endTime) {
-      setTimeError('กรุณาเลือกเวลาเริ่มต้นและเวลาสิ้นสุดที่ต้องการใช้งาน');
-      return;
+  // If past 17:00 today, default to tomorrow
+  const getInitialDate = () => {
+    if (query.get('date')) {
+      const qDate = query.get('date');
+      if (qDate >= todayIso) return qDate;
     }
-    if (endTime <= startTime) {
-      setTimeError('เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น');
-      return;
+    if (currentMins >= 17 * 60) {
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      return formatToIso(tomorrow);
     }
-    if (isPastTime(startTime, dateStr)) {
-      setTimeError('เวลาเริ่มต้นที่เลือกได้ผ่านไปแล้ว กรุณาเลือกช่วงเวลาใหม่');
-      return;
-    }
-
-    const guestNum = Math.max(1, parseInt(guests) || 1);
-    navigate(`/rooms?date=${dateStr}&startTime=${startTime}&endTime=${endTime}&guests=${guestNum}`);
+    return todayIso;
   };
 
-  // Format Date strictly as DD/MM/YYYY พ.ศ. (e.g. 04/08/2569)
-  const formatDdMmYyyy = (dStr) => {
-    if (!dStr) return '';
-    const [y, m, d] = dStr.split('-').map(Number);
-    const dayStr = String(d).padStart(2, '0');
-    const monthStr = String(m).padStart(2, '0');
-    const thaiYear = y + 543;
-    return `${dayStr}/${monthStr}/${thaiYear}`;
-  };
+  // States
+  const [dateStr, setDateStr] = useState(getInitialDate());
+  const [guests, setGuests] = useState(parseInt(query.get('guests'), 10) || 4);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  // Format Thai Full Date Display (without parentheses)
-  const formatThaiFullDate = (dStr) => {
-    if (!dStr) return '';
-    const [y, m, d] = dStr.split('-').map(Number);
-    const dateObj = new Date(y, m - 1, d);
-    const thaiYear = y + 543;
-    const weekday = dateObj.toLocaleDateString('th-TH', { weekday: 'long' });
-    const monthName = dateObj.toLocaleDateString('th-TH', { month: 'long' });
-    return `${weekday}ที่ ${d} ${monthName} ${thaiYear}`;
-  };
-
-  // Trigger date picker on box click anywhere
-  const handleBoxClick = () => {
+  const handleOpenDatePicker = () => {
     if (dateInputRef.current) {
-      try {
-        if (typeof dateInputRef.current.showPicker === 'function') {
-          dateInputRef.current.showPicker();
-        } else {
-          dateInputRef.current.focus();
-          dateInputRef.current.click();
-        }
-      } catch (err) {
-        dateInputRef.current.click();
+      if (typeof dateInputRef.current.showPicker === 'function') {
+        dateInputRef.current.showPicker();
+      } else {
+        dateInputRef.current.focus();
       }
     }
   };
 
+  const handleSearch = (e) => {
+    e.preventDefault();
+    setErrorMessage('');
+
+    if (!dateStr) {
+      setErrorMessage('กรุณาเลือกวันที่ต้องการใช้งาน');
+      return;
+    }
+    // Prevent past date
+    if (dateStr < todayIso) {
+      setErrorMessage('ไม่สามารถเลือกวันที่ย้อนหลังได้ กรุณาเลือกวันที่ปัจจุบันหรือล่วงหน้า');
+      return;
+    }
+    // Check if today is selected but business hours ended
+    if (dateStr === todayIso && currentMins >= 17 * 60 + 30) {
+      setErrorMessage('วันนี้หมดรอบเวลาให้บริการแล้ว กรุณาเลือกวันพรุ่งนี้เป็นต้นไป');
+      return;
+    }
+    if (!guests || guests < 1) {
+      setErrorMessage('กรุณาระบุจำนวนผู้เข้าใช้ห้องอย่างน้อย 1 ท่าน');
+      return;
+    }
+
+    // Navigate to Room List with Date & Guests
+    navigate(`/rooms?date=${dateStr}&guests=${guests}`);
+  };
+
   return (
-    <div className="page-transition" style={{ maxWidth: '460px', margin: '0 auto' }}>
-      {/* Hero Header */}
-      <div style={{ textAlign: 'center', marginBottom: '1.25rem' }}>
-        <h1 style={{ color: 'var(--primary)', fontSize: '2.2rem', margin: '0 0 0.2rem 0', fontWeight: 'bold' }}>B-WORK</h1>
-        <h2 style={{ margin: '0 0 0.25rem 0', fontSize: '1.2rem' }}>ระบบจองห้องประชุมออนไลน์</h2>
-        <p style={{ color: '#475569', margin: 0, fontSize: '0.95rem', fontWeight: 500 }}>
-          เลือกวันและเวลาที่ต้องการใช้งาน เพื่อดูสถานะห้องว่างและรูปแบบการจอง
+    <div className="main-content" style={{ maxWidth: '640px', margin: '0 auto', paddingBottom: '32px' }}>
+      {/* 4-STEP WIZARD PROGRESS BAR */}
+      <StepProgress currentStep={1} />
+
+      {/* HERO BANNER */}
+      <div style={{
+        textAlign: 'center',
+        marginTop: '12px',
+        marginBottom: '28px',
+        padding: '0 8px'
+      }}>
+        <div style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '6px',
+          padding: '5px 14px',
+          borderRadius: '20px',
+          backgroundColor: 'rgba(37, 99, 235, 0.08)',
+          color: 'var(--primary)',
+          fontSize: '0.8rem',
+          fontWeight: 800,
+          marginBottom: '10px'
+        }}>
+          <Building size={14} />
+          <span>B-WORK MEETING ROOM</span>
+        </div>
+        <h1 style={{
+          fontSize: '1.8rem',
+          fontWeight: 900,
+          color: 'var(--text-main)',
+          letterSpacing: '-0.02em',
+          margin: '0 0 8px 0',
+          lineHeight: 1.3
+        }}>
+          จองห้องประชุมออนไลน์
+        </h1>
+        <p style={{
+          fontSize: '0.9rem',
+          color: 'var(--text-muted)',
+          maxWidth: '480px',
+          margin: '0 auto',
+          lineHeight: 1.5
+        }}>
+          ระบุวันที่และจำนวนผู้เข้าใช้งาน เพื่อค้นหาห้องที่ว่างและเลือกช่วงเวลา
         </p>
       </div>
 
-      {/* Progress Step Indicator (Step 1 Active) */}
-      <StepProgress currentStep={1} />
-
-      {/* Step 1 Search Form Card */}
-      <div className="glass-card" style={{ padding: '1.5rem', borderRadius: '16px' }}>
-        <form onSubmit={handleSearch}>
+      {/* STEP 1 BOOKING CARD */}
+      <div className="booking-card" style={{ padding: '24px 20px', borderRadius: '20px' }}>
+        <form onSubmit={handleSearch} style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
           
-          {/* Custom Date Input with Icon Far Right */}
-          <div className="form-group" style={{ marginBottom: '1.25rem' }}>
-            <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-dark)' }}>
-              วันที่ต้องการจอง (วัน/เดือน/ปี)
-            </label>
+          {/* SECTION 1: DATE SELECTION (DD/MM/YYYY) */}
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Calendar size={17} style={{ color: 'var(--primary)' }} />
+                <span>1. เลือกวันที่ต้องการใช้งาน (Date)</span>
+                <span style={{ color: 'var(--danger)' }}>*</span>
+              </label>
+              <span style={{ fontSize: '0.74rem', color: 'var(--primary)', fontWeight: 700 }}>
+                (DD/MM/YYYY)
+              </span>
+            </div>
 
-            {/* Clickable Box Container */}
+            {/* Interactive Apple-Style Date Display Box */}
             <div 
-              onClick={handleBoxClick}
-              className="form-control"
-              style={{ 
+              onClick={handleOpenDatePicker}
+              style={{
+                position: 'relative',
                 display: 'flex',
-                justify: 'space-between',
                 alignItems: 'center',
-                padding: '0.75rem 0.85rem',
-                fontSize: '1rem',
-                fontWeight: 'bold',
-                color: 'var(--text-dark)',
-                backgroundColor: '#f8fafc',
-                borderRadius: '8px',
-                border: '1.5px solid var(--primary)',
-                boxShadow: '0 2px 6px rgba(30, 58, 138, 0.08)',
+                justifyContent: 'space-between',
+                padding: '14px 18px',
+                borderRadius: '16px',
+                border: '2px solid var(--primary)',
+                backgroundColor: '#ffffff',
                 cursor: 'pointer',
-                position: 'relative'
+                boxShadow: '0 4px 14px rgba(37, 99, 235, 0.08)',
+                transition: 'all 0.2s ease'
               }}
             >
-              {/* Date Text DD/MM/YYYY */}
-              <span>{formatDdMmYyyy(dateStr)}</span>
+              <div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  วันที่เลือก (DD/MM/YYYY)
+                </div>
+                <div style={{ fontSize: '1.45rem', fontWeight: 900, color: 'var(--primary)', letterSpacing: '1px', marginTop: '2px' }}>
+                  {formatToDdMmYyyy(dateStr)}
+                </div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-main)', fontWeight: 600, marginTop: '2px' }}>
+                  {formatThaiDateDesc(dateStr)}
+                </div>
+              </div>
 
-              {/* Far Right SVG Calendar Icon */}
-              <svg 
-                width="20" 
-                height="20" 
-                viewBox="0 0 24 24" 
-                fill="none" 
-                stroke="var(--primary)" 
-                strokeWidth="2" 
-                strokeLinecap="round" 
-                strokeLinejoin="round"
-                style={{ flexShrink: 0, marginLeft: 'auto' }}
-              >
-                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-                <line x1="16" y1="2" x2="16" y2="6"></line>
-                <line x1="8" y1="2" x2="8" y2="6"></line>
-                <line x1="3" y1="10" x2="21" y2="10"></line>
-              </svg>
+              <div style={{
+                padding: '10px 16px',
+                borderRadius: '12px',
+                backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                color: 'var(--primary)',
+                fontSize: '0.84rem',
+                fontWeight: 800,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <Calendar size={18} />
+                <span>เปิดปฏิทิน</span>
+              </div>
 
-              {/* Native Date Input Overlay - perfectly receives touch on iOS without blocking visual UI */}
-              <input 
+              {/* Native HTML5 Date Input Overlay (strictly min=todayIso) */}
+              <input
                 ref={dateInputRef}
                 type="date"
-                value={dateStr}
+                required
                 min={todayIso}
+                value={dateStr}
                 onChange={(e) => {
-                  if (e.target.value) {
-                    setDateStr(e.target.value);
-                  }
+                  setDateStr(e.target.value);
+                  setErrorMessage('');
                 }}
                 style={{
                   position: 'absolute',
@@ -193,146 +225,105 @@ export default function HomePage() {
                   width: '100%',
                   height: '100%',
                   opacity: 0,
-                  zIndex: 5,
                   cursor: 'pointer',
-                  fontSize: '16px'
+                  pointerEvents: 'auto',
+                  zIndex: 2
                 }}
               />
             </div>
+          </div>
 
-            {/* Thai Date Text Below */}
-            <div style={{ fontSize: '0.825rem', color: 'var(--primary)', marginTop: '0.4rem', fontWeight: 600 }}>
-              {formatThaiFullDate(dateStr)}
+          {/* SECTION 2: GUEST COUNT (Number of people) */}
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Users size={17} style={{ color: 'var(--primary)' }} />
+                <span>2. จำนวนผู้เข้าใช้งาน (Attendees)</span>
+                <span style={{ color: 'var(--danger)' }}>*</span>
+              </label>
+              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                ระบุจำนวนคน
+              </span>
+            </div>
+
+            <div style={{
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'center'
+            }}>
+              <Users size={20} style={{ position: 'absolute', left: '16px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+              <input
+                type="number"
+                min="1"
+                max="100"
+                required
+                value={guests}
+                onChange={e => {
+                  const val = parseInt(e.target.value, 10);
+                  setGuests(isNaN(val) ? '' : val);
+                  setErrorMessage('');
+                }}
+                placeholder="ระบุจำนวนผู้เข้าใช้งาน (เช่น 4, 8, 12 ท่าน)"
+                className="form-input"
+                style={{
+                  height: '52px',
+                  paddingLeft: '48px',
+                  paddingRight: '60px',
+                  fontSize: '1.15rem',
+                  fontWeight: 800,
+                  color: 'var(--text-main)',
+                  borderRadius: '14px',
+                  border: '1.5px solid var(--border)'
+                }}
+              />
+              <span style={{
+                position: 'absolute',
+                right: '16px',
+                fontSize: '0.9rem',
+                fontWeight: 800,
+                color: 'var(--text-muted)',
+                pointerEvents: 'none'
+              }}>
+                ท่าน
+              </span>
             </div>
           </div>
 
-          {/* Time Range Selector (Manual Selection, No Auto-fill) */}
-          <div className="form-group" style={{ marginBottom: '1.25rem' }}>
-            <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-dark)' }}>
-              ช่วงเวลาที่ต้องการใช้งาน <span style={{ color: '#ef4444' }}>*</span>
-            </label>
-
-            {timeError && (
-              <div style={{ fontSize: '0.8rem', color: '#ef4444', fontWeight: 'bold', marginBottom: '0.5rem', backgroundColor: '#fee2e2', padding: '0.4rem 0.6rem', borderRadius: '6px' }}>
-                {timeError}
-              </div>
-            )}
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-              <div>
-                <label style={{ fontSize: '0.8rem', color: '#64748b', display: 'block', marginBottom: '4px', fontWeight: 600 }}>เวลาเริ่มต้น:</label>
-                <select
-                  id="home-select-start-time"
-                  className="form-control"
-                  value={startTime}
-                  onChange={(e) => {
-                    const newStart = e.target.value;
-                    setStartTime(newStart);
-                    setTimeError('');
-                    if (newStart && (!endTime || endTime <= newStart)) {
-                      const startHour = parseInt(newStart.split(':')[0], 10);
-                      const nextHour = (startHour + 1).toString().padStart(2, '0') + ':00';
-                      if (TIME_OPTIONS.includes(nextHour)) {
-                        setEndTime(nextHour);
-                      }
-                    }
-                  }}
-                  style={{ 
-                    fontWeight: startTime ? 'bold' : 'normal',
-                    color: startTime ? 'var(--primary)' : '#0f172a',
-                    border: !startTime && timeError ? '1.5px solid #ef4444' : '1.5px solid var(--border)'
-                  }}
-                >
-                  <option value="">-- เลือกเวลาเริ่ม --</option>
-                  {TIME_OPTIONS.filter(t => t < '18:00').map(t => {
-                    const isPast = isPastTime(t, dateStr);
-                    return (
-                      <option 
-                        key={`hs-${t}`} 
-                        value={t} 
-                        disabled={isPast}
-                        style={{ color: isPast ? '#94a3b8' : 'inherit' }}
-                      >
-                        {t} น.
-                      </option>
-                    );
-                  })}
-                </select>
-              </div>
-
-              <div>
-                <label style={{ fontSize: '0.8rem', color: '#64748b', display: 'block', marginBottom: '4px', fontWeight: 600 }}>เวลาสิ้นสุด:</label>
-                <select
-                  id="home-select-end-time"
-                  className="form-control"
-                  value={endTime}
-                  onChange={(e) => {
-                    setEndTime(e.target.value);
-                    setTimeError('');
-                  }}
-                  style={{ 
-                    fontWeight: endTime ? 'bold' : 'normal',
-                    color: endTime ? 'var(--primary)' : '#0f172a',
-                    border: !endTime && timeError ? '1.5px solid #ef4444' : '1.5px solid var(--border)'
-                  }}
-                >
-                  <option value="">-- เลือกเวลาสิ้นสุด --</option>
-                  {TIME_OPTIONS.filter(t => t > '08:00').map(t => {
-                    const isPast = isPastTime(t, dateStr);
-                    const isBeforeStart = startTime ? t <= startTime : false;
-                    const isDisabled = isPast || isBeforeStart;
-                    return (
-                      <option 
-                        key={`he-${t}`} 
-                        value={t}
-                        disabled={isDisabled}
-                        style={{ color: isDisabled ? '#94a3b8' : 'inherit' }}
-                      >
-                        {t} น.
-                      </option>
-                    );
-                  })}
-                </select>
-              </div>
+          {/* ERROR ALERT */}
+          {errorMessage && (
+            <div style={{
+              padding: '12px 16px',
+              borderRadius: '12px',
+              backgroundColor: 'var(--danger-light)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: 'var(--danger)',
+              fontSize: '0.88rem',
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <AlertCircle size={18} />
+              <span>{errorMessage}</span>
             </div>
-          </div>
+          )}
 
-          {/* Guest Count Input */}
-          <div className="form-group" style={{ marginBottom: '1.5rem' }}>
-            <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--text-dark)' }}>
-              จำนวนผู้เข้าประชุม (ระบุจำนวนคน)
-            </label>
-            <input 
-              type="text" 
-              inputMode="numeric"
-              pattern="[0-9]*"
-              className="form-control"
-              value={guests}
-              onChange={(e) => {
-                const val = e.target.value.replace(/[^0-9]/g, '');
-                setGuests(val);
-              }}
-              placeholder="กรอกจำนวนคน เช่น 1, 5, 10"
-              style={{ fontSize: '0.95rem', padding: '0.75rem 0.85rem', borderRadius: '8px' }}
-            />
-          </div>
-
-          {/* Submit Search Button */}
-          <button 
-            type="submit" 
-            className="btn btn-primary"
-            style={{ width: '100%', padding: '0.85rem', fontSize: '1rem', fontWeight: 'bold', borderRadius: '10px' }}
+          {/* SUBMIT BUTTON */}
+          <button
+            type="submit"
+            className="btn-primary"
+            style={{
+              height: '52px',
+              fontSize: '1.05rem',
+              fontWeight: 800,
+              borderRadius: '14px',
+              marginTop: '4px'
+            }}
           >
-            ค้นหาห้องประชุม
+            <span>ค้นหาห้องประชุมว่าง (Next: Choose Room & Time)</span>
+            <ChevronRight size={22} />
           </button>
         </form>
-      </div>
-
-      {/* Booking Status Link */}
-      <div style={{ textAlign: 'center', marginTop: '1.5rem' }}>
-        <a href="/status" style={{ color: 'var(--primary)', textDecoration: 'underline', fontSize: '0.85rem' }}>
-          เช็คสถานะการจองด้วยหมายเลข BK / Check Booking Status
-        </a>
       </div>
     </div>
   );

@@ -136,29 +136,42 @@ function App() {
     }
   });
 
+  const markAllAsRead = (upcomingList = upcomingAlerts, incomingList = incomingBookings) => {
+    setReadAlertKeys(prev => {
+      const next = new Set(prev);
+      (upcomingList || []).forEach(item => {
+        next.add(`${item.booking_id}-${item.start_time}`);
+        next.add(`b-${item.booking_id}`);
+      });
+      (incomingList || []).forEach(item => {
+        next.add(`incoming-${item.booking_id}-${item.payment_status}`);
+        next.add(`incoming-${item.booking_id}`);
+        next.add(`b-${item.booking_id}`);
+      });
+      try {
+        localStorage.setItem('bwork_read_alerts', JSON.stringify(Array.from(next)));
+      } catch (e) {}
+      return next;
+    });
+  };
+
   // Count unread alerts (upcoming + incoming) for badge display
   const unreadAlerts = useMemo(() => {
-    const unreadUpcoming = upcomingAlerts.filter(item => !readAlertKeys.has(`${item.booking_id}-${item.start_time}`));
-    const unreadIncoming = incomingBookings.filter(item => !readAlertKeys.has(`incoming-${item.booking_id}-${item.payment_status}`));
+    const unreadUpcoming = upcomingAlerts.filter(item => 
+      !readAlertKeys.has(`${item.booking_id}-${item.start_time}`) &&
+      !readAlertKeys.has(`b-${item.booking_id}`)
+    );
+    const unreadIncoming = incomingBookings.filter(item => 
+      !readAlertKeys.has(`incoming-${item.booking_id}-${item.payment_status}`) &&
+      !readAlertKeys.has(`incoming-${item.booking_id}`) &&
+      !readAlertKeys.has(`b-${item.booking_id}`)
+    );
     return [...unreadUpcoming, ...unreadIncoming];
   }, [upcomingAlerts, incomingBookings, readAlertKeys]);
 
   const handleToggleBell = () => {
     if (!isBellOpen) {
-      // Mark all current alerts as read when opening dropdown
-      setReadAlertKeys(prev => {
-        const next = new Set(prev);
-        upcomingAlerts.forEach(item => {
-          next.add(`${item.booking_id}-${item.start_time}`);
-        });
-        incomingBookings.forEach(item => {
-          next.add(`incoming-${item.booking_id}-${item.payment_status}`);
-        });
-        try {
-          localStorage.setItem('bwork_read_alerts', JSON.stringify(Array.from(next)));
-        } catch (e) {}
-        return next;
-      });
+      markAllAsRead(upcomingAlerts, incomingBookings);
       setIsBellOpen(true);
     } else {
       setIsBellOpen(false);
@@ -671,24 +684,9 @@ function App() {
                 type="button"
                 className={`top-menu-item ${activeTab === 'pending' ? 'active' : ''}`}
                 onClick={() => setActiveTab('pending')}
-                style={{ position: 'relative' }}
               >
                 <Clock size={15} />
                 <span>รายการจองห้อง</span>
-                {pendingCount > 0 && (
-                  <span style={{
-                    backgroundColor: reviewingCount > 0 ? '#ef4444' : '#f59e0b',
-                    color: '#ffffff',
-                    fontSize: '0.68rem',
-                    fontWeight: 800,
-                    padding: '1px 6px',
-                    borderRadius: '999px',
-                    marginLeft: '4px',
-                    boxShadow: '0 2px 6px rgba(0,0,0,0.2)'
-                  }}>
-                    {pendingCount}
-                  </span>
-                )}
               </button>
             )}
             {hasPermission('layout') && (
@@ -875,87 +873,141 @@ function App() {
                     position: 'absolute',
                     top: 'calc(100% + 8px)',
                     right: 0,
-                    width: '360px',
+                    width: '380px',
                     maxWidth: '92vw',
-                    backgroundColor: 'var(--bg-card)',
-                    backdropFilter: 'blur(25px)',
-                    WebkitBackdropFilter: 'blur(25px)',
+                    backgroundColor: 'var(--bg-glass-modal, #ffffff)',
                     border: '1px solid var(--border-color)',
                     borderRadius: '18px',
-                    boxShadow: '0 16px 50px rgba(0, 0, 0, 0.3)',
-                    padding: '16px',
+                    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.35), 0 0 1px rgba(0,0,0,0.1)',
+                    padding: '14px',
                     zIndex: 2000,
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '12px',
-                    animation: 'fadeIn 0.2s ease-out'
+                    gap: '10px',
+                    animation: 'fadeIn 0.15s ease-out'
                   }}
                 >
-                  {/* Header & Tabs */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 800, fontSize: '0.9rem', color: 'var(--text-main)' }}>
-                      <Bell size={16} className="text-primary" />
-                      <span>ศูนย์การแจ้งเตือน</span>
+                  {/* Header */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ width: '28px', height: '28px', borderRadius: '8px', backgroundColor: 'rgba(37, 99, 235, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary-color)' }}>
+                        <Bell size={15} />
+                      </div>
+                      <span style={{ fontWeight: 800, fontSize: '0.92rem', color: 'var(--text-main)', letterSpacing: '0.01em' }}>
+                        การแจ้งเตือน
+                      </span>
                     </div>
-                    <div style={{ display: 'flex', gap: '3px', background: 'var(--bg-color)', padding: '2px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {unreadAlerts.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => markAllAsRead()}
+                          style={{
+                            background: 'rgba(37, 99, 235, 0.08)',
+                            border: '1px solid rgba(37, 99, 235, 0.2)',
+                            color: 'var(--primary-color)',
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          ✓ อ่านทั้งหมด
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => setBellTab('incoming')}
+                        onClick={() => setIsBellOpen(false)}
                         style={{
+                          background: 'transparent',
                           border: 'none',
-                          background: bellTab === 'incoming' ? 'var(--primary-color)' : 'transparent',
-                          color: bellTab === 'incoming' ? '#ffffff' : 'var(--text-muted)',
-                          fontSize: '0.7rem',
-                          fontWeight: 700,
-                          padding: '4px 6px',
+                          color: 'var(--text-muted)',
+                          cursor: 'pointer',
+                          padding: '4px',
                           borderRadius: '6px',
-                          cursor: 'pointer'
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          transition: 'all 0.15s ease'
                         }}
+                        onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.06)'; e.currentTarget.style.color = 'var(--text-main)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
                       >
-                        จองใหม่ ({incomingBookings.length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setBellTab('upcoming')}
-                        style={{
-                          border: 'none',
-                          background: bellTab === 'upcoming' ? 'var(--primary-color)' : 'transparent',
-                          color: bellTab === 'upcoming' ? '#ffffff' : 'var(--text-muted)',
-                          fontSize: '0.7rem',
-                          fontWeight: 700,
-                          padding: '4px 6px',
-                          borderRadius: '6px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        ใกล้เริ่ม ({upcomingAlerts.length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setBellTab('today')}
-                        style={{
-                          border: 'none',
-                          background: bellTab === 'today' ? 'var(--primary-color)' : 'transparent',
-                          color: bellTab === 'today' ? '#ffffff' : 'var(--text-muted)',
-                          fontSize: '0.7rem',
-                          fontWeight: 700,
-                          padding: '4px 6px',
-                          borderRadius: '6px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        วันนี้ ({todayBookings.length})
+                        <X size={16} />
                       </button>
                     </div>
                   </div>
 
+                  {/* Modern Full-Width Segmented Control */}
+                  <div style={{ 
+                    display: 'flex', 
+                    gap: '4px', 
+                    background: 'var(--bg-color)', 
+                    padding: '3px', 
+                    borderRadius: '12px', 
+                    border: '1px solid var(--border-color)' 
+                  }}>
+                    {[
+                      { key: 'incoming', label: 'จองใหม่', count: incomingBookings.length },
+                      { key: 'upcoming', label: 'ใกล้เริ่ม', count: upcomingAlerts.length },
+                      { key: 'today', label: 'วันนี้', count: todayBookings.length }
+                    ].map(tab => {
+                      const isSel = bellTab === tab.key;
+                      return (
+                        <button
+                          key={tab.key}
+                          type="button"
+                          onClick={() => setBellTab(tab.key)}
+                          style={{
+                            flex: 1,
+                            border: 'none',
+                            background: isSel ? 'var(--primary-color)' : 'transparent',
+                            color: isSel ? '#ffffff' : 'var(--text-muted)',
+                            fontSize: '0.74rem',
+                            fontWeight: isSel ? 800 : 600,
+                            padding: '6px 4px',
+                            borderRadius: '9px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '5px',
+                            boxShadow: isSel ? '0 2px 8px rgba(37, 99, 235, 0.3)' : 'none',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <span>{tab.label}</span>
+                          <span style={{
+                            fontSize: '0.66rem',
+                            fontWeight: 800,
+                            padding: '1px 5px',
+                            borderRadius: '8px',
+                            backgroundColor: isSel ? 'rgba(255, 255, 255, 0.25)' : (tab.count > 0 ? 'rgba(37, 99, 235, 0.12)' : 'transparent'),
+                            color: isSel ? '#ffffff' : (tab.count > 0 ? 'var(--primary-color)' : 'var(--text-muted)')
+                          }}>
+                            {tab.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
                   {/* Body Content */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '340px', overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '340px', overflowY: 'auto' }} className="scrollbar-thin">
                     {bellTab === 'incoming' ? (
                       incomingBookings.length === 0 ? (
-                        <div style={{ textAlign: 'center', padding: '24px 8px', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
-                          <CheckCircle2 size={26} style={{ color: '#10b981', margin: '0 auto 8px auto', display: 'block' }} />
-                          ไม่มีรายการจองใหม่ค้างตรวจสอบ
+                        <div style={{ textAlign: 'center', padding: '28px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                          <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: 'rgba(16, 185, 129, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#10b981' }}>
+                            <CheckCircle2 size={22} />
+                          </div>
+                          <div style={{ fontWeight: 800, fontSize: '0.86rem', color: 'var(--text-main)', marginTop: '4px' }}>
+                            ไม่มีรายการจองใหม่ค้างตรวจสอบ
+                          </div>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                            ทุกรายการได้รับการตรวจสอบและบันทึกเรียบร้อยแล้ว
+                          </div>
                         </div>
                       ) : (
                         incomingBookings.map((b, idx) => {
@@ -978,29 +1030,31 @@ function App() {
                                 gap: '3px',
                                 textAlign: 'left',
                                 cursor: 'pointer',
-                                transition: 'all 0.15s ease'
+                                transition: 'transform 0.15s ease'
                               }}
+                              onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-1px)'}
+                              onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
                             >
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontWeight: 800, fontSize: '0.85rem', color: 'var(--text-main)' }}>
+                                <span style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--text-main)' }}>
                                   #{b.booking_id} · {b.room_name || 'ห้องประชุม'}
                                 </span>
                                 <span style={{ 
-                                  fontSize: '0.7rem', 
+                                  fontSize: '0.68rem', 
                                   fontWeight: 800, 
                                   color: isSlip ? '#0ea5e9' : '#f59e0b', 
                                   backgroundColor: isSlip ? 'rgba(14,165,233,0.15)' : 'rgba(245,158,11,0.15)', 
                                   padding: '2px 6px', 
-                                  borderRadius: '4px' 
+                                  borderRadius: '6px' 
                                 }}>
                                   {isSlip ? '📎 แนบสลิปแล้ว' : '⚠️ รอชำระเงิน'}
                                 </span>
                               </div>
-                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
                                 ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{b.customer_name || 'ลูกค้า LINE OA'}</strong> · ยอด <strong style={{ color: 'var(--primary-color)' }}>฿{Number(b.total_amount || 0).toLocaleString()}</strong>
                               </div>
-                              <div style={{ fontSize: '0.7rem', color: 'var(--primary-color)', marginTop: '2px', fontWeight: 600 }}>
-                                👉 คลิกเพื่อไปที่หน้าตรวจสลิป / รับชำระ
+                              <div style={{ fontSize: '0.7rem', color: 'var(--primary-color)', marginTop: '2px', fontWeight: 700 }}>
+                                👉 คลิกเพื่อตรวจสลิป / รับชำระ
                               </div>
                             </div>
                           );
@@ -1008,9 +1062,16 @@ function App() {
                       )
                     ) : bellTab === 'upcoming' ? (
                       upcomingAlerts.length === 0 ? (
-                        <div style={{ textAlign: 'center', padding: '24px 8px', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
-                          <CheckCircle2 size={26} style={{ color: '#10b981', margin: '0 auto 8px auto', display: 'block' }} />
-                          ขณะนี้ไม่มีห้องประชุมที่ใกล้ถึงเวลาใช้งาน
+                        <div style={{ textAlign: 'center', padding: '28px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                          <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: 'rgba(249, 115, 22, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f97316' }}>
+                            <Clock size={22} />
+                          </div>
+                          <div style={{ fontWeight: 800, fontSize: '0.86rem', color: 'var(--text-main)', marginTop: '4px' }}>
+                            ขณะนี้ไม่มีห้องที่ใกล้ถึงเวลาใช้งาน
+                          </div>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                            ระบบจะแจ้งเตือนเมื่อมีคิวที่ใกล้ถึงเวลาใน 15 นาที
+                          </div>
                         </div>
                       ) : (
                         upcomingAlerts.map((alert, idx) => {
@@ -1032,15 +1093,15 @@ function App() {
                               }}
                             >
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontWeight: 800, fontSize: '0.85rem', color: 'var(--text-main)' }}>{alert.room_name}</span>
-                                <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.15)', padding: '2px 6px', borderRadius: '4px' }}>
+                                <span style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--text-main)' }}>{alert.room_name}</span>
+                                <span style={{ fontSize: '0.68rem', fontWeight: 800, color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.15)', padding: '2px 6px', borderRadius: '6px' }}>
                                   ใกล้เริ่มใช้งาน
                                 </span>
                               </div>
-                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
                                 เวลา: <strong style={{ color: 'var(--text-main)' }}>{startT} - {endT} น.</strong>
                               </div>
-                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
                                 ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{alert.customer_name || 'ลูกค้า'}</strong>
                               </div>
                             </div>
@@ -1049,9 +1110,16 @@ function App() {
                       )
                     ) : (
                       todayBookings.length === 0 ? (
-                        <div style={{ textAlign: 'center', padding: '24px 8px', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
-                          <Calendar size={26} style={{ color: 'var(--text-muted)', margin: '0 auto 8px auto', display: 'block' }} />
-                          วันนี้ยังไม่มีรายการจองห้องประชุม
+                        <div style={{ textAlign: 'center', padding: '28px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
+                          <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: 'rgba(37, 99, 235, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary-color)' }}>
+                            <Calendar size={22} />
+                          </div>
+                          <div style={{ fontWeight: 800, fontSize: '0.86rem', color: 'var(--text-main)', marginTop: '4px' }}>
+                            วันนี้ยังไม่มีรายการจองห้อง
+                          </div>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                            สามารถทำการจองคิวใหม่ได้ที่หน้าแผนผังจองห้อง
+                          </div>
                         </div>
                       ) : (
                         todayBookings.map((item, idx) => {
@@ -1064,7 +1132,7 @@ function App() {
                               style={{
                                 padding: '10px 12px',
                                 borderRadius: '12px',
-                                backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                                backgroundColor: 'var(--bg-color)',
                                 border: '1px solid var(--border-color)',
                                 borderLeft: `4px solid ${isExpired ? '#94a3b8' : (item.payment_status === 'paid' ? '#10b981' : '#f59e0b')}`,
                                 display: 'flex',
@@ -1075,10 +1143,10 @@ function App() {
                               }}
                             >
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontWeight: 800, fontSize: '0.85rem', color: 'var(--text-main)' }}>{item.room_name}</span>
+                                <span style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--text-main)' }}>{item.room_name}</span>
                                 <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--primary-color)' }}>{startT} - {endT} น.</span>
                               </div>
-                              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
                                 ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{item.customer_name || 'ลูกค้า'}</strong> · {isExpired ? 'ใช้งานเสร็จแล้ว' : (item.payment_status === 'paid' ? 'ชำระแล้ว' : 'รอชำระ')}
                               </div>
                             </div>

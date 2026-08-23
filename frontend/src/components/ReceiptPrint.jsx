@@ -176,6 +176,12 @@ function ReceiptPrint({ booking, settings }) {
             <span style={{ fontWeight: 700, textAlign: 'right' }}>{booking.contact}</span>
           </div>
         )}
+        {(booking.guest_count || renderItems[0]?.guest_count) && (
+          <div className="receipt-info-row" style={{ fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', color: '#000000' }}>
+            <span style={{ flexShrink: 0, fontWeight: 700 }}>จำนวนผู้เข้าใช้:</span>
+            <span style={{ fontWeight: 700, textAlign: 'right' }}>{booking.guest_count || renderItems[0]?.guest_count} ท่าน</span>
+          </div>
+        )}
       </div>
 
       {/* Crisp Divider */}

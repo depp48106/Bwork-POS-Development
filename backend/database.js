@@ -98,6 +98,7 @@ async function initDatabase() {
       pin_code TEXT,
       qr_token TEXT,
       line_user_id TEXT,
+      guest_count INTEGER,
       checkin_status TEXT DEFAULT 'pending',
       checkin_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -115,6 +116,7 @@ async function initDatabase() {
       subtotal REAL NOT NULL,
       layout TEXT DEFAULT 'standard',
       booking_type TEXT DEFAULT 'hourly',
+      guest_count INTEGER,
       pin_code TEXT,
       checkin_status TEXT DEFAULT 'pending',
       checkin_at DATETIME
@@ -240,6 +242,12 @@ async function initDatabase() {
   } catch (e) {}
   try {
     await dbQuery.run('ALTER TABLE booking_items ADD COLUMN checkin_at DATETIME');
+  } catch (e) {}
+  try {
+    await dbQuery.run('ALTER TABLE bookings ADD COLUMN guest_count INTEGER');
+  } catch (e) {}
+  try {
+    await dbQuery.run('ALTER TABLE booking_items ADD COLUMN guest_count INTEGER');
   } catch (e) {}
 
   // Migration: Add daily_rate column if not exists
@@ -426,6 +434,10 @@ async function initDatabase() {
     const checkValidDays = await dbQuery.get("SELECT value FROM settings WHERE key = 'quotation_valid_days'");
     if (!checkValidDays) {
       await dbQuery.run("INSERT INTO settings (key, value) VALUES ('quotation_valid_days', '7')");
+    }
+    const checkBuffer = await dbQuery.get("SELECT value FROM settings WHERE key = 'cleaning_buffer_minutes'");
+    if (!checkBuffer) {
+      await dbQuery.run("INSERT INTO settings (key, value) VALUES ('cleaning_buffer_minutes', '30')");
     }
   } catch (e) {}
 

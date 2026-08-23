@@ -1,78 +1,112 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Check } from 'lucide-react';
+
+const STEPS = [
+  { step: 1, label: 'วัน/เวลา', path: '/' },
+  { step: 2, label: 'เลือกห้อง', path: '/rooms' },
+  { step: 3, label: 'ข้อมูลผู้จอง', path: '/form' },
+  { step: 4, label: 'ชำระเงิน', path: '/confirm' }
+];
 
 export default function StepProgress({ currentStep }) {
-  const steps = [
-    { num: 1, label: 'วัน/เวลา' },
-    { num: 2, label: 'เลือกห้อง' },
-    { num: 3, label: 'กรอกข้อมูล' },
-    { num: 4, label: 'ชำระเงิน' }
-  ];
+  const navigate = useNavigate();
+
+  const handleStepClick = (item) => {
+    // Allow clicking back to earlier steps if passed
+    if (item.step < currentStep) {
+      navigate(item.path);
+    }
+  };
 
   return (
-    <div style={{ maxWidth: '380px', margin: '0 auto 1.25rem auto', padding: '0 0.5rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative' }}>
-        
+    <div className="step-progress-container" style={{
+      backgroundColor: '#ffffff',
+      border: '1px solid var(--border)',
+      borderRadius: 'var(--radius-lg)',
+      padding: '16px 20px',
+      marginBottom: '24px',
+      boxShadow: 'var(--shadow-sm)'
+    }}>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        position: 'relative'
+      }}>
         {/* Background Connecting Line */}
         <div style={{
           position: 'absolute',
-          top: '14px',
-          left: '16px',
-          right: '16px',
-          height: '2px',
-          backgroundColor: '#cbd5e1',
+          top: '18px',
+          left: '24px',
+          right: '24px',
+          height: '3px',
+          backgroundColor: '#e2e8f0',
           zIndex: 1
-        }}></div>
+        }}>
+          {/* Active Filled Progress Line */}
+          <div style={{
+            height: '100%',
+            backgroundColor: 'var(--primary)',
+            width: `${((currentStep - 1) / (STEPS.length - 1)) * 100}%`,
+            transition: 'width 0.3s ease'
+          }} />
+        </div>
 
-        {/* Active Line Fill */}
-        <div style={{
-          position: 'absolute',
-          top: '14px',
-          left: '16px',
-          width: currentStep === 1 ? '0%' : currentStep === 2 ? '33%' : currentStep === 3 ? '66%' : '100%',
-          height: '2px',
-          backgroundColor: 'var(--primary)',
-          transition: 'width 0.3s ease',
-          zIndex: 2
-        }}></div>
-
-        {/* Step Circles & Labels */}
-        {steps.map((step) => {
-          const isDone = currentStep > step.num;
-          const isActive = currentStep === step.num;
+        {/* Step Items */}
+        {STEPS.map((item) => {
+          const isCompleted = item.step < currentStep;
+          const isActive = item.step === currentStep;
+          const isClickable = isCompleted;
 
           return (
-            <div key={step.num} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', zIndex: 3 }}>
-              <div style={{
-                width: '28px',
-                height: '28px',
-                borderRadius: '50%',
-                display: 'inline-flex',
+            <div
+              key={item.step}
+              onClick={() => isClickable && handleStepClick(item)}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '0.85rem',
-                fontWeight: 'bold',
-                lineHeight: 1,
-                padding: 0,
-                margin: 0,
-                textAlign: 'center',
-                backgroundColor: isDone ? '#15803d' : isActive ? 'var(--primary)' : 'white',
-                color: isDone || isActive ? 'white' : '#64748b',
-                border: isDone ? '2px solid #15803d' : isActive ? '2px solid var(--primary)' : '2px solid #cbd5e1',
-                boxShadow: isActive ? '0 0 0 3px rgba(30, 58, 138, 0.2)' : 'none',
-                transition: 'all 0.2s ease'
-              }}>
-                <span style={{ lineHeight: 1, display: 'block', transform: 'translateY(-0.5px)' }}>
-                  {isDone ? '✓' : step.num}
-                </span>
+                gap: '6px',
+                zIndex: 2,
+                cursor: isClickable ? 'pointer' : 'default',
+                userSelect: 'none'
+              }}
+            >
+              {/* Circle Badge */}
+              <div 
+                className="step-progress-badge"
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 800,
+                  fontSize: '0.9rem',
+                  backgroundColor: isActive ? 'var(--primary)' : isCompleted ? '#10b981' : '#ffffff',
+                  color: (isActive || isCompleted) ? '#ffffff' : '#94a3b8',
+                  border: isActive ? '3px solid #bfdbfe' : isCompleted ? '2px solid #10b981' : '2px solid #cbd5e1',
+                  boxShadow: isActive ? '0 0 12px rgba(37, 99, 235, 0.4)' : 'none',
+                  transition: 'all 0.25s ease'
+                }}
+              >
+                {isCompleted ? <Check size={18} strokeWidth={3} /> : item.step}
               </div>
-              <span style={{
-                fontSize: '0.725rem',
-                marginTop: '0.25rem',
-                fontWeight: isActive ? 'bold' : 'normal',
-                color: isActive ? 'var(--primary)' : isDone ? '#15803d' : 'var(--text-muted)',
-                whiteSpace: 'nowrap'
-              }}>
-                {step.label}
+
+              {/* Label */}
+              <span 
+                className="step-progress-label"
+                style={{
+                  fontSize: '0.78rem',
+                  fontWeight: isActive ? 800 : isCompleted ? 700 : 500,
+                  color: isActive ? 'var(--primary)' : isCompleted ? '#0f172a' : '#94a3b8',
+                  whiteSpace: 'nowrap',
+                  transition: 'color 0.2s ease'
+                }}
+              >
+                {item.label}
               </span>
             </div>
           );

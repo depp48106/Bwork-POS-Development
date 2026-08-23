@@ -1,29 +1,51 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Minus, Trash2, Calendar, ShoppingCart, Printer, X, CreditCard, User, Building, Phone, FileText, Check, ChevronLeft, ChevronRight, Clock, Search, ChevronUp, ChevronDown, Image, CheckCircle2, Key, Send, AlertTriangle } from 'lucide-react';
+import { 
+  Plus, Minus, Trash2, Calendar, ShoppingCart, Printer, X, CreditCard, 
+  User, Users, Building, Phone, FileText, Check, ChevronLeft, ChevronRight, 
+  Clock, Search, ChevronUp, ChevronDown, Image, CheckCircle2, Key, Send, 
+  AlertTriangle, LayoutGrid, Columns, Sparkles, Layers, Presentation, Laptop, Coffee, Car, BookmarkPlus, Zap,
+  Banknote, Smartphone
+} from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
+import CustomSelect from './CustomSelect';
 
-const TIME_SLOT_OPTIONS = [
-  '08:00', '08:30', '09:00', '09:30',
-  '10:00', '10:30', '11:00', '11:30', '12:00', '12:30',
-  '13:00', '13:30', '14:00', '14:30', '15:00', '15:30',
-  '16:00', '16:30', '17:00', '17:30', '18:00'
-];
+const TIMELINE_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+const TIMELINE_START = 8;
+const TIMELINE_END = 18;
+const TIMELINE_TOTAL_HOURS = 10;
+
+// Robust Date Helpers (No UTC Timezone Offset Bugs)
+const formatDateToYYYYMMDD = (d) => {
+  if (!d) return '';
+  const dateObj = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(dateObj.getTime())) return '';
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const addDaysToDateStr = (dateStr, days) => {
+  if (!dateStr) return formatDateToYYYYMMDD(new Date());
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr;
+  const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+  d.setDate(d.getDate() + days);
+  return formatDateToYYYYMMDD(d);
+};
 
 function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselectedRoom, onNavigate, onExportToQuotation, showCartSidebar, setShowCartSidebar, onCartCountChange }) {
   const [rooms, setRooms] = useState([]);
   const [services, setServices] = useState([]);
   const [cart, setCart] = useState([]);
-  const [monthSearchQuery, setMonthSearchQuery] = useState('');
-  const [selectedRoomsFilter, setSelectedRoomsFilter] = useState({}); // e.g. { roomId: true/false }
-  const [showMonthSelector, setShowMonthSelector] = useState(false);
-
-  useEffect(() => {
-    if (onCartCountChange) {
-      onCartCountChange(cart.length);
-    }
-  }, [cart, onCartCountChange]);
+  const [searchQuery, setSearchQuery] = useState('');
   
+  // View Modes: 'matrix' (Unified Timeline Matrix & Rich Room Cards) | 'calendar' (Monthly Calendar Overview)
+  const [mainViewMode, setMainViewMode] = useState('matrix');
+  const [timelineCategory, setTimelineCategory] = useState('all');
+  const [timelineDate, setTimelineDate] = useState(formatDateToYYYYMMDD(new Date()));
+
   // Customer details
   const [customer, setCustomer] = useState({
     name: '',
@@ -31,8 +53,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     contact: ''
   });
 
-  const [paymentStatus, setPaymentStatus] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState('');
+  const [paymentStatus, setPaymentStatus] = useState('paid');
+  const [paymentMethod, setPaymentMethod] = useState('cash');
 
   // Main interactive calendar navigation (Large Calendar)
   const today = new Date();
@@ -40,43 +62,36 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [calendarMonth, setCalendarMonth] = useState(today.getMonth()); // 0-indexed
   const [calendarEvents, setCalendarEvents] = useState([]);
 
-  // Day Modal state (when clicking a day)
+  // Day Modal & Selected Day states
   const [selectedDay, setSelectedDay] = useState({
     day: today.getDate(),
     month: today.getMonth(),
     year: today.getFullYear(),
     isOtherMonth: false
   });
-  const [isDayModalOpen, setIsDayModalOpen] = useState(false);
-  const [dayModalTab, setDayModalTab] = useState('bookings'); // 'bookings' | 'catalog'
 
-  // Sidebar selected day state (only changed when clicking mini-calendar)
   const [sidebarSelectedDay, setSidebarSelectedDay] = useState({
     day: today.getDate(),
     month: today.getMonth(),
     year: today.getFullYear(),
     isOtherMonth: false
   });
-  const [modalCategory, setModalCategory] = useState('all'); // 'all', 'room', 'Co-Working', 'Koocafe', 'Parking'
 
-  // Room scheduling modal (sub-modal from day modal)
+  // Room scheduling Slide-over Drawer / Modal
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [viewedEvent, setViewedEvent] = useState(null);
-  const [bookingType, setBookingType] = useState('hourly'); // 'hourly' | 'daily'
-  const [dailyTimeSlot, setDailyTimeSlot] = useState('08-17'); // '08-17' | '09-18'
+  const [bookingType, setBookingType] = useState('hourly'); // 'hourly' | 'halfday' | 'daily'
+  const [dailyTimeSlot, setDailyTimeSlot] = useState('08-17'); // '08-17' | '09-18' | '08-12' | '13-17'
   const [layoutType, setLayoutType] = useState('standard'); // 'standard' | 'classroom'
-  const [isDailyTimeSlotOpen, setIsDailyTimeSlotOpen] = useState(false);
-  const [isHalfdayTimeSlotOpen, setIsHalfdayTimeSlotOpen] = useState(false);
-  const [isStartHourOpen, setIsStartHourOpen] = useState(false);
-  const [isEndHourOpen, setIsEndHourOpen] = useState(false);
-  const [isPaymentStatusOpen, setIsPaymentStatusOpen] = useState(false);
-  const [isPaymentMethodOpen, setIsPaymentMethodOpen] = useState(false);
+  const [selectedRoomsFilter, setSelectedRoomsFilter] = useState({});
+
   const [roomSchedule, setRoomSchedule] = useState({
-    date: new Date().toISOString().split('T')[0],
+    date: formatDateToYYYYMMDD(new Date()),
     startHour: '09',
     startMinute: '00',
     endHour: '10',
-    endMinute: '00'
+    endMinute: '00',
+    guestCount: ''
   });
 
   // Service selection modal
@@ -85,6 +100,13 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   // Printing State
   const [printBooking, setPrintBooking] = useState(null);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
+
+  // Cart count notification
+  useEffect(() => {
+    if (onCartCountChange) {
+      onCartCountChange(cart.length);
+    }
+  }, [cart, onCartCountChange]);
 
   // =========================================================
   // DATA FETCHING
@@ -102,7 +124,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       const roomsRes = await fetch('/api/rooms?status=active');
       const servicesRes = await fetch('/api/services?status=active');
       if (roomsRes.ok && servicesRes.ok) {
-        setRooms(await roomsRes.json());
+        const roomsData = await roomsRes.json();
+        setRooms(roomsData);
         setServices(await servicesRes.json());
       }
     } catch (err) {
@@ -122,59 +145,39 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     }
   };
 
+  // Sync calendar events when timeline date moves to another month
+  useEffect(() => {
+    if (timelineDate) {
+      const parts = timelineDate.split('-');
+      if (parts.length === 3) {
+        const yr = parseInt(parts[0], 10);
+        const mo = parseInt(parts[1], 10) - 1;
+        const dy = parseInt(parts[2], 10);
+        if (yr !== calendarYear || mo !== calendarMonth) {
+          setCalendarYear(yr);
+          setCalendarMonth(mo);
+        }
+        setSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
+        setSidebarSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
+      }
+    }
+  }, [timelineDate]);
+
   // =========================================================
-  // CALENDAR HELPERS
+  // DATE & THAI HELPERS
   // =========================================================
   const monthNames = [
     'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
     'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'
   ];
 
-  const weekdays = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
-
-  const calendarDays = useMemo(() => {
-    const firstDay = new Date(calendarYear, calendarMonth, 1);
-    const lastDay = new Date(calendarYear, calendarMonth + 1, 0);
-    const startDayOfWeek = firstDay.getDay(); // 0=Sun
-    const daysInMonth = lastDay.getDate();
-
-    // Previous month fill
-    const prevMonthLast = new Date(calendarYear, calendarMonth, 0);
-    const prevMonthDays = prevMonthLast.getDate();
-
-    const days = [];
-
-    // Fill previous month days
-    for (let i = startDayOfWeek - 1; i >= 0; i--) {
-      const day = prevMonthDays - i;
-      const prevMonth = calendarMonth === 0 ? 11 : calendarMonth - 1;
-      const prevYear = calendarMonth === 0 ? calendarYear - 1 : calendarYear;
-      days.push({ day, month: prevMonth, year: prevYear, isOtherMonth: true });
-    }
-
-    // Current month days
-    for (let d = 1; d <= daysInMonth; d++) {
-      days.push({ day: d, month: calendarMonth, year: calendarYear, isOtherMonth: false });
-    }
-
-    // Next month fill (complete to 6 rows = 42 cells, or 5 rows = 35 cells)
-    const totalCells = days.length <= 35 ? 35 : 42;
-    const remaining = totalCells - days.length;
-    for (let i = 1; i <= remaining; i++) {
-      const nextMonth = calendarMonth === 11 ? 0 : calendarMonth + 1;
-      const nextYear = calendarMonth === 11 ? calendarYear + 1 : calendarYear;
-      days.push({ day: i, month: nextMonth, year: nextYear, isOtherMonth: true });
-    }
-
-    return days;
-  }, [calendarYear, calendarMonth]);
-
   const monthNamesEng = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
 
-  // Helpers to format local date without UTC timezone shifting
+  const weekdays = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
+
   const getLocalDateStr = (timeVal) => {
     if (!timeVal) return '';
     if (typeof timeVal === 'string') {
@@ -183,10 +186,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     }
     const d = new Date(timeVal);
     if (isNaN(d.getTime())) return '';
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
+    return formatDateToYYYYMMDD(d);
   };
 
   const formatLocalISO = (d) => {
@@ -202,22 +202,112 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
   };
 
-  // Group events by day for calendar display
-  const filteredEventsByDay = useMemo(() => {
-    const map = {};
-    calendarEvents.forEach(ev => {
-      // Check if room filter is empty or room is checked
-      const isFiltered = Object.keys(selectedRoomsFilter).length > 0 && selectedRoomsFilter[ev.room_id] === false;
-      if (isFiltered) return; // skip this event since it's filtered out!
-      
-      const dateStr = getLocalDateStr(ev.start_time);
-      if (!map[dateStr]) map[dateStr] = [];
-      map[dateStr].push(ev);
-    });
-    return map;
-  }, [calendarEvents, selectedRoomsFilter]);
+  const getThaiDateFull = (dateStr) => {
+    if (!dateStr) return '';
+    const parts = dateStr.split('-');
+    if (parts.length !== 3) return dateStr;
+    const year = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    const d = new Date(year, month, day);
+    if (isNaN(d.getTime())) return dateStr;
+    return `วัน${weekdays[d.getDay()]}ที่ ${day} ${monthNames[month]} ${year + 543}`;
+  };
 
-  // Keep original events list for calculations
+  const getDateKey = (day, month, year) => {
+    return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  };
+
+  // Timeline Date Navigators
+  const handlePrevTimelineDay = () => {
+    setTimelineDate(prev => addDaysToDateStr(prev, -1));
+  };
+
+  const handleNextTimelineDay = () => {
+    setTimelineDate(prev => addDaysToDateStr(prev, 1));
+  };
+
+  const handleTodayTimeline = () => {
+    setTimelineDate(formatDateToYYYYMMDD(new Date()));
+  };
+
+  // =========================================================
+  // FILTERED ROOMS & EVENTS
+  // =========================================================
+  const filteredTimelineRooms = useMemo(() => {
+    return rooms.filter(r => {
+      const cat = (r.category || '').toLowerCase();
+      const name = (r.name || '').toLowerCase();
+
+      // Category filter based on inventory / database data (อิงข้อมูลจากคลังสินค้า)
+      if (timelineCategory !== 'all') {
+        if (timelineCategory === 'meeting') {
+          // ห้องประชุม: match category containing meeting or ห้องประชุม, or standard meeting rooms (including Uranus)
+          const isMeetingCat = cat.includes('meeting') || cat.includes('ห้องประชุม') || cat.includes('สัมมนา');
+          const isMeetingName = name.includes('mars') || name.includes('mercury') || name.includes('saturn') || 
+                                name.includes('venus') || name.includes('uranus') || name.includes('neptune') || 
+                                name.includes('jupiter') || name.includes('pluto');
+          if (!isMeetingCat && !isMeetingName) return false;
+        } else if (timelineCategory === 'coworking') {
+          // Co-Working: match if category contains coworking, or name explicitly specifies co-working
+          const isCoworkCat = cat.includes('coworking') || cat.includes('co-working');
+          const isCoworkName = (name.includes('co-working') || name.includes('coworking') || name.includes('โซน')) && !name.includes('uranus');
+          if (!isCoworkCat && !isCoworkName) return false;
+        } else if (timelineCategory === 'cafe') {
+          const isCafe = cat.includes('cafe') || cat.includes('koocafe') || name.includes('cafe') || name.includes('koocafe');
+          if (!isCafe) return false;
+        } else if (timelineCategory === 'parking') {
+          const isParking = cat.includes('parking') || cat.includes('ที่จอดรถ') || name.includes('ที่จอดรถ') || name.includes('parking');
+          if (!isParking) return false;
+        } else {
+          if (!cat.includes(timelineCategory.toLowerCase())) return false;
+        }
+      }
+
+      // Search filter
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchName = name.includes(q);
+        const matchCat = cat.includes(q);
+        if (!matchName && !matchCat) return false;
+      }
+      return true;
+    });
+  }, [rooms, timelineCategory, searchQuery]);
+
+  // Calendar monthly calculations
+  const calendarDays = useMemo(() => {
+    const firstDay = new Date(calendarYear, calendarMonth, 1);
+    const lastDay = new Date(calendarYear, calendarMonth + 1, 0);
+    const startDayOfWeek = firstDay.getDay(); // 0=Sun
+    const daysInMonth = lastDay.getDate();
+
+    const prevMonthLast = new Date(calendarYear, calendarMonth, 0);
+    const prevMonthDays = prevMonthLast.getDate();
+    const days = [];
+
+    for (let i = startDayOfWeek - 1; i >= 0; i--) {
+      const day = prevMonthDays - i;
+      const prevMonth = calendarMonth === 0 ? 11 : calendarMonth - 1;
+      const prevYear = calendarMonth === 0 ? calendarYear - 1 : calendarYear;
+      days.push({ day, month: prevMonth, year: prevYear, isOtherMonth: true });
+    }
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      days.push({ day: d, month: calendarMonth, year: calendarYear, isOtherMonth: false });
+    }
+
+    const totalCells = days.length <= 35 ? 35 : 42;
+    const remaining = totalCells - days.length;
+    for (let i = 1; i <= remaining; i++) {
+      const nextMonth = calendarMonth === 11 ? 0 : calendarMonth + 1;
+      const nextYear = calendarMonth === 11 ? calendarYear + 1 : calendarYear;
+      days.push({ day: i, month: nextMonth, year: nextYear, isOtherMonth: true });
+    }
+
+    return days;
+  }, [calendarYear, calendarMonth]);
+
   const eventsByDay = useMemo(() => {
     const map = {};
     calendarEvents.forEach(ev => {
@@ -228,7 +318,35 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     return map;
   }, [calendarEvents]);
 
-  // Real-time slot overlap checker for the open Room Modal
+  const filteredEventsByDay = useMemo(() => {
+    const map = {};
+    calendarEvents.forEach(ev => {
+      const isFiltered = Object.keys(selectedRoomsFilter).length > 0 && selectedRoomsFilter[ev.room_id] === false;
+      if (isFiltered) return;
+      const dateStr = getLocalDateStr(ev.start_time);
+      if (!map[dateStr]) map[dateStr] = [];
+      map[dateStr].push(ev);
+    });
+    return map;
+  }, [calendarEvents, selectedRoomsFilter]);
+
+  const selectedDayBookings = useMemo(() => {
+    if (!sidebarSelectedDay) return [];
+    const dateKey = getDateKey(sidebarSelectedDay.day, sidebarSelectedDay.month, sidebarSelectedDay.year);
+    return eventsByDay[dateKey] || [];
+  }, [sidebarSelectedDay, eventsByDay]);
+
+  // Timeline events for specific room on timelineDate
+  const getTimelineRoomEvents = (roomId) => {
+    return calendarEvents.filter(ev => {
+      if (ev.room_id !== roomId) return false;
+      if (ev.status === 'cancelled') return false;
+      const dStr = getLocalDateStr(ev.start_time);
+      return dStr === timelineDate;
+    }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
+  };
+
+  // Realtime Overlap Checker
   const currentSlotOverlap = useMemo(() => {
     if (!selectedRoom || !roomSchedule.date) return { isValid: true, isOverlap: false, booking: null };
 
@@ -268,13 +386,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       return { isValid: false, isOverlap: false, booking: null };
     }
 
-    // Check overlap with calendarEvents (excluding cancelled)
+    // Check overlap with calendarEvents + 30-min cleaning buffer
     const foundOverlap = calendarEvents.find(ev => {
       if (ev.room_id !== selectedRoom.id) return false;
       if (ev.status === 'cancelled') return false;
       const evStart = new Date(ev.start_time);
       const evEnd = new Date(ev.end_time);
-      return sTime < evEnd && eTime > evStart;
+      const evEndBuffered = new Date(evEnd.getTime() + 30 * 60 * 1000);
+      return sTime < evEndBuffered && eTime > evStart;
     });
 
     if (foundOverlap) {
@@ -291,7 +410,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       if (item.room_id !== selectedRoom.id) return false;
       const cStart = new Date(item.start_time);
       const cEnd = new Date(item.end_time);
-      return sTime < cEnd && eTime > cStart;
+      const cEndBuffered = new Date(cEnd.getTime() + 30 * 60 * 1000);
+      return sTime < cEndBuffered && eTime > cStart;
     });
 
     if (cartOverlap) {
@@ -310,128 +430,39 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     return { isValid: true, isOverlap: false, booking: null };
   }, [selectedRoom, roomSchedule, bookingType, dailyTimeSlot, calendarEvents, cart, customer.name]);
 
-  // All bookings for selected room on the chosen date
-  const dayRoomBookings = useMemo(() => {
-    if (!selectedRoom || !roomSchedule.date) return [];
-    return calendarEvents.filter(ev => {
-      if (ev.room_id !== selectedRoom.id) return false;
-      if (ev.status === 'cancelled') return false;
-      const dStr = ev.start_time ? ev.start_time.split('T')[0] : '';
-      return dStr === roomSchedule.date;
-    }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
-  }, [selectedRoom, roomSchedule.date, calendarEvents]);
-
-  const isToday = (day, month, year) => {
-    return day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
-  };
-
-  const goToToday = () => {
-    setCalendarYear(today.getFullYear());
-    setCalendarMonth(today.getMonth());
-  };
-
-  const goToPrevMonth = () => {
-    if (calendarMonth === 0) {
-      setCalendarMonth(11);
-      setCalendarYear(calendarYear - 1);
-    } else {
-      setCalendarMonth(calendarMonth - 1);
-    }
-  };
-
-  const goToNextMonth = () => {
-    if (calendarMonth === 11) {
-      setCalendarMonth(0);
-      setCalendarYear(calendarYear + 1);
-    } else {
-      setCalendarMonth(calendarMonth + 1);
-    }
-  };
-
-  const getDateKey = (day, month, year) => {
-    return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  };
-
-  // Select day bookings list for sidebar agenda view (depends on sidebarSelectedDay)
-  const selectedDayBookings = useMemo(() => {
-    if (!sidebarSelectedDay) return [];
-    const dateKey = getDateKey(sidebarSelectedDay.day, sidebarSelectedDay.month, sidebarSelectedDay.year);
-    return eventsByDay[dateKey] || [];
-  }, [sidebarSelectedDay, eventsByDay]);
-
-  // Select day bookings list for main day detail modal (depends on selectedDay)
-  const modalDayEvents = useMemo(() => {
-    if (!selectedDay) return [];
-    const dateKey = getDateKey(selectedDay.day, selectedDay.month, selectedDay.year);
-    return eventsByDay[dateKey] || [];
-  }, [selectedDay, eventsByDay]);
-
   // =========================================================
-  // CLICK DAY -> OPEN DAY MODAL
+  // ACTIONS: OPEN DRAWER & BOOKING
   // =========================================================
-  const handleDayClick = (dayObj, initialTab = null) => {
-    setSelectedDay(dayObj);
-    if (dayObj.month !== calendarMonth || dayObj.year !== calendarYear) {
-      setCalendarMonth(dayObj.month);
-      setCalendarYear(dayObj.year);
-    }
-    const dateKey = getDateKey(dayObj.day, dayObj.month, dayObj.year);
-    const count = (eventsByDay[dateKey] || []).length;
-    setDayModalTab(initialTab || (count > 0 ? 'bookings' : 'catalog'));
-  };
-
-  // CLICK MINI CALENDAR DAY -> UPDATE SIDEBAR AGENDA
-  const handleMiniDayClick = (dayObj) => {
-    setSidebarSelectedDay(dayObj);
-    if (dayObj.month !== calendarMonth || dayObj.year !== calendarYear) {
-      setCalendarMonth(dayObj.month);
-      setCalendarYear(dayObj.year);
-    }
-  };
-
-  // =========================================================
-  // ROOM BOOKING FLOW (from day modal)
-  // =========================================================
-  const openRoomModalFromDay = (room) => {
-    if (!selectedDay) return;
+  const openDrawerForSlot = (room, hour = 9) => {
     setSelectedRoom(room);
-    // Auto-select first available booking type based on room flags
-    if (room.has_hourly === 1 || room.has_hourly === true) {
+    const hasHourly = (room.has_hourly === 1 || room.has_hourly === true || (Number(room.hourly_rate) > 0));
+    const hasHalfday = (room.has_halfday === 1 || room.has_halfday === true || (Number(room.half_day_rate) > 0));
+    const hasDaily = (room.has_daily === 1 || room.has_daily === true || (Number(room.daily_rate) > 0));
+
+    if (hasHourly) {
       setBookingType('hourly');
       setDailyTimeSlot('08-17');
-    } else if (room.has_halfday === 1 || room.has_halfday === true) {
+    } else if (hasHalfday) {
       setBookingType('halfday');
       setDailyTimeSlot('08-12');
-    } else if (room.has_daily === 1 || room.has_daily === true) {
+    } else if (hasDaily) {
       setBookingType('daily');
       setDailyTimeSlot('08-17');
     } else {
-      setBookingType('hourly');
+      setBookingType('daily');
       setDailyTimeSlot('08-17');
     }
     setLayoutType('standard');
-    const now = new Date();
-    const currHour = now.getHours();
-    let startHourVal = '09';
-    let endHourVal = '10';
-    if (currHour >= 8 && currHour < 17) {
-      startHourVal = String(currHour).padStart(2, '0');
-      endHourVal = String(currHour + 1).padStart(2, '0');
-    } else if (currHour < 8) {
-      startHourVal = '08';
-      endHourVal = '09';
-    } else {
-      startHourVal = '08';
-      endHourVal = '09';
-    }
+    const startHStr = String(hour).padStart(2, '0');
+    const endHStr = String(Math.min(hour + 1, TIMELINE_END)).padStart(2, '0');
     setRoomSchedule({
-      date: getDateKey(selectedDay.day, selectedDay.month, selectedDay.year),
-      startHour: startHourVal,
+      date: timelineDate,
+      startHour: startHStr,
       startMinute: '00',
-      endHour: endHourVal,
-      endMinute: '00'
+      endHour: endHStr,
+      endMinute: '00',
+      guestCount: ''
     });
-    setCustomer({ name: '', department: '', contact: '' });
     setPaymentStatus('paid');
     setPaymentMethod('cash');
   };
@@ -440,101 +471,21 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     setSelectedRoom(null);
   };
 
-  // Automatically trigger schedule modal if room was preselected from layout status page
-  useEffect(() => {
-    if (preselectedRoom) {
-      // Set today's date as selected day first
-      setSelectedDay({ day: today.getDate(), month: today.getMonth(), year: today.getFullYear(), isOtherMonth: false });
-      setTimeout(() => {
-        openRoomModalFromDay(preselectedRoom);
-      }, 100);
-      clearPreselectedRoom();
-    }
-  }, [preselectedRoom]);
-
-  // Handle preselected room after selectedDay is set
-  useEffect(() => {
-    if (preselectedRoom && selectedDay) {
-      setSelectedRoom(preselectedRoom);
-      const hasHourly = preselectedRoom.hourly_rate > 0;
-      const hasDaily = preselectedRoom.daily_rate > 0;
-      if (!hasHourly && hasDaily) {
-        setBookingType('daily');
-      } else {
-        setBookingType('hourly');
-      }
-      const now = new Date();
-      const currHour = now.getHours();
-      const startHourVal = String((currHour + 1) % 24).padStart(2, '0');
-      const endHourVal = String((currHour + 2) % 24).padStart(2, '0');
-      setRoomSchedule({
-        date: getDateKey(selectedDay.day, selectedDay.month, selectedDay.year),
-        startHour: startHourVal,
-        startMinute: '00',
-        endHour: endHourVal,
-        endMinute: '00'
-      });
-      clearPreselectedRoom();
-    }
-  }, [selectedDay, preselectedRoom]);
-
-  // Download receipt as PDF with dynamic height based on items count
-  const handleDownloadPDF = () => {
-    if (!printBooking) return;
-    const element = document.getElementById('print-receipt-area');
-    if (!element) return;
-
-    if (!window.html2pdf) {
-      sysAlert('ระบบพิมพ์ PDF ยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง');
-      return;
-    }
-
-    element.classList.add('pdf-export-mode');
-
-    let estimatedHeight = 85;
-    if (printBooking.items) {
-      printBooking.items.forEach(item => {
-        estimatedHeight += 11;
-      });
-    }
-
-    const opt = {
-      margin:       [0, 0, 0, 0],
-      filename:     `receipt-${String(printBooking.id).padStart(6, '0')}.pdf`,
-      image:        { type: 'png' },
-      html2canvas:  { scale: 4, useCORS: true },
-      jsPDF:        { unit: 'mm', format: [72, 200], orientation: 'portrait' },
-      pagebreak:    { mode: ['avoid-all', 'css', 'legacy'] }
-    };
-
-    window.html2pdf().from(element).set(opt).save().then(() => {
-      element.classList.remove('pdf-export-mode');
-    }).catch(err => {
-      element.classList.remove('pdf-export-mode');
-      console.error(err);
+  // Quick Duration Setter inside Drawer
+  const setQuickDuration = (hoursCount) => {
+    setBookingType('hourly');
+    const sh = parseInt(roomSchedule.startHour, 10) || 9;
+    const eh = Math.min(sh + hoursCount, TIMELINE_END);
+    setRoomSchedule({
+      ...roomSchedule,
+      startHour: String(sh).padStart(2, '0'),
+      endHour: String(eh).padStart(2, '0')
     });
   };
 
-  // Close receipt modal and dynamically navigate to correct workspace tab
-  const handleCloseReceiptModal = () => {
-    setShowReceiptModal(false);
-    if (printBooking) {
-      if (printBooking.payment_status === 'paid' && onNavigate) {
-        onNavigate('history');
-      } else if (printBooking.payment_status === 'pending' && onNavigate) {
-        onNavigate('pending');
-      }
-    }
-  };
-
   // Add Room to cart with schedule details
-  const addRoomToCart = async () => {
-    if (!selectedRoom) return;
-
-    if (!customer.name.trim()) {
-      sysAlert('กรุณากรอกชื่อผู้จองเพื่อทำรายการจองห้องประชุม');
-      return;
-    }
+  const buildCartItem = () => {
+    if (!selectedRoom) return null;
 
     let startTimeStr = '';
     let endTimeStr = '';
@@ -546,7 +497,6 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     let hours = 0;
 
     if (bookingType === 'daily') {
-      // Daily booking
       const [startH, endH] = dailyTimeSlot === '08-17' ? ['08', '17'] : ['09', '18'];
       startTimeStr = `${startH}:00`;
       endTimeStr = `${endH}:00`;
@@ -557,11 +507,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       subtotal = price;
 
       if (price <= 0) {
-        sysAlert('ราคารายวันของรูปแบบที่เลือกยังไม่ได้ถูกตั้งค่า กรุณาตั้งค่าราคารายวันก่อน');
-        return;
+        sysAlert('ราคารายวันของรูปแบบที่เลือกยังไม่ได้ถูกตั้งค่า');
+        return null;
       }
     } else if (bookingType === 'halfday') {
-      // Half-day booking
       const [startH, endH] = dailyTimeSlot === '08-12' ? ['08', '12'] : ['13', '17'];
       startTimeStr = `${startH}:00`;
       endTimeStr = `${endH}:00`;
@@ -572,11 +521,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       subtotal = price;
 
       if (price <= 0) {
-        sysAlert('ราคารายครึ่งวันของห้องประชุมนี้ยังไม่ได้ถูกตั้งค่า กรุณาตั้งค่าก่อน');
-        return;
+        sysAlert('ราคารายครึ่งวันของห้องประชุมนี้ยังไม่ได้ถูกตั้งค่า');
+        return null;
       }
     } else {
-      // Hourly booking (original logic)
       const startHourPad = String(roomSchedule.startHour || '0').padStart(2, '0');
       const startMinPad = String(roomSchedule.startMinute || '0').padStart(2, '0');
       const endHourPad = String(roomSchedule.endHour || '0').padStart(2, '0');
@@ -585,17 +533,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       startTimeStr = `${startHourPad}:${startMinPad}`;
       endTimeStr = `${endHourPad}:${endMinPad}`;
 
-      // Validate 24HR range
       const sHourVal = parseInt(startHourPad, 10);
       const sMinVal = parseInt(startMinPad, 10);
       const eHourVal = parseInt(endHourPad, 10);
       const eMinVal = parseInt(endMinPad, 10);
 
-      if (isNaN(sHourVal) || isNaN(sMinVal) || isNaN(eHourVal) || isNaN(eMinVal) ||
-          sHourVal < 0 || sHourVal > 23 || sMinVal < 0 || sMinVal > 59 ||
-          eHourVal < 0 || eHourVal > 23 || eMinVal < 0 || eMinVal > 59) {
-        sysAlert('กรุณาระบุเวลาให้ถูกต้อง (ชั่วโมง 00-23, นาที 00-59)');
-        return;
+      if (isNaN(sHourVal) || isNaN(sMinVal) || isNaN(eHourVal) || isNaN(eMinVal)) {
+        sysAlert('กรุณาระบุเวลาให้ถูกต้อง');
+        return null;
       }
 
       startDateTime = new Date(`${roomSchedule.date}T${startTimeStr}`);
@@ -603,7 +548,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
       if (endDateTime <= startDateTime) {
         sysAlert('เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่มต้นจอง');
-        return;
+        return null;
       }
 
       const diffMs = endDateTime - startDateTime;
@@ -613,199 +558,172 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       subtotal = Math.round(hours * price * 100) / 100;
 
       if (price <= 0) {
-        sysAlert('ราคารายชั่วโมงของรูปแบบที่เลือกยังไม่ได้ถูกตั้งค่า กรุณาตั้งค่าราคาก่อน');
-        return;
+        sysAlert('ราคารายชั่วโมงของรูปแบบที่เลือกยังไม่ได้ถูกตั้งค่า');
+        return null;
       }
     }
 
-    // Check overlap with database bookings
-    try {
-      const checkRes = await fetch(
-        `/api/bookings/check-overlap?room_id=${selectedRoom.id}&start_time=${formatLocalISO(startDateTime)}&end_time=${formatLocalISO(endDateTime)}`
-      );
-      if (checkRes.ok) {
-        const checkData = await checkRes.json();
-        if (checkData.overlap) {
-          const sTime = new Date(checkData.booking.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-          const eTime = new Date(checkData.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-          sysAlert(
-            `ห้องนี้ไม่ว่างในช่วงเวลาดังกล่าว!\n\nมีผู้เข้าใช้งานแล้ว: คุณ ${checkData.booking.customer_name}\nช่วงเวลา: ${sTime} - ${eTime} น.`
-          );
-          return;
-        }
-      }
-    } catch (err) {
-      console.error('Failed to check room overlap:', err);
-    }
+    const layoutLabel = layoutType === 'classroom' ? ' (Classroom)' : ' (Standard)';
+    const typeLabel = bookingType === 'daily' ? ' [รายวัน]' : bookingType === 'halfday' ? ' [ครึ่งวัน]' : ' [รายชม.]';
+    const guestLabel = roomSchedule.guestCount ? ` (${roomSchedule.guestCount} ท่าน)` : '';
 
-    const uniqueKey = `room-${selectedRoom.id}-${roomSchedule.date}-${startTimeStr}-${bookingType}-${layoutType}`;
-
-    const existing = cart.find(item => item.uniqueKey === uniqueKey);
-    if (existing) {
-      sysAlert('คุณได้ใส่ช่วงเวลานี้ของห้องนี้ลงในตะกร้าเรียบร้อยแล้ว');
-      setSelectedRoom(null);
-      return;
-    }
-
-    setCart([...cart, {
-      uniqueKey,
+    return {
+      type: 'room',
       room_id: selectedRoom.id,
-      room_name: selectedRoom.name,
-      room_description: selectedRoom.description || '',
+      name: `${selectedRoom.name}${layoutLabel}${typeLabel}${guestLabel}`,
       price: price,
       quantity: quantity,
+      subtotal: subtotal,
+      date: roomSchedule.date,
       start_time: formatLocalISO(startDateTime),
       end_time: formatLocalISO(endDateTime),
-      subtotal: subtotal,
-      booking_type: bookingType, // 'hourly' or 'daily'
-      layout: layoutType // 'standard' or 'classroom'
-    }]);
-
-    setSelectedRoom(null);
-    setShowCartSidebar(true); // Auto-open cart sidebar when item added!
+      time_display: `${startTimeStr} - ${endTimeStr}`,
+      booking_type: bookingType,
+      layout: layoutType,
+      guest_count: roomSchedule.guestCount ? parseInt(roomSchedule.guestCount, 10) : null
+    };
   };
 
-  // Add Service directly to cart
-  const addServiceToCartDirect = (service) => {
-    const existing = cart.find(item => item.service_id === service.id);
-    if (existing) {
-      setCart(cart.map(item => 
-        item.service_id === service.id 
-          ? { ...item, quantity: item.quantity + 1, subtotal: Math.round((item.quantity + 1) * item.price * 100) / 100 } 
-          : item
-      ));
+  const addRoomToCart = async () => {
+    if (!customer.name.trim()) {
+      sysAlert('กรุณากรอกชื่อผู้จองเพื่อทำรายการจองห้อง');
+      return;
+    }
+    const cartItem = buildCartItem();
+    if (!cartItem) return;
+
+    setCart([...cart, cartItem]);
+    closeRoomModal();
+    if (setShowCartSidebar) {
+      setShowCartSidebar(true);
+    }
+  };
+
+  // ⚡ Quick Direct Booking (Checkout directly from Drawer without Cart)
+  const quickDirectBooking = async () => {
+    if (!customer.name.trim()) {
+      sysAlert('กรุณากรอกชื่อผู้จองเพื่อทำรายการจองห้อง');
+      return;
+    }
+    const singleItem = buildCartItem();
+    if (!singleItem) return;
+
+    try {
+      const payload = {
+        customer_name: customer.name,
+        customer_department: customer.department || '',
+        customer_contact: customer.contact || '',
+        payment_status: paymentStatus,
+        payment_method: paymentStatus === 'paid' ? paymentMethod : '',
+        total_amount: singleItem.subtotal,
+        guest_count: singleItem.guest_count || null,
+        items: [singleItem]
+      };
+
+      const res = await fetch('/api/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        const result = await res.json();
+        setPrintBooking(result);
+        setShowReceiptModal(true);
+        closeRoomModal();
+        setCustomer({ name: '', department: '', contact: '' });
+        fetchCalendarEvents();
+      } else {
+        const errData = await res.json();
+        sysAlert(`เกิดข้อผิดพลาด: ${errData.error || 'ไม่สามารถบันทึกการจองได้'}`);
+      }
+    } catch (err) {
+      console.error('Direct booking failed:', err);
+      sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    }
+  };
+
+  const removeFromCart = (index) => {
+    const newCart = [...cart];
+    newCart.splice(index, 1);
+    setCart(newCart);
+  };
+
+  const addServiceToCart = (service) => {
+    const existingIndex = cart.findIndex(item => item.type === 'service' && item.service_id === service.id);
+    if (existingIndex >= 0) {
+      const newCart = [...cart];
+      newCart[existingIndex].quantity += 1;
+      newCart[existingIndex].subtotal = newCart[existingIndex].quantity * newCart[existingIndex].price;
+      setCart(newCart);
     } else {
       setCart([...cart, {
-        uniqueKey: `service-${service.id}-${Date.now()}`,
+        type: 'service',
         service_id: service.id,
-        service_name: service.name,
-        service_description: service.description || '',
-        service_category: service.category || '',
+        name: service.name,
         price: service.price,
         quantity: 1,
         subtotal: service.price
       }]);
     }
     setShowServicePicker(false);
-    setShowCartSidebar(true);
   };
 
-  // Update Item Quantity in Cart
-  const updateQty = (uniqueKey, delta) => {
-    setCart(cart.map(item => {
-      if (item.uniqueKey === uniqueKey) {
-        if (item.room_id) {
-          sysAlert('กรุณาลบแล้วเพิ่มห้องใหม่หากต้องการแก้ไขระยะชั่วโมงการจอง');
-          return item;
-        }
-        const nextQty = Math.max(1, item.quantity + delta);
-        return {
-          ...item,
-          quantity: nextQty,
-          subtotal: Math.round(nextQty * item.price * 100) / 100
-        };
-      }
-      return item;
-    }));
-  };
+  const totalAmount = useMemo(() => {
+    return cart.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0);
+  }, [cart]);
 
-  const removeItem = (uniqueKey) => {
-    setCart(cart.filter(item => item.uniqueKey !== uniqueKey));
-  };
-
-  const calculateTotal = () => {
-    return cart.reduce((sum, item) => sum + item.subtotal, 0);
-  };
-
-  // Submit checkout to server
-  const handleCheckout = async () => {
-    const hasRoomInCart = cart.some(item => item.room_id);
-    let customerName = customer.name.trim();
-    
-    if (!customerName) {
-      if (hasRoomInCart) {
-        sysAlert('กรุณากรอกชื่อผู้จองเพื่อทำรายการจองห้องประชุม');
-        return;
-      } else {
-        customerName = 'ลูกค้าทั่วไป';
-      }
-    }
-    
+  // Checkout function for multi-item Cart
+  const checkout = async () => {
     if (cart.length === 0) {
-      sysAlert('กรุณาเลือกรายการในตะกร้าอย่างน้อย 1 รายการ');
+      sysAlert('กรุณาเพิ่มรายการห้องหรือบริการลงในตะกร้าก่อนทำรายการ');
+      return;
+    }
+    if (!customer.name.trim()) {
+      sysAlert('กรุณาระบุชื่อผู้จอง');
+      return;
+    }
+    if (!paymentStatus) {
+      sysAlert('กรุณาเลือกสถานะการชำระเงิน');
+      return;
+    }
+    if (paymentStatus === 'paid' && !paymentMethod) {
+      sysAlert('กรุณาเลือกช่องทางการชำระเงิน');
       return;
     }
 
-    const finalPaymentStatus = paymentStatus || (hasRoomInCart ? 'paid' : 'paid');
-    const finalPaymentMethod = (finalPaymentStatus === 'paid') ? (paymentMethod || 'cash') : '';
-
-    // Verify overlap check for all rooms in cart before final checkout
-    for (const item of cart) {
-      if (item.room_id) {
-        try {
-          const checkRes = await fetch(
-            `/api/bookings/check-overlap?room_id=${item.room_id}&start_time=${item.start_time}&end_time=${item.end_time}`
-          );
-          if (checkRes.ok) {
-            const checkData = await checkRes.json();
-            if (checkData.overlap) {
-              const sTime = new Date(checkData.booking.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-              const eTime = new Date(checkData.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-              sysAlert(
-                `ไม่สามารถยืนยันการจองได้เนื่องจากมีข้อมูลจองซ้ำ!\n\nห้อง "${item.room_name}" ถูกจองใช้งานไว้ก่อนแล้ว\nผู้เข้าใช้: คุณ ${checkData.booking.customer_name}\nช่วงเวลา: ${sTime} - ${eTime} น.\n\nกรุณาลบรายการห้องนี้ออกจากตะกร้าและเลือกเวลาใหม่`
-              );
-              return;
-            }
-          }
-        } catch (err) {
-          console.error('Failed to run final checkout check:', err);
-        }
-      }
-    }
-
-    const payload = {
-      customer_name: customerName,
-      department: customer.department,
-      contact: customer.contact,
-      total_amount: calculateTotal(),
-      payment_status: finalPaymentStatus,
-      payment_method: finalPaymentMethod,
-      booking_source: 'walkin',
-      items: cart
-    };
-
     try {
+      const payload = {
+        customer_name: customer.name,
+        customer_department: customer.department || '',
+        customer_contact: customer.contact || '',
+        payment_status: paymentStatus,
+        payment_method: paymentStatus === 'paid' ? paymentMethod : '',
+        total_amount: totalAmount,
+        guest_count: cart.find(c => c.guest_count)?.guest_count || null,
+        items: cart
+      };
+
       const res = await fetch('/api/bookings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        const bookingId = data.bookingId;
-        const detailsRes = await fetch(`/api/bookings/${bookingId}`);
-        if (detailsRes.ok) {
-          const bookingDetails = await detailsRes.json();
-          setPrintBooking(bookingDetails);
-          setShowReceiptModal(true);
-          
-          setTimeout(() => {
-            window.print();
-          }, 600);
-        }
 
-        // Reset state & refresh calendar
+      if (res.ok) {
+        const result = await res.json();
+        setPrintBooking(result);
+        setShowReceiptModal(true);
         setCart([]);
         setCustomer({ name: '', department: '', contact: '' });
-        setPaymentStatus('');
-        setPaymentMethod('');
-        setSelectedDay(null);
         fetchCalendarEvents();
       } else {
-        sysAlert('เกิดข้อผิดพลาด: ' + (data.error || 'ไม่สามารถชำระเงินได้'));
+        const errData = await res.json();
+        sysAlert(`เกิดข้อผิดพลาด: ${errData.error || 'ไม่สามารถบันทึกการจองได้'}`);
       }
     } catch (err) {
-      sysAlert('เชื่อมต่อเซิร์ฟเวอร์หลักไม่ได้ กรุณาตรวจสอบการรันเซิร์ฟเวอร์');
+      console.error('Checkout failed:', err);
+      sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
     }
   };
 
@@ -813,2122 +731,1717 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     if (!printBooking) return;
     const element = document.getElementById('print-receipt-area');
     if (!element) return;
-
-    element.classList.add('pdf-export-mode');
-
-    const opt = {
-      margin:       [0, 0, 0, 0],
-      filename:     `receipt-${printBooking.receipt_number || String(printBooking.id).padStart(6, '0')}.pdf`,
-      image:        { type: 'png' },
-      html2canvas:  { scale: 4, useCORS: true },
-      jsPDF:        { unit: 'mm', format: [72, 200], orientation: 'portrait' },
-      pagebreak:    { mode: ['avoid-all', 'css', 'legacy'] }
-    };
-
-    if (window.html2pdf) {
-      window.html2pdf().from(element).set(opt).save().then(() => {
-        element.classList.remove('pdf-export-mode');
-      }).catch(err => {
-        element.classList.remove('pdf-export-mode');
-        console.error('PDF export error:', err);
-      });
-    } else {
-      element.classList.remove('pdf-export-mode');
-      if (sysAlert) sysAlert('กำลังโหลดระบบ PDF กรุณาลองใหม่อีกครั้ง');
-    }
-  };
-
-  const handleExportToQuotation = () => {
-    if (cart.length === 0) {
-      sysAlert('กรุณาเลือกรายการในตะกร้าอย่างน้อย 1 รายการก่อนสร้างใบเสนอราคา');
+    if (!window.html2pdf) {
+      sysAlert('ระบบพิมพ์ PDF ยังไม่พร้อมใช้งาน');
       return;
     }
-    let custName = customer.name.trim() || 'ลูกค้าทั่วไป';
-    if (onExportToQuotation) {
-      onExportToQuotation({
-        cart,
-        customerName: custName,
-        contact: customer.contact.trim(),
-        department: customer.department.trim()
-      });
-    }
-  };
-
-  const changeSelectedDay = (offset) => {
-    if (!selectedDay) return;
-    const current = new Date(selectedDay.year, selectedDay.month, selectedDay.day);
-    current.setDate(current.getDate() + offset);
-    
-    const newMonth = current.getMonth();
-    const newYear = current.getFullYear();
-    if (newMonth !== calendarMonth || newYear !== calendarYear) {
-      setCalendarMonth(newMonth);
-      setCalendarYear(newYear);
-    }
-    
-    setSelectedDay({
-      day: current.getDate(),
-      month: newMonth,
-      year: newYear,
-      isOtherMonth: false
+    element.classList.add('pdf-export-mode');
+    const opt = {
+      margin: [2, 2, 2, 2],
+      filename: `Receipt-${printBooking.id || 'POS'}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'mm', format: [80, 180], orientation: 'portrait' }
+    };
+    window.html2pdf().from(element).set(opt).save().then(() => {
+      element.classList.remove('pdf-export-mode');
+    }).catch(err => {
+      element.classList.remove('pdf-export-mode');
+      console.error(err);
     });
   };
 
-  const filteredMonthBookings = useMemo(() => {
-    const query = monthSearchQuery.toLowerCase();
-    return calendarEvents.filter(b => 
-      String(b.booking_id).includes(query) ||
-      (b.customer_name && b.customer_name.toLowerCase().includes(query)) ||
-      (b.room_name && b.room_name.toLowerCase().includes(query))
-    );
-  }, [calendarEvents, monthSearchQuery]);
-
-  const groupedBookings = useMemo(() => {
-    const temp = {};
-    filteredMonthBookings.forEach(item => {
-      if (!temp[item.booking_id]) {
-        temp[item.booking_id] = {
-          id: item.booking_id,
-          customer_name: item.customer_name,
-          payment_status: item.payment_status,
-          start_time: item.start_time,
-          room_names: [item.room_name],
-          subtotal: item.subtotal
-        };
-      } else {
-        if (!temp[item.booking_id].room_names.includes(item.room_name)) {
-          temp[item.booking_id].room_names.push(item.room_name);
-        }
-        temp[item.booking_id].subtotal += item.subtotal;
+  const handleCloseReceiptModal = () => {
+    setShowReceiptModal(false);
+    if (printBooking) {
+      if (printBooking.payment_status === 'paid' && onNavigate) {
+        onNavigate('history');
+      } else if (printBooking.payment_status === 'pending' && onNavigate) {
+        onNavigate('pending');
       }
-    });
-    return Object.values(temp).sort((a, b) => b.id - a.id); // Newest first
-  }, [filteredMonthBookings]);
-
-  const handlePrintReceiptFromList = async (bookingId) => {
-    try {
-      const res = await fetch(`/api/bookings/${bookingId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setPrintBooking(data);
-        setShowReceiptModal(true);
-        setTimeout(() => {
-          window.print();
-        }, 600);
-      }
-    } catch (err) {
-      sysAlert('ไม่สามารถดึงข้อมูลใบเสร็จใบนี้ได้');
     }
   };
 
-  const getModalFilteredItems = () => {
-    const roomsFiltered = rooms.map(r => ({ ...r, type: 'room' }));
-    const servicesFiltered = services.map(s => ({ ...s, type: 'service' }));
-
-    if (modalCategory === 'all') {
-      return [...roomsFiltered, ...servicesFiltered];
-    } else if (modalCategory === 'room') {
-      return roomsFiltered;
-    } else {
-      const filteredRooms = roomsFiltered.filter(r => (r.category || 'Meeting Room') === modalCategory);
-      const filteredServices = servicesFiltered.filter(s => s.category === modalCategory);
-      return [...filteredRooms, ...filteredServices];
-    }
-  };
+  // Real-time Current Hour indicator for Timeline
+  const isTodayTimeline = timelineDate === formatDateToYYYYMMDD(new Date());
+  const now = new Date();
+  const currentHourFloat = now.getHours() + now.getMinutes() / 60;
+  const showNowLine = isTodayTimeline && currentHourFloat >= TIMELINE_START && currentHourFloat <= TIMELINE_END;
+  const nowLineLeftPercent = showNowLine ? ((currentHourFloat - TIMELINE_START) / TIMELINE_TOTAL_HOURS) * 100 : 0;
 
   // =========================================================
-  // RENDER
+  // RENDER MAIN COMPONENT
   // =========================================================
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, flex: 1, gap: '4px', overflow: 'hidden' }}>
-      <div className="pos-layout" style={{ 
-        display: 'grid', 
-        gridTemplateColumns: showCartSidebar ? '220px 1fr 340px' : '220px 1fr', 
-        gap: '10px', 
-        height: '100%',
-        minHeight: 0,
-        flex: 1,
-        transition: 'grid-template-columns 0.3s ease-in-out',
-        overflow: 'hidden'
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, flex: 1, gap: '8px', overflow: 'hidden' }}>
+      
+      {/* 1. TOP CONTROL BAR (2-TIER CLEAN DESIGN) */}
+      <div style={{
+        backgroundColor: 'var(--bg-card)',
+        border: '1px solid var(--border-color)',
+        borderRadius: '18px',
+        padding: '10px 16px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+        boxShadow: 'var(--glass-shadow)',
+        flexShrink: 0
       }}>
-        {/* LEFT COLUMN: Mini Calendar Sidebar & Selected Day History (Liquidglass theme blocks) */}
-        <div style={{
-          display: 'flex',
-          flexDirection: 'column',
-          borderRight: '1px solid var(--border-color)',
-          paddingRight: '10px',
-          height: '100%',
-          minHeight: 0,
-          overflowY: 'auto',
-          gap: '10px'
-        }}>
-          {/* Block 1: Mini Calendar (Liquidglass card) */}
-          <div style={{
-            background: 'var(--bg-glass-card, rgba(255, 255, 255, 0.03))',
-            backdropFilter: 'blur(12px)',
-            border: '1px solid var(--glass-border, rgba(255, 255, 255, 0.08))',
-            borderRadius: '16px',
-            padding: '12px 10px',
-            boxShadow: 'var(--glass-shadow, 0 8px 32px rgba(0,0,0,0.1))'
-          }}>
-            {/* Mini Calendar Month Title */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: 'var(--text-main)' }}>
-                {calendarYear} {monthNamesEng[calendarMonth]}
+        
+        {/* ROW 1: Date Navigation & View Mode Switcher */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+          
+          {/* Left: Date Navigator */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', backgroundColor: 'var(--bg-color)', borderRadius: '12px', padding: '2px', border: '1px solid var(--border-color)' }}>
+              <button 
+                type="button" 
+                onClick={handlePrevTimelineDay}
+                style={{ background: 'transparent', border: 'none', padding: '6px 8px', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', borderRadius: '8px' }}
+                title="วันก่อนหน้า"
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <button 
+                type="button" 
+                onClick={handleTodayTimeline}
+                style={{ background: 'transparent', border: 'none', padding: '4px 10px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700, color: 'var(--primary-color)' }}
+              >
+                วันนี้
+              </button>
+              <button 
+                type="button" 
+                onClick={handleNextTimelineDay}
+                style={{ background: 'transparent', border: 'none', padding: '6px 8px', cursor: 'pointer', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', borderRadius: '8px' }}
+                title="วันถัดไป"
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+
+            {/* Thai Date Badge & Integrated Calendar Picker Popover */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--text-main)', letterSpacing: '-0.2px' }}>
+                {getThaiDateFull(timelineDate)}
               </span>
-              <div style={{ display: 'flex', gap: '2px' }}>
-                <button 
-                  onClick={goToPrevMonth}
-                  type="button"
-                  style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '2px' }}
-                >
-                  <ChevronUp size={12} />
-                </button>
-                <button 
-                  onClick={goToNextMonth}
-                  type="button"
-                  style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '2px' }}
-                >
-                  <ChevronDown size={12} />
-                </button>
-              </div>
-            </div>
-
-            {/* Mini Calendar Weekdays */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', textAlign: 'center', marginBottom: '6px', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
-              {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayChar, i) => (
-                <div 
-                  key={i} 
-                  style={{ 
-                    fontSize: '0.65rem', 
-                    fontWeight: 'bold', 
-                    color: i === 0 ? '#ef4444' : i === 6 ? '#3b82f6' : 'var(--text-muted)' 
-                  }}
-                >
-                  {dayChar}
-                </div>
-              ))}
-            </div>
-
-            {/* Mini Calendar Cells Grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px' }}>
-              {calendarDays.map((dayObj, i) => {
-                const dateKey = getDateKey(dayObj.day, dayObj.month, dayObj.year);
-                const dayEvents = filteredEventsByDay[dateKey] || [];
-                const isSelected = sidebarSelectedDay && sidebarSelectedDay.day === dayObj.day && sidebarSelectedDay.month === dayObj.month && sidebarSelectedDay.year === dayObj.year;
-                const isTodayCell = isToday(dayObj.day, dayObj.month, dayObj.year);
-
-                return (
-                  <div 
-                    key={i}
-                    onClick={() => handleMiniDayClick(dayObj)}
-                    onDoubleClick={() => {
-                      handleMiniDayClick(dayObj);
-                      setSelectedDay(dayObj);
-                      setIsDayModalOpen(true);
-                    }}
-                    className={`mini-calendar-cell${isTodayCell ? ' today' : ''}${isSelected ? ' selected' : ''}`}
-                    style={{
-                      color: isSelected 
-                        ? '#ffffff' 
-                        : isTodayCell 
-                          ? 'var(--primary-color)' 
-                          : (dayObj.isOtherMonth ? 'var(--text-muted)' : 'var(--text-main)'),
-                      opacity: dayObj.isOtherMonth ? 0.35 : 1,
-                    }}
-                  >
-                    {dayObj.day}
-                    {dayEvents.length > 0 && (
-                      <div style={{
-                        position: 'absolute',
-                        bottom: '2px',
-                        width: '3.5px',
-                        height: '3.5px',
-                        borderRadius: '50%',
-                        backgroundColor: isSelected ? '#ffffff' : 'var(--primary-color)'
-                      }} />
-                    )}
-                  </div>
-                );
-              })}
+              <CustomDatePicker
+                value={timelineDate}
+                onChange={val => setTimelineDate(val)}
+                className="form-control"
+                style={{ 
+                  height: '32px', 
+                  fontSize: '0.78rem', 
+                  padding: '0 10px', 
+                  borderRadius: '10px', 
+                  cursor: 'pointer',
+                  backgroundColor: 'var(--bg-color)',
+                  border: '1px solid var(--border-color)',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+              />
             </div>
           </div>
 
-          {/* Block 2: Selected Day Agenda/History (Liquidglass card) */}
-          <div style={{
-            flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            background: 'var(--bg-glass-card, rgba(255, 255, 255, 0.03))',
-            backdropFilter: 'blur(12px)',
-            border: '1px solid var(--glass-border, rgba(255, 255, 255, 0.08))',
-            borderRadius: '16px',
-            padding: '14px 12px',
-            boxShadow: 'var(--glass-shadow, 0 8px 32px rgba(0,0,0,0.1))',
-            minHeight: 0
-          }}>
-            <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              ประวัติการจองประจำวัน
-            </h3>
-            <div style={{ 
-              display: 'flex', 
-              justifyContent: 'space-between', 
-              alignItems: 'center',
-              fontSize: '0.7rem', 
-              fontWeight: 500, 
-              color: 'var(--text-muted)', 
-              marginBottom: '12px', 
-              borderBottom: '1px solid var(--border-color)', 
-              paddingBottom: '8px'
-            }}>
-              <span>วันที่ {sidebarSelectedDay ? `${sidebarSelectedDay.day} ${monthNames[sidebarSelectedDay.month]} ${sidebarSelectedDay.year + 543}` : ''}</span>
-              <span style={{ 
-                backgroundColor: 'rgba(56, 189, 248, 0.15)', 
-                color: 'var(--primary-color)',
-                padding: '2px 8px', 
-                borderRadius: '99px',
-                fontSize: '0.65rem',
-                fontWeight: 'bold',
-                whiteSpace: 'nowrap'
-              }}>
-                ใช้งาน {selectedDayBookings.length} ห้อง
-              </span>
+          {/* Right: View Mode Switcher Tabs & Search */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            
+            {/* Search Input */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '0 10px', height: '36px' }}>
+              <Search size={14} style={{ color: 'var(--text-muted)' }} />
+              <input 
+                type="text" 
+                placeholder="ค้นหาห้อง..." 
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: '0.8rem', color: 'var(--text-main)', width: '110px' }}
+              />
             </div>
 
-            {/* List of bookings for the selected day */}
-            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px', minHeight: 0, paddingRight: '2px' }}>
-              {selectedDayBookings.length === 0 ? (
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'center', marginTop: '16px', fontStyle: 'italic' }}>
-                  ไม่มีประวัติการจองห้องในวันนี้
-                </div>
-              ) : (
-                selectedDayBookings.map((ev, idx) => {
-                  const startT = new Date(ev.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                  const endT = new Date(ev.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                  const now = new Date();
-                  const startTime = new Date(ev.start_time);
-                  const endTime = new Date(ev.end_time);
-                  const isExpired = now > endTime;
-                  const isActive = now >= startTime && now <= endTime;
+            {/* 2 Unified View Mode Tabs */}
+            <div style={{ display: 'flex', gap: '2px', backgroundColor: 'var(--bg-color)', padding: '3px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+              <button
+                type="button"
+                onClick={() => setMainViewMode('matrix')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 14px',
+                  borderRadius: '9px',
+                  fontSize: '0.8rem',
+                  fontWeight: mainViewMode === 'matrix' ? 800 : 600,
+                  border: 'none',
+                  cursor: 'pointer',
+                  backgroundColor: mainViewMode === 'matrix' ? 'var(--primary-color)' : 'transparent',
+                  color: mainViewMode === 'matrix' ? '#ffffff' : 'var(--text-muted)',
+                  boxShadow: mainViewMode === 'matrix' ? '0 2px 8px rgba(37,99,235,0.25)' : 'none',
+                  transition: 'all 0.15s ease'
+                }}
+                title="ตารางผังเวลาและการ์ดห้อง (Timeline Matrix & Cards)"
+              >
+                <LayoutGrid size={15} />
+                <span>ผังจองห้องประจำวัน (Matrix & Cards)</span>
+              </button>
 
-                  let statusText = '';
-                  let statusBg = '';
-                  let statusColor = '';
-
-                  if (isExpired) {
-                    statusText = 'ใช้งานเสร็จแล้ว';
-                    statusBg = 'rgba(239, 68, 68, 0.1)';
-                    statusColor = 'var(--danger-color)';
-                  } else if (isActive) {
-                    statusText = 'กำลังใช้งาน';
-                    statusBg = 'rgba(34, 197, 94, 0.1)';
-                    statusColor = 'var(--success-color)';
-                  } else {
-                    if (ev.payment_status === 'pending') {
-                      statusText = 'ค้างชำระ';
-                      statusBg = 'rgba(245, 158, 11, 0.1)';
-                      statusColor = 'var(--warning-color)';
-                    } else {
-                      statusText = 'รอใช้งาน';
-                      statusBg = 'rgba(100, 116, 139, 0.1)';
-                      statusColor = 'var(--text-muted)';
-                    }
-                  }
-
-                  return (
-                    <div 
-                      key={idx}
-                      onClick={() => setViewedEvent(ev)}
-                      style={{
-                        padding: '10px 12px',
-                        borderRadius: '12px',
-                        backgroundColor: 'rgba(255, 255, 255, 0.015)',
-                        border: '1px solid var(--border-color)',
-                        fontSize: '0.78rem',
-                        lineHeight: 1.4,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '4px',
-                        transition: 'all 0.2s ease',
-                        cursor: 'pointer'
-                      }}
-                      onMouseEnter={e => {
-                        e.currentTarget.style.transform = 'translateY(-2px)';
-                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
-                        e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
-                      }}
-                      onMouseLeave={e => {
-                        e.currentTarget.style.transform = 'translateY(0)';
-                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.015)';
-                        e.currentTarget.style.boxShadow = 'none';
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.88rem', fontWeight: 'bold', color: 'var(--primary-color)' }}>{ev.room_name}</span>
-                        <span style={{
-                          fontSize: '0.65rem',
-                          fontWeight: 'bold',
-                          padding: '2px 6px',
-                          borderRadius: '6px',
-                          backgroundColor: statusBg,
-                          color: statusColor
-                        }}>
-                          {statusText}
-                        </span>
-                      </div>
-                      <div style={{ fontWeight: 600, color: 'var(--text-main)', fontSize: '0.78rem' }}>{startT} - {endT}</div>
-                      <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>ผู้จอง: {ev.customer_name}</div>
-                    </div>
-                  );
-                })
-              )}
+              <button
+                type="button"
+                onClick={() => setMainViewMode('calendar')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 14px',
+                  borderRadius: '9px',
+                  fontSize: '0.8rem',
+                  fontWeight: mainViewMode === 'calendar' ? 800 : 600,
+                  border: 'none',
+                  cursor: 'pointer',
+                  backgroundColor: mainViewMode === 'calendar' ? 'var(--primary-color)' : 'transparent',
+                  color: mainViewMode === 'calendar' ? '#ffffff' : 'var(--text-muted)',
+                  boxShadow: mainViewMode === 'calendar' ? '0 2px 8px rgba(37,99,235,0.25)' : 'none',
+                  transition: 'all 0.15s ease'
+                }}
+                title="ปฏิทินรายเดือน (Monthly Calendar)"
+              >
+                <Calendar size={15} />
+                <span>ปฏิทินเดือน</span>
+              </button>
             </div>
+
           </div>
         </div>
 
-        {/* RIGHT COLUMN: Outlook-style Main Calendar Grid */}
-        <div className="calendar-container" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden', flex: 1 }}>
-          {/* Calendar Navigation Bar (Outlook-style) */}
-          <div className="calendar-nav" style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingBottom: '6px', flexShrink: 0 }}>
-            <button 
-              className="calendar-today-btn" 
-              onClick={goToToday}
-              style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem', padding: '4px 10px', borderRadius: '6px' }}
-            >
-              <Calendar size={12} />
-              <span>Today</span>
-              <ChevronDown size={10} style={{ opacity: 0.5 }} />
-            </button>
-            <div style={{ display: 'flex', gap: '2px' }}>
-              <button className="calendar-nav-btn" onClick={goToPrevMonth} style={{ width: '26px', height: '26px', borderRadius: '6px' }}>
-                <ChevronLeft size={13} />
-              </button>
-              <button className="calendar-nav-btn" onClick={goToNextMonth} style={{ width: '26px', height: '26px', borderRadius: '6px' }}>
-                <ChevronRight size={13} />
-              </button>
-            </div>
-            
-            <div style={{ position: 'relative' }}>
-              <span 
-                className="calendar-month-label" 
-                onClick={() => setShowMonthSelector(!showMonthSelector)}
-                style={{ fontSize: '1.05rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', userSelect: 'none', marginLeft: '4px' }}
-              >
-                {calendarYear} {monthNamesEng[calendarMonth]}
-                <ChevronDown size={13} style={{ opacity: 0.5 }} />
-              </span>
-
-              {/* FLOATING MONTH-YEAR SELECTOR POPUP */}
-              {showMonthSelector && (
-                <div 
-                  className="liquidglass-dropdown"
+        {/* ROW 2: Category Filter Pills & Color Status Legend */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-color)', paddingTop: '8px', flexWrap: 'wrap', gap: '10px' }}>
+          
+          {/* Category Filter Pills */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflowX: 'auto' }}>
+            {[
+              { id: 'all', name: 'ทั้งหมด', icon: Layers },
+              { id: 'meeting', name: 'ห้องประชุม', icon: Presentation },
+              { id: 'coworking', name: 'Co-Working', icon: Laptop },
+              { id: 'cafe', name: 'Koocafe', icon: Coffee },
+              { id: 'parking', name: 'ที่จอดรถ', icon: Car },
+            ].map(cat => {
+              const Icon = cat.icon;
+              const isSel = timelineCategory === cat.id;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setTimelineCategory(cat.id)}
                   style={{
-                    position: 'absolute',
-                    top: '28px',
-                    left: '4px',
-                    padding: '14px',
-                    width: '230px',
-                    zIndex: 150
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    padding: '4px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.76rem',
+                    fontWeight: isSel ? 700 : 500,
+                    cursor: 'pointer',
+                    border: isSel ? '1px solid var(--primary-color)' : '1px solid var(--border-color)',
+                    backgroundColor: isSel ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-color)',
+                    color: isSel ? 'var(--primary-color)' : 'var(--text-muted)',
+                    transition: 'all 0.15s ease'
                   }}
                 >
-                  {/* Year navigation row */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
-                    <span style={{ fontSize: '0.95rem', fontWeight: 'bold', color: 'var(--text-main)' }}>{calendarYear}</span>
-                    <div style={{ display: 'flex', gap: '6px' }}>
+                  <Icon size={12} />
+                  <span>{cat.name}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Status Legend Badges (Requested Color Specification) */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: '#10b981', boxShadow: '0 0 5px rgba(16, 185, 129, 0.5)' }} />
+              <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>รอใช้งาน</span>
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: '#f97316', boxShadow: '0 0 6px rgba(249, 115, 22, 0.6)' }} />
+              <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>กำลังใช้งาน</span>
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: '#ef4444', boxShadow: '0 0 5px rgba(239, 68, 68, 0.5)' }} />
+              <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>ใช้งานเสร็จแล้ว</span>
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span style={{ width: '9px', height: '9px', borderRadius: '2px', backgroundColor: 'rgba(245, 158, 11, 0.4)', border: '1px dashed #f59e0b' }} />
+              <span style={{ color: 'var(--text-muted)' }}>ทำความสะอาด (30m)</span>
+            </span>
+          </div>
+
+        </div>
+
+      </div>
+
+      {/* 2. MAIN WORKSPACE CONTENT */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: showCartSidebar ? '1fr 340px' : '1fr',
+        gap: '10px',
+        flex: 1,
+        minHeight: 0,
+        overflow: 'hidden',
+        transition: 'grid-template-columns 0.3s ease'
+      }}>
+        
+        {/* CENTER VIEW AREA */}
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflow: 'hidden' }}>
+
+          {/* ======================================================= */}
+          {/* VIEW 1: UNIFIED TIMELINE MATRIX & RICH ROOM CARDS       */}
+          {/* ======================================================= */}
+          {mainViewMode === 'matrix' && (
+            <div style={{
+              backgroundColor: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '16px',
+              display: 'flex',
+              flexDirection: 'column',
+              height: '100%',
+              minHeight: 0,
+              overflow: 'hidden',
+              boxShadow: 'var(--glass-shadow)'
+            }}>
+              {/* Matrix Scrollable Grid */}
+              <div style={{ flex: 1, minHeight: 0, overflowX: 'auto', overflowY: 'auto' }} className="scrollbar-thin">
+                <div style={{ minWidth: '980px' }}>
+                  
+                  {/* Timeline Header Row (08:00 - 18:00) */}
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: '290px repeat(10, 1fr)',
+                    borderBottom: '1px solid var(--border-color)',
+                    backgroundColor: 'var(--bg-color)',
+                    fontSize: '0.76rem',
+                    fontWeight: 800,
+                    color: 'var(--text-muted)',
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 10
+                  }}>
+                    <div style={{ padding: '10px 14px', borderRight: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span>🗂️ การ์ดห้อง / รายละเอียด</span>
+                      <span style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--primary-color)' }}>{filteredTimelineRooms.length} ห้อง</span>
+                    </div>
+                    {TIMELINE_HOURS.map(h => (
+                      <div key={h} style={{ padding: '10px 2px', textAlign: 'center', borderRight: '1px solid var(--border-color)', fontFamily: 'monospace' }}>
+                        {String(h).padStart(2, '0')}:00
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Room Rows (Rich Room Card on Left + 10 Hours on Right) */}
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    {filteredTimelineRooms.length === 0 ? (
+                      <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                        ไม่พบห้องที่ตรงกับเงื่อนไขการค้นหา
+                      </div>
+                    ) : (
+                      filteredTimelineRooms.map(room => {
+                        const dayEvents = getTimelineRoomEvents(room.id);
+                        
+                        // Real-time live status for this room today
+                        const currentNow = new Date();
+                        const activeEvent = dayEvents.find(ev => currentNow >= new Date(ev.start_time) && currentNow <= new Date(ev.end_time));
+                        const upcomingEvents = dayEvents.filter(ev => currentNow < new Date(ev.start_time));
+                        const allExpired = dayEvents.length > 0 && dayEvents.every(ev => currentNow > new Date(ev.end_time));
+
+                        let liveStatusBadge = null;
+                        if (activeEvent) {
+                          const endTStr = new Date(activeEvent.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                          liveStatusBadge = (
+                            <span style={{ fontSize: '0.65rem', fontWeight: 800, color: '#ea580c', backgroundColor: 'rgba(249, 115, 22, 0.14)', padding: '1px 6px', borderRadius: '6px', border: '1px solid rgba(249, 115, 22, 0.35)' }}>
+                              🟠 กำลังใช้งาน (ถึง {endTStr} น.)
+                            </span>
+                          );
+                        } else if (allExpired) {
+                          liveStatusBadge = (
+                            <span style={{ fontSize: '0.65rem', fontWeight: 700, color: '#dc2626', backgroundColor: 'rgba(239, 68, 68, 0.12)', padding: '1px 6px', borderRadius: '6px', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                              🔴 ใช้งานเสร็จแล้วทุกคิว
+                            </span>
+                          );
+                        } else if (upcomingEvents.length > 0) {
+                          const nextTStr = new Date(upcomingEvents[0].start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                          liveStatusBadge = (
+                            <span style={{ fontSize: '0.65rem', fontWeight: 700, color: '#059669', backgroundColor: 'rgba(16, 185, 129, 0.12)', padding: '1px 6px', borderRadius: '6px', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                              🟢 ว่าง (มีคิวถัดไป {nextTStr} น.)
+                            </span>
+                          );
+                        } else {
+                          liveStatusBadge = (
+                            <span style={{ fontSize: '0.65rem', fontWeight: 700, color: '#059669', backgroundColor: 'rgba(16, 185, 129, 0.12)', padding: '1px 6px', borderRadius: '6px', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                              🟢 ว่างตลอดวัน
+                            </span>
+                          );
+                        }
+
+                        return (
+                          <div 
+                            key={room.id}
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: '290px repeat(10, 1fr)',
+                              borderBottom: '1px solid var(--border-color)',
+                              minHeight: '74px',
+                              alignItems: 'stretch',
+                              position: 'relative'
+                            }}
+                          >
+                            {/* Rich Room Card Cell (Left Column) */}
+                            <div 
+                              onClick={() => openDrawerForSlot(room, 9)}
+                              style={{
+                                padding: '8px 12px',
+                                borderRight: '1px solid var(--border-color)',
+                                backgroundColor: 'var(--bg-card)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '10px',
+                                cursor: 'pointer',
+                                transition: 'background-color 0.15s ease'
+                              }}
+                              onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.04)'}
+                              onMouseLeave={e => e.currentTarget.style.backgroundColor = 'var(--bg-card)'}
+                              title="คลิกเพื่อเปิดฟอร์มจองห้องนี้"
+                            >
+                              {room.image_url ? (
+                                <img src={room.image_url} alt={room.name} style={{ width: '48px', height: '48px', borderRadius: '12px', objectFit: 'cover', flexShrink: 0, border: '1px solid var(--border-color)' }} />
+                              ) : (
+                                <div style={{ width: '48px', height: '48px', borderRadius: '12px', backgroundColor: 'rgba(37,99,235,0.1)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                  <Building size={22} />
+                                </div>
+                              )}
+
+                              <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <span style={{ fontWeight: 800, fontSize: '0.86rem', color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                    {room.name}
+                                  </span>
+                                  <span style={{ color: 'var(--primary-color)', fontWeight: 800, fontSize: '0.78rem' }}>
+                                    {Number(room.hourly_rate) > 0 ? (
+                                      <>฿{Number(room.hourly_rate).toLocaleString()}<span style={{ fontSize: '0.65rem', fontWeight: 500 }}>/ชม.</span></>
+                                    ) : Number(room.half_day_rate) > 0 ? (
+                                      <>฿{Number(room.half_day_rate).toLocaleString()}<span style={{ fontSize: '0.65rem', fontWeight: 500 }}>/ครึ่งวัน</span></>
+                                    ) : Number(room.daily_rate) > 0 ? (
+                                      <>฿{Number(room.daily_rate).toLocaleString()}<span style={{ fontSize: '0.65rem', fontWeight: 500 }}>/วัน</span></>
+                                    ) : (
+                                      <span>-</span>
+                                    )}
+                                  </span>
+                                </div>
+
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <Users size={11} />
+                                  <span>{room.capacity} ที่นั่ง</span>
+                                  <span>·</span>
+                                  <span>{room.category || 'ห้องประชุม'}</span>
+                                </div>
+
+                                <div style={{ marginTop: '1px' }}>
+                                  {liveStatusBadge}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* 10 Hourly Cells Container (Right Gantt Area) */}
+                            <div style={{ gridColumn: 'span 10', position: 'relative', display: 'grid', gridTemplateColumns: 'repeat(10, 1fr)', backgroundColor: 'var(--bg-card)' }}>
+                              
+                              {/* Real-time Red "NOW" Line indicator */}
+                              {showNowLine && (
+                                <div style={{
+                                  position: 'absolute',
+                                  top: 0,
+                                  bottom: 0,
+                                  left: `${nowLineLeftPercent}%`,
+                                  width: '2px',
+                                  backgroundColor: '#ef4444',
+                                  zIndex: 8,
+                                  pointerEvents: 'none',
+                                  boxShadow: '0 0 8px rgba(239, 68, 68, 0.8)'
+                                }} />
+                              )}
+
+                              {/* Background Slot Cells */}
+                              {TIMELINE_HOURS.map(h => (
+                                <div 
+                                  key={h}
+                                  onClick={() => openDrawerForSlot(room, h)}
+                                  style={{
+                                    borderRight: '1px solid var(--border-color)',
+                                    cursor: 'pointer',
+                                    transition: 'background-color 0.15s ease',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    position: 'relative'
+                                  }}
+                                  onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.08)'}
+                                  onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                  title={`คลิกเพื่อจอง ${room.name} เวลา ${h}:00 น.`}
+                                />
+                              ))}
+
+                              {/* Render Booked Pills on Top */}
+                              {dayEvents.map((ev, evIdx) => {
+                                const s = new Date(ev.start_time);
+                                const e = new Date(ev.end_time);
+                                const currentNowTime = new Date();
+                                const isExpired = currentNowTime > e;
+                                const isActive = currentNowTime >= s && currentNowTime <= e;
+                                const isUpcoming = currentNowTime < s;
+
+                                const sHour = s.getHours() + s.getMinutes() / 60;
+                                const eHour = e.getHours() + e.getMinutes() / 60;
+                                const duration = Math.max(0.5, eHour - sHour);
+                                const startOffset = Math.max(0, sHour - TIMELINE_START);
+                                const leftPercent = (startOffset / TIMELINE_TOTAL_HOURS) * 100;
+                                const widthPercent = Math.min(100 - leftPercent, (duration / TIMELINE_TOTAL_HOURS) * 100);
+
+                                const bufferLeft = ((eHour - TIMELINE_START) / TIMELINE_TOTAL_HOURS) * 100;
+                                const bufferWidth = (0.5 / TIMELINE_TOTAL_HOURS) * 100;
+
+                                const sT = s.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                                const eT = e.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+
+                                // Color coding: Red = Expired, Orange = Active, Green = Upcoming
+                                const pillBg = isExpired ? '#ef4444' : (isActive ? '#f97316' : '#10b981');
+                                const pillShadow = isActive ? '0 0 12px rgba(249, 115, 22, 0.6)' : '0 2px 8px rgba(0,0,0,0.18)';
+                                const statusLabel = isExpired ? 'ใช้งานเสร็จแล้ว' : (isActive ? 'กำลังใช้งาน' : 'รอใช้งาน');
+
+                                return (
+                                  <React.Fragment key={evIdx}>
+                                    {/* Booking Pill */}
+                                    <div
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setViewedEvent(ev);
+                                      }}
+                                      style={{
+                                        position: 'absolute',
+                                        top: '6px',
+                                        bottom: '6px',
+                                        left: `${leftPercent}%`,
+                                        width: `calc(${widthPercent}% - 3px)`,
+                                        backgroundColor: pillBg,
+                                        color: '#ffffff',
+                                        borderRadius: '10px',
+                                        padding: '4px 8px',
+                                        fontSize: '0.72rem',
+                                        fontWeight: 700,
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        justifyContent: 'center',
+                                        boxShadow: pillShadow,
+                                        cursor: 'pointer',
+                                        zIndex: 5,
+                                        overflow: 'hidden',
+                                        transition: 'transform 0.15s ease'
+                                      }}
+                                      title={`${ev.customer_name} (${sT} - ${eT} น.) - ${isExpired ? 'ใช้งานเสร็จแล้ว' : isActive ? 'กำลังใช้งาน' : 'รอใช้งาน'}`}
+                                      onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.02)'}
+                                      onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+                                    >
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.customer_name} {ev.guest_count ? `(${ev.guest_count} ท่าน)` : ''}</span>
+                                        <span style={{ fontSize: '0.62rem', opacity: 0.95, backgroundColor: 'rgba(0,0,0,0.22)', padding: '1px 5px', borderRadius: '4px' }}>{statusLabel}</span>
+                                      </div>
+                                      <div style={{ fontSize: '0.65rem', opacity: 0.9, display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                        <Clock size={10} />
+                                        <span>{sT} - {eT} น.</span>
+                                      </div>
+                                    </div>
+
+                                    {/* 30-min Buffer Strip */}
+                                    {bufferLeft < 100 && (
+                                      <div
+                                        className="timeline-buffer-stripe"
+                                        style={{
+                                          position: 'absolute',
+                                          top: '8px',
+                                          bottom: '8px',
+                                          left: `${bufferLeft}%`,
+                                          width: `${Math.min(bufferWidth, 100 - bufferLeft)}%`,
+                                          borderRadius: '6px',
+                                          zIndex: 4,
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          pointerEvents: 'none'
+                                        }}
+                                        title="ระยะเวลาพักทำความสะอาด 30 นาที"
+                                      >
+                                        <span style={{ fontSize: '0.62rem', fontWeight: 800, color: '#d97706', opacity: 0.9 }}>🧹 30m</span>
+                                      </div>
+                                    )}
+                                  </React.Fragment>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ======================================================= */}
+          {/* VIEW 2: MONTHLY CALENDAR (REDESIGNED COMPACT LAYOUT)    */}
+          {/* ======================================================= */}
+          {mainViewMode === 'calendar' && (
+            <div className="pos-layout" style={{ 
+              display: 'grid', 
+              gridTemplateColumns: '240px 1fr', 
+              gap: '10px', 
+              height: '100%',
+              minHeight: 0,
+              overflow: 'hidden'
+            }}>
+              {/* Left Sidebar: Compact Mini-Calendar + Selected Day Agenda */}
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                borderRight: '1px solid var(--border-color)',
+                paddingRight: '10px',
+                height: '100%',
+                minHeight: 0,
+                overflowY: 'auto',
+                gap: '10px'
+              }}>
+                {/* 1. Mini-Calendar Block */}
+                <div style={{
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '16px',
+                  padding: '12px 10px',
+                  boxShadow: 'var(--glass-shadow)',
+                  flexShrink: 0
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                      {calendarYear} {monthNamesEng[calendarMonth]}
+                    </span>
+                    <div style={{ display: 'flex', gap: '2px' }}>
                       <button 
-                        onClick={() => setCalendarYear(calendarYear - 1)}
+                        onClick={() => {
+                          if (calendarMonth === 0) { setCalendarMonth(11); setCalendarYear(calendarYear - 1); }
+                          else { setCalendarMonth(calendarMonth - 1); }
+                        }}
                         type="button"
-                        style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '2px' }}
+                        style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
+                        title="เดือนก่อนหน้า"
                       >
-                        <ChevronUp size={15} />
+                        <ChevronUp size={14} />
                       </button>
                       <button 
-                        onClick={() => setCalendarYear(calendarYear + 1)}
+                        onClick={() => {
+                          if (calendarMonth === 11) { setCalendarMonth(0); setCalendarYear(calendarYear + 1); }
+                          else { setCalendarMonth(calendarMonth + 1); }
+                        }}
                         type="button"
-                        style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', padding: '2px' }}
+                        style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
+                        title="เดือนถัดไป"
                       >
-                        <ChevronDown size={15} />
+                        <ChevronDown size={14} />
                       </button>
                     </div>
                   </div>
 
-                  {/* Months Grid */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px' }}>
-                    {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((mName, idx) => {
-                      const isSel = idx === calendarMonth;
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', textAlign: 'center', marginBottom: '6px', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
+                    {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((dayChar, i) => (
+                      <div key={i} style={{ fontSize: '0.68rem', fontWeight: 800, color: i === 0 ? '#ef4444' : i === 6 ? '#3b82f6' : 'var(--text-muted)' }}>
+                        {dayChar}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px' }}>
+                    {calendarDays.map((dayObj, i) => {
+                      const dateKey = getDateKey(dayObj.day, dayObj.month, dayObj.year);
+                      const dayEvents = filteredEventsByDay[dateKey] || [];
+                      const isSelected = (sidebarSelectedDay && sidebarSelectedDay.day === dayObj.day && sidebarSelectedDay.month === dayObj.month && sidebarSelectedDay.year === dayObj.year) || (timelineDate === dateKey);
+                      
                       return (
-                        <button
-                          key={mName}
+                        <div 
+                          key={i}
                           onClick={() => {
-                            setCalendarMonth(idx);
-                            setShowMonthSelector(false);
-                            if (sidebarSelectedDay) {
-                              setSidebarSelectedDay({
-                                ...sidebarSelectedDay,
-                                month: idx,
-                                year: calendarYear
-                              });
-                            }
+                            setSidebarSelectedDay(dayObj);
+                            setSelectedDay(dayObj);
+                            setTimelineDate(dateKey);
                           }}
-                          type="button"
+                          className={`mini-calendar-cell${isSelected ? ' selected' : ''}`}
                           style={{
-                            background: isSel ? 'var(--primary-color)' : 'transparent',
-                            color: isSel ? '#ffffff' : 'var(--text-main)',
-                            border: 'none',
-                            padding: '6px 0',
-                            fontSize: '0.72rem',
-                            fontWeight: 'bold',
-                            borderRadius: '6px',
+                            color: isSelected ? '#ffffff' : (dayObj.isOtherMonth ? 'var(--text-muted)' : 'var(--text-main)'),
+                            opacity: dayObj.isOtherMonth ? 0.35 : 1,
                             cursor: 'pointer',
-                            transition: 'all 0.15s'
+                            fontWeight: isSelected ? 800 : 500,
+                            position: 'relative'
                           }}
-                          className={!isSel ? 'calendar-nav-btn' : ''}
                         >
-                          {mName}
-                        </button>
+                          {dayObj.day}
+                          {dayEvents.length > 0 && (
+                            <div style={{ position: 'absolute', bottom: '2px', width: '4px', height: '4px', borderRadius: '50%', backgroundColor: isSelected ? '#ffffff' : 'var(--primary-color)' }} />
+                          )}
+                        </div>
                       );
                     })}
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
 
-          {/* Calendar Grid */}
-          <div className="calendar-grid-wrapper" style={{ flex: 1, minHeight: 0 }}>
-            {/* Weekday Headers */}
-            <div className="calendar-weekday-row">
-              {weekdays.map(wd => (
-                <div key={wd} className="calendar-weekday-cell">{wd}</div>
-              ))}
-            </div>
+                {/* 2. Selected Day Agenda / Booking History (Compact & Full) */}
+                <div style={{
+                  flex: 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '16px',
+                  padding: '12px 10px',
+                  boxShadow: 'var(--glass-shadow)',
+                  minHeight: 0
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                      รายการจองประจำวัน
+                    </span>
+                    <span style={{
+                      fontSize: '0.68rem',
+                      fontWeight: 800,
+                      backgroundColor: 'rgba(37, 99, 235, 0.12)',
+                      color: 'var(--primary-color)',
+                      padding: '2px 8px',
+                      borderRadius: '6px'
+                    }}>
+                      {selectedDayBookings.length} คิว
+                    </span>
+                  </div>
 
-            {/* Day Cells */}
-            <div className="calendar-body">
-              {calendarDays.map((dayObj, idx) => {
-                const dateKey = getDateKey(dayObj.day, dayObj.month, dayObj.year);
-                const dayEvents = filteredEventsByDay[dateKey] || [];
-                const isTodayCell = isToday(dayObj.day, dayObj.month, dayObj.year);
-                const isSelected = sidebarSelectedDay && sidebarSelectedDay.day === dayObj.day && sidebarSelectedDay.month === dayObj.month && sidebarSelectedDay.year === dayObj.year;
-                
-                // Show exactly 3 items per cell; if more than 3, show top 3 + 'ดูเพิ่มเติม' button
-                const maxVisible = 3;
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>
+                    {sidebarSelectedDay ? `${sidebarSelectedDay.day} ${monthNames[sidebarSelectedDay.month]} ${sidebarSelectedDay.year + 543}` : ''}
+                  </div>
 
-                return (
-                  <div 
-                    key={idx} 
-                    className={`calendar-cell ${dayObj.isOtherMonth ? 'other-month' : ''} ${isTodayCell ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
-                    onClick={() => {
-                      handleDayClick(dayObj);
-                      setIsDayModalOpen(true);
-                    }}
-                  >
-                    <div className="calendar-day-header">
-                      <div className="calendar-day-number">
-                        {dayObj.day}
+                  <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px', minHeight: 0 }} className="scrollbar-thin">
+                    {selectedDayBookings.length === 0 ? (
+                      <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.74rem', padding: '24px 0', fontStyle: 'italic' }}>
+                        ไม่มีรายการจองห้องในวันนี้
                       </div>
-                      {dayEvents.length > 0 && (
-                        <span className="calendar-day-count-badge">
-                          {dayEvents.length} รายการ
-                        </span>
-                      )}
-                    </div>
-                    <div className="calendar-events-list">
-                      {dayEvents.slice(0, maxVisible).map((ev, i) => {
-                        const startT = new Date(ev.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                        const endT = new Date(ev.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                        const isDaily = ev.quantity === 1 && ev.price >= 1000;
-                        const has301 = ev.room_name && ev.room_name.includes('301');
-                        
-                        const layoutText = has301 ? (ev.layout === 'classroom' ? ' (Classroom)' : ' (Standard)') : '';
-                        const typeText = isDaily ? ' [รายวัน]' : ' [รายชม.]';
-                        
-                        const fullTitle = `${ev.room_name || 'ห้องประชุม'}${layoutText}${typeText} | เวลา ${startT} - ${endT} น. | ผู้จอง: ${ev.customer_name || 'ลูกค้า'}`;
-                        const isExpired = new Date() > new Date(ev.end_time);
+                    ) : (
+                      selectedDayBookings.map((ev, i) => {
+                        const currentNowTime = new Date();
+                        const startTime = new Date(ev.start_time);
+                        const endTime = new Date(ev.end_time);
+                        const isExpired = currentNowTime > endTime;
+                        const isActive = currentNowTime >= startTime && currentNowTime <= endTime;
+                        const sT = startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                        const eT = endTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+
+                        const statusBg = isExpired ? 'rgba(239, 68, 68, 0.12)' : (isActive ? 'rgba(249, 115, 22, 0.14)' : 'rgba(16, 185, 129, 0.12)');
+                        const statusBorder = isExpired ? 'rgba(239, 68, 68, 0.3)' : (isActive ? 'rgba(249, 115, 22, 0.4)' : 'rgba(16, 185, 129, 0.3)');
+                        const statusText = isExpired ? '🔴 ใช้งานเสร็จแล้ว' : (isActive ? '🟠 กำลังใช้งาน' : '🟢 รอใช้งาน');
+                        const statusColor = isExpired ? '#ef4444' : (isActive ? '#ea580c' : '#059669');
 
                         return (
-                          <div 
-                            key={i} 
-                            className={`calendar-event-chip ${isExpired ? 'expired' : (ev.payment_status || 'pending')}`}
-                            title={fullTitle}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setViewedEvent(ev);
+                          <div
+                            key={i}
+                            onClick={() => setViewedEvent(ev)}
+                            style={{
+                              padding: '8px 10px',
+                              borderRadius: '10px',
+                              backgroundColor: 'var(--bg-color)',
+                              border: `1px solid ${statusBorder}`,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '3px',
+                              transition: 'transform 0.15s ease'
                             }}
+                            onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-1px)'}
+                            onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
                           >
-                            <span className="event-chip-time">{startT} - {endT}</span>
-                            <span className="event-chip-room">{ev.room_name}</span>
-                            <span className="event-chip-divider">·</span>
-                            <span className="event-chip-customer">{ev.customer_name || 'ลูกค้า'}</span>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <strong style={{ fontSize: '0.8rem', color: 'var(--text-main)' }}>{ev.room_name}</strong>
+                              <span style={{ fontSize: '0.62rem', fontWeight: 800, color: statusColor, backgroundColor: statusBg, padding: '1px 5px', borderRadius: '4px' }}>
+                                {statusText}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--primary-color)', fontWeight: 700 }}>
+                              {sT} - {eT} น.
+                            </div>
+                            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              ผู้จอง: {ev.customer_name} {ev.guest_count ? `(${ev.guest_count} คน)` : ''}
+                            </div>
                           </div>
                         );
-                      })}
-
-                      {dayEvents.length > maxVisible && (
-                        <button
-                          type="button"
-                          className="calendar-more-label"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleMiniDayClick(dayObj);
-                            handleDayClick(dayObj);
-                            setIsDayModalOpen(true);
-                          }}
-                          title={`มีรายการจองทั้งหมด ${dayEvents.length} รายการ (คลิกเพื่อเปิดดูทั้งหมด)`}
-                        >
-                          +{dayEvents.length - maxVisible} ดูเพิ่มเติม...
-                        </button>
-                      )}
-                    </div>
+                      })
+                    )}
                   </div>
-                );
-              })}
+                </div>
+              </div>
+
+              {/* Right: Big Monthly Calendar Grid (Synchronized Blue Highlight & Detailed Event Chips) */}
+              <div className="calendar-container" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                <div className="calendar-grid-wrapper" style={{ flex: 1, minHeight: 0 }}>
+                  <div className="calendar-weekday-row">
+                    {weekdays.map(wd => (
+                      <div key={wd} className="calendar-weekday-cell">{wd}</div>
+                    ))}
+                  </div>
+
+                  <div className="calendar-body">
+                    {calendarDays.map((dayObj, idx) => {
+                      const dateKey = getDateKey(dayObj.day, dayObj.month, dayObj.year);
+                      const dayEvents = filteredEventsByDay[dateKey] || [];
+                      const isSelected = (sidebarSelectedDay && sidebarSelectedDay.day === dayObj.day && sidebarSelectedDay.month === dayObj.month && sidebarSelectedDay.year === dayObj.year) || (timelineDate === dateKey);
+
+                      return (
+                        <div 
+                          key={idx} 
+                          className={`calendar-cell ${dayObj.isOtherMonth ? 'other-month' : ''} ${isSelected ? 'selected' : ''}`}
+                          onClick={() => {
+                            setSelectedDay(dayObj);
+                            setSidebarSelectedDay(dayObj);
+                            setTimelineDate(dateKey);
+                          }}
+                          style={{
+                            cursor: 'pointer',
+                            border: isSelected ? '2px solid var(--primary-color)' : undefined,
+                            boxShadow: isSelected ? '0 0 12px rgba(37, 99, 235, 0.35)' : undefined,
+                            backgroundColor: isSelected ? 'rgba(37, 99, 235, 0.05)' : undefined,
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <div className="calendar-day-header">
+                            <div className="calendar-day-number" style={{ fontWeight: isSelected ? 900 : 700 }}>
+                              {dayObj.day}
+                            </div>
+                            {dayEvents.length > 0 && (
+                              <span className="calendar-day-count-badge">{dayEvents.length} รายการ</span>
+                            )}
+                          </div>
+                          
+                          {/* Event Chips List (Showing Room Name + Usage Time + Status Color) */}
+                          <div className="calendar-events-list">
+                            {dayEvents.slice(0, 3).map((ev, i) => {
+                              const currentNowTime = new Date();
+                              const startTime = new Date(ev.start_time);
+                              const endTime = new Date(ev.end_time);
+                              const isExpired = currentNowTime > endTime;
+                              const isActive = currentNowTime >= startTime && currentNowTime <= endTime;
+                              const isUpcoming = currentNowTime < startTime;
+
+                              const sT = startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                              const eT = endTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+                              const statusClass = isExpired ? 'expired' : (isActive ? 'active' : 'upcoming');
+                              const badgeLabel = isExpired ? '🔴 ใช้งานเสร็จแล้ว' : (isActive ? '🟠 กำลังใช้งาน' : '🟢 รอใช้งาน');
+
+                              return (
+                                <div 
+                                  key={i} 
+                                  className={`calendar-event-chip ${statusClass}`} 
+                                  onClick={(e) => { e.stopPropagation(); setViewedEvent(ev); }}
+                                  title={`${ev.room_name} | ${sT} - ${eT} น. | ผู้จอง: ${ev.customer_name || 'ลูกค้า'} (${isExpired ? 'ใช้งานเสร็จแล้ว' : isActive ? 'กำลังใช้งาน' : 'รอใช้งาน'})`}
+                                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '3px', padding: '1px 5px' }}
+                                >
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', overflow: 'hidden', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
+                                    <span className="event-chip-room" style={{ fontWeight: 800, fontSize: '0.73rem' }}>{ev.room_name}</span>
+                                    <span className="event-chip-time" style={{ fontWeight: 700, fontSize: '0.65rem' }}>{sT}-{eT}</span>
+                                  </div>
+                                  <span style={{ fontSize: '0.6rem', fontWeight: 800, flexShrink: 0, opacity: 0.9 }}>
+                                    {badgeLabel}
+                                  </span>
+                                </div>
+                              );
+                            })}
+
+                            {dayEvents.length > 3 && (
+                              <div style={{ fontSize: '0.65rem', color: 'var(--primary-color)', fontWeight: 700, textAlign: 'center', marginTop: '1px' }}>
+                                +{dayEvents.length - 3} ดูเพิ่มเติม...
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
+
         </div>
 
-        {/* RIGHT: Cart & Checkout Panel (conditionally displayed based on showCartSidebar state) */}
+        {/* 3. CART SIDEBAR (WHEN OPEN) */}
         {showCartSidebar && (
-          <div className="pos-cart-panel" style={{
-            animation: 'slideIn 0.3s forwards',
-            height: '100%',
+          <div style={{
+            backgroundColor: 'var(--bg-card)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '16px',
+            padding: '16px',
             display: 'flex',
-            flexDirection: 'column'
+            flexDirection: 'column',
+            gap: '12px',
+            height: '100%',
+            minHeight: 0,
+            overflowY: 'auto',
+            boxShadow: 'var(--glass-shadow)'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
-              <ShoppingCart size={22} className="text-primary" />
-              <h2 style={{ fontSize: '1.2rem', fontWeight: 700 }}>รายการสินค้าในตะกร้า</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ShoppingCart size={18} style={{ color: 'var(--primary-color)' }} />
+                <h3 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>ตะกร้าการจอง ({cart.length})</h3>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setShowCartSidebar(false)}
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+              >
+                <X size={18} />
+              </button>
             </div>
 
             {/* Cart Items List */}
-            <div className="cart-items-list">
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', minHeight: 0 }}>
               {cart.length === 0 ? (
-                <div style={{ textAlign: 'center', color: 'var(--text-muted)', marginTop: '48px' }}>
-                  <p style={{ fontSize: '2.5rem', marginBottom: '8px' }}></p>
-                  <p style={{ fontSize: '0.9rem' }}>คลิกวันบนปฏิทินเพื่อจองห้องประชุม</p>
+                <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem', padding: '30px 0' }}>
+                  ยังไม่มีรายการในตะกร้า
                 </div>
               ) : (
-                cart.map(item => (
-                  <div key={item.uniqueKey} className="cart-item">
-                    <div className="cart-item-details">
-                      <span className="cart-item-name">
-                        {item.room_id 
-                          ? (item.room_name && item.room_name.includes('301')
-                              ? `${item.room_name} (${item.layout === 'classroom' ? 'Classroom' : 'Standard'})`
-                              : item.room_name)
-                          : item.service_name}
-                      </span>
-
-                      {item.room_id ? (
-                        <span className="cart-item-meta">
-                           {new Date(item.start_time).toLocaleDateString('th-TH', { month: 'short', day: 'numeric' })} ({new Date(item.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(item.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })})
-                          {item.booking_type === 'daily' && <span style={{ color: '#f59e0b', fontWeight: 'bold', marginLeft: '6px' }}>[เต็มวัน]</span>}
-                        </span>
-                      ) : (
-                        <span className="cart-item-meta">ราคาชิ้นละ: {item.price}.-</span>
-                      )}
-                      <div className="cart-item-actions">
-                        {!item.room_id && (
-                          <>
-                            <button className="cart-qty-btn" onClick={() => updateQty(item.uniqueKey, -1)}><Minus size={12} /></button>
-                            <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{item.quantity}</span>
-                            <button className="cart-qty-btn" onClick={() => updateQty(item.uniqueKey, 1)}><Plus size={12} /></button>
-                          </>
+                cart.map((item, idx) => (
+                  <div key={idx} style={{ padding: '10px', borderRadius: '12px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: '0.82rem', color: 'var(--text-main)' }}>{item.name}</div>
+                        {item.type === 'room' && (
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                            {item.date} · {item.time_display}
+                          </div>
                         )}
-                        <button 
-                          style={{ background: 'transparent', border: 'none', color: 'var(--danger-color)', cursor: 'pointer', marginLeft: item.room_id ? '0' : '12px' }}
-                          onClick={() => removeItem(item.uniqueKey)}
-                        >
-                          <Trash2 size={16} />
-                        </button>
                       </div>
+                      <button 
+                        type="button"
+                        onClick={() => removeFromCart(idx)}
+                        style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '2px' }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
-                    <div className="cart-item-subtotal">
-                      {item.subtotal.toLocaleString()}.-
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{item.quantity} {item.type === 'room' ? 'ชั่วโมง' : 'รายการ'}</span>
+                      <strong style={{ fontSize: '0.85rem', color: 'var(--primary-color)' }}>฿{Number(item.subtotal).toLocaleString()}</strong>
                     </div>
                   </div>
                 ))
               )}
             </div>
 
-            {/* Cart Summary & Checkout */}
-            <div className="cart-summary" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
-              {cart.some(item => item.room_id) && (
-                <div style={{
-                  padding: '8px 12px',
-                  borderRadius: '10px',
-                  backgroundColor: 'rgba(255,255,255,0.03)',
-                  border: '1px solid var(--border-color)',
-                  fontSize: '0.78rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '4px',
-                  marginBottom: '8px'
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>ผู้จอง:</span>
-                    <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{customer.name.trim() || 'ลูกค้าทั่วไป'}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>การชำระเงิน:</span>
-                    <span style={{ 
-                      fontWeight: 600, 
-                      color: paymentStatus === 'pending' ? '#f59e0b' : 'var(--primary-color)' 
-                    }}>
-                      {paymentStatus === 'pending' ? 'ค้างชำระ (Pending)' : (paymentMethod === 'transfer' ? 'ชำระแล้ว (โอนเงิน)' : 'ชำระแล้ว (เงินสด)')}
-                    </span>
-                  </div>
-                </div>
-              )}
-              <div className="cart-summary-row">
-                <span style={{ color: 'var(--text-muted)' }}>จำนวนรายการทั้งหมด</span>
-                <span>{cart.reduce((sum, item) => sum + (item.room_id ? 1 : item.quantity), 0)} รายการ</span>
-              </div>
-              <div className="cart-summary-row cart-total-row">
-                <span>ยอดชำระสุทธิ</span>
-                <span>{calculateTotal().toLocaleString()} บาท</span>
+            {/* Cart Footer: Total & Checkout */}
+            <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดรวมสุทธิ:</span>
+                <strong style={{ fontSize: '1.25rem', color: 'var(--text-main)', fontWeight: 900 }}>฿{Number(totalAmount).toLocaleString()}</strong>
               </div>
 
-              <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
-                <button 
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
                   type="button"
-                  className="btn btn-secondary" 
-                  style={{ flex: 1, padding: '12px', gap: '6px', fontSize: '0.875rem', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', backgroundColor: 'rgba(255,255,255,0.02)', color: 'var(--text-main)' }}
-                  onClick={handleExportToQuotation}
+                  onClick={() => setShowServicePicker(true)}
+                  className="btn btn-secondary"
+                  style={{ flex: 1, borderRadius: '12px', fontSize: '0.78rem', padding: '8px' }}
                 >
-                  <FileText size={16} />
-                  ทำใบเสนอราคา
+                  + เพิ่มบริการ
                 </button>
-                <button 
+                <button
                   type="button"
-                  className="btn btn-primary" 
-                  style={{ flex: 1.4, padding: '12px', gap: '6px', fontSize: '0.875rem', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                  onClick={handleCheckout}
+                  onClick={checkout}
+                  disabled={cart.length === 0}
+                  className="btn btn-primary"
+                  style={{ flex: 2, borderRadius: '12px', fontSize: '0.82rem', fontWeight: 800, padding: '10px' }}
                 >
-                  <Check size={16} />
-                  ยืนยันชำระเงิน
+                  ชำระเงิน / ยืนยันการจอง
                 </button>
               </div>
             </div>
           </div>
         )}
+
       </div>
 
       {/* ========================================================= */}
-      {/* DAY DETAIL MODAL (opened when clicking a calendar day)     */}
-      {/* ========================================================= */}
-      {isDayModalOpen && selectedDay && !selectedRoom && (
-        <div style={{
-          position: 'fixed',
-          top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(15, 23, 42, 0.6)',
-          backdropFilter: 'blur(4px)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 2000
-        }}>
-          <div className="card" style={{ 
-            width: '95%', 
-            maxWidth: '650px', 
-            height: '580px',
-            padding: '24px', 
-            backgroundColor: 'var(--bg-glass-modal, rgba(255, 255, 255, 0.94))', 
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
-            border: '1px solid var(--glass-border, rgba(255, 255, 255, 0.18))',
-            display: 'flex', 
-            flexDirection: 'column', 
-            gap: '16px', 
-            borderRadius: '24px', 
-            boxShadow: '0 24px 70px rgba(0,0,0,0.25)',
-            overflow: 'hidden'
-          }}>
-            {/* Header with Day Navigation */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <button 
-                  onClick={() => changeSelectedDay(-1)}
-                  type="button"
-                  style={{
-                    background: 'var(--bg-color)',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    width: '32px',
-                    height: '32px',
-                    borderRadius: '50%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                  className="calendar-nav-btn"
-                >
-                  <ChevronLeft size={16} />
-                </button>
-                <h2 style={{ fontSize: '1.2rem', fontWeight: 800, margin: 0, color: 'var(--text-main)', minWidth: '260px', textAlign: 'center' }}>
-                   จัดการจอง: {selectedDay.day} {monthNames[selectedDay.month]} {selectedDay.year + 543}
-                </h2>
-                <button 
-                  onClick={() => changeSelectedDay(1)}
-                  type="button"
-                  style={{
-                    background: 'var(--bg-color)',
-                    border: '1px solid var(--border-color)',
-                    color: 'var(--text-main)',
-                    width: '32px',
-                    height: '32px',
-                    borderRadius: '50%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                  className="calendar-nav-btn"
-                >
-                  <ChevronRight size={16} />
-                </button>
-              </div>
-              <button style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }} onClick={() => setIsDayModalOpen(false)}>
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Tabs: รายการจองห้อง vs จองห้อง/บริการใหม่ */}
-            <div style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-              <button 
-                type="button"
-                onClick={() => setDayModalTab('bookings')}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '12px',
-                  fontSize: '0.85rem',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  border: '1px solid',
-                  borderColor: dayModalTab === 'bookings' ? 'var(--primary-color)' : 'var(--border-color)',
-                  backgroundColor: dayModalTab === 'bookings' ? 'var(--primary-color)' : 'transparent',
-                  color: dayModalTab === 'bookings' ? '#ffffff' : 'var(--text-main)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  transition: 'all 0.15s ease-in-out'
-                }}
-              >
-                <Calendar size={16} />
-                <span>รายการจองห้องของวันนี้ ({modalDayEvents.length})</span>
-              </button>
-
-              <button 
-                type="button"
-                onClick={() => setDayModalTab('catalog')}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '12px',
-                  fontSize: '0.85rem',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  border: '1px solid',
-                  borderColor: dayModalTab === 'catalog' ? 'var(--primary-color)' : 'var(--border-color)',
-                  backgroundColor: dayModalTab === 'catalog' ? 'var(--primary-color)' : 'transparent',
-                  color: dayModalTab === 'catalog' ? '#ffffff' : 'var(--text-main)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  transition: 'all 0.15s ease-in-out'
-                }}
-              >
-                <Plus size={16} />
-                <span>จองห้อง / สั่งบริการใหม่</span>
-              </button>
-            </div>
-
-            {/* TAB 1: LIST OF BOOKED ROOMS FOR SELECTED DAY */}
-            {dayModalTab === 'bookings' && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', minHeight: 0, paddingRight: '4px' }}>
-                {modalDayEvents.length === 0 ? (
-                  <div style={{ textAlign: 'center', padding: '48px 16px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-                    <div style={{ width: '56px', height: '56px', borderRadius: '50%', backgroundColor: 'rgba(16, 185, 129, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#10b981' }}>
-                      <CheckCircle2 size={32} />
-                    </div>
-                    <div style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-main)' }}>
-                      วันนี้ยังไม่มีรายการจองห้องประชุม
-                    </div>
-                    <p style={{ fontSize: '0.85rem', margin: 0 }}>
-                      สามารถกดเลือกแท็บ "จองห้อง / สั่งบริการใหม่" เพื่อทำการจองได้ทันที
-                    </p>
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      style={{ marginTop: '8px', padding: '8px 20px', borderRadius: '10px', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px' }}
-                      onClick={() => setDayModalTab('catalog')}
-                    >
-                      <Plus size={16} />
-                      ทำการจองห้องประชุม
-                    </button>
-                  </div>
-                ) : (
-                  modalDayEvents.map((ev, i) => {
-                    const startT = new Date(ev.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                    const endT = new Date(ev.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                    const isDaily = ev.booking_type === 'daily' || (ev.quantity === 1 && ev.price >= 1000);
-                    const isExpired = new Date() > new Date(ev.end_time);
-
-                    return (
-                      <div 
-                        key={i} 
-                        style={{
-                          backgroundColor: 'rgba(255, 255, 255, 0.04)',
-                          border: '1px solid var(--border-color)',
-                          borderLeft: `5px solid ${isExpired ? '#ef4444' : (ev.payment_status === 'paid' ? '#10b981' : '#f59e0b')}`,
-                          borderRadius: '14px',
-                          padding: '14px 16px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: '12px',
-                          transition: 'all 0.15s ease-in-out'
-                        }}
-                      >
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                            <span style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                              {ev.room_name}
-                            </span>
-                            {ev.layout === 'classroom' && (
-                              <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6' }}>
-                                Classroom
-                              </span>
-                            )}
-                            <span style={{ 
-                              fontSize: '0.7rem', 
-                              fontWeight: 700, 
-                              padding: '2px 8px', 
-                              borderRadius: '99px',
-                              backgroundColor: isExpired ? 'rgba(239, 68, 68, 0.15)' : (ev.payment_status === 'paid' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)'),
-                              color: isExpired ? '#ef4444' : (ev.payment_status === 'paid' ? '#10b981' : '#f59e0b'),
-                              border: `1px solid ${isExpired ? 'rgba(239, 68, 68, 0.25)' : (ev.payment_status === 'paid' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(245, 158, 11, 0.25)')}`
-                            }}>
-                              {isExpired ? 'ใช้งานเสร็จแล้ว' : (ev.payment_status === 'paid' ? 'ชำระเงินแล้ว' : 'รอชำระเงิน')}
-                            </span>
-                            <span style={{
-                              fontSize: '0.7rem',
-                              fontWeight: 700,
-                              padding: '2px 8px',
-                              borderRadius: '99px',
-                              backgroundColor: ev.booking_source === 'online' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                              color: ev.booking_source === 'online' ? '#0ea5e9' : '#10b981',
-                              border: `1px solid ${ev.booking_source === 'online' ? 'rgba(14, 165, 233, 0.25)' : 'rgba(16, 185, 129, 0.25)'}`
-                            }}>
-                              {ev.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
-                            </span>
-                          </div>
-
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', fontSize: '0.8rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                              <Clock size={14} className="text-primary" />
-                              <strong style={{ color: 'var(--text-main)' }}>{startT} - {endT} น.</strong>
-                              {isDaily ? ' [เต็มวัน]' : ' [รายชั่วโมง]'}
-                            </div>
-                            <div>
-                              ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{ev.customer_name || 'ลูกค้า'}</strong>
-                            </div>
-                            {ev.contact && (
-                              <div>
-                                ติดต่อ: <strong style={{ color: 'var(--text-main)' }}>{ev.contact}</strong>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                          <div style={{ textAlign: 'right', marginRight: '6px' }}>
-                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>ยอดชำระ</div>
-                            <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--primary-color)' }}>
-                              {Number(ev.subtotal || ev.price || 0).toLocaleString()}.-
-                            </div>
-                          </div>
-
-                          {/* Button: View Details & Slip */}
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            style={{ padding: '8px 14px', fontSize: '0.78rem', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 600 }}
-                            onClick={() => setViewedEvent(ev)}
-                            title="ดูรายละเอียดใบเสร็จและข้อมูลการจอง"
-                          >
-                            <FileText size={14} />
-                            <span>ดูสลิป</span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            )}
-
-            {/* TAB 2: PRODUCT/SERVICE CATALOG TO MAKE NEW BOOKING */}
-            {dayModalTab === 'catalog' && (
-              <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', minHeight: 0, overflow: 'hidden' }}>
-                  
-                  {/* Category selectors (Tabs) */}
-                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                    <button 
-                      onClick={() => setModalCategory('all')}
-                      type="button"
-                      style={{
-                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                        backgroundColor: modalCategory === 'all' ? 'var(--primary-color)' : 'var(--bg-color)',
-                        color: modalCategory === 'all' ? '#ffffff' : 'var(--text-muted)'
-                      }}
-                    >ทั้งหมด</button>
-                    <button 
-                      onClick={() => setModalCategory('room')}
-                      type="button"
-                      style={{
-                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                        backgroundColor: modalCategory === 'room' ? 'var(--primary-color)' : 'var(--bg-color)',
-                        color: modalCategory === 'room' ? '#ffffff' : 'var(--text-muted)'
-                      }}
-                    >ห้องประชุม</button>
-                    <button 
-                      onClick={() => setModalCategory('Co-Working')}
-                      type="button"
-                      style={{
-                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                        backgroundColor: modalCategory === 'Co-Working' ? 'var(--primary-color)' : 'var(--bg-color)',
-                        color: modalCategory === 'Co-Working' ? '#ffffff' : 'var(--text-muted)'
-                      }}
-                    >Co-Working</button>
-                    <button 
-                      onClick={() => setModalCategory('Koocafe')}
-                      type="button"
-                      style={{
-                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                        backgroundColor: modalCategory === 'Koocafe' ? 'var(--primary-color)' : 'var(--bg-color)',
-                        color: modalCategory === 'Koocafe' ? '#ffffff' : 'var(--text-muted)'
-                      }}
-                    >Koocafe</button>
-                    <button 
-                      onClick={() => setModalCategory('Parking')}
-                      type="button"
-                      style={{
-                        padding: '6px 12px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer', border: '1px solid var(--border-color)',
-                        backgroundColor: modalCategory === 'Parking' ? 'var(--primary-color)' : 'var(--bg-color)',
-                        color: modalCategory === 'Parking' ? '#ffffff' : 'var(--text-muted)'
-                      }}
-                    >ที่จอดรถ</button>
-                  </div>
-
-                  {/* Items Catalog Grid */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '10px', overflowY: 'auto', flex: 1, padding: '4px' }}>
-                    {getModalFilteredItems().map(item => (
-                      <div 
-                        key={`${item.type}-${item.id}`}
-                        className="pos-item-card"
-                        style={{ height: 'auto', padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px', cursor: 'pointer' }}
-                        onClick={() => item.type === 'room' ? openRoomModalFromDay(item) : addServiceToCartDirect(item)}
-                      >
-                        {/* Image Thumbnail */}
-                        <div style={{ width: '100%', height: '110px', borderRadius: '10px', overflow: 'hidden', border: '1px solid var(--border-color)', backgroundColor: 'rgba(255,255,255,0.02)', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-                          {item.image_url ? (
-                            <img src={item.image_url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                          ) : (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', opacity: 0.2 }}>
-                              <Image size={20} />
-                              <span style={{ fontSize: '0.6rem' }}>ไม่มีรูปภาพ</span>
-                            </div>
-                          )}
-                          <span className={`badge ${item.type === 'room' ? 'badge-success' : 'badge-warning'}`} style={{ position: 'absolute', top: '6px', right: '6px', fontSize: '0.65rem', padding: '2px 6px', boxShadow: '0 4px 10px rgba(0,0,0,0.3)' }}>
-                            {item.type === 'room' ? 'ห้อง' : 'บริการ'}
-                          </span>
-                        </div>
-
-                        <div className="pos-item-info" style={{ gap: '2px', display: 'flex', flexDirection: 'column' }}>
-                          <span className="pos-item-title" style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>{item.name}</span>
-                          {item.type === 'room' ? (
-                            <p className="pos-item-desc" style={{ fontSize: '0.7rem', margin: 0 }}>ความจุ {item.capacity} คน</p>
-                          ) : (
-                            <p className="pos-item-desc" style={{ fontSize: '0.7rem', margin: 0 }}>{item.category}</p>
-                          )}
-                        </div>
-
-                        <div className="pos-item-footer" style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span className="pos-item-price" style={{ fontSize: '0.85rem', fontWeight: '700' }}>
-                            {item.type === 'room' ? (
-                              (item.has_hourly === 1 || item.has_hourly === true || (!item.has_hourly && !item.has_halfday && !item.has_daily)) ? `${item.hourly_rate}.-/ชม.` :
-                              (item.has_halfday === 1 || item.has_halfday === true) ? `${item.half_day_rate}.-/ครึ่งวัน` :
-                              `${item.daily_rate}.-/วัน`
-                            ) : (
-                              `${item.price}.-`
-                            )}
-                          </span>
-                          <div style={{ 
-                            backgroundColor: 'var(--primary-light)', 
-                            color: 'var(--primary-color)',
-                            width: '24px', height: '24px', borderRadius: '50%',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            fontWeight: 'bold', fontSize: '0.8rem'
-                          }}>+</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* ROOM SCHEDULE CONFIGURATION MODAL                          */}
+      {/* 4. SEAMLESS SLIDE-OVER BOOKING DRAWER (POLISHED REDESIGN)  */}
       {/* ========================================================= */}
       {selectedRoom && (
         <div style={{
           position: 'fixed',
           top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(15, 23, 42, 0.6)',
+          backgroundColor: 'rgba(15, 23, 42, 0.55)',
+          backdropFilter: 'blur(6px)',
+          WebkitBackdropFilter: 'blur(6px)',
+          display: 'flex',
+          justifyContent: 'flex-end',
+          zIndex: 2000,
+          animation: 'fadeIn 0.2s ease-out'
+        }}>
+          <div style={{
+            width: '100%',
+            maxWidth: '500px',
+            height: '100%',
+            backgroundColor: 'var(--bg-card)',
+            boxShadow: '-12px 0 45px rgba(0,0,0,0.35)',
+            display: 'flex',
+            flexDirection: 'column',
+            borderLeft: '1px solid var(--border-color)',
+            animation: 'slideInRight 0.25s ease-out'
+          }}>
+            
+            {/* 1. Drawer Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid var(--border-color)',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              backgroundColor: 'rgba(255,255,255,0.02)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: '12px',
+                  backgroundColor: 'rgba(37, 99, 235, 0.12)',
+                  color: 'var(--primary-color)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: '1px solid rgba(37, 99, 235, 0.25)'
+                }}>
+                  <BookmarkPlus size={22} />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', margin: 0, lineHeight: 1.2 }}>
+                    จองพื้นที่: {selectedRoom.name}
+                  </h3>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    <span>{selectedRoom.category || 'ห้องประชุม'}</span>
+                    <span>•</span>
+                    <span>ความจุ {layoutType === 'classroom' ? (selectedRoom.classroom_capacity || selectedRoom.capacity) : selectedRoom.capacity} ที่นั่ง</span>
+                    <span>•</span>
+                    <strong style={{ color: 'var(--primary-color)' }}>฿{selectedRoom.hourly_rate}/ชม.</strong>
+                  </div>
+                </div>
+              </div>
+
+              <button 
+                type="button" 
+                onClick={closeRoomModal}
+                style={{
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '10px',
+                  border: '1px solid var(--border-color)',
+                  background: 'var(--bg-color)',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.15s ease'
+                }}
+                onMouseEnter={e => e.currentTarget.style.color = '#ef4444'}
+                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-muted)'}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* 2. Drawer Scrollable Body */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }} className="scrollbar-thin">
+              
+              {/* Group A: Booking Type & Layout */}
+              <div style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '16px',
+                padding: '14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}>
+                <div>
+                  <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px' }}>
+                    รูปแบบระยะเวลาการจอง
+                  </div>
+                  {(() => {
+                    const hasHourly = (selectedRoom.has_hourly === 1 || selectedRoom.has_hourly === true || (Number(selectedRoom.hourly_rate) > 0));
+                    const hasHalfday = (selectedRoom.has_halfday === 1 || selectedRoom.has_halfday === true || (Number(selectedRoom.half_day_rate) > 0));
+                    const hasDaily = (selectedRoom.has_daily === 1 || selectedRoom.has_daily === true || (Number(selectedRoom.daily_rate) > 0));
+
+                    const availableTypes = [
+                      { key: 'hourly', label: 'รายชั่วโมง', icon: Clock, color: 'var(--primary-color)', available: hasHourly },
+                      { key: 'halfday', label: 'ครึ่งวัน (4 ชม.)', icon: Clock, color: '#10b981', available: hasHalfday },
+                      { key: 'daily', label: 'รายวัน (เต็มวัน)', icon: Calendar, color: '#f59e0b', available: hasDaily }
+                    ].filter(t => t.available);
+
+                    if (availableTypes.length === 0) {
+                      return (
+                        <div style={{ padding: '8px 12px', borderRadius: '10px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                          รายวัน (เต็มวัน)
+                        </div>
+                      );
+                    }
+
+                    if (availableTypes.length === 1) {
+                      const t = availableTypes[0];
+                      const Icon = t.icon;
+                      return (
+                        <div style={{
+                          padding: '8px 12px',
+                          borderRadius: '12px',
+                          backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                          border: '1px solid rgba(37, 99, 235, 0.25)',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          color: 'var(--primary-color)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <Icon size={14} />
+                            <span>{t.label}</span>
+                          </div>
+                          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 500 }}>
+                            (เฉพาะรูปแบบนี้ตามคลังสินค้า)
+                          </span>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div style={{ display: 'flex', gap: '4px', backgroundColor: 'var(--bg-color)', padding: '3px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                        {availableTypes.map(t => {
+                          const Icon = t.icon;
+                          const isSel = bookingType === t.key;
+                          return (
+                            <button
+                              key={t.key}
+                              type="button"
+                              onClick={() => {
+                                setBookingType(t.key);
+                                if (t.key === 'halfday') setDailyTimeSlot('08-12');
+                                else if (t.key === 'daily') setDailyTimeSlot('08-17');
+                              }}
+                              style={{
+                                flex: 1,
+                                padding: '7px 4px',
+                                border: 'none',
+                                borderRadius: '9px',
+                                fontSize: '0.76rem',
+                                fontWeight: isSel ? 800 : 600,
+                                cursor: 'pointer',
+                                backgroundColor: isSel ? t.color : 'transparent',
+                                color: isSel ? '#ffffff' : 'var(--text-muted)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '4px',
+                                boxShadow: isSel ? '0 2px 8px rgba(0,0,0,0.15)' : 'none',
+                                transition: 'all 0.15s ease'
+                              }}
+                            >
+                              <Icon size={13} />
+                              <span>{t.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Layout Switch (if classroom supported) */}
+                {selectedRoom.has_classroom === 1 && (
+                  <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '8px' }}>
+                    <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px' }}>
+                      รูปแบบการจัดโต๊ะเก้าอี้ (Layout)
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setLayoutType('standard')}
+                        style={{
+                          flex: 1,
+                          padding: '7px 8px',
+                          borderRadius: '10px',
+                          border: layoutType === 'standard' ? '1px solid var(--primary-color)' : '1px solid var(--border-color)',
+                          backgroundColor: layoutType === 'standard' ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-color)',
+                          color: layoutType === 'standard' ? 'var(--primary-color)' : 'var(--text-muted)',
+                          fontSize: '0.76rem',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Standard ({selectedRoom.capacity} ที่นั่ง)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLayoutType('classroom')}
+                        style={{
+                          flex: 1,
+                          padding: '7px 8px',
+                          borderRadius: '10px',
+                          border: layoutType === 'classroom' ? '1px solid #ec4899' : '1px solid var(--border-color)',
+                          backgroundColor: layoutType === 'classroom' ? 'rgba(236, 72, 153, 0.12)' : 'var(--bg-color)',
+                          color: layoutType === 'classroom' ? '#ec4899' : 'var(--text-muted)',
+                          fontSize: '0.76rem',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Classroom ({selectedRoom.classroom_capacity} ที่นั่ง)
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Group B: Date & Time Configuration */}
+              <div style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '16px',
+                padding: '14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
+                      วันที่ทำการจอง *
+                    </label>
+                    <CustomDatePicker
+                      value={roomSchedule.date}
+                      onChange={val => setRoomSchedule({ ...roomSchedule, date: val })}
+                      className="form-control"
+                      style={{ height: '40px', borderRadius: '12px', fontSize: '0.82rem', padding: '0 10px', cursor: 'pointer', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', display: 'flex', alignItems: 'center' }}
+                    />
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
+                      {bookingType === 'daily' ? 'ช่วงเวลาเต็มวัน' : bookingType === 'halfday' ? 'รอบครึ่งวัน' : 'ช่วงเวลาเริ่ม - สิ้นสุด'} *
+                    </label>
+                    
+                    {bookingType === 'daily' ? (
+                      <CustomSelect
+                        value={dailyTimeSlot}
+                        onChange={val => setDailyTimeSlot(val)}
+                        options={[
+                          { value: '08-17', label: '08:00 - 17:00 น. (เต็มวัน 9 ชม.)', icon: Clock },
+                          { value: '09-18', label: '09:00 - 18:00 น. (เต็มวัน 9 ชม.)', icon: Clock }
+                        ]}
+                      />
+                    ) : bookingType === 'halfday' ? (
+                      <CustomSelect
+                        value={dailyTimeSlot}
+                        onChange={val => setDailyTimeSlot(val)}
+                        options={[
+                          { value: '08-12', label: '08:00 - 12:00 น. (รอบเช้า 4 ชม.)', icon: Clock },
+                          { value: '13-17', label: '13:00 - 17:00 น. (รอบบ่าย 4 ชม.)', icon: Clock }
+                        ]}
+                      />
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <CustomSelect
+                          value={roomSchedule.startHour}
+                          onChange={val => {
+                            const eH = String(Math.min(parseInt(val, 10) + 1, TIMELINE_END)).padStart(2, '0');
+                            setRoomSchedule({ ...roomSchedule, startHour: val, endHour: eH });
+                          }}
+                          options={TIMELINE_HOURS.map(h => ({
+                            value: String(h).padStart(2, '0'),
+                            label: `${String(h).padStart(2, '0')}:00`
+                          }))}
+                          style={{ flex: 1 }}
+                        />
+                        <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)', fontWeight: 700 }}>-</span>
+                        <CustomSelect
+                          value={roomSchedule.endHour}
+                          onChange={val => setRoomSchedule({ ...roomSchedule, endHour: val })}
+                          options={[9, 10, 11, 12, 13, 14, 15, 16, 17, 18].map(h => ({
+                            value: String(h).padStart(2, '0'),
+                            label: `${String(h).padStart(2, '0')}:00`
+                          }))}
+                          align="right"
+                          style={{ flex: 1 }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Quick Duration Shortcuts */}
+                {bookingType === 'hourly' && (
+                  <div>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '5px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span>⚡ ปุ่มลัดขยายเวลา:</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {[1, 2, 3, 4].map(h => (
+                        <button
+                          key={h}
+                          type="button"
+                          onClick={() => setQuickDuration(h)}
+                          style={{
+                            flex: 1,
+                            padding: '6px 0',
+                            borderRadius: '8px',
+                            fontSize: '0.74rem',
+                            fontWeight: 700,
+                            border: '1px solid var(--border-color)',
+                            backgroundColor: 'var(--bg-color)',
+                            color: 'var(--text-main)',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease'
+                          }}
+                          onMouseEnter={e => {
+                            e.currentTarget.style.borderColor = 'var(--primary-color)';
+                            e.currentTarget.style.color = 'var(--primary-color)';
+                          }}
+                          onMouseLeave={e => {
+                            e.currentTarget.style.borderColor = 'var(--border-color)';
+                            e.currentTarget.style.color = 'var(--text-main)';
+                          }}
+                        >
+                          +{h} ชม.
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Group C: Guest Count */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
+                  <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', margin: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <Users size={14} style={{ color: 'var(--primary-color)' }} />
+                    <span>จำนวนผู้เข้าใช้งาน (คน/ท่าน)</span>
+                  </label>
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>ไม่จำเป็นต้องระบุ</span>
+                </div>
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                  <input
+                    type="number"
+                    min="1"
+                    max={layoutType === 'classroom' ? (selectedRoom.classroom_capacity || 100) : (selectedRoom.capacity || 100)}
+                    placeholder={`ระบุจำนวนผู้เข้าใช้ห้อง...`}
+                    value={roomSchedule.guestCount || ''}
+                    onChange={e => setRoomSchedule({ ...roomSchedule, guestCount: e.target.value })}
+                    className="form-control"
+                    style={{ height: '40px', borderRadius: '12px', fontSize: '0.82rem', padding: '0 90px 0 12px', width: '100%', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', color: 'var(--text-main)' }}
+                  />
+                  <span style={{ position: 'absolute', right: '12px', fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600, pointerEvents: 'none' }}>
+                    สูงสุด {layoutType === 'classroom' ? (selectedRoom.classroom_capacity || selectedRoom.capacity) : selectedRoom.capacity} ท่าน
+                  </span>
+                </div>
+              </div>
+
+              {/* Group D: Live Price & Duration Preview Box */}
+              {(() => {
+                let durationText = '';
+                let totalHrs = 0;
+                let ratePrice = 0;
+
+                if (bookingType === 'daily') {
+                  durationText = '9 ชั่วโมง (เต็มวัน)';
+                  totalHrs = 9;
+                  ratePrice = layoutType === 'classroom' ? (selectedRoom.classroom_daily_rate || 0) : (selectedRoom.daily_rate || 0);
+                } else if (bookingType === 'halfday') {
+                  durationText = '4 ชั่วโมง (ครึ่งวัน)';
+                  totalHrs = 4;
+                  ratePrice = selectedRoom.half_day_rate || 0;
+                } else {
+                  const sH = parseInt(roomSchedule.startHour, 10);
+                  const eH = parseInt(roomSchedule.endHour, 10);
+                  totalHrs = Math.max(1, eH - sH);
+                  durationText = `${totalHrs} ชั่วโมง`;
+                  ratePrice = layoutType === 'classroom' ? (selectedRoom.classroom_hourly_rate || 0) : (selectedRoom.hourly_rate || 0);
+                }
+
+                const estSubtotal = (bookingType === 'daily' || bookingType === 'halfday') ? ratePrice : (ratePrice * totalHrs);
+
+                return (
+                  <div style={{
+                    background: 'linear-gradient(135deg, rgba(37, 99, 235, 0.08) 0%, rgba(99, 102, 241, 0.04) 100%)',
+                    border: '1px solid rgba(37, 99, 235, 0.25)',
+                    borderRadius: '16px',
+                    padding: '12px 16px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.03)'
+                  }}>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ระยะเวลาที่เลือกใช้งาน</div>
+                      <div style={{ color: 'var(--primary-color)', fontSize: '0.92rem', fontWeight: 800, marginTop: '2px' }}>
+                        {durationText}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดรวมเบื้องต้น</div>
+                      <div style={{ color: 'var(--text-main)', fontSize: '1.2rem', fontWeight: 900, marginTop: '1px' }}>
+                        ฿{Number(estSubtotal).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Group E: Customer Information */}
+              <div style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '16px',
+                padding: '14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
+                    <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+                      ชื่อผู้จอง <span style={{ color: 'var(--danger-color)' }}>*</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setCustomer({ ...customer, name: 'ลูกค้า Walk-in' })}
+                      style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        color: 'var(--primary-color)',
+                        background: 'rgba(37,99,235,0.1)',
+                        border: '1px solid rgba(37,99,235,0.25)',
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      + ใส่ชื่อ Walk-in
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '0 10px', backgroundColor: 'var(--bg-color)', height: '40px' }}>
+                    <User size={15} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                    <input 
+                      type="text"
+                      placeholder="กรอกชื่อผู้จอง / องค์กร"
+                      value={customer.name}
+                      onChange={e => setCustomer({ ...customer, name: e.target.value })}
+                      style={{ border: 'none', background: 'transparent', outline: 'none', width: '100%', fontSize: '0.82rem', color: 'var(--text-main)' }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
+                    เบอร์ติดต่อ
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '0 10px', backgroundColor: 'var(--bg-color)', height: '40px' }}>
+                    <Phone size={15} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                    <input 
+                      type="text"
+                      placeholder="08x-xxx-xxxx"
+                      value={customer.contact}
+                      onChange={e => setCustomer({ ...customer, contact: e.target.value })}
+                      style={{ border: 'none', background: 'transparent', outline: 'none', width: '100%', fontSize: '0.82rem', color: 'var(--text-main)' }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Group F: Payment Status & Method */}
+              <div style={{ display: 'grid', gridTemplateColumns: paymentStatus === 'paid' ? '1fr 1fr' : '1fr', gap: '10px' }}>
+                <div>
+                  <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
+                    สถานะชำระเงิน *
+                  </label>
+                  <CustomSelect
+                    value={paymentStatus}
+                    onChange={val => setPaymentStatus(val)}
+                    options={[
+                      { value: 'paid', label: 'ชำระเงินแล้ว (Paid)', icon: CheckCircle2, iconColor: '#10b981' },
+                      { value: 'pending', label: 'ค้างชำระ (Pending)', icon: Clock, iconColor: '#f59e0b' }
+                    ]}
+                  />
+                </div>
+
+                {paymentStatus === 'paid' && (
+                  <div>
+                    <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
+                      ช่องทางชำระ *
+                    </label>
+                    <CustomSelect
+                      value={paymentMethod}
+                      onChange={val => setPaymentMethod(val)}
+                      options={[
+                        { value: 'cash', label: 'เงินสด (Cash)', icon: Banknote, iconColor: '#10b981' },
+                        { value: 'transfer', label: 'โอนเงินเข้าบัญชี (Transfer)', icon: Smartphone, iconColor: '#3b82f6' },
+                        { value: 'card', label: 'บัตรเครดิต (Card)', icon: CreditCard, iconColor: '#8b5cf6' }
+                      ]}
+                      align="right"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Group G: Real-time Overlap Alert */}
+              {currentSlotOverlap.isOverlap ? (
+                <div style={{
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  border: '1px solid rgba(239, 68, 68, 0.35)',
+                  borderRadius: '14px',
+                  padding: '10px 14px',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '8px'
+                }}>
+                  <AlertTriangle size={16} style={{ color: '#ef4444', flexShrink: 0, marginTop: '2px' }} />
+                  <div style={{ fontSize: '0.78rem' }}>
+                    <div style={{ fontWeight: 800, color: '#ef4444' }}>ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง)</div>
+                    <div style={{ color: 'var(--text-main)', marginTop: '2px' }}>
+                      ผู้เข้าใช้: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong>
+                    </div>
+                  </div>
+                </div>
+              ) : currentSlotOverlap.isValid ? (
+                <div style={{
+                  backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                  border: '1px solid rgba(16, 185, 129, 0.25)',
+                  borderRadius: '12px',
+                  padding: '8px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  color: '#10b981',
+                  fontSize: '0.78rem',
+                  fontWeight: 700
+                }}>
+                  <CheckCircle2 size={16} style={{ color: '#10b981', flexShrink: 0 }} />
+                  <span>ห้องว่าง พร้อมทำการจองในช่วงเวลานี้</span>
+                </div>
+              ) : null}
+
+            </div>
+
+            {/* 3. Drawer Footer Actions */}
+            <div style={{
+              padding: '14px 20px',
+              borderTop: '1px solid var(--border-color)',
+              display: 'flex',
+              gap: '8px',
+              backgroundColor: 'var(--bg-color)',
+              boxShadow: '0 -4px 15px rgba(0,0,0,0.05)'
+            }}>
+              <button 
+                type="button"
+                className="btn btn-secondary" 
+                style={{ height: '44px', padding: '0 14px', borderRadius: '12px', fontWeight: 600, fontSize: '0.82rem' }} 
+                onClick={closeRoomModal}
+              >
+                ยกเลิก
+              </button>
+
+              <button 
+                type="button"
+                onClick={addRoomToCart}
+                disabled={currentSlotOverlap.isOverlap}
+                style={{ 
+                  flex: 1, 
+                  height: '44px',
+                  borderRadius: '12px',
+                  fontWeight: 700,
+                  fontSize: '0.82rem',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  backgroundColor: 'var(--bg-card)',
+                  border: '1px solid var(--border-color)',
+                  color: 'var(--text-main)',
+                  cursor: currentSlotOverlap.isOverlap ? 'not-allowed' : 'pointer'
+                }} 
+              >
+                <ShoppingCart size={15} />
+                <span>+ ลงตะกร้า</span>
+              </button>
+
+              <button 
+                type="button"
+                className="btn btn-primary" 
+                style={{ 
+                  flex: 2, 
+                  height: '44px',
+                  borderRadius: '12px',
+                  fontWeight: 800,
+                  fontSize: '0.86rem',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  backgroundColor: currentSlotOverlap.isOverlap ? '#ef4444' : undefined,
+                  opacity: currentSlotOverlap.isOverlap ? 0.65 : 1,
+                  cursor: currentSlotOverlap.isOverlap ? 'not-allowed' : 'pointer',
+                  boxShadow: currentSlotOverlap.isOverlap ? 'none' : '0 4px 14px rgba(37,99,235,0.3)'
+                }} 
+                onClick={quickDirectBooking}
+                disabled={currentSlotOverlap.isOverlap}
+              >
+                <Zap size={16} />
+                <span>{currentSlotOverlap.isOverlap ? 'ช่วงนี้ไม่ว่าง' : 'ยืนยันจองทันที'}</span>
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 5. SERVICE PICKER MODAL                                   */}
+      {/* ========================================================= */}
+      {showServicePicker && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.5)',
           backdropFilter: 'blur(4px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           zIndex: 2000
         }}>
-          <div className="card" style={{ width: '95%', maxWidth: '480px', padding: '24px', backgroundColor: 'var(--bg-card)', display: 'flex', flexDirection: 'column', gap: '16px', borderRadius: '24px', boxShadow: '0 20px 50px rgba(0,0,0,0.3)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
-              <h2 style={{ fontSize: '1.15rem', fontWeight: 700 }}>จองพื้นที่: {selectedRoom.name}</h2>
-              <button style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }} onClick={closeRoomModal}>
-                <X size={20} />
+          <div style={{ width: '95%', maxWidth: '480px', backgroundColor: 'var(--bg-card)', borderRadius: '20px', padding: '20px', border: '1px solid var(--border-color)', boxShadow: '0 20px 50px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>เลือกบริการเสริม / อาหารว่าง</h3>
+              <button type="button" onClick={() => setShowServicePicker(false)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                <X size={18} />
               </button>
             </div>
-
-            {/* Booking Type Toggle - Dynamic based on room flags */}
-            {(() => {
-              const types = [];
-              if (selectedRoom.has_hourly === 1 || selectedRoom.has_hourly === true) types.push({ key: 'hourly', label: 'รายชั่วโมง', icon: 'Clock', color: 'var(--primary-color)' });
-              if (selectedRoom.has_halfday === 1 || selectedRoom.has_halfday === true) types.push({ key: 'halfday', label: 'ครึ่งวัน', icon: 'Clock', color: '#10b981' });
-              if (selectedRoom.has_daily === 1 || selectedRoom.has_daily === true) types.push({ key: 'daily', label: 'รายวัน (ทั้งวัน)', icon: 'Calendar', color: '#f59e0b' });
-              if (types.length === 0) types.push({ key: 'hourly', label: 'รายชั่วโมง', icon: 'Clock', color: 'var(--primary-color)' });
-              return (
-                <div style={{ display: 'flex', gap: '0', borderRadius: '14px', overflow: 'hidden', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-color)' }}>
-                  {types.map(t => (
-                    <button
-                      key={t.key}
-                      style={{
-                        flex: 1, padding: '10px 16px', border: 'none', cursor: 'pointer',
-                        fontWeight: 700, fontSize: '0.85rem', transition: 'all 0.2s ease',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                        backgroundColor: bookingType === t.key ? t.color : 'transparent',
-                        color: bookingType === t.key ? '#fff' : 'var(--text-muted)',
-                      }}
-                      onClick={() => {
-                        setBookingType(t.key);
-                        if (t.key === 'halfday') {
-                          if (dailyTimeSlot !== '08-12' && dailyTimeSlot !== '13-17') {
-                            setDailyTimeSlot('08-12');
-                          }
-                        } else if (t.key === 'daily') {
-                          if (dailyTimeSlot !== '08-17' && dailyTimeSlot !== '09-18') {
-                            setDailyTimeSlot('08-17');
-                          }
-                        }
-                      }}
-                    >
-                      {t.key === 'hourly' || t.key === 'halfday' ? <Clock size={15} /> : <Calendar size={15} />}
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-              );
-            })()}
-
-            {/* Room Layout Toggle (Standard vs Classroom) - Only if supports classroom! */}
-            {selectedRoom.has_classroom === 1 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '0.825rem', fontWeight: 600 }}>รูปแบบการจัดห้อง (Layout)</label>
-                <div style={{ display: 'flex', gap: '0', borderRadius: '14px', overflow: 'hidden', border: '1px solid rgba(236, 72, 153, 0.2)', backgroundColor: 'var(--bg-color)' }}>
-                  <button
-                    style={{
-                      flex: 1, padding: '8px 12px', border: 'none', cursor: 'pointer',
-                      fontWeight: 700, fontSize: '0.8rem', transition: 'all 0.2s ease',
-                      backgroundColor: layoutType === 'standard' ? 'var(--primary-color)' : 'transparent',
-                      color: layoutType === 'standard' ? '#fff' : 'var(--text-muted)',
-                    }}
-                    onClick={() => {
-                      setLayoutType('standard');
-                      // Re-validate current bookingType against room flags
-                      const hasH = selectedRoom.has_hourly === 1;
-                      const hasHD = selectedRoom.has_halfday === 1;
-                      const hasD = selectedRoom.has_daily === 1;
-                      if (bookingType === 'hourly' && !hasH) setBookingType(hasHD ? 'halfday' : hasD ? 'daily' : 'hourly');
-                      else if (bookingType === 'halfday' && !hasHD) setBookingType(hasH ? 'hourly' : hasD ? 'daily' : 'hourly');
-                      else if (bookingType === 'daily' && !hasD) setBookingType(hasH ? 'hourly' : hasHD ? 'halfday' : 'hourly');
-                    }}
-                  >
-                    Standard ({selectedRoom.capacity} ที่นั่ง)
-                  </button>
-                  <button
-                    style={{
-                      flex: 1, padding: '8px 12px', border: 'none', cursor: 'pointer',
-                      fontWeight: 700, fontSize: '0.8rem', transition: 'all 0.2s ease',
-                      backgroundColor: layoutType === 'classroom' ? '#ec4899' : 'transparent',
-                      color: layoutType === 'classroom' ? '#fff' : 'var(--text-muted)',
-                    }}
-                    onClick={() => {
-                      setLayoutType('classroom');
-                      // Re-validate current bookingType against room flags
-                      const hasH = selectedRoom.has_hourly === 1;
-                      const hasHD = selectedRoom.has_halfday === 1;
-                      const hasD = selectedRoom.has_daily === 1;
-                      if (bookingType === 'hourly' && !hasH) setBookingType(hasHD ? 'halfday' : hasD ? 'daily' : 'hourly');
-                      else if (bookingType === 'halfday' && !hasHD) setBookingType(hasH ? 'hourly' : hasD ? 'daily' : 'hourly');
-                      else if (bookingType === 'daily' && !hasD) setBookingType(hasH ? 'hourly' : hasHD ? 'halfday' : 'hourly');
-                    }}
-                  >
-                    Classroom ({selectedRoom.classroom_capacity} ที่นั่ง)
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Row 1: Date & Time */}
-            <div className="grid-cols-2" style={{ gap: '16px' }}>
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 600 }}>
-                  วันที่ทำการจอง <span style={{ color: 'var(--danger-color)', fontWeight: 'bold' }}>*</span>
-                </label>
-                <CustomDatePicker
-                  value={roomSchedule.date}
-                  onChange={val => setRoomSchedule({ ...roomSchedule, date: val })}
-                  showHistory={true}
-                  className="form-control"
-                  style={{ display: 'flex', alignItems: 'center', height: '40px', padding: '8px 12px', cursor: 'pointer', backgroundColor: 'var(--bg-color)', borderRadius: '12px' }}
-                />
-              </div>
-
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 600 }}>
-                  {bookingType === 'daily' ? 'ช่วงเวลาประจำวัน' : bookingType === 'halfday' ? 'ช่วงเวลาครึ่งวัน' : 'ช่วงเวลาใช้งาน'} <span style={{ color: 'var(--danger-color)', fontWeight: 'bold' }}>*</span>
-                </label>
-
-                {bookingType === 'daily' ? (
-                  /* Daily: Dropdown time slot selector */
-                  <div style={{ flex: 1, position: 'relative' }}>
-                    <div 
-                      className="form-control"
-                      onClick={() => setIsDailyTimeSlotOpen(!isDailyTimeSlotOpen)}
-                      style={{ 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        justifyContent: 'space-between', 
-                        height: '40px', 
-                        fontSize: '0.9rem', 
-                        borderRadius: '12px', 
-                        cursor: 'pointer',
-                        background: 'rgba(255, 255, 255, 0.05)',
-                        border: '1px solid var(--border-color)',
-                        padding: '0 12px',
-                        fontWeight: 600
-                      }}
-                    >
-                      <span style={{ color: 'var(--text-main)' }}>
-                        {dailyTimeSlot === '09-18' ? '09:00 - 18:00 น.' : '08:00 - 17:00 น.'}
-                      </span>
-                      <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
-                    </div>
-
-                    {isDailyTimeSlotOpen && (
-                      <>
-                        <div onClick={() => setIsDailyTimeSlotOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                        <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
-                          <div 
-                            onClick={() => { setDailyTimeSlot('08-17'); setIsDailyTimeSlotOpen(false); }}
-                            style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: dailyTimeSlot === '08-17' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: dailyTimeSlot === '08-17' ? 'bold' : 'normal', background: dailyTimeSlot === '08-17' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                            onMouseEnter={e => { if (dailyTimeSlot !== '08-17') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
-                            onMouseLeave={e => { if (dailyTimeSlot !== '08-17') e.currentTarget.style.background = 'transparent'; }}
-                          >
-                            08:00 - 17:00 น.
-                          </div>
-                          <div 
-                            onClick={() => { setDailyTimeSlot('09-18'); setIsDailyTimeSlotOpen(false); }}
-                            style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: dailyTimeSlot === '09-18' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: dailyTimeSlot === '09-18' ? 'bold' : 'normal', background: dailyTimeSlot === '09-18' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                            onMouseEnter={e => { if (dailyTimeSlot !== '09-18') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
-                            onMouseLeave={e => { if (dailyTimeSlot !== '09-18') e.currentTarget.style.background = 'transparent'; }}
-                          >
-                            09:00 - 18:00 น.
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ) : bookingType === 'halfday' ? (
-                  /* Half-Day: Dropdown time slot selector */
-                  <div style={{ flex: 1, position: 'relative' }}>
-                    <div 
-                      className="form-control"
-                      onClick={() => setIsHalfdayTimeSlotOpen(!isHalfdayTimeSlotOpen)}
-                      style={{ 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        justifyContent: 'space-between', 
-                        height: '40px', 
-                        fontSize: '0.9rem', 
-                        borderRadius: '12px', 
-                        cursor: 'pointer',
-                        background: 'rgba(255, 255, 255, 0.05)',
-                        border: '1px solid var(--border-color)',
-                        padding: '0 12px',
-                        fontWeight: 600
-                      }}
-                    >
-                      <span style={{ color: 'var(--text-main)', fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {dailyTimeSlot === '13-17' ? '13:00 - 17:00 น. (บ่าย)' : '08:00 - 12:00 น. (เช้า)'}
-                      </span>
-                      <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
-                    </div>
-
-                    {isHalfdayTimeSlotOpen && (
-                      <>
-                        <div onClick={() => setIsHalfdayTimeSlotOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                        <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
-                          <div 
-                            onClick={() => { setDailyTimeSlot('08-12'); setIsHalfdayTimeSlotOpen(false); }}
-                            style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: dailyTimeSlot === '08-12' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: dailyTimeSlot === '08-12' ? 'bold' : 'normal', background: dailyTimeSlot === '08-12' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                            onMouseEnter={e => { if (dailyTimeSlot !== '08-12') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
-                            onMouseLeave={e => { if (dailyTimeSlot !== '08-12') e.currentTarget.style.background = 'transparent'; }}
-                          >
-                            08:00 - 12:00 น. (ครึ่งวันเช้า)
-                          </div>
-                          <div 
-                            onClick={() => { setDailyTimeSlot('13-17'); setIsHalfdayTimeSlotOpen(false); }}
-                            style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: dailyTimeSlot === '13-17' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: dailyTimeSlot === '13-17' ? 'bold' : 'normal', background: dailyTimeSlot === '13-17' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                            onMouseEnter={e => { if (dailyTimeSlot !== '13-17') e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; }}
-                            onMouseLeave={e => { if (dailyTimeSlot !== '13-17') e.currentTarget.style.background = 'transparent'; }}
-                          >
-                            13:00 - 17:00 น. (ครึ่งวันบ่าย)
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  /* Hourly: Dropdown time selectors (No manual typing) */
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', height: '40px', width: '100%' }}>
-                    {/* Start Time Dropdown */}
-                    <div style={{ flex: 1, position: 'relative' }}>
-                      <div 
-                        className="form-control"
-                        onClick={() => { setIsStartHourOpen(!isStartHourOpen); setIsEndHourOpen(false); }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          height: '40px',
-                          fontSize: '0.85rem',
-                          borderRadius: '12px',
-                          cursor: 'pointer',
-                          background: 'rgba(255, 255, 255, 0.05)',
-                          border: '1px solid var(--border-color)',
-                          padding: '0 8px',
-                          fontWeight: 700,
-                          whiteSpace: 'nowrap'
-                        }}
-                      >
-                        <span>
-                          {roomSchedule.startHour 
-                            ? `${String(roomSchedule.startHour).padStart(2, '0')}:${String(roomSchedule.startMinute || '00').padStart(2, '0')} น.` 
-                            : 'เลือกเวลาเริ่ม'}
-                        </span>
-                        <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
-                      </div>
-
-                      {isStartHourOpen && (
-                        <>
-                          <div onClick={() => setIsStartHourOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                          <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, minWidth: '110px', zIndex: 2000, borderRadius: '12px', padding: '4px', maxHeight: '200px', overflowY: 'auto' }}>
-                            {TIME_SLOT_OPTIONS.map(t => {
-                              const [h, m] = t.split(':');
-                              const isSelected = roomSchedule.startHour === h && roomSchedule.startMinute === m;
-                              return (
-                                <div
-                                  key={`start-${t}`}
-                                  onClick={() => {
-                                    const newSchedule = { ...roomSchedule, startHour: h, startMinute: m };
-                                    const startMins = parseInt(h, 10) * 60 + parseInt(m, 10);
-                                    const endMins = parseInt(roomSchedule.endHour || '0', 10) * 60 + parseInt(roomSchedule.endMinute || '0', 10);
-                                    if (endMins <= startMins) {
-                                      const nextMins = Math.min(startMins + 60, 18 * 60);
-                                      newSchedule.endHour = String(Math.floor(nextMins / 60)).padStart(2, '0');
-                                      newSchedule.endMinute = String(nextMins % 60).padStart(2, '0');
-                                    }
-                                    setRoomSchedule(newSchedule);
-                                    setIsStartHourOpen(false);
-                                  }}
-                                  style={{
-                                    padding: '6px 8px',
-                                    borderRadius: '8px',
-                                    cursor: 'pointer',
-                                    fontSize: '0.825rem',
-                                    fontWeight: isSelected ? 'bold' : 'normal',
-                                    color: isSelected ? 'var(--primary-color)' : 'var(--text-main)',
-                                    background: isSelected ? 'rgba(37, 99, 235, 0.15)' : 'transparent',
-                                    textAlign: 'center',
-                                    marginBottom: '2px'
-                                  }}
-                                >
-                                  {t} น.
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </>
-                      )}
-                    </div>
-
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, flexShrink: 0 }}>ถึง</span>
-
-                    {/* End Time Dropdown */}
-                    <div style={{ flex: 1, position: 'relative' }}>
-                      <div 
-                        className="form-control"
-                        onClick={() => { setIsEndHourOpen(!isEndHourOpen); setIsStartHourOpen(false); }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          height: '40px',
-                          fontSize: '0.85rem',
-                          borderRadius: '12px',
-                          cursor: 'pointer',
-                          background: 'rgba(255, 255, 255, 0.05)',
-                          border: '1px solid var(--border-color)',
-                          padding: '0 8px',
-                          fontWeight: 700,
-                          whiteSpace: 'nowrap'
-                        }}
-                      >
-                        <span>
-                          {roomSchedule.endHour 
-                            ? `${String(roomSchedule.endHour).padStart(2, '0')}:${String(roomSchedule.endMinute || '00').padStart(2, '0')} น.` 
-                            : 'เลือกเวลาสิ้นสุด'}
-                        </span>
-                        <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
-                      </div>
-
-                      {isEndHourOpen && (
-                        <>
-                          <div onClick={() => setIsEndHourOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                          <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, minWidth: '110px', zIndex: 2000, borderRadius: '12px', padding: '4px', maxHeight: '200px', overflowY: 'auto' }}>
-                            {TIME_SLOT_OPTIONS.map(t => {
-                              const [h, m] = t.split(':');
-                              const isSelected = roomSchedule.endHour === h && roomSchedule.endMinute === m;
-                              const startMins = parseInt(roomSchedule.startHour || '0', 10) * 60 + parseInt(roomSchedule.startMinute || '0', 10);
-                              const currentMins = parseInt(h, 10) * 60 + parseInt(m, 10);
-                              const isBeforeStart = currentMins <= startMins;
-                              return (
-                                <div
-                                  key={`end-${t}`}
-                                  onClick={() => {
-                                    if (isBeforeStart) return;
-                                    setRoomSchedule({ ...roomSchedule, endHour: h, endMinute: m });
-                                    setIsEndHourOpen(false);
-                                  }}
-                                  style={{
-                                    padding: '6px 8px',
-                                    borderRadius: '8px',
-                                    cursor: isBeforeStart ? 'not-allowed' : 'pointer',
-                                    fontSize: '0.825rem',
-                                    fontWeight: isSelected ? 'bold' : 'normal',
-                                    color: isSelected ? 'var(--primary-color)' : isBeforeStart ? 'var(--text-muted)' : 'var(--text-main)',
-                                    opacity: isBeforeStart ? 0.35 : 1,
-                                    background: isSelected ? 'rgba(37, 99, 235, 0.15)' : 'transparent',
-                                    textAlign: 'center',
-                                    marginBottom: '2px'
-                                  }}
-                                >
-                                  {t} น.
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Realtime Calculated Duration & Pricing Info */}
-            {(() => {
-              let durationText = '';
-              let totalHrs = 0;
-              let ratePrice = 0;
-              let isTimeValid = true;
-
-              if (bookingType === 'daily') {
-                durationText = '9 ชั่วโมง';
-                totalHrs = 9;
-                ratePrice = layoutType === 'classroom' ? (selectedRoom.classroom_daily_rate || 0) : (selectedRoom.daily_rate || 0);
-              } else if (bookingType === 'halfday') {
-                durationText = '4 ชั่วโมง';
-                totalHrs = 4;
-                ratePrice = selectedRoom.half_day_rate || 0;
-              } else {
-                // Hourly calculation
-                const sh = parseInt(roomSchedule.startHour, 10);
-                const sm = parseInt(roomSchedule.startMinute, 10);
-                const eh = parseInt(roomSchedule.endHour, 10);
-                const em = parseInt(roomSchedule.endMinute, 10);
-                if (!isNaN(sh) && !isNaN(sm) && !isNaN(eh) && !isNaN(em) &&
-                    sh >= 0 && sh <= 23 && sm >= 0 && sm <= 59 &&
-                    eh >= 0 && eh <= 23 && em >= 0 && em <= 59) {
-                  const startMins = sh * 60 + sm;
-                  const endMins = eh * 60 + em;
-                  if (endMins > startMins) {
-                    const diffMs = (endMins - startMins) * 60 * 1000;
-                    totalHrs = Math.ceil(diffMs / (1000 * 60 * 60));
-                    durationText = `${totalHrs} ชั่วโมง`;
-                    ratePrice = layoutType === 'classroom' ? (selectedRoom.classroom_hourly_rate || 0) : (selectedRoom.hourly_rate || 0);
-                  } else {
-                    isTimeValid = false;
-                  }
-                } else {
-                  isTimeValid = false;
-                }
-              }
-
-              return (
-                <div style={{
-                  backgroundColor: 'rgba(99, 102, 241, 0.05)',
-                  border: '1px dashed rgba(99, 102, 241, 0.25)',
-                  borderRadius: '12px',
-                  padding: '10px 14px',
-                  fontSize: '0.825rem',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginTop: '-8px',
-                  marginBottom: '6px'
-                }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px', maxHeight: '320px', overflowY: 'auto' }}>
+              {services.map(s => (
+                <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', borderRadius: '12px', backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)' }}>
                   <div>
-                    <span style={{ color: 'var(--text-muted)' }}>ระยะเวลาจอง:</span>{' '}
-                    <strong style={{ color: 'var(--primary-color)' }}>
-                      {isTimeValid ? durationText : 'กรุณาระบุเวลาเริ่มต้น-สิ้นสุดให้ถูกต้อง'}
-                    </strong>
+                    <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-main)' }}>{s.name}</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--primary-color)', fontWeight: 800 }}>฿{s.price}</div>
                   </div>
-                  {isTimeValid && ratePrice > 0 && (
-                    <div>
-                      <span style={{ color: 'var(--text-muted)' }}>ราคาต่อหน่วย:</span>{' '}
-                      <strong>{Number(ratePrice).toLocaleString()} บาท</strong>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
-            {/* Realtime Room Availability Status Banner */}
-            {currentSlotOverlap.isOverlap ? (
-              <div style={{
-                backgroundColor: 'rgba(239, 68, 68, 0.12)',
-                border: '1.5px solid rgba(239, 68, 68, 0.45)',
-                borderRadius: '12px',
-                padding: '12px 14px',
-                fontSize: '0.85rem',
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: '10px',
-                marginTop: '-4px',
-                marginBottom: '4px',
-                boxShadow: '0 4px 14px rgba(239, 68, 68, 0.12)'
-              }}>
-                <AlertTriangle size={18} style={{ color: '#ef4444', flexShrink: 0, marginTop: '2px' }} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 800, color: '#ef4444', marginBottom: '2px', fontSize: '0.875rem' }}>
-                    ⛔ ช่วงเวลานี้มีผู้จองใช้งานแล้ว (ห้องไม่ว่าง)
-                  </div>
-                  <div style={{ color: 'var(--text-main)', fontSize: '0.8rem', lineHeight: 1.5 }}>
-                    ผู้เข้าใช้: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong> · ช่วงเวลา:{' '}
-                    <strong>
-                      {new Date(currentSlotOverlap.booking.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(currentSlotOverlap.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
-                    </strong>
-                  </div>
-                </div>
-              </div>
-            ) : currentSlotOverlap.isValid ? (
-              <div style={{
-                backgroundColor: 'rgba(16, 185, 129, 0.08)',
-                border: '1px solid rgba(16, 185, 129, 0.3)',
-                borderRadius: '12px',
-                padding: '10px 14px',
-                fontSize: '0.825rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                marginTop: '-4px',
-                marginBottom: '4px',
-                color: '#10b981'
-              }}>
-                <CheckCircle2 size={16} style={{ color: '#10b981', flexShrink: 0 }} />
-                <span style={{ fontWeight: 700 }}>
-                  ห้องว่าง พร้อมทำการจองในช่วงเวลานี้
-                </span>
-              </div>
-            ) : null}
-
-            {/* Day Bookings Timeline / Existing Slots */}
-            {dayRoomBookings.length > 0 && (
-              <div style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.03)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '12px',
-                padding: '10px 14px',
-                fontSize: '0.78rem',
-                marginTop: '-4px',
-                marginBottom: '4px'
-              }}>
-                <div style={{ fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Clock size={13} />
-                  <span>รายการที่จองแล้วในวันที่ {roomSchedule.date ? new Date(roomSchedule.date).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' }) : 'วันนี้'} ({dayRoomBookings.length} รายการ):</span>
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {dayRoomBookings.map((b, idx) => {
-                    const sT = new Date(b.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                    const eT = new Date(b.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                    const isNowExpired = new Date(b.end_time) < new Date();
-                    return (
-                      <span 
-                        key={idx}
-                        style={{
-                          padding: '3px 8px',
-                          borderRadius: '8px',
-                          fontSize: '0.75rem',
-                          fontWeight: 600,
-                          backgroundColor: isNowExpired ? 'rgba(239, 68, 68, 0.12)' : 'rgba(37, 99, 235, 0.12)',
-                          color: isNowExpired ? '#dc2626' : 'var(--primary-color)',
-                          border: `1px solid ${isNowExpired ? 'rgba(239, 68, 68, 0.25)' : 'rgba(37, 99, 235, 0.25)'}`
-                        }}
-                      >
-                        {sT} - {eT} น. · {b.customer_name || 'ลูกค้า'}
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Row 2: Customer Name & Contact */}
-            <div className="grid-cols-2" style={{ gap: '16px' }}>
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 600 }}>
-                  ชื่อผู้จอง <span style={{ color: 'var(--danger-color)', fontWeight: 'bold' }}>*</span>
-                </label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '4px 10px', backgroundColor: 'var(--bg-color)', height: '40px' }}>
-                  <User size={15} style={{ color: 'var(--text-muted)' }} />
-                  <input 
-                    type="text" className="form-control" 
-                    style={{ border: 'none', background: 'transparent', padding: '6px 0', width: '100%', outline: 'none', boxShadow: 'none' }}
-                    placeholder="กรอกชื่อผู้จอง"
-                    value={customer.name}
-                    onChange={e => setCustomer({ ...customer, name: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 600 }}>เบอร์ติดต่อ</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '4px 10px', backgroundColor: 'var(--bg-color)', height: '40px' }}>
-                  <Phone size={15} style={{ color: 'var(--text-muted)' }} />
-                  <input 
-                    type="text" className="form-control" 
-                    style={{ border: 'none', background: 'transparent', padding: '6px 0', width: '100%', outline: 'none', boxShadow: 'none' }}
-                    placeholder="กรอกเบอร์โทรศัพท์"
-                    value={customer.contact}
-                    onChange={e => setCustomer({ ...customer, contact: e.target.value })}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Row 3: Payment Status & Method */}
-            <div style={{ display: 'grid', gridTemplateColumns: paymentStatus === 'paid' ? '1fr 1fr' : '1fr', gap: '16px' }}>
-              <div className="form-group" style={{ flex: 1, position: 'relative' }}>
-                <label style={{ fontSize: '0.825rem', fontWeight: 600 }}>สถานะการชำระเงิน <span style={{ color: 'var(--danger-color)', fontWeight: 'bold' }}>*</span></label>
-                <div 
-                  className="form-control"
-                  onClick={() => setIsPaymentStatusOpen(!isPaymentStatusOpen)}
-                  style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    justifyContent: 'space-between', 
-                    height: '40px', 
-                    fontSize: '0.9rem', 
-                    borderRadius: '12px', 
-                    cursor: 'pointer',
-                    background: 'rgba(255, 255, 255, 0.05)',
-                    border: '1px solid var(--border-color)',
-                    padding: '0 12px',
-                    fontWeight: 600
-                  }}
-                >
-                  <span style={{ color: paymentStatus ? 'var(--text-main)' : 'var(--text-muted)' }}>
-                    {paymentStatus === 'paid' ? 'ชำระเงินแล้ว' : paymentStatus === 'pending' ? 'ค้างชำระ (Pending)' : 'ยังไม่เลือก'}
-                  </span>
-                  <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
-                </div>
-
-                {isPaymentStatusOpen && (
-                  <>
-                    <div onClick={() => setIsPaymentStatusOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                    <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
-                      <div 
-                        onClick={() => { setPaymentStatus(''); setPaymentMethod(''); setIsPaymentStatusOpen(false); }}
-                        style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentStatus === '' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentStatus === '' ? 'bold' : 'normal', background: paymentStatus === '' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                      >
-                        ยังไม่เลือก
-                      </div>
-                      <div 
-                        onClick={() => { setPaymentStatus('paid'); if (!paymentMethod) setPaymentMethod('cash'); setIsPaymentStatusOpen(false); }}
-                        style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentStatus === 'paid' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentStatus === 'paid' ? 'bold' : 'normal', background: paymentStatus === 'paid' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                      >
-                        ชำระเงินแล้ว
-                      </div>
-                      <div 
-                        onClick={() => { setPaymentStatus('pending'); setPaymentMethod(''); setIsPaymentStatusOpen(false); }}
-                        style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentStatus === 'pending' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentStatus === 'pending' ? 'bold' : 'normal', background: paymentStatus === 'pending' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                      >
-                        ค้างชำระ (Pending)
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {paymentStatus === 'paid' && (
-                <div className="form-group" style={{ flex: 1, position: 'relative' }}>
-                  <label style={{ fontSize: '0.825rem', fontWeight: 600 }}>ช่องทางการชำระเงิน <span style={{ color: 'var(--danger-color)', fontWeight: 'bold' }}>*</span></label>
-                  <div 
-                    className="form-control"
-                    onClick={() => setIsPaymentMethodOpen(!isPaymentMethodOpen)}
-                    style={{ 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      justifyContent: 'space-between', 
-                      height: '40px', 
-                      fontSize: '0.9rem', 
-                      borderRadius: '12px', 
-                      cursor: 'pointer',
-                      background: 'rgba(255, 255, 255, 0.05)',
-                      border: '1px solid var(--border-color)',
-                      padding: '0 12px',
-                      fontWeight: 600
-                    }}
+                  <button
+                    type="button"
+                    onClick={() => addServiceToCart(s)}
+                    className="btn btn-primary"
+                    style={{ padding: '6px 12px', borderRadius: '8px', fontSize: '0.75rem', fontWeight: 700 }}
                   >
-                    <span style={{ color: paymentMethod ? 'var(--text-main)' : 'var(--text-muted)' }}>
-                      {paymentMethod === 'cash' ? 'เงินสด (Cash)' : paymentMethod === 'transfer' ? 'โอนเงินเข้าบัญชี' : 'ยังไม่เลือก'}
-                    </span>
-                    <ChevronDown size={16} style={{ color: 'var(--text-muted)' }} />
-                  </div>
-
-                  {isPaymentMethodOpen && (
-                    <>
-                      <div onClick={() => setIsPaymentMethodOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                      <div className="liquidglass-dropdown" style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 2000, borderRadius: '12px', padding: '6px' }}>
-                        <div 
-                          onClick={() => { setPaymentMethod(''); setIsPaymentMethodOpen(false); }}
-                          style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentMethod === '' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentMethod === '' ? 'bold' : 'normal', background: paymentMethod === '' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                        >
-                          ยังไม่เลือก
-                        </div>
-                        <div 
-                          onClick={() => { setPaymentMethod('cash'); setIsPaymentMethodOpen(false); }}
-                          style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentMethod === 'cash' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentMethod === 'cash' ? 'bold' : 'normal', background: paymentMethod === 'cash' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                        >
-                          เงินสด (Cash)
-                        </div>
-                        <div 
-                          onClick={() => { setPaymentMethod('transfer'); setIsPaymentMethodOpen(false); }}
-                          style={{ padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', color: paymentMethod === 'transfer' ? 'var(--primary-color)' : 'var(--text-main)', fontWeight: paymentMethod === 'transfer' ? 'bold' : 'normal', background: paymentMethod === 'transfer' ? 'rgba(37, 99, 235, 0.15)' : 'transparent', transition: 'all 0.2s', marginBottom: '2px' }}
-                        >
-                          โอนเงินเข้าบัญชี
-                        </div>
-                      </div>
-                    </>
-                  )}
+                    + เพิ่ม
+                  </button>
                 </div>
-              )}
-            </div>
-
-            {/* Rate info summary */}
-            <div style={{ 
-              fontSize: '0.825rem', 
-              padding: '10px 14px', 
-              borderRadius: '12px', 
-              backgroundColor: bookingType === 'daily' ? 'rgba(245, 158, 11, 0.08)' : bookingType === 'halfday' ? 'rgba(16, 185, 129, 0.08)' : 'rgba(99, 102, 241, 0.08)',
-              border: `1px solid ${bookingType === 'daily' ? 'rgba(245, 158, 11, 0.2)' : bookingType === 'halfday' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(99, 102, 241, 0.15)'}`,
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}>
-              {bookingType === 'daily' ? (
-                <>
-                  <Calendar size={14} style={{ color: '#f59e0b', flexShrink: 0 }} />
-                  <span style={{ color: 'var(--text-main)' }}>
-                    <strong style={{ color: '#f59e0b' }}>รายวัน ({layoutType === 'classroom' ? 'Classroom' : 'Standard'})</strong> — อัตราค่าบริการ <strong>{Number(layoutType === 'classroom' ? selectedRoom.classroom_daily_rate || 0 : selectedRoom.daily_rate || 0).toLocaleString()}</strong> บาท / วัน
-                    {dailyTimeSlot === '09-18' ? ' (09:00 - 18:00 น.)' : ' (08:00 - 17:00 น.)'}
-                  </span>
-                </>
-              ) : bookingType === 'halfday' ? (
-                <>
-                  <Clock size={14} style={{ color: '#10b981', flexShrink: 0 }} />
-                  <span style={{ color: 'var(--text-main)' }}>
-                    <strong style={{ color: '#10b981' }}>รายครึ่งวัน ({layoutType === 'classroom' ? 'Classroom' : 'Standard'})</strong> — อัตราค่าบริการ <strong>{Number(selectedRoom.half_day_rate || 0).toLocaleString()}</strong> บาท / ครึ่งวัน
-                    {dailyTimeSlot === '13-17' ? ' (13:00 - 17:00 น. ครึ่งวันบ่าย)' : ' (08:00 - 12:00 น. ครึ่งวันเช้า)'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Clock size={14} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
-                  <span style={{ color: 'var(--text-main)' }}>
-                    <strong style={{ color: 'var(--primary-color)' }}>รายชั่วโมง ({layoutType === 'classroom' ? 'Classroom' : 'Standard'})</strong> — อัตราค่าบริการ <strong>{Number(layoutType === 'classroom' ? selectedRoom.classroom_hourly_rate || 0 : selectedRoom.hourly_rate || 0).toLocaleString()}</strong> บาท / ชม. (เศษชั่วโมงปัดขึ้น)
-                  </span>
-                </>
-              )}
-            </div>
-
-            <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
-              <button className="btn btn-secondary" style={{ flex: 1, borderRadius: '12px' }} onClick={closeRoomModal}>ยกเลิก</button>
-              <button 
-                className="btn btn-primary" 
-                style={{ 
-                  flex: 2, 
-                  borderRadius: '12px',
-                  backgroundColor: currentSlotOverlap.isOverlap ? '#ef4444' : undefined,
-                  opacity: currentSlotOverlap.isOverlap ? 0.65 : 1,
-                  cursor: currentSlotOverlap.isOverlap ? 'not-allowed' : 'pointer'
-                }} 
-                onClick={addRoomToCart}
-                disabled={currentSlotOverlap.isOverlap}
-              >
-                {currentSlotOverlap.isOverlap ? '⛔ ช่วงเวลานี้ไม่ว่าง' : 'เพิ่มลงตะกร้า'}
-              </button>
+              ))}
             </div>
           </div>
         </div>
       )}
 
       {/* ========================================================= */}
-      {/* 🧾 RECEIPT PRINT MODAL (REDESIGNED ULTRA-MODERN PREVIEW)   */}
+      {/* 6. RECEIPT PRINT MODAL                                    */}
       {/* ========================================================= */}
       {showReceiptModal && printBooking && (
         <div style={{
           position: 'fixed',
           top: 0, left: 0, right: 0, bottom: 0,
           backgroundColor: 'rgba(15, 23, 42, 0.65)',
-          backdropFilter: 'blur(24px) saturate(200%)',
-          WebkitBackdropFilter: 'blur(24px) saturate(200%)',
+          backdropFilter: 'blur(20px)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
           zIndex: 9999,
-          overflowY: 'auto',
-          padding: '24px'
-        }} className="print-modal-overlay">
-          
-          {/* Main Floating Glass Container */}
-          <div style={{
-            maxWidth: '460px',
-            width: '100%',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '16px',
-            animation: 'fadeIn 0.25s ease-out'
-          }}>
-            {/* Top Action Header Bar */}
-            <div style={{
-              width: '100%',
-              backgroundColor: 'var(--bg-card)',
-              border: '1px solid var(--glass-border)',
-              borderRadius: '20px',
-              padding: '12px 18px',
-              display: 'flex',
-              alignItems: 'center',
-              justify: 'space-between',
-              boxShadow: '0 12px 35px rgba(0, 0, 0, 0.2)'
-            }} className="no-print">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ 
-                  backgroundColor: 'rgba(16, 185, 129, 0.15)', 
-                  color: '#10b981', 
-                  padding: '4px 10px', 
-                  borderRadius: '99px', 
-                  fontSize: '0.75rem', 
-                  fontWeight: 800,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '4px'
-                }}>
-                  <Check size={13} /> ชำระเงินสำเร็จ
-                </span>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <button 
-                  type="button"
-                  onClick={handleDownloadReceiptPDF}
-                  className="btn btn-secondary"
-                  style={{
-                    height: '36px',
-                    padding: '0 14px',
-                    borderRadius: '12px',
-                    fontSize: '0.8rem',
-                    fontWeight: 700,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    border: '1px solid var(--border-color)',
-                    background: 'var(--bg-hover)',
-                    color: 'var(--text-main)',
-                    cursor: 'pointer'
-                  }}
-                  title="ดาวน์โหลดไฟล์ PDF สลิป"
-                >
-                  <FileText size={15} />
-                  <span>PDF</span>
+          padding: '20px'
+        }}>
+          <div style={{ maxWidth: '440px', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+            <div style={{ width: '100%', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '16px', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', padding: '4px 10px', borderRadius: '99px', fontSize: '0.75rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                <Check size={13} /> ชำระเงินสำเร็จ
+              </span>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button type="button" onClick={handleDownloadReceiptPDF} className="btn btn-secondary" style={{ height: '34px', padding: '0 12px', borderRadius: '10px', fontSize: '0.78rem', fontWeight: 700 }}>
+                  <FileText size={14} /> PDF
                 </button>
-
-                <button 
-                  type="button"
-                  onClick={() => window.print()}
-                  className="btn btn-primary"
-                  style={{
-                    height: '36px',
-                    padding: '0 16px',
-                    borderRadius: '12px',
-                    fontSize: '0.8rem',
-                    fontWeight: 800,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  <Printer size={15} />
-                  <span>พิมพ์ใบเสร็จ</span>
+                <button type="button" onClick={() => window.print()} className="btn btn-primary" style={{ height: '34px', padding: '0 14px', borderRadius: '10px', fontSize: '0.78rem', fontWeight: 800 }}>
+                  <Printer size={14} /> พิมพ์ใบเสร็จ
                 </button>
-
-                <button 
-                  type="button"
-                  onClick={handleCloseReceiptModal}
-                  style={{
-                    width: '36px',
-                    height: '36px',
-                    borderRadius: '12px',
-                    border: '1px solid var(--border-color)',
-                    background: 'rgba(239, 68, 68, 0.1)',
-                    color: 'var(--danger-color)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer'
-                  }}
-                  title="ปิดหน้าต่าง"
-                >
-                  <X size={18} />
+                <button type="button" onClick={handleCloseReceiptModal} style={{ width: '34px', height: '34px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'rgba(239, 68, 68, 0.1)', color: 'var(--danger-color)', cursor: 'pointer' }}>
+                  <X size={16} />
                 </button>
               </div>
             </div>
 
-            {/* Thermal Paper Slip Preview Sheet Container */}
-            <div style={{
-              backgroundColor: '#ffffff',
-              borderRadius: '20px',
-              padding: '20px',
-              boxShadow: '0 25px 60px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.2)',
-              width: '100%',
-              maxWidth: '390px',
-              display: 'flex',
-              justify: 'center'
-            }}>
+            <div style={{ backgroundColor: '#ffffff', borderRadius: '16px', padding: '16px', width: '100%', maxWidth: '380px' }}>
               <ReceiptPrint booking={printBooking} settings={settings} />
             </div>
           </div>
-
         </div>
       )}
 
-      {/* Liquidglass Booking Details Modal */}
+      {/* ========================================================= */}
+      {/* 7. VIEWED EVENT DETAILS MODAL                             */}
+      {/* ========================================================= */}
       {viewedEvent && (
         <div style={{
           position: 'fixed',
           top: 0, left: 0, right: 0, bottom: 0,
           backgroundColor: 'rgba(15, 23, 42, 0.45)',
-          background: 'rgba(15, 23, 42, 0.45)',
           backdropFilter: 'blur(16px)',
-          WebkitBackdropFilter: 'blur(16px)',
           zIndex: 2000,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: '24px'
+          padding: '20px'
         }}>
-          <div className="card" style={{
-            width: '95%',
-            maxWidth: '460px',
-            padding: '28px',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
-            border: '1px solid var(--glass-border)',
-            position: 'relative',
-            borderRadius: '24px',
-            backgroundColor: 'var(--bg-card)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '20px'
-          }}>
-            {/* Close button */}
-            <button 
-              type="button"
-              style={{ position: 'absolute', right: '20px', top: '20px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
-              onClick={() => setViewedEvent(null)}
-            >
-              <X size={20} />
+          <div style={{ width: '95%', maxWidth: '440px', padding: '24px', borderRadius: '20px', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-color)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column', gap: '16px', position: 'relative' }}>
+            <button type="button" style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }} onClick={() => setViewedEvent(null)}>
+              <X size={18} />
             </button>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--primary-color)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                รายละเอียดการจองประจำวัน
-              </div>
-              <h2 style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
-                {viewedEvent.room_name}
-              </h2>
+            <div>
+              <div style={{ fontSize: '0.72rem', fontWeight: 'bold', color: 'var(--primary-color)', textTransform: 'uppercase' }}>รายละเอียดการจองห้อง</div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--text-main)', margin: '2px 0 0 0' }}>{viewedEvent.room_name}</h3>
             </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              
-              {/* Event Info Card */}
-              <div style={{
-                background: 'rgba(255, 255, 255, 0.02)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '16px',
-                padding: '16px',
-                fontSize: '0.85rem',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px',
-                color: 'var(--text-main)'
-              }}>
-                <div><strong>ผู้จอง:</strong> {viewedEvent.customer_name}</div>
-                <div><strong>วันที่จอง:</strong> {(() => {
-                  const d = new Date(viewedEvent.start_time);
-                  return `${d.getDate()} ${monthNames[d.getMonth()]} ${d.getFullYear() + 543}`;
-                })()}</div>
-                <div><strong>เวลาจอง:</strong> {new Date(viewedEvent.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(viewedEvent.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</div>
-                <div><strong>รูปแบบการจอง:</strong> {
-                  viewedEvent.booking_type === 'daily' ? 'รายวัน (ทั้งวัน)' :
-                  viewedEvent.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง'
-                }</div>
-                <div><strong>ระยะเวลาใช้งาน:</strong> {(() => {
-                  const start = new Date(viewedEvent.start_time);
-                  const end = new Date(viewedEvent.end_time);
-                  const diffMs = end - start;
-                  const diffHrs = diffMs / (1000 * 60 * 60);
-                  const hoursRounded = Math.ceil(diffHrs);
-                  
-                  if (viewedEvent.booking_type === 'daily') {
-                    return '1 วัน (9 ชั่วโมง)';
-                  } else if (viewedEvent.booking_type === 'halfday') {
-                    return 'ครึ่งวัน (4 ชั่วโมง)';
-                  }
-                  return `${hoursRounded} ชั่วโมง`;
-                })()}</div>
-                <div><strong>รูปแบบการจัดห้อง:</strong> {viewedEvent.layout === 'classroom' ? 'Classroom (CR)' : 'Standard (Std)'}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <strong>ช่องทางการจอง:</strong>
-                  <span style={{
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                    padding: '2px 10px',
-                    borderRadius: '99px',
-                    backgroundColor: viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                    color: viewedEvent.booking_source === 'online' ? '#0ea5e9' : '#10b981',
-                    border: `1px solid ${viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.25)' : 'rgba(16, 185, 129, 0.25)'}`
-                  }}>
-                    {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Price Details */}
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                borderTop: '1px solid var(--border-color)',
-                paddingTop: '12px',
-                marginTop: '4px'
-              }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    หมายเลขอ้างอิงใบเสร็จ: #{viewedEvent.booking_id}
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                    <span style={{
-                      fontSize: '0.7rem',
-                      fontWeight: 'bold',
-                      padding: '2px 8px',
-                      borderRadius: '99px',
-                      backgroundColor: viewedEvent.payment_status === 'paid' ? 'rgba(34,197,94,0.1)' : 'rgba(245,158,11,0.1)',
-                      color: viewedEvent.payment_status === 'paid' ? 'var(--success-color)' : 'var(--warning-color)',
-                      border: `1px solid ${viewedEvent.payment_status === 'paid' ? 'rgba(34,197,94,0.2)' : 'rgba(245,158,11,0.2)'}`
-                    }}>
-                      {viewedEvent.payment_status === 'paid' ? 'จ่ายแล้ว' : 'ค้างชำระ'}
-                    </span>
-                    {new Date() > new Date(viewedEvent.end_time) && (
-                      <span style={{
-                        fontSize: '0.7rem',
-                        fontWeight: 'bold',
-                        padding: '2px 8px',
-                        borderRadius: '99px',
-                        backgroundColor: 'rgba(239, 68, 68, 0.15)',
-                        color: '#ef4444',
-                        border: '1px solid rgba(239, 68, 68, 0.25)'
-                      }}>
-                        ใช้งานเสร็จแล้ว
-                      </span>
-                    )}
-                  </div>
-                </div>
-                
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ราคาสุทธิเฉพาะห้องนี้</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--text-main)' }}>
-                    {Number(viewedEvent.subtotal).toLocaleString()}.-
-                  </div>
-                </div>
-              </div>
-
+            <div style={{ backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '14px', fontSize: '0.82rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div><strong>ผู้จอง:</strong> {viewedEvent.customer_name}</div>
+              <div><strong>จำนวนผู้เข้าใช้:</strong> {viewedEvent.guest_count || viewedEvent.item_guest_count ? `${viewedEvent.guest_count || viewedEvent.item_guest_count} ท่าน` : 'ไม่ระบุ'}</div>
+              <div><strong>ช่วงเวลา:</strong> {new Date(viewedEvent.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(viewedEvent.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</div>
+              <div><strong>รูปแบบ:</strong> {viewedEvent.booking_type === 'daily' ? 'รายวัน (ทั้งวัน)' : viewedEvent.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง'} · {viewedEvent.layout === 'classroom' ? 'Classroom' : 'Standard'}</div>
+              <div><strong>สถานะชำระ:</strong> {viewedEvent.payment_status === 'paid' ? '✅ ชำระเงินแล้ว' : '⏳ ค้างชำระ'}</div>
+              <div><strong>สถานะการใช้งาน:</strong> {(() => {
+                const currentNowTime = new Date();
+                const s = new Date(viewedEvent.start_time);
+                const e = new Date(viewedEvent.end_time);
+                if (currentNowTime > e) return <span style={{ color: '#ef4444', fontWeight: 700 }}>🔴 ใช้งานเสร็จแล้ว</span>;
+                if (currentNowTime >= s && currentNowTime <= e) return <span style={{ color: '#ea580c', fontWeight: 800 }}>🟠 กำลังใช้งาน</span>;
+                return <span style={{ color: '#10b981', fontWeight: 700 }}>🟢 รอใช้งาน</span>;
+              })()}</div>
             </div>
-
-            <div style={{ marginTop: '8px' }}>
-              <button 
-                type="button" 
-                className="btn btn-secondary" 
-                style={{ width: '100%', height: '44px', borderRadius: '14px', fontWeight: 700 }} 
-                onClick={() => setViewedEvent(null)}
-              >
-                ปิดหน้าต่าง
-              </button>
-            </div>
+            <button type="button" className="btn btn-secondary" style={{ width: '100%', height: '40px', borderRadius: '12px', fontWeight: 700 }} onClick={() => setViewedEvent(null)}>
+              ปิดหน้าต่าง
+            </button>
           </div>
         </div>
       )}
+
     </div>
   );
 }

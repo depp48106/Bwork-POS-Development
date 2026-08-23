@@ -985,6 +985,7 @@ async function ensureD1Schema(env) {
     "ALTER TABLE bookings ADD COLUMN tax_phone TEXT",
     "ALTER TABLE bookings ADD COLUMN tax_delivery_method TEXT",
     "ALTER TABLE bookings ADD COLUMN tax_postal_address TEXT",
+    "ALTER TABLE bookings ADD COLUMN guest_count INTEGER",
     "ALTER TABLE bookings ADD COLUMN booking_source TEXT DEFAULT 'online'",
     "ALTER TABLE bookings ADD COLUMN customer_email TEXT",
     "ALTER TABLE bookings ADD COLUMN slip_image_url TEXT",
@@ -996,6 +997,7 @@ async function ensureD1Schema(env) {
     "ALTER TABLE bookings ADD COLUMN checkin_at DATETIME",
     "ALTER TABLE booking_items ADD COLUMN layout TEXT DEFAULT 'standard'",
     "ALTER TABLE booking_items ADD COLUMN booking_type TEXT DEFAULT 'hourly'",
+    "ALTER TABLE booking_items ADD COLUMN guest_count INTEGER",
     "ALTER TABLE booking_items ADD COLUMN pin_code TEXT",
     "ALTER TABLE booking_items ADD COLUMN checkin_status TEXT DEFAULT 'pending'",
     "ALTER TABLE booking_items ADD COLUMN checkin_at DATETIME",
@@ -1437,8 +1439,9 @@ export default {
 
         let query = `
           SELECT bi.start_time, bi.end_time, bi.room_id, bi.subtotal, bi.price, bi.quantity, bi.layout, bi.booking_type,
+                 bi.guest_count as item_guest_count,
                  r.name as room_name,
-                 b.id as booking_id, b.customer_name, b.payment_status, b.booking_source, b.department, b.contact
+                 b.id as booking_id, b.customer_name, b.payment_status, b.booking_source, b.department, b.contact, b.guest_count
           FROM booking_items bi
           JOIN bookings b ON bi.booking_id = b.id
           LEFT JOIN rooms r ON bi.room_id = r.id
@@ -1636,34 +1639,68 @@ export default {
           }
         }
 
+        // Extract optional guest count for Walk-in
+        const effectiveGuestCount = (body.guest_count !== undefined && body.guest_count !== null && body.guest_count !== '')
+          ? parseInt(body.guest_count, 10)
+          : (items.find(it => it.guest_count)?.guest_count ? parseInt(items.find(it => it.guest_count).guest_count, 10) : null);
+
         const nowIso = new Date().toISOString();
-        const insBooking = await env.DB.prepare(
-          `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, checkin_status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
-        ).bind(customer_name, department || '', contact || '', verifiedTotal, payment_status || 'pending', payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
+        let insBooking;
+        try {
+          insBooking = await env.DB.prepare(
+            `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+          ).bind(customer_name, department || '', contact || '', verifiedTotal, payment_status || 'pending', payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, effectiveGuestCount, nowIso).run();
+        } catch (dbErr) {
+          insBooking = await env.DB.prepare(
+            `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, checkin_status, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+          ).bind(customer_name, department || '', contact || '', verifiedTotal, payment_status || 'pending', payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
+        }
 
         const bookingId = insBooking.meta.last_row_id;
 
         for (let item of items) {
           const normStart = (item.room_id && item.start_time) ? normalizeToLocalISO(item.start_time) : null;
           const normEnd = (item.room_id && item.end_time) ? normalizeToLocalISO(item.end_time) : null;
+          const itemGuestCount = item.guest_count ? parseInt(item.guest_count, 10) : effectiveGuestCount;
 
-          await env.DB.prepare(
-            `INSERT INTO booking_items (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).bind(
-            bookingId,
-            item.room_id || null,
-            item.service_id || null,
-            item.quantity || 1,
-            item.price || 0,
-            normStart,
-            normEnd,
-            item.subtotal || 0,
-            item.layout || 'standard',
-            item.booking_type || 'hourly',
-            item.room_id ? pinCode : null
-          ).run();
+          try {
+            await env.DB.prepare(
+              `INSERT INTO booking_items (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(
+              bookingId,
+              item.room_id || null,
+              item.service_id || null,
+              item.quantity || 1,
+              item.price || 0,
+              normStart,
+              normEnd,
+              item.subtotal || 0,
+              item.layout || 'standard',
+              item.booking_type || 'hourly',
+              itemGuestCount,
+              item.room_id ? pinCode : null
+            ).run();
+          } catch (itemErr) {
+            await env.DB.prepare(
+              `INSERT INTO booking_items (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(
+              bookingId,
+              item.room_id || null,
+              item.service_id || null,
+              item.quantity || 1,
+              item.price || 0,
+              normStart,
+              normEnd,
+              item.subtotal || 0,
+              item.layout || 'standard',
+              item.booking_type || 'hourly',
+              item.room_id ? pinCode : null
+            ).run();
+          }
         }
 
         return new Response(JSON.stringify({
@@ -2044,11 +2081,17 @@ export default {
           customer_name, contact, email, department, note, room_id, booking_date, 
           start_time, end_time, booking_type, layout, total_amount, line_user_id,
           tax_invoice_required, tax_name, tax_address, tax_id, tax_phone,
-          tax_delivery_method, tax_postal_address
+          tax_delivery_method, tax_postal_address, guest_count, guests
         } = body;
 
         if (!customer_name || !contact || !room_id || !booking_date || !start_time || !end_time) {
           return new Response(JSON.stringify({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน (ชื่อ, เบอร์โทร, ห้อง, วันที่, เวลา)' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Mandatory guest_count validation for online bookings
+        const parsedGuests = parseInt(guest_count || guests, 10);
+        if (isNaN(parsedGuests) || parsedGuests < 1) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุจำนวนผู้เข้าใช้งาน (อย่างน้อย 1 ท่าน)' }), { status: 400, headers: corsHeaders });
         }
 
         if (end_time <= start_time) {
@@ -2109,14 +2152,16 @@ export default {
                customer_name, department, contact, total_amount, payment_status, payment_method, 
                receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
                tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
+               guest_count,
                created_at
              )
-             VALUES (?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode, 
             email || null, line_user_id || null, 
             tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null, 
             tax_delivery_method || null, tax_postal_address || null, 
+            parsedGuests,
             nowIso
           ).run();
         } catch (dbErr) {
@@ -2139,9 +2184,9 @@ export default {
 
         try {
           await env.DB.prepare(
-            `INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code)
-             VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`
-          ).bind(bookingId, room_id, subtotal, fullStart, fullEnd, subtotal, bLayout, bType, pinCode).run();
+            `INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code)
+             VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(bookingId, room_id, subtotal, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode).run();
         } catch (itemErr) {
           console.warn('Extended item insert failed, falling back to core item schema:', itemErr);
           await env.DB.prepare(

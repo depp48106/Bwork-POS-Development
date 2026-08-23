@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+*/node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+*/dist/
+build/
+.vite/
+*/.vite/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+
+# IDE & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# Backup files
+*.backup*
+*.bak
+booking-app.backup/
+
+# Cache
+.cache/
+*/.cache/
+.wrangler/
+*/.wrangler/
+
+# User uploads & slips
+backend/uploads/slips/*
+!backend/uploads/slips/.gitkeep
+backend/uploads/*
+!backend/uploads/.gitkeep

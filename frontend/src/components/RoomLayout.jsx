@@ -1002,6 +1002,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                   </span>
                 </div>
                 <div><strong>ช่องทางการจอง:</strong> {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์ผ่านเว็บ' : '🏬 Walk-in'}</div>
+                <div><strong>จำนวนผู้เข้าใช้:</strong> {viewedEvent.guest_count || viewedEvent.item_guest_count ? `${viewedEvent.guest_count || viewedEvent.item_guest_count} ท่าน` : 'ไม่ระบุ'}</div>
                 <div><strong>วันที่จอง:</strong> {(() => {
                   const d = new Date(viewedEvent.start_time);
                   return `${d.getDate()} ${monthNames[d.getMonth()]} ${d.getFullYear() + 543}`;

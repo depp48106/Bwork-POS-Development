@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>B-WORK Meeting Room & Workspace Booking System - UI Prototype</title>
+  <!-- Google Fonts: Prompt & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Prompt:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Alpine.js -->
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Prompt', 'Inter', 'sans-serif'],
+            mono: ['Inter', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#eff6ff',
+              100: '#dbeafe',
+              500: '#3b82f6',
+              600: '#2563eb',
+              700: '#1d4ed8',
+              800: '#1e40af',
+              900: '#1e3a8a',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      font-family: 'Prompt', 'Inter', sans-serif;
+    }
+    .scrollbar-thin::-webkit-scrollbar {
+      height: 6px;
+      width: 6px;
+    }
+    .scrollbar-thin::-webkit-scrollbar-track {
+      background: rgba(241, 245, 249, 0.5);
+    }
+    .scrollbar-thin::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 999px;
+    }
+    .buffer-stripes {
+      background: repeating-linear-gradient(
+        45deg,
+        rgba(245, 158, 11, 0.15),
+        rgba(245, 158, 11, 0.15) 6px,
+        rgba(245, 158, 11, 0.05) 6px,
+        rgba(245, 158, 11, 0.05) 12px
+      );
+      border: 1px dashed rgba(245, 158, 11, 0.4);
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen" x-data="bookingApp()">
+
+  <!-- 1. TOP NAVBAR & CONTROL HEADER -->
+  <header class="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-slate-200 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16 gap-4">
+        
+        <!-- Brand Logo -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
+            <i data-lucide="building-2" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h1 class="text-base font-extrabold tracking-tight text-slate-900 leading-tight">B-WORK</h1>
+              <span class="px-2 py-0.5 text-[11px] font-bold rounded-full bg-blue-100 text-blue-700">POS PROTOTYPE</span>
+            </div>
+            <p class="text-xs text-slate-500 font-medium">Meeting & Workspace Booking UI</p>
+          </div>
+        </div>
+
+        <!-- Date Navigator -->
+        <div class="flex items-center gap-2 bg-slate-100/80 p-1 rounded-xl border border-slate-200/80">
+          <button @click="prevDay()" class="p-1.5 rounded-lg hover:bg-white hover:shadow-xs transition text-slate-600">
+            <i data-lucide="chevron-left" class="w-4 h-4"></i>
+          </button>
+          <button @click="setToday()" class="px-2.5 py-1 text-xs font-semibold rounded-lg hover:bg-white transition text-slate-700">
+            วันนี้
+          </button>
+          <span class="text-sm font-bold text-slate-900 px-3 flex items-center gap-2" x-text="currentDateFormatted">
+            วันเสาร์ที่ 22 ส.ค. 2569
+          </span>
+          <button @click="nextDay()" class="p-1.5 rounded-lg hover:bg-white hover:shadow-xs transition text-slate-600">
+            <i data-lucide="chevron-right" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <!-- View Mode Switcher -->
+        <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/80">
+          <button 
+            @click="viewMode = 'matrix'" 
+            :class="viewMode === 'matrix' ? 'bg-white text-blue-600 font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900 font-medium'"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition"
+          >
+            <i data-lucide="layout-grid" class="w-4 h-4"></i>
+            <span>Timeline Matrix</span>
+          </button>
+
+          <button 
+            @click="viewMode = 'cards'" 
+            :class="viewMode === 'cards' ? 'bg-white text-blue-600 font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900 font-medium'"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition"
+          >
+            <i data-lucide="columns-2" class="w-4 h-4"></i>
+            <span>Room Cards</span>
+          </button>
+
+          <button 
+            @click="viewMode = 'calendar'" 
+            :class="viewMode === 'calendar' ? 'bg-white text-blue-600 font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900 font-medium'"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition"
+          >
+            <i data-lucide="calendar" class="w-4 h-4"></i>
+            <span>ปฏิทินเดือน</span>
+          </button>
+        </div>
+
+      </div>
+
+      <!-- Subheader: Category Filter Pills & Summary -->
+      <div class="flex items-center justify-between py-2.5 border-t border-slate-100 gap-4 overflow-x-auto scrollbar-thin">
+        <div class="flex items-center gap-1.5">
+          <template x-for="cat in categories" :key="cat.id">
+            <button 
+              @click="selectedCategory = cat.id"
+              :class="selectedCategory === cat.id ? 'bg-slate-900 text-white font-semibold shadow-xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200/70 font-medium'"
+              class="px-3 py-1 rounded-lg text-xs transition whitespace-nowrap flex items-center gap-1.5"
+            >
+              <i :data-lucide="cat.icon" class="w-3.5 h-3.5"></i>
+              <span x-text="cat.name"></span>
+            </button>
+          </template>
+        </div>
+
+        <div class="flex items-center gap-4 text-xs text-slate-500 font-medium whitespace-nowrap">
+          <div class="flex items-center gap-1.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+            <span>ว่างพร้อมจอง</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-blue-500"></span>
+            <span>จองแล้ว</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+            <span>ทำความสะอาด (30 นาที)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 2. MAIN CONTAINER -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+
+    <!-- ============================================================ -->
+    <!-- VIEW MODE 1: TIMELINE MATRIX (DEFAULT / RECOMMENDED)        -->
+    <!-- ============================================================ -->
+    <div x-show="viewMode === 'matrix'" class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+        <div>
+          <h2 class="text-sm font-bold text-slate-900">ผังเวลาใช้งานห้อง (Timeline Schedule Matrix)</h2>
+          <p class="text-xs text-slate-500">คลิกที่ช่องเวลาว่างเพื่อทำการจองห้องทันที (ไม่มี Modal ซ้อนหลายชั้น)</p>
+        </div>
+        <div class="text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-100">
+          <i data-lucide="sparkles" class="w-3.5 h-3.5 inline mr-1"></i>
+          คลิกช่องว่างเพื่อเปิดแถบจองด่วน
+        </div>
+      </div>
+
+      <!-- Matrix Table Scrollable Area -->
+      <div class="overflow-x-auto scrollbar-thin">
+        <div class="min-w-[980px]">
+          
+          <!-- Timeline Header Row: Time slots 08:00 - 20:00 -->
+          <div class="grid grid-cols-13 border-b border-slate-200 bg-slate-100/80 text-xs font-bold text-slate-700 sticky top-0 z-10">
+            <div class="p-3 border-r border-slate-200 w-56 flex-shrink-0 bg-slate-100">ห้อง / รายละเอียด</div>
+            <template x-for="hour in timeHours" :key="hour">
+              <div class="p-2.5 text-center border-r border-slate-200/60 last:border-r-0 font-mono" x-text="`${String(hour).padStart(2, '0')}:00`"></div>
+            </template>
+          </div>
+
+          <!-- Room Rows -->
+          <div class="divide-y divide-slate-100">
+            <template x-for="room in filteredRooms" :key="room.id">
+              <div class="grid grid-cols-13 hover:bg-slate-50/40 transition group items-stretch">
+                
+                <!-- Room Info Card (Left Column) -->
+                <div class="p-3 border-r border-slate-200 w-56 flex-shrink-0 bg-white group-hover:bg-slate-50/40 transition flex items-center gap-3">
+                  <img :src="room.image" class="w-12 h-12 rounded-lg object-cover border border-slate-200 shadow-2xs flex-shrink-0" alt="room">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-1.5">
+                      <span class="font-bold text-xs text-slate-900 truncate" x-text="room.name"></span>
+                    </div>
+                    <div class="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
+                      <i data-lucide="users" class="w-3 h-3 text-slate-400"></i>
+                      <span x-text="`${room.capacity} ที่นั่ง`"></span>
+                    </div>
+                    <div class="text-[11px] font-bold text-blue-600 mt-0.5" x-text="`฿${room.hourlyRate}/ชม.`"></div>
+                  </div>
+                </div>
+
+                <!-- 12 Hourly Grid Cells (08:00 to 20:00) -->
+                <div class="col-span-12 relative grid grid-cols-12 bg-white">
+                  
+                  <!-- Cell Grid Backgrounds -->
+                  <template x-for="(hour, idx) in timeHours" :key="hour">
+                    <div 
+                      @click="openDrawerForSlot(room, hour)"
+                      class="h-18 border-r border-slate-100 hover:bg-blue-50/60 cursor-pointer transition relative group/cell"
+                      :title="`คลิกเพื่อจอง ${room.name} เวลา ${hour}:00`"
+                    >
+                      <div class="opacity-0 group-hover/cell:opacity-100 absolute inset-0 flex items-center justify-center pointer-events-none transition">
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white shadow-sm">+ จอง</span>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- Render Booked Events on Timeline -->
+                  <template x-for="b in getRoomBookings(room.id)" :key="b.id">
+                    <div 
+                      class="absolute top-2 bottom-2 rounded-xl p-2 z-10 flex flex-col justify-center shadow-sm cursor-pointer transition hover:brightness-95"
+                      :class="b.status === 'confirmed' ? 'bg-blue-600 text-white shadow-blue-500/20' : 'bg-emerald-600 text-white shadow-emerald-500/20'"
+                      :style="getEventStyle(b.startHour, b.durationHours)"
+                      @click="showBookingDetails(b, room)"
+                    >
+                      <div class="flex items-center justify-between text-[11px] font-bold">
+                        <span class="truncate" x-text="b.customerName"></span>
+                        <span class="opacity-80 text-[10px]" x-text="`${b.guests} ท่าน`"></span>
+                      </div>
+                      <div class="text-[10px] opacity-90 truncate flex items-center gap-1 mt-0.5">
+                        <i data-lucide="clock" class="w-3 h-3"></i>
+                        <span x-text="`${b.startTime} - ${b.endTime}`"></span>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- Render 30-min Cleaning Buffer Bar -->
+                  <template x-for="b in getRoomBookings(room.id)" :key="`buf-${b.id}`">
+                    <div 
+                      class="absolute top-2 bottom-2 rounded-lg buffer-stripes z-5 flex items-center justify-center"
+                      :style="getBufferStyle(b.endHour)"
+                      title="ระยะเวลาทำความสะอาดห้อง 30 นาที"
+                    >
+                      <span class="text-[9px] font-bold text-amber-700 opacity-90 whitespace-nowrap">🧹 30m</span>
+                    </div>
+                  </template>
+
+                </div>
+
+              </div>
+            </template>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- VIEW MODE 2: SPLIT SCREEN / ROOM CARDS VIEW                  -->
+    <!-- ============================================================ -->
+    <div x-show="viewMode === 'cards'" class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      
+      <!-- Left Side: Room Cards Grid (5 cols) -->
+      <div class="lg:col-span-5 space-y-4">
+        <h2 class="text-sm font-bold text-slate-900">เลือกห้องประชุมที่ต้องการ</h2>
+        <div class="space-y-3">
+          <template x-for="room in filteredRooms" :key="room.id">
+            <div 
+              @click="selectedCardRoom = room"
+              :class="selectedCardRoom?.id === room.id ? 'border-blue-600 ring-2 ring-blue-500/20 bg-blue-50/20' : 'border-slate-200 bg-white hover:border-slate-300'"
+              class="p-3.5 rounded-2xl border transition cursor-pointer flex items-center gap-4 shadow-2xs"
+            >
+              <img :src="room.image" class="w-20 h-20 rounded-xl object-cover border border-slate-200 shadow-inner flex-shrink-0" alt="room">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center justify-between">
+                  <h3 class="font-bold text-slate-900 text-sm truncate" x-text="room.name"></h3>
+                  <span class="text-xs font-bold text-blue-600" x-text="`฿${room.hourlyRate}/ชม.`"></span>
+                </div>
+                <div class="flex items-center gap-2 text-xs text-slate-500 mt-1">
+                  <span class="px-2 py-0.5 rounded-md bg-slate-100 font-medium" x-text="`${room.capacity} ที่นั่ง`"></span>
+                  <span class="text-slate-400">·</span>
+                  <span x-text="room.category"></span>
+                </div>
+                <div class="mt-2 flex items-center gap-2 text-xs">
+                  <span class="inline-flex items-center gap-1 text-emerald-600 font-semibold">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    ว่าง 8 ช่วงเวลา
+                  </span>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Right Side: Selected Room's Time Slot Chips & Quick Action (7 cols) -->
+      <div class="lg:col-span-7">
+        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm sticky top-24">
+          <template x-if="selectedCardRoom">
+            <div>
+              <div class="flex items-center justify-between border-b border-slate-100 pb-4">
+                <div class="flex items-center gap-3">
+                  <img :src="selectedCardRoom.image" class="w-12 h-12 rounded-xl object-cover border border-slate-200" alt="room">
+                  <div>
+                    <h3 class="font-extrabold text-base text-slate-900" x-text="selectedCardRoom.name"></h3>
+                    <p class="text-xs text-slate-500" x-text="`ความจุ: ${selectedCardRoom.capacity} ท่าน · อัตรา ฿${selectedCardRoom.hourlyRate}/ชม.`"></p>
+                  </div>
+                </div>
+                <button 
+                  @click="openDrawerForSlot(selectedCardRoom, 9)"
+                  class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-500/20 transition flex items-center gap-2"
+                >
+                  <i data-lucide="plus" class="w-4 h-4"></i>
+                  <span>เปิดฟอร์มจองห้องนี้</span>
+                </button>
+              </div>
+
+              <div class="mt-5">
+                <h4 class="text-xs font-bold text-slate-700 mb-3 flex items-center gap-1.5">
+                  <i data-lucide="clock" class="w-4 h-4 text-blue-600"></i>
+                  <span>เลือกช่วงเวลาที่ต้องการ (Slot Chips ประจำวัน)</span>
+                </h4>
+
+                <div class="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
+                  <template x-for="slot in sampleSlotChips" :key="slot.time">
+                    <button 
+                      @click="slot.isBooked ? null : openDrawerForSlot(selectedCardRoom, slot.hour)"
+                      :class="slot.isBooked 
+                        ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed line-through' 
+                        : 'bg-white border-slate-200 hover:border-blue-600 hover:bg-blue-50 text-slate-700 hover:text-blue-700'"
+                      class="p-2.5 rounded-xl border text-xs font-semibold text-center transition flex flex-col items-center justify-center gap-1"
+                    >
+                      <span x-text="slot.time"></span>
+                      <span class="text-[10px]" :class="slot.isBooked ? 'text-red-500' : 'text-emerald-600'" x-text="slot.isBooked ? 'จองแล้ว' : 'ว่าง'"></span>
+                    </button>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- VIEW MODE 3: MONTHLY CALENDAR VIEW                          -->
+    <!-- ============================================================ -->
+    <div x-show="viewMode === 'calendar'" class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-base font-bold text-slate-900">ปฏิทินการจองประจำเดือนสิงหาคม 2569</h2>
+          <p class="text-xs text-slate-500">คลิกที่วันที่เพื่อสลับไปยัง Timeline Matrix ของวันนั้น</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="px-3 py-1.5 text-xs font-bold rounded-lg border border-slate-200 hover:bg-slate-50 transition">เดือนก่อนหน้า</button>
+          <button class="px-3 py-1.5 text-xs font-bold rounded-lg bg-blue-600 text-white shadow-xs">สิงหาคม 2569</button>
+          <button class="px-3 py-1.5 text-xs font-bold rounded-lg border border-slate-200 hover:bg-slate-50 transition">เดือนถัดไป</button>
+        </div>
+      </div>
+
+      <!-- Month Grid -->
+      <div class="grid grid-cols-7 gap-2">
+        <template x-for="dayName in ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.']" :key="dayName">
+          <div class="p-2 text-center text-xs font-bold text-slate-400" x-text="dayName"></div>
+        </template>
+        <template x-for="day in 31" :key="day">
+          <div 
+            @click="viewMode = 'matrix'"
+            class="min-h-[90px] p-2 rounded-xl border border-slate-100 hover:border-blue-400 hover:bg-blue-50/20 transition cursor-pointer flex flex-col justify-between"
+            :class="day === 22 ? 'bg-blue-50/40 border-blue-300 ring-1 ring-blue-400/30' : 'bg-slate-50/30'"
+          >
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold" :class="day === 22 ? 'text-blue-600' : 'text-slate-700'" x-text="day"></span>
+              <span x-show="day === 22" class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-600 text-white">วันนี้</span>
+            </div>
+            <div class="space-y-1 mt-1">
+              <template x-if="day % 3 === 0">
+                <div class="text-[10px] font-medium bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded truncate">3 การจอง</div>
+              </template>
+              <template x-if="day === 22">
+                <div class="text-[10px] font-medium bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded truncate">5 การจอง (คึกคัก)</div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ============================================================ -->
+  <!-- 3. SEAMLESS SLIDE-OVER DRAWER (NO MODAL-IN-MODAL)            -->
+  <!-- ============================================================ -->
+  <div 
+    x-show="isDrawerOpen" 
+    x-transition:enter="transition ease-out duration-300"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-in duration-200"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-50 flex justify-end"
+    style="display: none;"
+  >
+    <div 
+      @click.away="closeDrawer()"
+      x-show="isDrawerOpen"
+      x-transition:enter="transition transform ease-out duration-300"
+      x-transition:enter-start="translate-x-full"
+      x-transition:enter-end="translate-x-0"
+      x-transition:leave="transition transform ease-in duration-200"
+      x-transition:leave-start="translate-x-0"
+      x-transition:leave-end="translate-x-full"
+      class="w-full max-w-md bg-white h-full shadow-2xl flex flex-col border-l border-slate-200 overflow-hidden"
+    >
+      <!-- Drawer Header -->
+      <div class="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center font-bold">
+            <i data-lucide="bookmark-plus" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="font-extrabold text-slate-900 text-base">ทำรายการจองพื้นที่</h3>
+            <p class="text-xs text-slate-500" x-text="drawerForm.roomName || 'เลือกห้อง'"></p>
+          </div>
+        </div>
+        <button @click="closeDrawer()" class="p-1.5 rounded-full hover:bg-slate-200/80 text-slate-400 hover:text-slate-700 transition">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Drawer Scrollable Form Body -->
+      <div class="flex-1 overflow-y-auto p-5 space-y-5 scrollbar-thin">
+        
+        <!-- Room Banner Card -->
+        <div class="flex items-center gap-3.5 p-3.5 rounded-2xl bg-blue-50/60 border border-blue-100">
+          <img :src="drawerForm.roomImage" class="w-14 h-14 rounded-xl object-cover border border-blue-200 flex-shrink-0" alt="room">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between">
+              <h4 class="font-bold text-slate-900 text-sm truncate" x-text="drawerForm.roomName"></h4>
+              <span class="text-xs font-bold text-blue-600" x-text="`฿${drawerForm.hourlyRate}/ชม.`"></span>
+            </div>
+            <div class="text-xs text-slate-500 mt-0.5" x-text="`ความจุ: ${drawerForm.capacity} ท่าน`"></div>
+            <div class="text-[11px] text-emerald-700 font-semibold mt-1 flex items-center gap-1">
+              <i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-emerald-600"></i>
+              <span>ห้องว่าง พร้อมทำการจอง</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Booking Type Switcher -->
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1.5">ประเภทการจอง</label>
+          <div class="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200">
+            <button 
+              type="button"
+              @click="drawerForm.bookingType = 'hourly'"
+              :class="drawerForm.bookingType === 'hourly' ? 'bg-white font-bold text-blue-600 shadow-xs' : 'text-slate-600'"
+              class="py-1.5 text-xs rounded-lg transition"
+            >รายชั่วโมง</button>
+            <button 
+              type="button"
+              @click="drawerForm.bookingType = 'halfday'"
+              :class="drawerForm.bookingType === 'halfday' ? 'bg-white font-bold text-emerald-600 shadow-xs' : 'text-slate-600'"
+              class="py-1.5 text-xs rounded-lg transition"
+            >ครึ่งวัน</button>
+            <button 
+              type="button"
+              @click="drawerForm.bookingType = 'daily'"
+              :class="drawerForm.bookingType === 'daily' ? 'bg-white font-bold text-amber-600 shadow-xs' : 'text-slate-600'"
+              class="py-1.5 text-xs rounded-lg transition"
+            >รายวัน (ทั้งวัน)</button>
+          </div>
+        </div>
+
+        <!-- Date & Time Range -->
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">วันที่ทำการจอง *</label>
+            <input type="date" x-model="drawerForm.date" class="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-medium focus:ring-2 focus:ring-blue-500 focus:outline-none bg-slate-50">
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">ช่วงเวลาใช้งาน *</label>
+            <div class="flex items-center gap-1.5">
+              <select x-model="drawerForm.startHour" class="w-full px-2 py-2 rounded-xl border border-slate-200 text-xs font-semibold focus:ring-2 focus:ring-blue-500 bg-slate-50">
+                <template x-for="h in timeHours" :key="`s-${h}`">
+                  <option :value="h" x-text="`${String(h).padStart(2,'0')}:00`"></option>
+                </template>
+              </select>
+              <span class="text-xs text-slate-400">-</span>
+              <select x-model="drawerForm.endHour" class="w-full px-2 py-2 rounded-xl border border-slate-200 text-xs font-semibold focus:ring-2 focus:ring-blue-500 bg-slate-50">
+                <template x-for="h in timeHours" :key="`e-${h}`">
+                  <option :value="h" x-text="`${String(h).padStart(2,'0')}:00`"></option>
+                </template>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Guest Count (Optional) -->
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <label class="text-xs font-bold text-slate-700">จำนวนผู้เข้าใช้งาน (คน/ท่าน)</label>
+            <span class="text-[11px] text-slate-400">ไม่จำเป็นต้องระบุ</span>
+          </div>
+          <div class="relative">
+            <i data-lucide="users" class="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
+            <input 
+              type="number" 
+              x-model="drawerForm.guests" 
+              placeholder="เช่น 5 ท่าน" 
+              class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs font-medium focus:ring-2 focus:ring-blue-500 bg-slate-50"
+            >
+          </div>
+        </div>
+
+        <!-- Real-time Price & Duration Badge -->
+        <div class="p-3.5 rounded-xl bg-gradient-to-tr from-slate-900 to-indigo-950 text-white flex items-center justify-between shadow-md">
+          <div>
+            <div class="text-[11px] text-slate-300 font-medium">ระยะเวลา & ค่าบริการ</div>
+            <div class="text-xs font-semibold mt-0.5" x-text="`${calculateDuration()} ชั่วโมง (${drawerForm.startHour}:00 - ${drawerForm.endHour}:00)`"></div>
+          </div>
+          <div class="text-right">
+            <div class="text-[10px] text-slate-400">ยอดรวมสุทธิ</div>
+            <div class="text-base font-extrabold text-amber-400" x-text="`฿${calculateTotal().toLocaleString()}`"></div>
+          </div>
+        </div>
+
+        <!-- Customer Name & Contact Phone -->
+        <div class="space-y-3 pt-2 border-t border-slate-100">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">ชื่อผู้จอง <span class="text-red-500">*</span></label>
+            <div class="relative">
+              <i data-lucide="user" class="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
+              <input type="text" x-model="drawerForm.customerName" placeholder="กรอกชื่อ-นามสกุล / บริษัท" class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs font-medium focus:ring-2 focus:ring-blue-500 bg-slate-50">
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">เบอร์ติดต่อ</label>
+            <div class="relative">
+              <i data-lucide="phone" class="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
+              <input type="text" x-model="drawerForm.phone" placeholder="08x-xxx-xxxx" class="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs font-medium focus:ring-2 focus:ring-blue-500 bg-slate-50">
+            </div>
+          </div>
+        </div>
+
+        <!-- Payment Status & Method -->
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">สถานะชำระเงิน</label>
+            <select x-model="drawerForm.paymentStatus" class="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold focus:ring-2 focus:ring-blue-500 bg-slate-50">
+              <option value="paid">ชำระเงินแล้ว</option>
+              <option value="pending">ค้างชำระ (Pending)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">ช่องทางชำระเงิน</label>
+            <select x-model="drawerForm.paymentMethod" class="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold focus:ring-2 focus:ring-blue-500 bg-slate-50">
+              <option value="cash">เงินสด (Cash)</option>
+              <option value="transfer">โอนเงินเข้าบัญชี</option>
+              <option value="card">บัตรเครดิต</option>
+            </select>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Drawer Footer Buttons -->
+      <div class="p-4 border-t border-slate-100 bg-slate-50 flex items-center gap-3">
+        <button 
+          @click="closeDrawer()" 
+          class="w-1/3 py-2.5 text-xs font-bold rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 transition"
+        >
+          ยกเลิก
+        </button>
+        <button 
+          @click="submitBooking()" 
+          class="w-2/3 py-2.5 text-xs font-bold rounded-xl bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/20 transition flex items-center justify-center gap-2"
+        >
+          <i data-lucide="check" class="w-4 h-4"></i>
+          <span>ยืนยันการจอง</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div 
+    x-show="toast.show" 
+    x-transition 
+    class="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl flex items-center gap-3 text-xs font-semibold"
+    style="display: none;"
+  >
+    <i data-lucide="check-circle" class="w-4 h-4 text-emerald-400"></i>
+    <span x-text="toast.message"></span>
+  </div>
+
+  <!-- 4. APP SCRIPT & STATE -->
+  <script>
+    function bookingApp() {
+      return {
+        viewMode: 'matrix', // 'matrix' | 'cards' | 'calendar'
+        selectedCategory: 'all',
+        isDrawerOpen: false,
+        selectedCardRoom: null,
+        currentDateFormatted: 'วันเสาร์ที่ 22 สิงหาคม 2569',
+        
+        toast: { show: false, message: '' },
+
+        categories: [
+          { id: 'all', name: 'ทั้งหมด', icon: 'layers' },
+          { id: 'meeting', name: 'ห้องประชุม', icon: 'presentation' },
+          { id: 'coworking', name: 'Co-Working', icon: 'laptop' },
+          { id: 'cafe', name: 'Koocafe', icon: 'coffee' },
+          { id: 'parking', name: 'ที่จอดรถ', icon: 'car' },
+        ],
+
+        timeHours: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+
+        rooms: [
+          { id: 1, name: 'Mars (301)', category: 'meeting', capacity: 8, hourlyRate: 500, image: 'https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=400&q=80' },
+          { id: 2, name: 'Mercury (302)', category: 'meeting', capacity: 6, hourlyRate: 400, image: 'https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=400&q=80' },
+          { id: 3, name: 'Saturn (303)', category: 'meeting', capacity: 12, hourlyRate: 800, image: 'https://images.unsplash.com/photo-1517502884422-41eaead166d4?auto=format&fit=crop&w=400&q=80' },
+          { id: 4, name: 'Venus (304)', category: 'meeting', capacity: 4, hourlyRate: 350, image: 'https://images.unsplash.com/photo-1497215728101-856f4ea42174?auto=format&fit=crop&w=400&q=80' },
+          { id: 5, name: 'Uranus (305)', category: 'coworking', capacity: 20, hourlyRate: 1200, image: 'https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=400&q=80' },
+          { id: 6, name: 'Neptune (306)', category: 'meeting', capacity: 10, hourlyRate: 650, image: 'https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=400&q=80' },
+        ],
+
+        bookings: [
+          { id: 101, roomId: 1, customerName: 'คุณสมชาย (SCG)', startTime: '10:00', endTime: '12:00', startHour: 10, endHour: 12, durationHours: 2, guests: 6, status: 'confirmed' },
+          { id: 102, roomId: 2, customerName: 'คุณโอ (Design Team)', startTime: '15:00', endTime: '17:00', startHour: 15, endHour: 17, durationHours: 2, guests: 4, status: 'confirmed' },
+          { id: 103, roomId: 3, customerName: 'คุณวิภา (Board Meet)', startTime: '13:00', endTime: '16:00', startHour: 13, endHour: 16, durationHours: 3, guests: 10, status: 'confirmed' },
+          { id: 104, roomId: 6, customerName: 'คุณธนากร (Pitching)', startTime: '09:00', endTime: '11:00', startHour: 9, endHour: 11, durationHours: 2, guests: 8, status: 'paid' },
+        ],
+
+        sampleSlotChips: [
+          { time: '08:00 - 09:00', hour: 8, isBooked: false },
+          { time: '09:00 - 10:00', hour: 9, isBooked: false },
+          { time: '10:00 - 11:00', hour: 10, isBooked: true },
+          { time: '11:00 - 12:00', hour: 11, isBooked: true },
+          { time: '12:00 - 13:00', hour: 12, isBooked: false },
+          { time: '13:00 - 14:00', hour: 13, isBooked: false },
+          { time: '14:00 - 15:00', hour: 14, isBooked: false },
+          { time: '15:00 - 16:00', hour: 15, isBooked: false },
+          { time: '16:00 - 17:00', hour: 16, isBooked: false },
+          { time: '17:00 - 18:00', hour: 17, isBooked: false },
+          { time: '18:00 - 19:00', hour: 18, isBooked: false },
+          { time: '19:00 - 20:00', hour: 19, isBooked: false },
+        ],
+
+        drawerForm: {
+          roomId: null,
+          roomName: '',
+          roomImage: '',
+          capacity: 0,
+          hourlyRate: 0,
+          bookingType: 'hourly',
+          date: '2026-08-22',
+          startHour: 9,
+          endHour: 11,
+          guests: '',
+          customerName: '',
+          phone: '',
+          paymentStatus: 'paid',
+          paymentMethod: 'cash'
+        },
+
+        init() {
+          this.selectedCardRoom = this.rooms[0];
+          this.$nextTick(() => lucide.createIcons());
+        },
+
+        get filteredRooms() {
+          if (this.selectedCategory === 'all') return this.rooms;
+          return this.rooms.filter(r => r.category === this.selectedCategory);
+        },
+
+        getRoomBookings(roomId) {
+          return this.bookings.filter(b => b.roomId === roomId);
+        },
+
+        getEventStyle(startHour, durationHours) {
+          const startCol = startHour - 8;
+          const leftPercent = (startCol / 12) * 100;
+          const widthPercent = (durationHours / 12) * 100;
+          return `left: ${leftPercent}%; width: ${widthPercent - 0.5}%;`;
+        },
+
+        getBufferStyle(endHour) {
+          const startCol = endHour - 8;
+          const leftPercent = (startCol / 12) * 100;
+          const widthPercent = (0.5 / 12) * 100; // 30 mins = 0.5 hr
+          return `left: ${leftPercent}%; width: ${widthPercent}%;`;
+        },
+
+        openDrawerForSlot(room, hour) {
+          this.drawerForm.roomId = room.id;
+          this.drawerForm.roomName = room.name;
+          this.drawerForm.roomImage = room.image;
+          this.drawerForm.capacity = room.capacity;
+          this.drawerForm.hourlyRate = room.hourlyRate;
+          this.drawerForm.startHour = hour;
+          this.drawerForm.endHour = Math.min(hour + 2, 20);
+          this.isDrawerOpen = true;
+          this.$nextTick(() => lucide.createIcons());
+        },
+
+        showBookingDetails(booking, room) {
+          alert(`รายละเอียดการจอง:\nผู้จอง: ${booking.customerName}\nห้อง: ${room.name}\nเวลา: ${booking.startTime} - ${booking.endTime}\nจำนวน: ${booking.guests} ท่าน`);
+        },
+
+        closeDrawer() {
+          this.isDrawerOpen = false;
+        },
+
+        calculateDuration() {
+          const dur = this.drawerForm.endHour - this.drawerForm.startHour;
+          return dur > 0 ? dur : 1;
+        },
+
+        calculateTotal() {
+          return this.calculateDuration() * (this.drawerForm.hourlyRate || 0);
+        },
+
+        submitBooking() {
+          if (!this.drawerForm.customerName) {
+            alert('กรุณากรอกชื่อผู้จอง');
+            return;
+          }
+
+          // Add to local bookings list
+          this.bookings.push({
+            id: Date.now(),
+            roomId: this.drawerForm.roomId,
+            customerName: this.drawerForm.customerName,
+            startTime: `${String(this.drawerForm.startHour).padStart(2,'0')}:00`,
+            endTime: `${String(this.drawerForm.endHour).padStart(2,'0')}:00`,
+            startHour: parseInt(this.drawerForm.startHour),
+            endHour: parseInt(this.drawerForm.endHour),
+            durationHours: this.calculateDuration(),
+            guests: this.drawerForm.guests || 1,
+            status: this.drawerForm.paymentStatus === 'paid' ? 'confirmed' : 'pending'
+          });
+
+          this.closeDrawer();
+          this.showToast(`จองห้อง ${this.drawerForm.roomName} สำเร็จแล้ว!`);
+          this.$nextTick(() => lucide.createIcons());
+        },
+
+        showToast(msg) {
+          this.toast.message = msg;
+          this.toast.show = true;
+          setTimeout(() => { this.toast.show = false; }, 3000);
+        },
+
+        prevDay() {
+          this.showToast('เปลี่ยนเป็นวันก่อนหน้า');
+        },
+        nextDay() {
+          this.showToast('เปลี่ยนเป็นวันถัดไป');
+        },
+        setToday() {
+          this.showToast('กลับสู่วันนี้');
+        }
+      }
+    }
+  </script>
+</body>
+</html>
