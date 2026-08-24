@@ -58,7 +58,7 @@ export default function HomePage() {
 
   // States
   const [dateStr, setDateStr] = useState(getInitialDate());
-  const [guests, setGuests] = useState(parseInt(query.get('guests'), 10) || 4);
+  const [guests, setGuests] = useState(query.get('guests') ? (parseInt(query.get('guests'), 10) || '') : '');
   const [errorMessage, setErrorMessage] = useState('');
 
   const handleOpenDatePicker = () => {
@@ -263,7 +263,7 @@ export default function HomePage() {
                   setGuests(isNaN(val) ? '' : val);
                   setErrorMessage('');
                 }}
-                placeholder="ระบุจำนวนผู้เข้าใช้งาน (เช่น 4, 8, 12 ท่าน)"
+                placeholder="กรุณาระบุจำนวนผู้เข้าใช้งาน (เช่น 2, 4, 8 ท่าน)"
                 className="form-input"
                 style={{
                   height: '52px',
