@@ -15,6 +15,15 @@ const TIMELINE_START = 8;
 const TIMELINE_END = 18;
 const TIMELINE_TOTAL_HOURS = 10;
 
+const TIME_OPTIONS_POS = [];
+for (let h = 8; h <= 20; h++) {
+  const hh = String(h).padStart(2, '0');
+  TIME_OPTIONS_POS.push(`${hh}:00`);
+  if (h < 20) {
+    TIME_OPTIONS_POS.push(`${hh}:30`);
+  }
+}
+
 // Robust Date Helpers (No UTC Timezone Offset Bugs)
 const formatDateToYYYYMMDD = (d) => {
   if (!d) return '';
@@ -475,14 +484,26 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       setDailyTimeSlot('08-17');
     }
     setLayoutType('standard');
-    const startHStr = String(hour).padStart(2, '0');
-    const endHStr = String(Math.min(hour + 1, TIMELINE_END)).padStart(2, '0');
+    let startH = 9;
+    let startM = 0;
+    if (typeof hour === 'string' && hour.includes(':')) {
+      const [h, m] = hour.split(':').map(Number);
+      startH = h || 9;
+      startM = m || 0;
+    } else if (typeof hour === 'number') {
+      startH = Math.floor(hour);
+      startM = (hour % 1 >= 0.5) ? 30 : 0;
+    }
+    const endMins = startH * 60 + startM + 60;
+    const endH = Math.floor(endMins / 60);
+    const endM = endMins % 60;
+
     setRoomSchedule({
       date: timelineDate,
-      startHour: startHStr,
-      startMinute: '00',
-      endHour: endHStr,
-      endMinute: '00',
+      startHour: String(startH).padStart(2, '0'),
+      startMinute: String(startM).padStart(2, '0'),
+      endHour: String(endH).padStart(2, '0'),
+      endMinute: String(endM).padStart(2, '0'),
       guestCount: ''
     });
     setPaymentStatus('paid');
@@ -493,15 +514,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     setSelectedRoom(null);
   };
 
-  // Quick Duration Setter inside Drawer
+  // Quick Duration Setter inside Drawer (+1 ชม., +2 ชม., +3 ชม., +4 ชม.)
   const setQuickDuration = (hoursCount) => {
     setBookingType('hourly');
     const sh = parseInt(roomSchedule.startHour, 10) || 9;
-    const eh = Math.min(sh + hoursCount, TIMELINE_END);
+    const sm = parseInt(roomSchedule.startMinute, 10) || 0;
+    let endMins = sh * 60 + sm + hoursCount * 60;
+    if (endMins > 20 * 60) endMins = 20 * 60;
+    const eh = Math.floor(endMins / 60);
+    const em = endMins % 60;
     setRoomSchedule({
       ...roomSchedule,
-      startHour: String(sh).padStart(2, '0'),
-      endHour: String(eh).padStart(2, '0')
+      endHour: String(eh).padStart(2, '0'),
+      endMinute: String(em).padStart(2, '0')
     });
   };
 
@@ -2098,24 +2123,49 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     ) : (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                         <CustomSelect
-                          value={roomSchedule.startHour}
+                          value={`${String(roomSchedule.startHour || '09').padStart(2, '0')}:${String(roomSchedule.startMinute || '00').padStart(2, '0')}`}
                           onChange={val => {
-                            const eH = String(Math.min(parseInt(val, 10) + 1, TIMELINE_END)).padStart(2, '0');
-                            setRoomSchedule({ ...roomSchedule, startHour: val, endHour: eH });
+                            const [sh, sm] = val.split(':').map(Number);
+                            const startMins = sh * 60 + sm;
+                            const curEndMins = (parseInt(roomSchedule.endHour || '10', 10) * 60) + parseInt(roomSchedule.endMinute || '00', 10);
+                            let newEndMins = curEndMins <= startMins ? startMins + 60 : curEndMins;
+                            if (newEndMins > 20 * 60) newEndMins = 20 * 60;
+                            const eh = Math.floor(newEndMins / 60);
+                            const em = newEndMins % 60;
+                            setRoomSchedule({
+                              ...roomSchedule,
+                              startHour: String(sh).padStart(2, '0'),
+                              startMinute: String(sm).padStart(2, '0'),
+                              endHour: String(eh).padStart(2, '0'),
+                              endMinute: String(em).padStart(2, '0')
+                            });
                           }}
-                          options={TIMELINE_HOURS.map(h => ({
-                            value: String(h).padStart(2, '0'),
-                            label: `${String(h).padStart(2, '0')}:00`
+                          options={TIME_OPTIONS_POS.filter(t => t < '20:00').map(t => ({
+                            value: t,
+                            label: `${t} น.`
                           }))}
                           style={{ flex: 1 }}
                         />
                         <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)', fontWeight: 700 }}>-</span>
                         <CustomSelect
-                          value={roomSchedule.endHour}
-                          onChange={val => setRoomSchedule({ ...roomSchedule, endHour: val })}
-                          options={[9, 10, 11, 12, 13, 14, 15, 16, 17, 18].map(h => ({
-                            value: String(h).padStart(2, '0'),
-                            label: `${String(h).padStart(2, '0')}:00`
+                          value={`${String(roomSchedule.endHour || '10').padStart(2, '0')}:${String(roomSchedule.endMinute || '00').padStart(2, '0')}`}
+                          onChange={val => {
+                            const [eh, em] = val.split(':').map(Number);
+                            setRoomSchedule({
+                              ...roomSchedule,
+                              endHour: String(eh).padStart(2, '0'),
+                              endMinute: String(em).padStart(2, '0')
+                            });
+                          }}
+                          options={TIME_OPTIONS_POS.filter(t => {
+                            const [sh, sm] = (roomSchedule.startHour && roomSchedule.startMinute) 
+                              ? [Number(roomSchedule.startHour), Number(roomSchedule.startMinute)] 
+                              : [9, 0];
+                            const [eh, em] = t.split(':').map(Number);
+                            return (eh * 60 + em) > (sh * 60 + sm);
+                          }).map(t => ({
+                            value: t,
+                            label: `${t} น.`
                           }))}
                           align="right"
                           style={{ flex: 1 }}
@@ -2207,10 +2257,17 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   totalHrs = 4;
                   ratePrice = selectedRoom.half_day_rate || 0;
                 } else {
-                  const sH = parseInt(roomSchedule.startHour, 10);
-                  const eH = parseInt(roomSchedule.endHour, 10);
-                  totalHrs = Math.max(1, eH - sH);
-                  durationText = `${totalHrs} ชั่วโมง`;
+                  const sH = parseInt(roomSchedule.startHour, 10) || 9;
+                  const sM = parseInt(roomSchedule.startMinute, 10) || 0;
+                  const eH = parseInt(roomSchedule.endHour, 10) || 10;
+                  const eM = parseInt(roomSchedule.endMinute, 10) || 0;
+                  const diffMinutes = (eH * 60 + eM) - (sH * 60 + sM);
+                  const exactHours = diffMinutes > 0 ? diffMinutes / 60 : 1;
+                  const billedHours = Math.max(1, Math.ceil(exactHours));
+                  totalHrs = billedHours;
+                  durationText = exactHours === Math.floor(exactHours)
+                    ? `${exactHours} ชั่วโมง`
+                    : `${exactHours} ชั่วโมง (${diffMinutes} นาที)`;
                   ratePrice = layoutType === 'classroom' ? (selectedRoom.classroom_hourly_rate || 0) : (selectedRoom.hourly_rate || 0);
                 }
 
