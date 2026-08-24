@@ -154,7 +154,7 @@ function ReceiptPrint({ booking, settings }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginBottom: '8px' }}>
         <div className="receipt-info-row" style={{ fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', color: '#000000' }}>
           <span style={{ flexShrink: 0, fontWeight: 700 }}>เลขที่ใบเสร็จ:</span>
-          <span style={{ fontWeight: 800, whiteSpace: 'nowrap' }}>{booking.receipt_number || `#${String(booking.id || '').padStart(6, '0')}`}</span>
+          <span style={{ fontWeight: 800, whiteSpace: 'nowrap' }}>{booking.receipt_number || booking.receiptNumber || booking.booking_code || booking.bookingCode || (booking.id ? `#${String(booking.id).padStart(6, '0')}` : '-')}</span>
         </div>
         <div className="receipt-info-row" style={{ fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', color: '#000000' }}>
           <span style={{ flexShrink: 0, fontWeight: 700 }}>วันที่ทำรายการ:</span>

@@ -658,11 +658,28 @@ app.post('/api/bookings', async (req, res) => {
 
       await dbQuery.run('COMMIT');
 
+      const savedBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+      const savedItems = await dbQuery.all(`
+        SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.description as service_description, s.category as service_category
+        FROM booking_items bi
+        LEFT JOIN rooms r ON bi.room_id = r.id
+        LEFT JOIN services s ON bi.service_id = s.id
+        WHERE bi.booking_id = ?
+      `, [bookingId]);
+
       res.status(201).json({ 
         success: true, 
-        bookingId, 
+        bookingId,
+        booking_id: bookingId,
+        id: bookingId, 
         receiptNumber,
+        receipt_number: receiptNumber,
+        booking_code: receiptNumber,
+        bookingCode: receiptNumber,
         pinCode,
+        pin_code: pinCode,
+        ...(savedBooking || {}),
+        items: savedItems || [],
         message: 'บันทึกการจองสำเร็จ' 
       });
     } catch (innerErr) {

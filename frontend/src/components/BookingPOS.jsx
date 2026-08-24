@@ -638,7 +638,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
       if (res.ok) {
         const result = await res.json();
-        setPrintBooking(result);
+        let fullBooking = result;
+        const bId = result.bookingId || result.id || result.booking_id;
+        if (bId) {
+          try {
+            const detailRes = await fetch(`/api/bookings/${bId}`);
+            if (detailRes.ok) {
+              fullBooking = await detailRes.json();
+            }
+          } catch (e) {
+            console.error('Failed to fetch full booking details:', e);
+          }
+        }
+        setPrintBooking(fullBooking);
         setShowReceiptModal(true);
         closeRoomModal();
         setCustomer({ name: '', department: '', contact: '' });
@@ -722,7 +734,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
       if (res.ok) {
         const result = await res.json();
-        setPrintBooking(result);
+        let fullBooking = result;
+        const bId = result.bookingId || result.id || result.booking_id;
+        if (bId) {
+          try {
+            const detailRes = await fetch(`/api/bookings/${bId}`);
+            if (detailRes.ok) {
+              fullBooking = await detailRes.json();
+            }
+          } catch (e) {
+            console.error('Failed to fetch full booking details:', e);
+          }
+        }
+        setPrintBooking(fullBooking);
         setShowReceiptModal(true);
         setCart([]);
         setCustomer({ name: '', department: '', contact: '' });
