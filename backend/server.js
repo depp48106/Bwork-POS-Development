@@ -1818,6 +1818,24 @@ app.get('/api/backup/download-sql', async (req, res) => {
   }
 });
 
+// Restore Full Database from SQL Dump
+app.post('/api/backup/restore-sql', async (req, res) => {
+  const { sqlContent } = req.body;
+  if (!sqlContent || typeof sqlContent !== 'string' || !sqlContent.trim()) {
+    return res.status(400).json({ error: 'ไม่พบเนื้อหาไฟล์ SQL สำหรับกู้คืน' });
+  }
+
+  try {
+    await dbQuery.exec(sqlContent);
+    res.json({
+      success: true,
+      message: 'กู้คืนฐานข้อมูลจากไฟล์ .sql สำเร็จเรียบร้อยแล้ว'
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'การกู้คืนล้มเหลว: ' + err.message });
+  }
+});
+
 // OneDrive Connection Status
 app.get('/api/backup/onedrive/status', async (req, res) => {
   try {

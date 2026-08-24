@@ -2617,6 +2617,27 @@ export default {
         });
       }
 
+      // Restore Full Database from SQL Dump
+      if (pathname === '/api/backup/restore-sql' && method === 'POST') {
+        const auth = await authenticateUser(request, env, 'admin');
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const { sqlContent } = await request.json();
+        if (!sqlContent || typeof sqlContent !== 'string' || !sqlContent.trim()) {
+          return new Response(JSON.stringify({ error: 'ไม่พบเนื้อหาไฟล์ SQL สำหรับกู้คืน' }), { status: 400, headers: corsHeaders });
+        }
+
+        try {
+          await env.DB.exec(sqlContent);
+          return new Response(JSON.stringify({
+            success: true,
+            message: 'กู้คืนฐานข้อมูลจากไฟล์ .sql สำเร็จเรียบร้อยแล้ว'
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: 'การกู้คืนล้มเหลว: ' + err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
       // OneDrive Status
       if (pathname === '/api/backup/onedrive/status' && method === 'GET') {
         const auth = await authenticateUser(request, env, 'admin');

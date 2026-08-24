@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone, CreditCard, Building2, Download, RefreshCw, ExternalLink, ShieldCheck, Clock, FileText } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone, CreditCard, Building2, Download, RefreshCw, ExternalLink, ShieldCheck, Clock, FileText, UploadCloud, RotateCcw, Upload } from 'lucide-react';
 import DoorAccessSettings from './DoorAccessSettings';
 
 function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, sysAlert, sysConfirm, sysPrompt, onClearHistory }) {
@@ -36,6 +36,8 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
   });
   const [oneDriveLoading, setOneDriveLoading] = useState(false);
   const [downloadSqlLoading, setDownloadSqlLoading] = useState(false);
+  const [restoreLoading, setRestoreLoading] = useState(false);
+  const restoreInputRef = useRef(null);
 
   // User list states
   const [users, setUsers] = useState([]);
@@ -316,6 +318,52 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
         await fetchOneDriveStatus();
       }
     } catch (err) {}
+  };
+
+  // Handle Restore Database from .sql file
+  const handleRestoreSqlFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.sql')) {
+      await sysAlert('กรุณาเลือกไฟล์สำรองข้อมูลที่เป็นนามสกุล .sql เท่านั้น');
+      e.target.value = '';
+      return;
+    }
+
+    const confirmed = await sysConfirm(
+      `⚠️ คำเตือนสำคัญสำหรับการกู้คืนข้อมูล!\n\nคุณกำลังจะกู้คืนฐานข้อมูลจากไฟล์:\n"${file.name}" (${(file.size / 1024 / 1024).toFixed(2)} MB)\n\nการกู้คืนนี้จะทำการแทนที่ข้อมูลปัจจุบันด้วยข้อมูลจากไฟล์นี้ทั้งหมด!\nคุณแน่ใจหรือไม่ว่าต้องการดำเนินการกู้คืนข้อมูล?`
+    );
+    if (!confirmed) {
+      e.target.value = '';
+      return;
+    }
+
+    setRestoreLoading(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const sqlContent = reader.result;
+        const res = await fetch('/api/backup/restore-sql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sqlContent })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          await sysAlert('🎉 กู้คืนฐานข้อมูลสำเร็จเรียบร้อยแล้ว!\nระบบจะทำการรีโหลดหน้าจอเพื่อแสดงข้อมูลล่าสุด...');
+          window.location.reload();
+        } else {
+          await sysAlert('การกู้คืนฐานข้อมูลล้มเหลว: ' + (data.error || 'กรุณาตรวจสอบโครงสร้างไฟล์ SQL'));
+        }
+      } catch (err) {
+        await sysAlert('เกิดข้อผิดพลาดในการกู้คืนฐานข้อมูล: ' + err.message);
+      } finally {
+        setRestoreLoading(false);
+        e.target.value = '';
+      }
+    };
+    reader.readAsText(file);
   };
 
   // Trigger Local SQLite Backup
@@ -1170,6 +1218,57 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                   <Download size={16} />
                   <span>{downloadSqlLoading ? 'กำลังสร้างไฟล์ SQL...' : '📥 ดาวน์โหลดไฟล์ฐานข้อมูล .sql ทันที'}</span>
                 </button>
+              </div>
+            </div>
+
+            {/* 🔄 3. DATABASE RESTORE SECTION */}
+            <div className="card" style={{ padding: '24px', borderRadius: '24px', border: '1px solid rgba(245, 158, 11, 0.3)', background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.02), rgba(245, 158, 11, 0.04))' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'rgba(245, 158, 11, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#d97706' }}>
+                    <UploadCloud size={24} />
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: '1.05rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                      กู้คืนฐานข้อมูลจากไฟล์ .sql (Restore Database from .sql file)
+                    </h3>
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+                      เลือกไฟล์สำรองข้อมูล (.sql) เพื่อกู้คืนและนำเข้าข้อมูลทั้งหมด ข้อมูลเดิมจะถูกแทนที่ด้วยข้อมูลจากไฟล์
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <input
+                    type="file"
+                    accept=".sql"
+                    ref={restoreInputRef}
+                    onChange={handleRestoreSqlFile}
+                    style={{ display: 'none' }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{
+                      height: '42px',
+                      padding: '0 20px',
+                      borderRadius: '12px',
+                      fontWeight: 800,
+                      fontSize: '0.84rem',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      color: '#d97706',
+                      borderColor: 'rgba(245, 158, 11, 0.4)',
+                      backgroundColor: 'rgba(245, 158, 11, 0.08)'
+                    }}
+                    onClick={() => restoreInputRef.current?.click()}
+                    disabled={restoreLoading}
+                  >
+                    <RotateCcw size={16} className={restoreLoading ? 'spin' : ''} />
+                    <span>{restoreLoading ? 'กำลังกู้คืนข้อมูล กรุณารอสักครู่...' : '📤 เลือกไฟล์เพื่อกู้คืนฐานข้อมูล (Restore .sql)'}</span>
+                  </button>
+                </div>
               </div>
             </div>
 
