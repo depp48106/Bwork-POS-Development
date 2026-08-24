@@ -218,11 +218,9 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
 async function generateReceiptNumber(env) {
   const bangkokOffsetMs = 7 * 60 * 60 * 1000;
   const bkkDate = new Date(Date.now() + bangkokOffsetMs);
-  const yyyy = bkkDate.getUTCFullYear();
+  const yy = String(bkkDate.getUTCFullYear()).slice(-2);
   const mm = String(bkkDate.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(bkkDate.getUTCDate()).padStart(2, '0');
-  const dateStr = `${yyyy}${mm}${dd}`;
-  const prefix = `BK-${dateStr}-`;
+  const prefix = `BK-${yy}${mm}`;
 
   const lastRow = await env.DB.prepare(
     "SELECT receipt_number FROM bookings WHERE receipt_number LIKE ? ORDER BY id DESC LIMIT 1"
@@ -230,11 +228,11 @@ async function generateReceiptNumber(env) {
 
   let seq = 1;
   if (lastRow && lastRow.receipt_number) {
-    const parts = lastRow.receipt_number.split('-');
-    const lastNum = parseInt(parts[parts.length - 1], 10);
+    const rawSeq = lastRow.receipt_number.replace(prefix, '').replace(/^-/, '');
+    const lastNum = parseInt(rawSeq, 10);
     if (!isNaN(lastNum)) seq = lastNum + 1;
   }
-  return `${prefix}${String(seq).padStart(4, '0')}`;
+  return `${prefix}${String(seq).padStart(3, '0')}`;
 }
 
 async function generateQuotationNumber(env) {

@@ -368,33 +368,30 @@ app.delete('/api/categories/:name', async (req, res) => {
 // ==========================================================
 // 4. BOOKINGS (POS CHECKOUT & HISTORY)
 // ==========================================
-// Helper to generate a daily-resetting receipt number in the format REC-YYYYMMDD-XXXX
 async function generateReceiptNumber() {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
-  const dateStr = `${yyyy}${mm}${dd}`; // e.g. "20260717"
+  const bangkokOffsetMs = 7 * 60 * 60 * 1000;
+  const bkkDate = new Date(Date.now() + bangkokOffsetMs);
+  const yy = String(bkkDate.getUTCFullYear()).slice(-2);
+  const mm = String(bkkDate.getUTCMonth() + 1).padStart(2, '0');
+  const prefix = `BK-${yy}${mm}`;
 
-  // Query the last receipt number generated today
   const lastBooking = await dbQuery.get(
     `SELECT receipt_number FROM bookings 
-     WHERE date(created_at, 'localtime') = date('now', 'localtime')
-     AND receipt_number LIKE ?
+     WHERE receipt_number LIKE ?
      ORDER BY id DESC LIMIT 1`,
-    [`REC-${dateStr}-%`]
+    [`${prefix}%`]
   );
 
   let sequence = 1;
   if (lastBooking && lastBooking.receipt_number) {
-    const parts = lastBooking.receipt_number.split('-');
-    const lastSeq = parseInt(parts[parts.length - 1], 10);
+    const rawSeq = lastBooking.receipt_number.replace(prefix, '').replace(/^-/, '');
+    const lastSeq = parseInt(rawSeq, 10);
     if (!isNaN(lastSeq)) {
       sequence = lastSeq + 1;
     }
   }
 
-  return `REC-${dateStr}-${String(sequence).padStart(4, '0')}`;
+  return `${prefix}${String(sequence).padStart(3, '0')}`;
 }
 
 // Helper function to generate 6-digit PIN Code
