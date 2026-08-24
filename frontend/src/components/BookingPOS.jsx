@@ -16,10 +16,10 @@ const TIMELINE_END = 18;
 const TIMELINE_TOTAL_HOURS = 10;
 
 const TIME_OPTIONS_POS = [];
-for (let h = 8; h <= 20; h++) {
+for (let h = 8; h <= 18; h++) {
   const hh = String(h).padStart(2, '0');
   TIME_OPTIONS_POS.push(`${hh}:00`);
-  if (h < 20) {
+  if (h < 18) {
     TIME_OPTIONS_POS.push(`${hh}:30`);
   }
 }
@@ -367,6 +367,22 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
   };
 
+  // Strict Real-Time Time Protection for POS: For today, filter out past time slots
+  const posAvailableStartOptions = useMemo(() => {
+    const isToday = roomSchedule.date === formatDateToYYYYMMDD(new Date());
+    const now = new Date();
+    const currentMins = now.getHours() * 60 + now.getMinutes();
+    if (!isToday) {
+      return TIME_OPTIONS_POS.filter(t => t < '18:00');
+    }
+    const unpassed = TIME_OPTIONS_POS.filter(t => {
+      if (t >= '18:00') return false;
+      const [h, m] = t.split(':').map(Number);
+      return (h * 60 + m) >= currentMins;
+    });
+    return unpassed.length > 0 ? unpassed : TIME_OPTIONS_POS.filter(t => t < '18:00');
+  }, [roomSchedule.date]);
+
   // Realtime Overlap & Cleaning Buffer Checker
   const currentSlotOverlap = useMemo(() => {
     if (!selectedRoom || !roomSchedule.date) return { isValid: true, isOverlap: false, booking: null };
@@ -494,7 +510,25 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       startH = Math.floor(hour);
       startM = (hour % 1 >= 0.5) ? 30 : 0;
     }
-    const endMins = startH * 60 + startM + 60;
+
+    const isToday = timelineDate === formatDateToYYYYMMDD(new Date());
+    const now = new Date();
+    const currentMins = now.getHours() * 60 + now.getMinutes();
+    if (isToday && (startH * 60 + startM) < currentMins) {
+      const firstValid = TIME_OPTIONS_POS.find(t => {
+        if (t >= '18:00') return false;
+        const [h, m] = t.split(':').map(Number);
+        return (h * 60 + m) >= currentMins;
+      });
+      if (firstValid) {
+        const [fh, fm] = firstValid.split(':').map(Number);
+        startH = fh;
+        startM = fm;
+      }
+    }
+
+    let endMins = startH * 60 + startM + 60;
+    if (endMins > 18 * 60) endMins = 18 * 60;
     const endH = Math.floor(endMins / 60);
     const endM = endMins % 60;
 
@@ -520,7 +554,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     const sh = parseInt(roomSchedule.startHour, 10) || 9;
     const sm = parseInt(roomSchedule.startMinute, 10) || 0;
     let endMins = sh * 60 + sm + hoursCount * 60;
-    if (endMins > 20 * 60) endMins = 20 * 60;
+    if (endMins > 18 * 60) endMins = 18 * 60;
     const eh = Math.floor(endMins / 60);
     const em = endMins % 60;
     setRoomSchedule({
@@ -2129,7 +2163,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                             const startMins = sh * 60 + sm;
                             const curEndMins = (parseInt(roomSchedule.endHour || '10', 10) * 60) + parseInt(roomSchedule.endMinute || '00', 10);
                             let newEndMins = curEndMins <= startMins ? startMins + 60 : curEndMins;
-                            if (newEndMins > 20 * 60) newEndMins = 20 * 60;
+                            if (newEndMins > 18 * 60) newEndMins = 18 * 60;
                             const eh = Math.floor(newEndMins / 60);
                             const em = newEndMins % 60;
                             setRoomSchedule({
@@ -2140,7 +2174,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               endMinute: String(em).padStart(2, '0')
                             });
                           }}
-                          options={TIME_OPTIONS_POS.filter(t => t < '20:00').map(t => ({
+                          options={posAvailableStartOptions.map(t => ({
                             value: t,
                             label: `${t} น.`
                           }))}
@@ -2162,7 +2196,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               ? [Number(roomSchedule.startHour), Number(roomSchedule.startMinute)] 
                               : [9, 0];
                             const [eh, em] = t.split(':').map(Number);
-                            return (eh * 60 + em) > (sh * 60 + sm);
+                            return (eh * 60 + em) > (sh * 60 + sm) && (eh * 60 + em) <= 18 * 60;
                           }).map(t => ({
                             value: t,
                             label: `${t} น.`

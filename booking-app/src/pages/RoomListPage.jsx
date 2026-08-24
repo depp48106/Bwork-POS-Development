@@ -68,7 +68,7 @@ export default function RoomListPage() {
 
   const defaultStart = availableStartOptions.length > 0 ? availableStartOptions[0] : '09:00';
   const [defH, defM] = defaultStart.split(':').map(Number);
-  const defEndMins = Math.min(18 * 60, defH * 60 + defM + 120);
+  const defEndMins = Math.min(18 * 60, defH * 60 + defM + 60);
   const defaultEnd = `${Math.floor(defEndMins / 60).toString().padStart(2, '0')}:${(defEndMins % 60).toString().padStart(2, '0')}`;
 
   const [globalStartTime, setGlobalStartTime] = useState(query.get('start') || defaultStart);
@@ -86,7 +86,11 @@ export default function RoomListPage() {
   const handleGlobalStartChange = (newStart) => {
     setGlobalStartTime(newStart);
     const [sH, sM] = newStart.split(':').map(Number);
-    let newEndMins = sH * 60 + sM + 120;
+    const startMins = sH * 60 + sM;
+    const [curEndH, curEndM] = (globalEndTime || '18:00').split(':').map(Number);
+    const curEndMins = curEndH * 60 + curEndM;
+
+    let newEndMins = curEndMins <= startMins ? startMins + 60 : curEndMins;
     if (newEndMins > 18 * 60) newEndMins = 18 * 60;
     const eH = Math.floor(newEndMins / 60).toString().padStart(2, '0');
     const eM = (newEndMins % 60).toString().padStart(2, '0');
@@ -643,7 +647,11 @@ export default function RoomListPage() {
                       onChange={e => {
                         const newStart = e.target.value;
                         const [sH, sM] = newStart.split(':').map(Number);
-                        let newEndMins = sH * 60 + sM + 120;
+                        const startMins = sH * 60 + sM;
+                        const [curEndH, curEndM] = (sel.endTime || '18:00').split(':').map(Number);
+                        const curEndMins = curEndH * 60 + curEndM;
+
+                        let newEndMins = curEndMins <= startMins ? startMins + 60 : curEndMins;
                         if (newEndMins > 18 * 60) newEndMins = 18 * 60;
                         const eH = Math.floor(newEndMins / 60).toString().padStart(2, '0');
                         const eM = (newEndMins % 60).toString().padStart(2, '0');
