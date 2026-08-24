@@ -165,7 +165,7 @@ export default function StatusPage() {
           </div>
 
           {bookings.map(item => {
-            const bookingCode = item.bookingCode || `BK-${String(item.id).padStart(6, '0')}`;
+            const bookingCode = item.receipt_number || item.bookingCode || `BK-${String(item.id).padStart(6, '0')}`;
             const isPaid = item.payment_status === 'paid';
             const isPending = item.payment_status === 'pending' || item.payment_status === 'unpaid';
 
@@ -181,8 +181,8 @@ export default function StatusPage() {
                 {/* Header */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '12px', marginBottom: '12px' }}>
                   <div>
-                    <span style={{ fontSize: '1.05rem', fontWeight: 900, color: 'var(--primary)' }}>
-                      #{bookingCode}
+                    <span style={{ fontSize: '1.05rem', fontWeight: 900, color: 'var(--primary)', letterSpacing: '0.5px' }}>
+                      {bookingCode.startsWith('BK-') ? bookingCode : `#${bookingCode}`}
                     </span>
                     <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: '8px' }}>
                       ({item.room_name})

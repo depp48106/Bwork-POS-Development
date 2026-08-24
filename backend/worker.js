@@ -216,10 +216,11 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
 // 3. SEQUENTIAL RECEIPT & QUOTATION NUMBER GENERATORS
 // ==========================================
 async function generateReceiptNumber(env) {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
+  const bangkokOffsetMs = 7 * 60 * 60 * 1000;
+  const bkkDate = new Date(Date.now() + bangkokOffsetMs);
+  const yyyy = bkkDate.getUTCFullYear();
+  const mm = String(bkkDate.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(bkkDate.getUTCDate()).padStart(2, '0');
   const dateStr = `${yyyy}${mm}${dd}`;
   const prefix = `BK-${dateStr}-`;
 
@@ -1939,22 +1940,52 @@ export default {
       if (pathname.startsWith('/api/public/bookings/') && pathname.endsWith('/upload-slip') && method === 'POST') {
         const parts = pathname.split('/');
         const idParam = parts[4];
-        const { slip_image } = await request.json();
 
-        let bookingId = idParam;
-        if (typeof idParam === 'string' && idParam.startsWith('BK-')) {
+        let slip_image = null;
+        const contentType = request.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          try {
+            const body = await request.json();
+            slip_image = body.slip_image || body.slip || body.image;
+          } catch (e) {}
+        } else if (contentType.includes('multipart/form-data')) {
+          try {
+            const formData = await request.formData();
+            const file = formData.get('slip') || formData.get('slip_image') || formData.get('image');
+            if (file && typeof file === 'object' && typeof file.arrayBuffer === 'function') {
+              const arrayBuffer = await file.arrayBuffer();
+              const bytes = new Uint8Array(arrayBuffer);
+              let binary = '';
+              for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+              }
+              const base64 = btoa(binary);
+              const mime = file.type || 'image/jpeg';
+              slip_image = `data:${mime};base64,${base64}`;
+            } else if (typeof file === 'string') {
+              slip_image = file;
+            }
+          } catch (e) {}
+        }
+
+        let bookingId = isNaN(Number(idParam)) ? null : Number(idParam);
+        if (!bookingId && typeof idParam === 'string' && idParam.startsWith('BK-')) {
           const raw = idParam.replace('BK-', '');
-          if (raw.length <= 6 && !isNaN(raw)) {
+          if (raw.length <= 6 && !isNaN(Number(raw))) {
             bookingId = parseInt(raw, 10);
           }
         }
 
         const booking = await env.DB.prepare(
           'SELECT * FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
-        ).bind(bookingId, idParam, idParam).first();
+        ).bind(bookingId || 0, idParam, idParam).first();
 
         if (!booking) {
           return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        if (!slip_image) {
+          return new Response(JSON.stringify({ error: 'ไม่พบไฟล์รูปภาพสลิปที่ส่งมา กรุณาลองใหม่อีกครั้ง' }), { status: 400, headers: corsHeaders });
         }
 
         const savedSlipUrl = await saveUploadedFile(env, slip_image, 'slips');
@@ -2225,9 +2256,14 @@ export default {
         // Return clean response WITHOUT exposing the PIN code to unverified customer
         return new Response(JSON.stringify({
           success: true,
-          bookingId,
-          bookingCode,
-          receiptNumber,
+          booking_id: bookingId,
+          bookingId: bookingId,
+          id: bookingId,
+          booking_code: receiptNumber || bookingCode,
+          bookingCode: receiptNumber || bookingCode,
+          receipt_number: receiptNumber,
+          receiptNumber: receiptNumber,
+          total_amount: subtotal,
           totalAmount: subtotal,
           paymentDeadline: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
           message: 'บันทึกการจองสำเร็จ! กรุณาแนบสลิปชำระเงินเพื่อยืนยันการจอง'

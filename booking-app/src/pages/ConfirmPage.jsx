@@ -14,6 +14,7 @@ export default function ConfirmPage() {
   const location = useLocation();
   const query = new URLSearchParams(location.search);
   const bookingId = query.get('id');
+  const queryCode = query.get('code');
 
   const [booking, setBooking] = useState(null);
   const [paymentSettings, setPaymentSettings] = useState({
@@ -30,6 +31,9 @@ export default function ConfirmPage() {
   const [toastMessage, setToastMessage] = useState('');
   const [error, setError] = useState('');
 
+  // Determine standard readable booking code
+  const displayBookingCode = queryCode || booking?.booking_code || booking?.receipt_number || (bookingId && bookingId !== 'undefined' ? `BK-${String(bookingId).padStart(6, '0')}` : '-');
+
   // Load completed booking info
   useEffect(() => {
     const raw = sessionStorage.getItem('completed_booking_result');
@@ -37,6 +41,24 @@ export default function ConfirmPage() {
       try {
         setBooking(JSON.parse(raw));
       } catch (e) {}
+    }
+
+    // Auto-fetch fresh booking info from backend if id is provided
+    if (bookingId && bookingId !== 'undefined') {
+      fetch(`${API_BASE}/api/public/bookings/${bookingId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data && !data.error) {
+            setBooking(prev => ({
+              ...prev,
+              ...data,
+              room_name: data.room?.name || prev?.room_name,
+              booking_code: data.receipt_number || data.bookingCode || prev?.booking_code,
+              total_amount: data.total_amount || prev?.total_amount
+            }));
+          }
+        })
+        .catch(() => {});
     }
 
     // Fetch live payment settings from backend
@@ -72,8 +94,14 @@ export default function ConfirmPage() {
   // Handle Slip Upload
   const handleUploadSlip = async (e) => {
     e.preventDefault();
-    if (!slipFile) {
+    if (!slipFile && !slipPreview) {
       setError('กรุณาเลือกไฟล์รูปภาพสลิปก่อนกดยืนยัน');
+      return;
+    }
+
+    const targetId = bookingId && bookingId !== 'undefined' ? bookingId : (booking?.booking_id || booking?.id);
+    if (!targetId) {
+      setError('ไม่พบรหัสการจองสำหรับการแนบสลิป');
       return;
     }
 
@@ -81,15 +109,14 @@ export default function ConfirmPage() {
     setError('');
 
     try {
-      const formData = new FormData();
-      formData.append('slip', slipFile);
-      if (booking?.customer_contact) {
-        formData.append('contact', booking.customer_contact);
-      }
-
-      const res = await fetch(`${API_BASE}/api/public/bookings/${bookingId}/upload-slip`, {
+      // Send Base64 payload (100% reliable across Cloudflare Workers and Express)
+      const res = await fetch(`${API_BASE}/api/public/bookings/${targetId}/upload-slip`, {
         method: 'POST',
-        body: formData
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          slip_image: slipPreview,
+          contact: booking?.customer_contact || booking?.contact
+        })
       });
 
       const data = await res.json();
@@ -157,7 +184,7 @@ export default function ConfirmPage() {
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--text-muted)' }}>รหัสการจอง:</span>
-              <strong style={{ color: 'var(--primary)' }}>#{bookingId}</strong>
+              <strong style={{ color: 'var(--primary)', letterSpacing: '0.5px' }}>{displayBookingCode}</strong>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--text-muted)' }}>ห้องประชุม:</span>
@@ -213,7 +240,7 @@ export default function ConfirmPage() {
               <CheckCircle2 size={24} style={{ color: '#10b981', flexShrink: 0 }} />
               <div>
                 <div style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--text-main)' }}>
-                  บันทึกการจองสำเร็จ! รหัสการจอง: <span style={{ color: 'var(--primary)' }}>#{bookingId}</span>
+                  บันทึกการจองสำเร็จ! รหัสการจอง: <span style={{ color: 'var(--primary)', letterSpacing: '0.5px' }}>{displayBookingCode}</span>
                 </div>
                 <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                   {booking?.room_name} · {booking?.date ? booking.date.split('-').reverse().join('/') : '-'} ({booking?.start_time} - {booking?.end_time} น.)

@@ -158,15 +158,20 @@ export default function BookingFormPage() {
       const data = await res.json();
 
       if (res.ok && data.success) {
+        const finalBookingId = data.booking_id || data.bookingId || data.id;
+        const finalBookingCode = data.receipt_number || data.receiptNumber || data.booking_code || data.bookingCode || (finalBookingId ? `BK-${String(finalBookingId).padStart(6, '0')}` : '');
+
         // Save current booking confirmation
         sessionStorage.setItem('completed_booking_result', JSON.stringify({
           ...bookingData,
-          booking_id: data.booking_id || data.id,
+          booking_id: finalBookingId,
+          booking_code: finalBookingCode,
+          receipt_number: data.receipt_number || data.receiptNumber,
           customer_name: name.trim(),
           customer_contact: contact.trim(),
           line_user_id: lineUserId
         }));
-        navigate(`/confirm?id=${data.booking_id || data.id}`);
+        navigate(`/confirm?id=${finalBookingId}&code=${encodeURIComponent(finalBookingCode)}`);
       } else {
         setError(data.error || 'ไม่สามารถทำรายการจองได้ กรุณาลองใหม่อีกครั้ง');
       }
