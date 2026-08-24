@@ -2635,6 +2635,107 @@ export default {
         }), { headers: corsHeaders });
       }
 
+      // Get OneDrive OAuth URL
+      if (pathname === '/api/backup/onedrive/auth-url' && method === 'GET') {
+        const clientIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_client_id'").first();
+        const cId = clientIdRow?.value || 'd3590ed6-52b3-4102-aeff-aad2292ab01c';
+        const redirectUri = url.searchParams.get('redirect_uri') || `${url.origin}/api/backup/onedrive/callback`;
+        const scopes = encodeURIComponent('offline_access Files.ReadWrite Files.ReadWrite.All User.Read');
+        const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${cId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_mode=query&prompt=consent`;
+        return new Response(JSON.stringify({ authUrl, clientId: cId, redirectUri }), { headers: corsHeaders });
+      }
+
+      // OneDrive OAuth Callback Endpoint
+      if (pathname === '/api/backup/onedrive/callback' && method === 'GET') {
+        const code = url.searchParams.get('code');
+        const error = url.searchParams.get('error_description') || url.searchParams.get('error');
+
+        if (error || !code) {
+          return new Response(`
+            <!DOCTYPE html>
+            <html>
+            <body style="font-family: sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; background:#f8fafc;">
+              <div style="text-align:center; padding:30px; background:#fff; border-radius:16px; border:1px solid #e2e8f0; max-width:420px;">
+                <h3 style="color:#ef4444;">❌ การเชื่อมต่อไม่สำเร็จ</h3>
+                <p style="color:#64748b; font-size:14px;">${error || 'ไม่พบ Authorization Code'}</p>
+                <button onclick="window.close()" style="margin-top:12px; padding:8px 16px; background:#e2e8f0; border:none; border-radius:8px; cursor:pointer;">ปิดหน้าต่าง</button>
+              </div>
+            </body>
+            </html>
+          `, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        }
+
+        try {
+          const clientIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_client_id'").first();
+          const clientSecretRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_client_secret'").first();
+          const cId = clientIdRow?.value || 'd3590ed6-52b3-4102-aeff-aad2292ab01c';
+          const redirectUri = `${url.origin}/api/backup/onedrive/callback`;
+
+          const params = new URLSearchParams();
+          params.append('client_id', cId);
+          if (clientSecretRow?.value) params.append('client_secret', clientSecretRow.value);
+          params.append('code', code);
+          params.append('redirect_uri', redirectUri);
+          params.append('grant_type', 'authorization_code');
+
+          const tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString()
+          });
+          const tokenData = await tokenRes.json();
+          if (tokenData.error) {
+            throw new Error(tokenData.error_description || tokenData.error);
+          }
+
+          let userEmail = 'OneDrive User';
+          try {
+            const profileRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+              headers: { Authorization: `Bearer ${tokenData.access_token}` }
+            });
+            const profile = await profileRes.json();
+            userEmail = profile.userPrincipalName || profile.mail || profile.displayName || 'OneDrive User';
+          } catch (e) {}
+
+          await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_refresh_token', ?)").bind(tokenData.refresh_token).run();
+          await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_user_email', ?)").bind(userEmail).run();
+
+          return new Response(`
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="utf-8"><title>เชื่อมต่อ OneDrive สำเร็จ</title></head>
+            <body style="font-family: sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; background:#f0fdf4;">
+              <div style="text-align:center; padding:36px; background:#fff; border-radius:20px; box-shadow:0 10px 30px rgba(0,0,0,0.06); max-width:440px; border:1px solid #bbf7d0;">
+                <div style="font-size:42px; margin-bottom:12px;">✅</div>
+                <h2 style="color:#16a34a; margin:0 0 8px 0; font-size:20px;">เชื่อมต่อบัญชี OneDrive สำเร็จ!</h2>
+                <p style="color:#475569; font-size:14px; margin:0 0 16px 0;">เชื่อมต่อกับ: <strong>${userEmail}</strong></p>
+                <p style="color:#94a3b8; font-size:12px;">กำลังปิดหน้าต่างนี้และกลับสู่ระบบ POS...</p>
+                <script>
+                  if (window.opener) {
+                    window.opener.postMessage({ type: 'ONEDRIVE_AUTH_SUCCESS', email: '${userEmail}' }, '*');
+                  }
+                  setTimeout(() => window.close(), 1500);
+                </script>
+              </div>
+            </body>
+            </html>
+          `, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        } catch (err) {
+          return new Response(`
+            <!DOCTYPE html>
+            <html>
+            <body style="font-family: sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; background:#fef2f2;">
+              <div style="text-align:center; padding:30px; background:#fff; border-radius:16px; border:1px solid #fecaca; max-width:420px;">
+                <h3 style="color:#ef4444; margin-top:0;">❌ การแลกเปลี่ยน Token ล้มเหลว</h3>
+                <p style="color:#64748b; font-size:13px; word-break:break-all;">${err.message}</p>
+                <button onclick="window.close()" style="margin-top:12px; padding:8px 16px; background:#fee2e2; color:#ef4444; border:none; border-radius:8px; cursor:pointer; font-weight:bold;">ปิดหน้าต่าง</button>
+              </div>
+            </body>
+            </html>
+          `, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+        }
+      }
+
       // Connect OneDrive Token
       if (pathname === '/api/backup/onedrive/connect' && method === 'POST') {
         const auth = await authenticateUser(request, env, 'admin');

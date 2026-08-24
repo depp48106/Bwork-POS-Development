@@ -255,31 +255,33 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     }
   };
 
-  // Connect OneDrive
+  // Connect OneDrive (1-Click OAuth Popup)
   const handleConnectOneDrive = async () => {
-    const authCode = await sysPrompt(
-      'กรุณาใส่ Microsoft Authorization Code หรือ Refresh Token เพื่อเชื่อมต่อ OneDrive Cloud อัตโนมัติ:',
-      ''
-    );
-    if (!authCode) return;
-
     setOneDriveLoading(true);
     try {
-      const res = await fetch('/api/backup/onedrive/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: authCode.trim() })
-      });
+      const res = await fetch('/api/backup/onedrive/auth-url');
       const data = await res.json();
-      if (res.ok && data.success) {
-        await sysAlert(`เชื่อมต่อบัญชี OneDrive (${data.userEmail || ''}) สำเร็จ!`);
-        await fetchOneDriveStatus();
-      } else {
-        await sysAlert('การเชื่อมต่อล้มเหลว: ' + (data.error || 'ตรวจสอบโค้ดหรือการตั้งค่า'));
+      if (!data.authUrl) throw new Error('ไม่สามารถสร้างลิงก์เข้าสู่ระบบ Microsoft ได้');
+
+      // Listen for callback postMessage
+      const handleMessage = async (event) => {
+        if (event.data && event.data.type === 'ONEDRIVE_AUTH_SUCCESS') {
+          window.removeEventListener('message', handleMessage);
+          await sysAlert(`เชื่อมต่อบัญชี OneDrive (${event.data.email || ''}) สำเร็จ!`);
+          await fetchOneDriveStatus();
+          setOneDriveLoading(false);
+        }
+      };
+      window.addEventListener('message', handleMessage);
+
+      // Open Microsoft OAuth popup
+      const popup = window.open(data.authUrl, 'OneDriveAuth', 'width=600,height=720,status=yes,toolbar=no,menubar=no,scrollbars=yes');
+      if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+        // Fallback if popup blocked
+        window.location.href = data.authUrl;
       }
     } catch (err) {
       await sysAlert('เกิดข้อผิดพลาด: ' + err.message);
-    } finally {
       setOneDriveLoading(false);
     }
   };
