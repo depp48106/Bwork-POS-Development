@@ -516,10 +516,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
       return bItems.some(it => {
         if (Number(it.room_id) !== Number(roomId)) return false;
         if (!it.start_time || !it.end_time) return false;
-        const sStr = String(it.start_time).replace(' ', 'T');
-        const eStr = String(it.end_time).replace(' ', 'T');
-        const bStart = new Date(sStr.endsWith('Z') ? sStr : sStr + 'Z');
-        const bEnd = new Date(eStr.endsWith('Z') ? eStr : eStr + 'Z');
+        const sStr = String(it.start_time).replace(' ', 'T').replace('Z', '');
+        const eStr = String(it.end_time).replace(' ', 'T').replace('Z', '');
+        const bStart = new Date(sStr);
+        const bEnd = new Date(eStr);
         return sTime < bEnd && eTime > bStart;
       });
     });

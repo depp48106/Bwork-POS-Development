@@ -414,12 +414,34 @@ async function generateUniquePinCode() {
 function normalizeToLocalISO(dateStr, timeStr) {
   if (!dateStr) return '';
   if (timeStr) {
-    const cleanTime = timeStr.length === 5 ? `${timeStr}:00` : timeStr;
-    return `${dateStr}T${cleanTime}`;
+    let cleanTime = String(timeStr).trim();
+    if (cleanTime.length === 5) cleanTime += ':00';
+    const cleanDate = String(dateStr).trim().split('T')[0].split(' ')[0];
+    return `${cleanDate}T${cleanTime}`;
   }
   if (typeof dateStr === 'string') {
     let s = dateStr.trim();
-    if (s.includes('Z')) s = s.replace('Z', '');
+    // YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD HH:MM:SS format without timezone
+    if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/.test(s)) {
+      s = s.replace(' ', 'T');
+      if (s.length === 16) s += ':00';
+      return s;
+    }
+    // Has timezone offset (e.g. Z or +07:00)
+    if (s.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(s)) {
+      const d = new Date(s);
+      if (!isNaN(d.getTime())) {
+        const bkkMs = d.getTime() + 7 * 60 * 60 * 1000;
+        const bkk = new Date(bkkMs);
+        const y = bkk.getUTCFullYear();
+        const m = String(bkk.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(bkk.getUTCDate()).padStart(2, '0');
+        const h = String(bkk.getUTCHours()).padStart(2, '0');
+        const min = String(bkk.getUTCMinutes()).padStart(2, '0');
+        const sec = String(bkk.getUTCSeconds()).padStart(2, '0');
+        return `${y}-${m}-${day}T${h}:${min}:${sec}`;
+      }
+    }
     if (s.includes('T')) {
       const parts = s.split('T');
       const timePart = parts[1].split('.')[0];
@@ -435,12 +457,15 @@ function normalizeToLocalISO(dateStr, timeStr) {
   }
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return String(dateStr);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const hours = String(d.getHours()).padStart(2, '0');
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  return `${year}-${month}-${day}T${hours}:${minutes}:00`;
+  const bkkMs = d.getTime() + 7 * 60 * 60 * 1000;
+  const bkk = new Date(bkkMs);
+  const y = bkk.getUTCFullYear();
+  const m = String(bkk.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(bkk.getUTCDate()).padStart(2, '0');
+  const h = String(bkk.getUTCHours()).padStart(2, '0');
+  const min = String(bkk.getUTCMinutes()).padStart(2, '0');
+  const sec = String(bkk.getUTCSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day}T${h}:${min}:${sec}`;
 }
 
 // Helper: Get cleaning buffer minutes from settings (defaults to 30 mins)

@@ -145,10 +145,11 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     }
   };
 
-  // Sync calendar events when timeline date moves to another month
+  // Sync calendar events when timeline date or drawer roomSchedule.date moves to another month
   useEffect(() => {
-    if (timelineDate) {
-      const parts = timelineDate.split('-');
+    const activeDate = roomSchedule?.date || timelineDate;
+    if (activeDate) {
+      const parts = activeDate.split('-');
       if (parts.length === 3) {
         const yr = parseInt(parts[0], 10);
         const mo = parseInt(parts[1], 10) - 1;
@@ -157,11 +158,13 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           setCalendarYear(yr);
           setCalendarMonth(mo);
         }
-        setSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
-        setSidebarSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
+        if (timelineDate === activeDate) {
+          setSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
+          setSidebarSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
+        }
       }
     }
-  }, [timelineDate]);
+  }, [timelineDate, roomSchedule?.date, calendarYear, calendarMonth]);
 
   // =========================================================
   // DATE & THAI HELPERS
@@ -386,14 +389,13 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       return { isValid: false, isOverlap: false, booking: null };
     }
 
-    // Check overlap with calendarEvents + 30-min cleaning buffer
+    // Check overlap with calendarEvents (Direct overlap: sTime < evEnd && eTime > evStart)
     const foundOverlap = calendarEvents.find(ev => {
       if (ev.room_id !== selectedRoom.id) return false;
-      if (ev.status === 'cancelled') return false;
+      if (ev.status === 'cancelled' || ev.payment_status === 'cancelled') return false;
       const evStart = new Date(ev.start_time);
       const evEnd = new Date(ev.end_time);
-      const evEndBuffered = new Date(evEnd.getTime() + 30 * 60 * 1000);
-      return sTime < evEndBuffered && eTime > evStart;
+      return sTime < evEnd && eTime > evStart;
     });
 
     if (foundOverlap) {
@@ -410,8 +412,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       if (item.room_id !== selectedRoom.id) return false;
       const cStart = new Date(item.start_time);
       const cEnd = new Date(item.end_time);
-      const cEndBuffered = new Date(cEnd.getTime() + 30 * 60 * 1000);
-      return sTime < cEndBuffered && eTime > cStart;
+      return sTime < cEnd && eTime > cStart;
     });
 
     if (cartOverlap) {

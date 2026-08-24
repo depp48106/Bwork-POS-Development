@@ -228,16 +228,48 @@ export default function RoomListPage() {
     };
   };
 
-  // Check if a room has booking overlap or 30-min cleaning buffer for its specific active times
+  // Robust time string extractor (handles ISO string "2026-08-24T09:00:00", space format, or "09:00")
+  const extractHHMM = (timeStr) => {
+    if (!timeStr) return null;
+    if (typeof timeStr !== 'string') {
+      const d = new Date(timeStr);
+      if (isNaN(d.getTime())) return null;
+      return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+    const str = timeStr.trim();
+    if (str.includes('T')) {
+      const timePart = str.split('T')[1];
+      const [h, m] = timePart.split(':');
+      return `${h.padStart(2, '0')}:${(m || '00').padStart(2, '0')}`;
+    }
+    if (str.includes(' ')) {
+      const timePart = str.split(' ')[1];
+      const [h, m] = timePart.split(':');
+      return `${h.padStart(2, '0')}:${(m || '00').padStart(2, '0')}`;
+    }
+    const parts = str.split(':');
+    if (parts.length >= 2) {
+      return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`;
+    }
+    return null;
+  };
+
+  // Check if a room has booking overlap for its specific active times
   const getRoomOccupiedInfo = (roomId, effStart, effEnd) => {
     if (!schedule || !schedule.rooms) return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };
 
+    const startHHMM = extractHHMM(effStart || globalStartTime || '09:00');
+    const endHHMM = extractHHMM(effEnd || globalEndTime || '11:00');
+    if (!startHHMM || !endHHMM) return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };
+
+    const [sH, sM] = startHHMM.split(':').map(Number);
+    const [eH, eM] = endHHMM.split(':').map(Number);
+    const reqStartMins = sH * 60 + (sM || 0);
+    const reqEndMins = eH * 60 + (eM || 0);
+
     // Real-time past time check for today
-    if (isToday) {
-      const [sH, sM] = (effStart || '09:00').split(':').map(Number);
-      if (sH * 60 + (sM || 0) < currentMins) {
-        return { isOccupied: true, reason: 'past', label: '⛔ เวลานี้ผ่านมาแล้ว' };
-      }
+    if (isToday && reqStartMins < currentMins) {
+      return { isOccupied: true, reason: 'past', label: '⛔ เวลานี้ผ่านมาแล้ว' };
     }
 
     const roomObj = schedule.rooms.find(r => r.id === roomId);
@@ -245,37 +277,25 @@ export default function RoomListPage() {
       return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };
     }
 
-    const [sH, sM] = (effStart || globalStartTime || '09:00').split(':').map(Number);
-    const [eH, eM] = (effEnd || globalEndTime || '11:00').split(':').map(Number);
-    const reqStartMins = sH * 60 + (sM || 0);
-    const reqEndMins = eH * 60 + (eM || 0);
-    const bufferMins = schedule.cleaning_buffer_minutes || 30;
-
     for (const b of roomObj.bookings) {
-      if (b.status === 'cancelled') continue;
-      const [bStartH, bStartM] = (b.start_time || '00:00').split(':').map(Number);
-      const [bEndH, bEndM] = (b.end_time || '23:59').split(':').map(Number);
+      if (b.status === 'cancelled' || b.payment_status === 'cancelled') continue;
+      
+      const bStartHHMM = extractHHMM(b.start_time);
+      const bEndHHMM = extractHHMM(b.end_time);
+      if (!bStartHHMM || !bEndHHMM) continue;
+
+      const [bStartH, bStartM] = bStartHHMM.split(':').map(Number);
+      const [bEndH, bEndM] = bEndHHMM.split(':').map(Number);
       const bStartMins = bStartH * 60 + (bStartM || 0);
       const bEndMins = bEndH * 60 + (bEndM || 0);
-      const bufferEndMins = bEndMins + bufferMins;
 
-      // Overlap with booking or 30-min buffer
-      if (reqStartMins < bufferEndMins && reqEndMins > bStartMins) {
-        if (reqStartMins < bEndMins) {
-          return { 
-            isOccupied: true, 
-            reason: 'booked',
-            label: `🔴 ติดจอง (${b.start_time} - ${b.end_time} น.)` 
-          };
-        } else {
-          const bufH = Math.floor(bufferEndMins / 60).toString().padStart(2, '0');
-          const bufM = (bufferEndMins % 60).toString().padStart(2, '0');
-          return { 
-            isOccupied: true, 
-            reason: 'cleaning',
-            label: `🧹 พักทำความสะอาด 30 นาที (ถึง ${bufH}:${bufM} น.)` 
-          };
-        }
+      // Overlap condition: (ReqStart < ExistingEnd) AND (ReqEnd > ExistingStart)
+      if (reqStartMins < bEndMins && reqEndMins > bStartMins) {
+        return { 
+          isOccupied: true, 
+          reason: 'booked',
+          label: `🔴 ติดจอง (${bStartHHMM} - ${bEndHHMM} น.)` 
+        };
       }
     }
     return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };
