@@ -358,7 +358,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     }).sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
   };
 
-  // Realtime Overlap Checker
+  // Realtime Overlap & Cleaning Buffer Checker
   const currentSlotOverlap = useMemo(() => {
     if (!selectedRoom || !roomSchedule.date) return { isValid: true, isOverlap: false, booking: null };
 
@@ -398,47 +398,59 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       return { isValid: false, isOverlap: false, booking: null };
     }
 
-    // Check overlap with calendarEvents (Direct overlap: sTime < evEnd && eTime > evStart)
-    const foundOverlap = calendarEvents.find(ev => {
-      if (ev.room_id !== selectedRoom.id) return false;
-      if (ev.status === 'cancelled' || ev.payment_status === 'cancelled') return false;
-      const evStart = new Date(ev.start_time);
-      const evEnd = new Date(ev.end_time);
-      return sTime < evEnd && eTime > evStart;
-    });
+    const bufferMins = Number(settings?.cleaning_buffer_minutes !== undefined ? settings.cleaning_buffer_minutes : 30);
+    const bufferMs = bufferMins * 60 * 1000;
+    const reqStartMs = sTime.getTime();
+    const reqEndMs = eTime.getTime();
+    const reqEndBufferedMs = reqEndMs + bufferMs;
 
-    if (foundOverlap) {
-      return {
-        isValid: true,
-        isOverlap: true,
-        booking: foundOverlap,
-        source: 'database'
-      };
+    // Check overlap with calendarEvents taking cleaning buffer into account
+    for (const ev of calendarEvents) {
+      if (ev.room_id !== selectedRoom.id) continue;
+      if (ev.status === 'cancelled' || ev.payment_status === 'cancelled') continue;
+      const evStartMs = new Date(ev.start_time).getTime();
+      const evEndMs = new Date(ev.end_time).getTime();
+      const evEndBufferedMs = evEndMs + bufferMs;
+
+      if (reqStartMs < evEndBufferedMs && reqEndBufferedMs > evStartMs) {
+        const isDirectUsage = (reqStartMs < evEndMs && reqEndMs > evStartMs);
+        return {
+          isValid: true,
+          isOverlap: true,
+          isCleaningBuffer: !isDirectUsage,
+          bufferMinutes: bufferMins,
+          booking: ev,
+          source: 'database'
+        };
+      }
     }
 
-    // Check overlap with cart items
-    const cartOverlap = cart.find(item => {
-      if (item.room_id !== selectedRoom.id) return false;
-      const cStart = new Date(item.start_time);
-      const cEnd = new Date(item.end_time);
-      return sTime < cEnd && eTime > cStart;
-    });
+    // Check overlap with cart items taking cleaning buffer into account
+    for (const item of cart) {
+      if (item.room_id !== selectedRoom.id) continue;
+      const cStartMs = new Date(item.start_time).getTime();
+      const cEndMs = new Date(item.end_time).getTime();
+      const cEndBufferedMs = cEndMs + bufferMs;
 
-    if (cartOverlap) {
-      return {
-        isValid: true,
-        isOverlap: true,
-        booking: {
-          customer_name: customer.name || 'ในตะกร้าสินค้า',
-          start_time: cartOverlap.start_time,
-          end_time: cartOverlap.end_time
-        },
-        source: 'cart'
-      };
+      if (reqStartMs < cEndBufferedMs && reqEndBufferedMs > cStartMs) {
+        const isDirectUsage = (reqStartMs < cEndMs && reqEndMs > cStartMs);
+        return {
+          isValid: true,
+          isOverlap: true,
+          isCleaningBuffer: !isDirectUsage,
+          bufferMinutes: bufferMins,
+          booking: {
+            customer_name: customer.name || 'ในตะกร้าสินค้า',
+            start_time: item.start_time,
+            end_time: item.end_time
+          },
+          source: 'cart'
+        };
+      }
     }
 
     return { isValid: true, isOverlap: false, booking: null };
-  }, [selectedRoom, roomSchedule, bookingType, dailyTimeSlot, calendarEvents, cart, customer.name]);
+  }, [selectedRoom, roomSchedule, bookingType, dailyTimeSlot, calendarEvents, cart, customer.name, settings]);
 
   // =========================================================
   // ACTIONS: OPEN DRAWER & BOOKING
@@ -595,6 +607,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   };
 
   const addRoomToCart = async () => {
+    if (currentSlotOverlap.isOverlap) {
+      if (currentSlotOverlap.isCleaningBuffer) {
+        sysAlert(`ห้องนี้อยู่ในช่วงเวลาทำความสะอาด / เคลียร์ห้อง (${currentSlotOverlap.bufferMinutes || 30} นาที) กรุณาเลือกเวลาอื่น`);
+      } else {
+        sysAlert('ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง) กรุณาเลือกเวลาอื่น');
+      }
+      return;
+    }
     if (!customer.name.trim()) {
       sysAlert('กรุณากรอกชื่อผู้จองเพื่อทำรายการจองห้อง');
       return;
@@ -611,6 +631,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
   // ⚡ Quick Direct Booking (Checkout directly from Drawer without Cart)
   const quickDirectBooking = async () => {
+    if (currentSlotOverlap.isOverlap) {
+      if (currentSlotOverlap.isCleaningBuffer) {
+        sysAlert(`ห้องนี้อยู่ในช่วงเวลาทำความสะอาด / เคลียร์ห้อง (${currentSlotOverlap.bufferMinutes || 30} นาที) กรุณาเลือกเวลาอื่น`);
+      } else {
+        sysAlert('ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง) กรุณาเลือกเวลาอื่น');
+      }
+      return;
+    }
     if (!customer.name.trim()) {
       sysAlert('กรุณากรอกชื่อผู้จองเพื่อทำรายการจองห้อง');
       return;
@@ -2314,23 +2342,43 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
               {/* Group G: Real-time Overlap Alert */}
               {currentSlotOverlap.isOverlap ? (
-                <div style={{
-                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                  border: '1px solid rgba(239, 68, 68, 0.35)',
-                  borderRadius: '14px',
-                  padding: '10px 14px',
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '8px'
-                }}>
-                  <AlertTriangle size={16} style={{ color: '#ef4444', flexShrink: 0, marginTop: '2px' }} />
-                  <div style={{ fontSize: '0.78rem' }}>
-                    <div style={{ fontWeight: 800, color: '#ef4444' }}>ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง)</div>
-                    <div style={{ color: 'var(--text-main)', marginTop: '2px' }}>
-                      ผู้เข้าใช้: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong>
+                currentSlotOverlap.isCleaningBuffer ? (
+                  <div style={{
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                    borderRadius: '14px',
+                    padding: '10px 14px',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '8px'
+                  }}>
+                    <Clock size={16} style={{ color: '#f59e0b', flexShrink: 0, marginTop: '2px' }} />
+                    <div style={{ fontSize: '0.78rem' }}>
+                      <div style={{ fontWeight: 800, color: '#d97706' }}>🧹 ช่วงเวลานี้ติดทำความสะอาด / เคลียร์ห้อง ({currentSlotOverlap.bufferMinutes || 30} นาที)</div>
+                      <div style={{ color: 'var(--text-main)', marginTop: '2px' }}>
+                        ต่อจากคิวของ: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong> (เสร็จสิ้นรอบก่อนหน้า)
+                      </div>
                     </div>
                   </div>
-                </div>
+                ) : (
+                  <div style={{
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.35)',
+                    borderRadius: '14px',
+                    padding: '10px 14px',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '8px'
+                  }}>
+                    <AlertTriangle size={16} style={{ color: '#ef4444', flexShrink: 0, marginTop: '2px' }} />
+                    <div style={{ fontSize: '0.78rem' }}>
+                      <div style={{ fontWeight: 800, color: '#ef4444' }}>ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง)</div>
+                      <div style={{ color: 'var(--text-main)', marginTop: '2px' }}>
+                        ผู้เข้าใช้: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong>
+                      </div>
+                    </div>
+                  </div>
+                )
               ) : currentSlotOverlap.isValid ? (
                 <div style={{
                   backgroundColor: 'rgba(16, 185, 129, 0.08)',
@@ -2383,9 +2431,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '6px',
-                  backgroundColor: 'var(--bg-card)',
-                  border: '1px solid var(--border-color)',
-                  color: 'var(--text-main)',
+                  backgroundColor: currentSlotOverlap.isOverlap ? 'rgba(148, 163, 184, 0.15)' : 'var(--bg-card)',
+                  border: currentSlotOverlap.isOverlap ? '1px solid rgba(148, 163, 184, 0.3)' : '1px solid var(--border-color)',
+                  color: currentSlotOverlap.isOverlap ? '#94a3b8' : 'var(--text-main)',
+                  opacity: currentSlotOverlap.isOverlap ? 0.6 : 1,
                   cursor: currentSlotOverlap.isOverlap ? 'not-allowed' : 'pointer'
                 }} 
               >
@@ -2395,7 +2444,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
               <button 
                 type="button"
-                className="btn btn-primary" 
+                className={currentSlotOverlap.isOverlap ? '' : 'btn btn-primary'}
                 style={{ 
                   flex: 2, 
                   height: '44px',
@@ -2406,16 +2455,26 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '6px',
-                  backgroundColor: currentSlotOverlap.isOverlap ? '#ef4444' : undefined,
-                  opacity: currentSlotOverlap.isOverlap ? 0.65 : 1,
+                  backgroundColor: currentSlotOverlap.isOverlap ? '#94a3b8' : undefined,
+                  color: '#ffffff',
+                  opacity: currentSlotOverlap.isOverlap ? 0.75 : 1,
                   cursor: currentSlotOverlap.isOverlap ? 'not-allowed' : 'pointer',
-                  boxShadow: currentSlotOverlap.isOverlap ? 'none' : '0 4px 14px rgba(37,99,235,0.3)'
+                  boxShadow: currentSlotOverlap.isOverlap ? 'none' : '0 4px 14px rgba(37,99,235,0.3)',
+                  border: 'none'
                 }} 
                 onClick={quickDirectBooking}
                 disabled={currentSlotOverlap.isOverlap}
               >
-                <Zap size={16} />
-                <span>{currentSlotOverlap.isOverlap ? 'ช่วงนี้ไม่ว่าง' : 'ยืนยันจองทันที'}</span>
+                {currentSlotOverlap.isOverlap ? (
+                  currentSlotOverlap.isCleaningBuffer ? <Clock size={16} /> : <AlertTriangle size={16} />
+                ) : (
+                  <Zap size={16} />
+                )}
+                <span>
+                  {currentSlotOverlap.isOverlap 
+                    ? (currentSlotOverlap.isCleaningBuffer ? `ติดทำความสะอาด (${currentSlotOverlap.bufferMinutes || 30} น.)` : 'ช่วงนี้ไม่ว่าง (ติดจอง)') 
+                    : 'ยืนยันจองทันที'}
+                </span>
               </button>
             </div>
 
