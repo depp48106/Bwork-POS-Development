@@ -277,6 +277,8 @@ export default function RoomListPage() {
       return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };
     }
 
+    const bufferMins = Number(schedule.cleaning_buffer_minutes || schedule.buffer_minutes) || 30;
+
     for (const b of roomObj.bookings) {
       if (b.status === 'cancelled' || b.payment_status === 'cancelled') continue;
       
@@ -288,14 +290,28 @@ export default function RoomListPage() {
       const [bEndH, bEndM] = bEndHHMM.split(':').map(Number);
       const bStartMins = bStartH * 60 + (bStartM || 0);
       const bEndMins = bEndH * 60 + (bEndM || 0);
+      const bEndBufferedMins = bEndMins + bufferMins;
+      const reqEndBufferedMins = reqEndMins + bufferMins;
 
-      // Overlap condition: (ReqStart < ExistingEnd) AND (ReqEnd > ExistingStart)
-      if (reqStartMins < bEndMins && reqEndMins > bStartMins) {
-        return { 
-          isOccupied: true, 
-          reason: 'booked',
-          label: `🔴 ติดจอง (${bStartHHMM} - ${bEndHHMM} น.)` 
-        };
+      // Overlap condition taking cleaning buffer into account
+      if (reqStartMins < bEndBufferedMins && reqEndBufferedMins > bStartMins) {
+        const isDirectUsage = (reqStartMins < bEndMins && reqEndMins > bStartMins);
+        if (isDirectUsage) {
+          return { 
+            isOccupied: true, 
+            reason: 'booked',
+            label: `🔴 ติดจอง (${bStartHHMM} - ${bEndHHMM} น.)` 
+          };
+        } else {
+          const cleanEndH = Math.floor(bEndBufferedMins / 60);
+          const cleanEndM = bEndBufferedMins % 60;
+          const cleanEndHHMM = `${String(cleanEndH).padStart(2, '0')}:${String(cleanEndM).padStart(2, '0')}`;
+          return { 
+            isOccupied: true, 
+            reason: 'cleaning',
+            label: `🟡 ติดทำความสะอาด (${bEndHHMM} - ${cleanEndHHMM} น.)` 
+          };
+        }
       }
     }
     return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };

@@ -182,12 +182,29 @@ function normalizeToLocalISO(dateStr, timeStr) {
   return `${y}-${m}-${day}T${h}:${min}:${sec}`;
 }
 
+async function getCleaningBufferMinutes(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'cleaning_buffer_minutes'").first();
+    if (row && row.value) {
+      const val = parseInt(row.value, 10);
+      if (!isNaN(val)) return val;
+    }
+  } catch (e) {}
+  return 30;
+}
+
 async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId = null) {
   const normStart = normalizeToLocalISO(startISO);
   const normEnd = normalizeToLocalISO(endISO);
+  const bufferMins = await getCleaningBufferMinutes(env);
+  const bufferMs = bufferMins * 60 * 1000;
+
+  const reqStartMs = new Date(normStart.replace(' ', 'T')).getTime();
+  const reqEndMs = new Date(normEnd.replace(' ', 'T')).getTime();
+  const reqEndBufferedMs = reqEndMs + bufferMs;
 
   let query = `
-    SELECT bi.id, bi.start_time, bi.end_time 
+    SELECT bi.id, bi.booking_id, bi.start_time, bi.end_time, b.customer_name, b.payment_status
     FROM booking_items bi
     JOIN bookings b ON bi.booking_id = b.id
     WHERE bi.room_id = ?
@@ -202,14 +219,28 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
   const { results: bookings } = await env.DB.prepare(query).bind(...params).all();
   for (const b of (bookings || [])) {
     if (!b.start_time || !b.end_time) continue;
-    const bStartNorm = normalizeToLocalISO(b.start_time);
-    const bEndNorm = normalizeToLocalISO(b.end_time);
-    // Overlap condition: (StartA < EndB) AND (EndA > StartB)
-    if (bStartNorm < normEnd && bEndNorm > normStart) {
-      return true;
+    const bStartMs = new Date(normalizeToLocalISO(b.start_time).replace(' ', 'T')).getTime();
+    const bEndMs = new Date(normalizeToLocalISO(b.end_time).replace(' ', 'T')).getTime();
+    const bEndBufferedMs = bEndMs + bufferMs;
+
+    // Overlap condition taking cleaning buffer into account:
+    // (Requested Start < Existing End + Buffer) AND (Requested End + Buffer > Existing Start)
+    if (reqStartMs < bEndBufferedMs && reqEndBufferedMs > bStartMs) {
+      const isDirectUsage = (reqStartMs < bEndMs && reqEndMs > bStartMs);
+      return {
+        hasOverlap: true,
+        overlap: true,
+        isCleaningBuffer: !isDirectUsage,
+        bufferMinutes: bufferMins,
+        booking: {
+          ...b,
+          start_time: normalizeToLocalISO(b.start_time),
+          end_time: normalizeToLocalISO(b.end_time)
+        }
+      };
     }
   }
-  return false;
+  return { hasOverlap: false, overlap: false, bufferMinutes: bufferMins };
 }
 
 // ==========================================
@@ -1446,15 +1477,17 @@ export default {
           bookings: (bookings || []).filter(b => b.room_id === room.id)
         }));
 
-        return new Response(JSON.stringify({ date, rooms: scheduleMap }), { headers: corsHeaders });
+        const bufferMins = await getCleaningBufferMinutes(env);
+        return new Response(JSON.stringify({ date, cleaning_buffer_minutes: bufferMins, buffer_minutes: bufferMins, rooms: scheduleMap }), { headers: corsHeaders });
       }
 
       if (pathname === '/api/bookings/check-overlap') {
         const roomId = url.searchParams.get('room_id');
         const startTime = url.searchParams.get('start_time');
         const endTime = url.searchParams.get('end_time');
-        const hasOverlap = await checkRoomOverlap(env, roomId, startTime, endTime);
-        return new Response(JSON.stringify({ hasOverlap }), { headers: corsHeaders });
+        const excludeBookingId = url.searchParams.get('exclude_booking_id');
+        const overlapResult = await checkRoomOverlap(env, roomId, startTime, endTime, excludeBookingId);
+        return new Response(JSON.stringify(overlapResult), { headers: corsHeaders });
       }
 
       if (pathname === '/api/bookings/calendar' && method === 'GET') {
@@ -1610,8 +1643,11 @@ export default {
         // 1. Verify Overlap for all room items
         for (const item of items) {
           if (item.room_id && item.start_time && item.end_time) {
-            const hasOverlap = await checkRoomOverlap(env, item.room_id, item.start_time, item.end_time);
-            if (hasOverlap) {
+            const overlapResult = await checkRoomOverlap(env, item.room_id, item.start_time, item.end_time);
+            if (overlapResult.hasOverlap) {
+              if (overlapResult.isCleaningBuffer) {
+                return new Response(JSON.stringify({ error: `ห้องนี้อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาทีหลังรอบการใช้งานก่อนหน้า) กรุณาเลือกเวลาอื่น` }), { status: 409, headers: corsHeaders });
+              }
               return new Response(JSON.stringify({ error: `ห้องนี้ถูกจองในช่วงเวลาดังกล่าวแล้ว กรุณาเลือกเวลาอื่น` }), { status: 409, headers: corsHeaders });
             }
           }
@@ -1872,8 +1908,11 @@ export default {
         const newEndISO = `${date}T${cleanEnd}`;
 
         // Overlap check (exclude this booking)
-        const isOverlapping = await checkRoomOverlap(env, targetRoomId, newStartISO, newEndISO, bookingId);
-        if (isOverlapping) {
+        const overlapResult = await checkRoomOverlap(env, targetRoomId, newStartISO, newEndISO, bookingId);
+        if (overlapResult.hasOverlap) {
+          if (overlapResult.isCleaningBuffer) {
+            return new Response(JSON.stringify({ error: `ช่วงเวลาที่เลือกใหม่นี้ตรงกับเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) กรุณาเลือกช่วงเวลาอื่น` }), { status: 400, headers: corsHeaders });
+          }
           return new Response(JSON.stringify({ error: 'ช่วงเวลาที่เลือกใหม่นี้มีผู้จองใช้งานแล้ว กรุณาเลือกช่วงเวลาอื่น' }), { status: 400, headers: corsHeaders });
         }
 
@@ -2185,8 +2224,11 @@ export default {
         const fullStart = normalizeToLocalISO(booking_date, start_time);
         const fullEnd = normalizeToLocalISO(booking_date, end_time);
 
-        const hasOverlap = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
-        if (hasOverlap) {
+        const overlapResult = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
+        if (overlapResult.hasOverlap) {
+          if (overlapResult.isCleaningBuffer) {
+            return new Response(JSON.stringify({ error: `ขออภัย ห้องนี้อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาทีหลังรอบการใช้งานก่อนหน้า) กรุณาเลือกเวลาอื่น` }), { status: 409, headers: corsHeaders });
+          }
           return new Response(JSON.stringify({ error: 'ห้องนี้ถูกจองในช่วงเวลาดังกล่าวแล้ว กรุณาเลือกเวลาอื่น' }), { status: 409, headers: corsHeaders });
         }
 
