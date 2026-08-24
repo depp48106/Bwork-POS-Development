@@ -117,6 +117,18 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
   useEffect(() => {
     fetchCalendarEvents();
+    // Auto-refresh calendar events every 8 seconds to show newly approved/created bookings live
+    const interval = setInterval(() => {
+      fetchCalendarEvents();
+    }, 8000);
+
+    const onFocus = () => fetchCalendarEvents();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [calendarYear, calendarMonth]);
 
   const fetchItems = async () => {
@@ -145,26 +157,23 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     }
   };
 
-  // Sync calendar events when timeline date or drawer roomSchedule.date moves to another month
+  // Sync calendar when timeline date changes (without overriding manual month navigation)
   useEffect(() => {
-    const activeDate = roomSchedule?.date || timelineDate;
-    if (activeDate) {
-      const parts = activeDate.split('-');
+    if (timelineDate) {
+      const parts = timelineDate.split('-');
       if (parts.length === 3) {
         const yr = parseInt(parts[0], 10);
         const mo = parseInt(parts[1], 10) - 1;
         const dy = parseInt(parts[2], 10);
-        if (yr !== calendarYear || mo !== calendarMonth) {
+        if (mainViewMode === 'matrix') {
           setCalendarYear(yr);
           setCalendarMonth(mo);
         }
-        if (timelineDate === activeDate) {
-          setSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
-          setSidebarSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
-        }
+        setSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
+        setSidebarSelectedDay({ day: dy, month: mo, year: yr, isOtherMonth: false });
       }
     }
-  }, [timelineDate, roomSchedule?.date, calendarYear, calendarMonth]);
+  }, [timelineDate, mainViewMode]);
 
   // =========================================================
   // DATE & THAI HELPERS
@@ -1488,6 +1497,82 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
               {/* Right: Big Monthly Calendar Grid (Synchronized Blue Highlight & Detailed Event Chips) */}
               <div className="calendar-container" style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {/* Main Month Navigation Toolbar */}
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '8px 14px',
+                  borderBottom: '1px solid var(--border-color)',
+                  backgroundColor: 'var(--bg-card)',
+                  flexShrink: 0
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 900, color: 'var(--text-main)' }}>
+                      {monthNames[calendarMonth]} {calendarYear + 543}
+                    </h3>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      ({monthNamesEng[calendarMonth]} {calendarYear})
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (calendarMonth === 0) {
+                          setCalendarMonth(11);
+                          setCalendarYear(calendarYear - 1);
+                        } else {
+                          setCalendarMonth(calendarMonth - 1);
+                        }
+                      }}
+                      className="btn-secondary"
+                      style={{ height: '32px', padding: '0 10px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      title="เดือนก่อนหน้า"
+                    >
+                      <ChevronLeft size={15} />
+                      <span>เดือนก่อนหน้า</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const now = new Date();
+                        setCalendarMonth(now.getMonth());
+                        setCalendarYear(now.getFullYear());
+                        const todayStr = formatDateToYYYYMMDD(now);
+                        setTimelineDate(todayStr);
+                        setSelectedDay({ day: now.getDate(), month: now.getMonth(), year: now.getFullYear(), isOtherMonth: false });
+                        setSidebarSelectedDay({ day: now.getDate(), month: now.getMonth(), year: now.getFullYear(), isOtherMonth: false });
+                      }}
+                      className="btn-secondary"
+                      style={{ height: '32px', padding: '0 10px', fontSize: '0.78rem', fontWeight: 700 }}
+                      title="กลับมาเดือนปัจจุบัน"
+                    >
+                      เดือนปัจจุบัน
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (calendarMonth === 11) {
+                          setCalendarMonth(0);
+                          setCalendarYear(calendarYear + 1);
+                        } else {
+                          setCalendarMonth(calendarMonth + 1);
+                        }
+                      }}
+                      className="btn-secondary"
+                      style={{ height: '32px', padding: '0 10px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      title="เดือนถัดไป"
+                    >
+                      <span>เดือนถัดไป</span>
+                      <ChevronRight size={15} />
+                    </button>
+                  </div>
+                </div>
+
                 <div className="calendar-grid-wrapper" style={{ flex: 1, minHeight: 0 }}>
                   <div className="calendar-weekday-row">
                     {weekdays.map(wd => (
