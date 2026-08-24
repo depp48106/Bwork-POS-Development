@@ -4,6 +4,13 @@ const path = require('path');
 const fs = require('fs');
 const { initDatabase, dbQuery, hashPassword } = require('./database');
 const { performBackup } = require('./backup');
+const { 
+  generateDatabaseDumpSql, 
+  getOneDriveAuthUrl, 
+  exchangeOneDriveCode, 
+  refreshOneDriveAccessToken, 
+  uploadSqlToOneDrive 
+} = require('./onedrive');
 const crypto = require('crypto');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'bwork-pos-secret-key-change-in-production';
@@ -1796,7 +1803,125 @@ app.post('/api/settings', async (req, res) => {
   }
 });
 
-// Manual backup trigger
+// Direct Full Database SQL Dump Download (Attachment)
+app.get('/api/backup/download-sql', async (req, res) => {
+  try {
+    const sql = await generateDatabaseDumpSql(q => dbQuery.all(q));
+    const now = new Date();
+    const dStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `bwork_pos_backup_${dStr}.sql`;
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(sql);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// OneDrive Connection Status
+app.get('/api/backup/onedrive/status', async (req, res) => {
+  try {
+    const refTokenRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_refresh_token'");
+    const emailRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_user_email'");
+    const lastBackupRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_last_backup'");
+    const lastFileRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_last_file'");
+    const clientIdRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_client_id'");
+
+    res.json({
+      connected: !!(refTokenRow && refTokenRow.value),
+      userEmail: emailRow ? emailRow.value : '',
+      lastBackup: lastBackupRow ? lastBackupRow.value : null,
+      lastFile: lastFileRow ? lastFileRow.value : '',
+      clientId: clientIdRow ? clientIdRow.value : ''
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get OneDrive OAuth URL
+app.get('/api/backup/onedrive/auth-url', async (req, res) => {
+  try {
+    const { redirect_uri } = req.query;
+    const clientIdRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_client_id'");
+    const authUrl = getOneDriveAuthUrl(clientIdRow?.value, redirect_uri || `${req.protocol}://${req.get('host')}/api/backup/onedrive/callback`);
+    res.json({ authUrl });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Save / Connect OneDrive Token
+app.post('/api/backup/onedrive/connect', async (req, res) => {
+  const { code, redirect_uri, client_id, client_secret } = req.body;
+  try {
+    if (client_id) {
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_client_id', ?)", [client_id]);
+    }
+    if (client_secret) {
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_client_secret', ?)", [client_secret]);
+    }
+
+    const tokenData = await exchangeOneDriveCode(code, client_id, client_secret, redirect_uri);
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_refresh_token', ?)", [tokenData.refresh_token]);
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_user_email', ?)", [tokenData.user_email]);
+
+    res.json({
+      success: true,
+      message: `เชื่อมต่อบัญชี OneDrive (${tokenData.user_email}) สำเร็จ`,
+      userEmail: tokenData.user_email
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Trigger Manual OneDrive Cloud Backup
+app.post('/api/backup/onedrive/trigger', async (req, res) => {
+  try {
+    const refTokenRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_refresh_token'");
+    if (!refTokenRow || !refTokenRow.value) {
+      return res.status(400).json({ error: 'ยังไม่ได้เชื่อมต่อบัญชี OneDrive กรุณากดเชื่อมต่อบัญชีก่อนทำการสำรองข้อมูล' });
+    }
+    const clientIdRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_client_id'");
+    const clientSecretRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_client_secret'");
+
+    const tokenData = await refreshOneDriveAccessToken(refTokenRow.value, clientIdRow?.value, clientSecretRow?.value);
+    if (tokenData.refresh_token && tokenData.refresh_token !== refTokenRow.value) {
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_refresh_token', ?)", [tokenData.refresh_token]);
+    }
+
+    const sql = await generateDatabaseDumpSql(q => dbQuery.all(q));
+    const now = new Date();
+    const dStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fileName = `bwork_backup_${dStr}.sql`;
+
+    const uploadRes = await uploadSqlToOneDrive(tokenData.access_token, fileName, sql, 'Bwork_POS_Backups');
+
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_last_backup', ?)", [now.toISOString()]);
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_last_file', ?)", [fileName]);
+
+    res.json({
+      success: true,
+      message: 'สำรองข้อมูลและอัปโหลดขึ้น OneDrive สำเร็จแล้ว',
+      file: uploadRes
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Disconnect OneDrive
+app.post('/api/backup/onedrive/disconnect', async (req, res) => {
+  try {
+    await dbQuery.run("DELETE FROM settings WHERE key IN ('onedrive_refresh_token', 'onedrive_user_email', 'onedrive_last_backup', 'onedrive_last_file')");
+    res.json({ success: true, message: 'ยกเลิกการเชื่อมต่อ OneDrive เรียบร้อยแล้ว' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Legacy Local Manual backup trigger
 app.post('/api/backup/trigger', async (req, res) => {
   const result = await performBackup();
   if (result.success) {
@@ -2090,21 +2215,43 @@ app.post('/api/users/:id/reset-password', async (req, res) => {
   }
 });
 
-// Auto-run backup daily at midnight (local time)
-// Since this is a local desktop app that may close, we also check & trigger backup when app starts or when users log in.
-// We can use a simple daily timer check interval in Node.js
+// Auto-run backup daily at midnight / hourly check (local time & OneDrive cloud)
 let lastBackupDate = '';
-setInterval(async () => {
-  const todayStr = new Date().toLocaleDateString();
-  if (lastBackupDate !== todayStr) {
-    // Run backup
-    console.log('Automated Daily Backup started...');
-    const result = await performBackup();
-    if (result.success) {
-      lastBackupDate = todayStr;
+async function runDailyAutomatedBackup() {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  if (lastBackupDate === todayStr) return;
+
+  console.log('Automated Daily Backup started...');
+  try {
+    // 1. Local backup
+    await performBackup();
+
+    // 2. OneDrive cloud backup if connected
+    const refTokenRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_refresh_token'");
+    if (refTokenRow && refTokenRow.value) {
+      const clientIdRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_client_id'");
+      const clientSecretRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'onedrive_client_secret'");
+      const tokenData = await refreshOneDriveAccessToken(refTokenRow.value, clientIdRow?.value, clientSecretRow?.value);
+      if (tokenData.refresh_token && tokenData.refresh_token !== refTokenRow.value) {
+        await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_refresh_token', ?)", [tokenData.refresh_token]);
+      }
+      const sql = await generateDatabaseDumpSql(q => dbQuery.all(q));
+      const now = new Date();
+      const dStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const fileName = `bwork_backup_${dStr}.sql`;
+      await uploadSqlToOneDrive(tokenData.access_token, fileName, sql, 'Bwork_POS_Backups');
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_last_backup', ?)", [now.toISOString()]);
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_last_file', ?)", [fileName]);
+      console.log('Automated OneDrive Backup uploaded successfully:', fileName);
     }
+    lastBackupDate = todayStr;
+  } catch (err) {
+    console.error('Daily automated backup failed:', err);
   }
-}, 60 * 60 * 1000); // Check every hour
+}
+
+setInterval(runDailyAutomatedBackup, 60 * 60 * 1000); // Check every hour
+
 
 // Ensure uploads directory exists outside public folder (prevents deletion on frontend rebuilds)
 const uploadsDir = path.join(__dirname, 'uploads');

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone, CreditCard, Building2 } from 'lucide-react';
+import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone, CreditCard, Building2, Download, RefreshCw, ExternalLink, ShieldCheck, Clock, FileText } from 'lucide-react';
 import DoorAccessSettings from './DoorAccessSettings';
 
 function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, sysAlert, sysConfirm, sysPrompt, onClearHistory }) {
@@ -24,9 +24,18 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     payment_deadline_hours: '24'
   });
 
-  // DB Backup logs
+  // DB Backup logs & OneDrive Cloud
   const [backupStatus, setBackupStatus] = useState(null);
   const [backupLoading, setBackupLoading] = useState(false);
+  const [oneDriveStatus, setOneDriveStatus] = useState({
+    connected: false,
+    userEmail: '',
+    lastBackup: null,
+    lastFile: '',
+    clientId: ''
+  });
+  const [oneDriveLoading, setOneDriveLoading] = useState(false);
+  const [downloadSqlLoading, setDownloadSqlLoading] = useState(false);
 
   // User list states
   const [users, setUsers] = useState([]);
@@ -205,7 +214,109 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     setConfigs(prev => ({ ...prev, logo_image: '' }));
   };
 
-  // Trigger Backup
+  // Fetch OneDrive Cloud Status
+  const fetchOneDriveStatus = async () => {
+    try {
+      const res = await fetch('/api/backup/onedrive/status');
+      if (res.ok) {
+        const data = await res.json();
+        setOneDriveStatus(data);
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    if (viewMode === 'backup') {
+      fetchOneDriveStatus();
+    }
+  }, [viewMode]);
+
+  // Direct SQL Download
+  const handleDownloadSql = async () => {
+    setDownloadSqlLoading(true);
+    try {
+      const res = await fetch('/api/backup/download-sql');
+      if (!res.ok) throw new Error('ไม่สามารถดาวน์โหลดไฟล์ได้');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const now = new Date();
+      const dStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      a.download = `bwork_pos_backup_${dStr}.sql`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      await sysAlert('เกิดข้อผิดพลาดในการดาวน์โหลดไฟล์ฐานข้อมูล: ' + err.message);
+    } finally {
+      setDownloadSqlLoading(false);
+    }
+  };
+
+  // Connect OneDrive
+  const handleConnectOneDrive = async () => {
+    const authCode = await sysPrompt(
+      'กรุณาใส่ Microsoft Authorization Code หรือ Refresh Token เพื่อเชื่อมต่อ OneDrive Cloud อัตโนมัติ:',
+      ''
+    );
+    if (!authCode) return;
+
+    setOneDriveLoading(true);
+    try {
+      const res = await fetch('/api/backup/onedrive/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: authCode.trim() })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await sysAlert(`เชื่อมต่อบัญชี OneDrive (${data.userEmail || ''}) สำเร็จ!`);
+        await fetchOneDriveStatus();
+      } else {
+        await sysAlert('การเชื่อมต่อล้มเหลว: ' + (data.error || 'ตรวจสอบโค้ดหรือการตั้งค่า'));
+      }
+    } catch (err) {
+      await sysAlert('เกิดข้อผิดพลาด: ' + err.message);
+    } finally {
+      setOneDriveLoading(false);
+    }
+  };
+
+  // Trigger Manual OneDrive Cloud Backup
+  const handleTriggerOneDriveBackup = async () => {
+    setOneDriveLoading(true);
+    try {
+      const res = await fetch('/api/backup/onedrive/trigger', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await sysAlert(`สำรองข้อมูลขึ้น OneDrive สำเร็จ!\nชื่อไฟล์: ${data.file?.name || 'bwork_backup.sql'}`);
+        await fetchOneDriveStatus();
+      } else {
+        await sysAlert('การสำรองข้อมูลขึ้น OneDrive ล้มเหลว: ' + (data.error || ''));
+      }
+    } catch (err) {
+      await sysAlert('เกิดข้อผิดพลาดในการสำรองข้อมูล: ' + err.message);
+    } finally {
+      setOneDriveLoading(false);
+    }
+  };
+
+  // Disconnect OneDrive
+  const handleDisconnectOneDrive = async () => {
+    const confirmed = await sysConfirm('คุณแน่ใจหรือไม่ว่าต้องการยกเลิกการเชื่อมต่อกับ OneDrive?');
+    if (!confirmed) return;
+    try {
+      const res = await fetch('/api/backup/onedrive/disconnect', { method: 'POST' });
+      if (res.ok) {
+        await sysAlert('ยกเลิกการเชื่อมต่อเรียบร้อยแล้ว');
+        await fetchOneDriveStatus();
+      }
+    } catch (err) {}
+  };
+
+  // Trigger Local SQLite Backup
   const handleTriggerBackup = async () => {
     setBackupLoading(true);
     setBackupStatus(null);
@@ -887,103 +998,176 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
         {viewMode === 'backup' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
             
-            {/* 💾 1. DATABASE BACKUP SECTION */}
+            {/* 💾 1. ONEDRIVE CLOUD AUTO BACKUP SECTION */}
             <div className="card" style={{ padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
-                <Database size={22} className="text-primary" />
-                <h2 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
-                  ระบบสำรองข้อมูล (Database Backup & Synchronization)
-                </h2>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'rgba(37, 99, 235, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary-color)' }}>
+                    <Cloud size={24} />
+                  </div>
+                  <div>
+                    <h2 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                      ระบบสำรองข้อมูลออนไลน์ Microsoft OneDrive (Cloud-to-Cloud)
+                    </h2>
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+                      สำรองข้อมูลขึ้น OneDrive ออนไลน์อัตโนมัติทุกวันเวลา 00:00 น. โดยไม่ต้องเปิดคอมพิวเตอร์และไม่ต้องล็อกอินแอปในเครื่อง
+                    </p>
+                  </div>
+                </div>
+
+                <span style={{
+                  padding: '6px 12px',
+                  borderRadius: '20px',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  backgroundColor: oneDriveStatus.connected ? 'rgba(34, 197, 94, 0.12)' : 'rgba(148, 163, 184, 0.12)',
+                  color: oneDriveStatus.connected ? '#16a34a' : '#64748b',
+                  border: `1px solid ${oneDriveStatus.connected ? 'rgba(34, 197, 94, 0.3)' : 'rgba(148, 163, 184, 0.3)'}`
+                }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: oneDriveStatus.connected ? '#16a34a' : '#94a3b8' }} />
+                  {oneDriveStatus.connected ? 'เชื่อมต่อ OneDrive สำเร็จ' : 'ยังไม่ได้เชื่อมต่อ OneDrive'}
+                </span>
               </div>
-              
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', flexWrap: 'wrap' }}>
-                
-                {/* Left side: OneDrive Config */}
-                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '100%' }}>
-                  <form onSubmit={handleSaveOneDrivePath} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                    <div className="form-group" style={{ margin: 0 }}>
-                      <label htmlFor="onedrivePath" style={{ color: 'var(--primary-color)', fontWeight: 'bold', fontSize: '0.85rem', display: 'block', marginBottom: '6px' }}>
-                        เส้นทางโฟลเดอร์ OneDrive ภายในเครื่อง
-                      </label>
-                      <input 
-                        id="onedrivePath"
-                        type="text" 
-                        className="form-control" 
-                        placeholder="เช่น C:\Users\ADMIN\OneDrive\POS_Backups"
-                        value={configs.onedrive_path}
-                        onChange={e => setConfigs({ ...configs, onedrive_path: e.target.value })}
-                        required
-                        style={{ fontSize: '0.85rem', padding: '8px 12px' }}
-                      />
-                      <span style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginTop: '6px', display: 'block', lineHeight: 1.4 }}>
-                        * เมื่อเปิดระบบ POS ในแต่ละวัน ไฟล์ฐานข้อมูล SQLite สำรองจะถูกคัดลอกไปบันทึกไว้ในเส้นทางที่คุณระบุนี้ทันทีเพื่อให้เชื่อมโยงขึ้น OneDrive อัตโนมัติ
-                      </span>
-                    </div>
-                    <button type="submit" className="btn btn-primary" style={{ width: '100%', gap: '8px', borderRadius: '12px', height: '40px', fontSize: '0.85rem', fontWeight: 'bold' }}>
-                      <Save size={16} />
-                      <span>บันทึกเส้นทางสำรองข้อมูล</span>
-                    </button>
-                  </form>
-                </div>
 
-                {/* Right side: Manual Trigger Backup */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', borderLeft: '1px solid var(--border-color)', paddingLeft: '24px' }}>
-                  <h3 style={{ fontSize: '0.9rem', fontWeight: 700, margin: '0 0 4px 0', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <CloudLightning size={16} className="text-primary" />
-                    คัดลอกสำรองข้อมูลด่วนด้วยตนเอง
-                  </h3>
-                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.4 }}>
-                    ปกติระบบจะทำการซิงค์ไฟล์เป็นประจำเมื่อเปิดโปรแกรม หากต้องการสำรองข้อมูลด่วนเดี่ยวนี้ สามารถกดทำรายการคัดลอกไฟล์ได้ทันที
-                  </p>
-
-                  <button 
-                    className="btn btn-secondary" 
-                    style={{ 
-                      width: '100%', 
-                      gap: '8px', 
-                      color: 'var(--primary-color)', 
-                      borderColor: 'var(--primary-color)',
-                      borderRadius: '12px',
-                      height: '40px',
-                      fontSize: '0.85rem',
-                      fontWeight: 'bold',
-                      marginTop: '8px'
-                    }}
-                    onClick={handleTriggerBackup}
-                    disabled={backupLoading}
-                  >
-                    <Cloud size={16} />
-                    <span>{backupLoading ? 'กำลังสร้างไฟล์สำรอง...' : 'กดบันทึกไฟล์ SQLite ด่วนทันที'}</span>
-                  </button>
-
-                  {backupStatus && (
-                    <div style={{
-                      marginTop: '8px',
-                      padding: '12px 14px',
-                      borderRadius: '12px',
-                      fontSize: '0.775rem',
-                      border: '1px solid',
-                      borderColor: backupStatus.success ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                      backgroundColor: backupStatus.success ? 'var(--success-bg)' : 'var(--danger-bg)',
-                      color: backupStatus.success ? 'var(--success-color)' : 'var(--danger-color)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '4px'
-                    }}>
-                      <div style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        {backupStatus.success ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
-                        {backupStatus.message}
+              {oneDriveStatus.connected ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{
+                    padding: '16px 20px',
+                    borderRadius: '16px',
+                    backgroundColor: 'rgba(37, 99, 235, 0.04)',
+                    border: '1px solid rgba(37, 99, 235, 0.15)',
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                    gap: '16px'
+                  }}>
+                    <div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>👤 บัญชี OneDrive ที่เชื่อมต่อ</div>
+                      <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '3px' }}>
+                        {oneDriveStatus.userEmail || 'Microsoft Account'}
                       </div>
-                      {backupStatus.success && (
-                        <div style={{ fontSize: '0.7rem', opacity: 0.85, marginTop: '2px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                          <div><strong>ชื่อไฟล์:</strong> {backupStatus.fileName}</div>
-                          <div style={{ wordBreak: 'break-all' }}><strong>พาธ:</strong> {backupStatus.path}</div>
-                        </div>
-                      )}
                     </div>
-                  )}
+
+                    <div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>⏰ รอบการสำรองข้อมูลอัตโนมัติ</div>
+                      <div style={{ fontSize: '0.92rem', fontWeight: 800, color: '#16a34a', marginTop: '3px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                        <Clock size={15} />
+                        <span>ทุกวัน เวลา 00:00 น. (เที่ยงคืน)</span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>📁 โฟลเดอร์จัดเก็บบน OneDrive</div>
+                      <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--primary-color)', marginTop: '3px' }}>
+                        /Bwork_POS_Backups/
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>🕒 การสำรองข้อมูลล่าสุด</div>
+                      <div style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginTop: '3px' }}>
+                        {oneDriveStatus.lastBackup ? new Date(oneDriveStatus.lastBackup).toLocaleString('th-TH') : 'ยังไม่มีรอบสำรอง'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ height: '42px', padding: '0 20px', borderRadius: '12px', fontWeight: 700, fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+                      onClick={handleTriggerOneDriveBackup}
+                      disabled={oneDriveLoading}
+                    >
+                      <CloudLightning size={16} />
+                      <span>{oneDriveLoading ? 'กำลังส่งข้อมูลขึ้น OneDrive...' : '⚡ สั่งสำรองข้อมูลขึ้น OneDrive ทันที'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ height: '42px', padding: '0 16px', borderRadius: '12px', fontWeight: 600, fontSize: '0.82rem', color: 'var(--danger-color)', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                      onClick={handleDisconnectOneDrive}
+                    >
+                      ยกเลิกการเชื่อมต่อ OneDrive
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{
+                    padding: '16px 20px',
+                    borderRadius: '16px',
+                    backgroundColor: 'var(--bg-color)',
+                    border: '1px solid var(--border-color)',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '12px'
+                  }}>
+                    <ShieldCheck size={22} style={{ color: 'var(--primary-color)', flexShrink: 0, marginTop: '2px' }} />
+                    <div style={{ fontSize: '0.82rem', lineHeight: 1.5, color: 'var(--text-main)' }}>
+                      <strong>เชื่อมต่อบัญชี Microsoft OneDrive เพียงครั้งเดียว</strong><br />
+                      ระบบจะสร้าง Snapshot ฐานข้อมูลเป็นไฟล์ SQL และส่งขึ้นโฟลเดอร์ <code>/Bwork_POS_Backups/</code> ใน OneDrive ออนไลน์ของคุณโดยอัตโนมัติทุกๆ เที่ยงคืน ปลอดภัย ข้อมูลย้อนหลังได้ไม่จำกัดระยะเวลา และไม่ต้องเปิดคอมพิวเตอร์ทิ้งไว้
+                    </div>
+                  </div>
+
+                  <div>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ height: '44px', padding: '0 24px', borderRadius: '12px', fontWeight: 800, fontSize: '0.88rem', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+                      onClick={handleConnectOneDrive}
+                      disabled={oneDriveLoading}
+                    >
+                      <Cloud size={18} />
+                      <span>{oneDriveLoading ? 'กำลังเชื่อมต่อ...' : '☁️ เชื่อมต่อบัญชี Microsoft OneDrive'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 💾 2. DIRECT SQL DATABASE EXPORT SECTION */}
+            <div className="card" style={{ padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'rgba(16, 185, 129, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#10b981' }}>
+                    <Database size={24} />
+                  </div>
+                  <div>
+                    <h3 style={{ fontSize: '1.05rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                      ดาวน์โหลดไฟล์ฐานข้อมูล SQL ฉบับเต็ม (Direct Database SQL Export)
+                    </h3>
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+                      ดาวน์โหลด Snapshot ฐานข้อมูลทั้งหมดทุกตาราง (.sql) ลงเครื่องคอมพิวเตอร์ของคุณได้ทันทีด้วยคลิกเดียว
+                    </p>
+                  </div>
                 </div>
 
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{
+                    height: '42px',
+                    padding: '0 18px',
+                    borderRadius: '12px',
+                    fontWeight: 700,
+                    fontSize: '0.84rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    color: '#10b981',
+                    borderColor: 'rgba(16, 185, 129, 0.35)',
+                    backgroundColor: 'rgba(16, 185, 129, 0.05)'
+                  }}
+                  onClick={handleDownloadSql}
+                  disabled={downloadSqlLoading}
+                >
+                  <Download size={16} />
+                  <span>{downloadSqlLoading ? 'กำลังสร้างไฟล์ SQL...' : '📥 ดาวน์โหลดไฟล์ฐานข้อมูล .sql ทันที'}</span>
+                </button>
               </div>
             </div>
 

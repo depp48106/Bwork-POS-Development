@@ -2598,6 +2598,116 @@ export default {
         }), { headers: corsHeaders });
       }
 
+      // Direct Full Database SQL Dump Download
+      if (pathname === '/api/backup/download-sql' && method === 'GET') {
+        const auth = await authenticateUser(request, env, 'admin');
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const sql = await generateD1DumpSql(env);
+        const now = new Date();
+        const dStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const fileName = `bwork_pos_backup_${dStr}.sql`;
+
+        return new Response(sql, {
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Content-Disposition': `attachment; filename="${fileName}"`
+          }
+        });
+      }
+
+      // OneDrive Status
+      if (pathname === '/api/backup/onedrive/status' && method === 'GET') {
+        const auth = await authenticateUser(request, env, 'admin');
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const refTokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_refresh_token'").first();
+        const emailRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_user_email'").first();
+        const lastBackupRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_last_backup'").first();
+        const lastFileRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_last_file'").first();
+
+        return new Response(JSON.stringify({
+          connected: !!(refTokenRow && refTokenRow.value),
+          userEmail: emailRow ? emailRow.value : '',
+          lastBackup: lastBackupRow ? lastBackupRow.value : null,
+          lastFile: lastFileRow ? lastFileRow.value : ''
+        }), { headers: corsHeaders });
+      }
+
+      // Connect OneDrive Token
+      if (pathname === '/api/backup/onedrive/connect' && method === 'POST') {
+        const auth = await authenticateUser(request, env, 'admin');
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const body = await request.json();
+        const { code, client_id, client_secret, redirect_uri } = body;
+
+        const cId = client_id || 'd3590ed6-52b3-4102-aeff-aad2292ab01c';
+        const params = new URLSearchParams();
+        params.append('client_id', cId);
+        if (client_secret) params.append('client_secret', client_secret);
+        params.append('code', code);
+        params.append('redirect_uri', redirect_uri || 'https://bwork-pos-api.ohnatza74185-ky.workers.dev/api/backup/onedrive/callback');
+        params.append('grant_type', 'authorization_code');
+
+        const tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString()
+        });
+        const tokenData = await tokenRes.json();
+        if (tokenData.error) {
+          return new Response(JSON.stringify({ error: tokenData.error_description || tokenData.error }), { status: 400, headers: corsHeaders });
+        }
+
+        let userEmail = 'OneDrive User';
+        try {
+          const profileRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+            headers: { Authorization: `Bearer ${tokenData.access_token}` }
+          });
+          const profile = await profileRes.json();
+          userEmail = profile.userPrincipalName || profile.mail || profile.displayName || 'OneDrive User';
+        } catch (e) {}
+
+        await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_refresh_token', ?)").bind(tokenData.refresh_token).run();
+        await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_user_email', ?)").bind(userEmail).run();
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: `เชื่อมต่อบัญชี OneDrive (${userEmail}) สำเร็จ`,
+          userEmail
+        }), { headers: corsHeaders });
+      }
+
+      // Trigger Manual OneDrive Cloud Backup
+      if (pathname === '/api/backup/onedrive/trigger' && method === 'POST') {
+        const auth = await authenticateUser(request, env, 'admin');
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const sql = await generateD1DumpSql(env);
+        const now = new Date();
+        const dStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const fileName = `bwork_backup_${dStr}.sql`;
+
+        const fileData = await uploadToOneDriveFromWorker(env, sql, fileName);
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'สำรองข้อมูลและอัปโหลดขึ้น OneDrive สำเร็จแล้ว',
+          file: fileData
+        }), { headers: corsHeaders });
+      }
+
+      // Disconnect OneDrive
+      if (pathname === '/api/backup/onedrive/disconnect' && method === 'POST') {
+        const auth = await authenticateUser(request, env, 'admin');
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        await env.DB.prepare("DELETE FROM settings WHERE key IN ('onedrive_refresh_token', 'onedrive_user_email', 'onedrive_last_backup', 'onedrive_last_file')").run();
+        return new Response(JSON.stringify({ success: true, message: 'ยกเลิกการเชื่อมต่อ OneDrive เรียบร้อยแล้ว' }), { headers: corsHeaders });
+      }
+
       if (pathname === '/api/backup/trigger' && (method === 'POST' || method === 'GET')) {
         const auth = await authenticateUser(request, env, 'admin');
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -2640,5 +2750,131 @@ export default {
       console.error('Worker runtime error:', err);
       return new Response(JSON.stringify({ error: err.message || 'Internal Server Error' }), { status: 500, headers: corsHeaders });
     }
+  },
+
+  // Scheduled Midnight Auto-Backup Trigger (Cloudflare Cron)
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      try {
+        console.log('Daily midnight Cloudflare D1 to OneDrive backup started...');
+        const refTokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_refresh_token'").first();
+        if (refTokenRow && refTokenRow.value) {
+          const sql = await generateD1DumpSql(env);
+          const now = new Date();
+          const dStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          const fileName = `bwork_backup_${dStr}.sql`;
+          await uploadToOneDriveFromWorker(env, sql, fileName);
+          console.log('Daily midnight OneDrive backup completed successfully:', fileName);
+        }
+      } catch (err) {
+        console.error('Scheduled daily backup error:', err);
+      }
+    })());
   }
 };
+
+const BACKUP_TABLES = [
+  'rooms', 'categories', 'items', 'users', 'roles',
+  'customers', 'departments', 'settings', 'bookings',
+  'booking_items', 'quotations', 'quotation_items',
+  'payment_transactions', 'timeline_notes', 'booking_history',
+  'cash_shifts', 'cash_drawer_logs'
+];
+
+async function generateD1DumpSql(env) {
+  const lines = [
+    '--',
+    '-- =========================================================',
+    '-- BWORK POS DATABASE BACKUP (SQL DUMP)',
+    `-- Export Timestamp: ${new Date().toISOString()}`,
+    '-- Target: Microsoft OneDrive Cloud Backup',
+    '-- =========================================================',
+    '',
+    'PRAGMA foreign_keys = OFF;',
+    'BEGIN TRANSACTION;'
+  ];
+
+  for (const table of BACKUP_TABLES) {
+    try {
+      const { results: rows } = await env.DB.prepare(`SELECT * FROM ${table}`).all();
+      if (!rows || !rows.length) continue;
+
+      lines.push('');
+      lines.push(`-- Table: ${table} (${rows.length} rows)`);
+      lines.push(`DELETE FROM ${table};`);
+
+      for (const row of rows) {
+        const columns = Object.keys(row);
+        const values = columns.map(col => {
+          const val = row[col];
+          if (val === null || val === undefined) return 'NULL';
+          if (typeof val === 'number') return val;
+          if (typeof val === 'boolean') return val ? 1 : 0;
+          const str = String(val).replace(/'/g, "''");
+          return `'${str}'`;
+        });
+        lines.push(`INSERT INTO ${table} (${columns.join(', ')}) VALUES (${values.join(', ')});`);
+      }
+    } catch (e) {}
+  }
+
+  lines.push('');
+  lines.push('COMMIT;');
+  lines.push('PRAGMA foreign_keys = ON;');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+async function uploadToOneDriveFromWorker(env, sqlContent, fileName) {
+  const refTokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_refresh_token'").first();
+  if (!refTokenRow || !refTokenRow.value) {
+    throw new Error('ยังไม่ได้เชื่อมต่อบัญชี OneDrive');
+  }
+
+  const clientIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_client_id'").first();
+  const clientSecretRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_client_secret'").first();
+
+  const cId = clientIdRow?.value || 'd3590ed6-52b3-4102-aeff-aad2292ab01c';
+  const params = new URLSearchParams();
+  params.append('client_id', cId);
+  if (clientSecretRow?.value) params.append('client_secret', clientSecretRow.value);
+  params.append('refresh_token', refTokenRow.value);
+  params.append('grant_type', 'refresh_token');
+
+  const tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString()
+  });
+  const tokenData = await tokenRes.json();
+  if (tokenData.error) {
+    throw new Error(tokenData.error_description || tokenData.error);
+  }
+
+  if (tokenData.refresh_token && tokenData.refresh_token !== refTokenRow.value) {
+    await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_refresh_token', ?)").bind(tokenData.refresh_token).run();
+  }
+
+  const endpoint = `https://graph.microsoft.com/v1.0/me/drive/root:/Bwork_POS_Backups/${encodeURIComponent(fileName)}:/content`;
+  const uploadRes = await fetch(endpoint, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${tokenData.access_token}`,
+      'Content-Type': 'text/plain; charset=utf-8'
+    },
+    body: sqlContent
+  });
+
+  if (!uploadRes.ok) {
+    const errText = await uploadRes.text();
+    throw new Error(`OneDrive upload failed (${uploadRes.status}): ${errText}`);
+  }
+
+  const fileData = await uploadRes.json();
+  const nowIso = new Date().toISOString();
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_last_backup', ?)").bind(nowIso).run();
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('onedrive_last_file', ?)").bind(fileName).run();
+
+  return fileData;
+}
