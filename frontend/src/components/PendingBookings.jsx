@@ -105,7 +105,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   const [sortKey, setSortKey] = useState('id');
   const [sortOrder, setSortOrder] = useState('desc'); // default: newest first
 
-  // Active Tab Filter: 'pending' | 'paid' | 'cancelled' | 'all'
+  // Active Tab Filter: 'pending' | 'paid' | 'cancelled'
   const [activeTabFilter, setActiveTabFilter] = useState('pending');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -157,9 +157,6 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     setAppliedDateFilterType(dateFilterTypeInput);
     setAppliedStartDate(startDateInput);
     setAppliedEndDate(endDateInput);
-    if (searchQueryInput && searchQueryInput.trim()) {
-      setActiveTabFilter('all');
-    }
     setCurrentPage(1);
     fetchBookings();
   };
@@ -864,8 +861,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
         </button>
       </div>
 
-      {/* Interactive Stat-Tabs (4 ขั้นตอนการจัดการการจอง) */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
+      {/* Interactive Stat-Tabs (3 สถานะการจัดการการจอง) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px' }}>
         
         {/* Tab 1: ตรวจสอบการชำระเงิน */}
         <div 
@@ -964,38 +961,6 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
               {cancelledCount} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>รายการ</span>
             </div>
             <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>ยกเลิกการจอง</div>
-          </div>
-        </div>
-
-        {/* Tab 4: รายการทั้งหมด */}
-        <div 
-          className="card" 
-          onClick={() => { setActiveTabFilter('all'); setCurrentPage(1); }}
-          style={{ 
-            padding: '16px 18px', 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '14px', 
-            border: activeTabFilter === 'all' ? '2px solid #3b82f6' : '1px solid var(--border-color)', 
-            background: activeTabFilter === 'all' 
-              ? 'linear-gradient(135deg, var(--bg-card) 0%, rgba(59, 130, 246, 0.12) 100%)' 
-              : 'linear-gradient(135deg, var(--bg-card) 0%, rgba(59, 130, 246, 0.03) 100%)',
-            cursor: 'pointer',
-            borderRadius: '16px',
-            boxShadow: activeTabFilter === 'all' ? '0 6px 20px rgba(59, 130, 246, 0.2)' : 'none',
-            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-            transform: activeTabFilter === 'all' ? 'translateY(-2px)' : 'none'
-          }}
-        >
-          <div style={{ backgroundColor: activeTabFilter === 'all' ? '#3b82f6' : 'rgba(59, 130, 246, 0.15)', color: activeTabFilter === 'all' ? '#ffffff' : '#3b82f6', width: '48px', height: '48px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
-            <Clock size={24} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: '0.82rem', color: activeTabFilter === 'all' ? '#2563eb' : 'var(--text-muted)', fontWeight: 800 }}>รายการทั้งหมด</div>
-            <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#3b82f6', margin: '2px 0' }}>
-              {totalCount} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>รายการ</span>
-            </div>
-            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>รวมทุกสถานะ</div>
           </div>
         </div>
 
