@@ -504,9 +504,19 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
 
   for (const b of bookings) {
     if (!b.start_time || !b.end_time) continue;
-    const bStartMs = new Date(normalizeToLocalISO(b.start_time).replace(' ', 'T')).getTime();
-    const bEndMs = new Date(normalizeToLocalISO(b.end_time).replace(' ', 'T')).getTime();
+    const bStartNorm = normalizeToLocalISO(b.start_time);
+    const bEndNorm = normalizeToLocalISO(b.end_time);
+    const bStartMs = new Date(bStartNorm.replace(' ', 'T')).getTime();
+    const bEndMs = new Date(bEndNorm.replace(' ', 'T')).getTime();
     const bEndBufferedMs = bEndMs + bufferMs;
+
+    const [bEndDate, bEndTime] = bEndNorm.split('T');
+    const [bEndH, bEndM] = (bEndTime || '00:00').substring(0, 5).split(':').map(Number);
+    const totalBufferedMins = bEndH * 60 + bEndM + bufferMins;
+    const bufH = Math.floor(totalBufferedMins / 60) % 24;
+    const bufM = totalBufferedMins % 60;
+    const bufHHMM = `${String(bufH).padStart(2, '0')}:${String(bufM).padStart(2, '0')}`;
+    const endBufferedISO = `${bEndDate}T${bufHHMM}:00`;
 
     // Overlap condition taking 30-min cleaning buffer into account:
     // (Requested Start < Existing End + Buffer) AND (Requested End + Buffer > Existing Start)
@@ -519,9 +529,9 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
         bufferMinutes: bufferMins,
         booking: {
           ...b,
-          start_time: normalizeToLocalISO(b.start_time),
-          end_time: normalizeToLocalISO(b.end_time),
-          end_buffered_time: normalizeToLocalISO(new Date(bEndBufferedMs))
+          start_time: bStartNorm,
+          end_time: bEndNorm,
+          end_buffered_time: endBufferedISO
         }
       };
     }
@@ -531,11 +541,9 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
 
 function formatOverlapErrorMessage(roomName, overlapResult) {
   const b = (overlapResult && overlapResult.booking) || {};
-  const sTime = b.start_time ? new Date(b.start_time.replace(' ', 'T')).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '';
-  const eTime = b.end_time ? new Date(b.end_time.replace(' ', 'T')).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '';
-  const nextAvail = b.end_buffered_time 
-    ? new Date(b.end_buffered_time.replace(' ', 'T')).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
-    : (b.end_time ? new Date(new Date(b.end_time.replace(' ', 'T')).getTime() + (overlapResult.bufferMinutes || 30) * 60000).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '');
+  const sTime = b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : (b.start_time || '');
+  const eTime = b.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : (b.end_time || '');
+  const nextAvail = b.end_buffered_time && b.end_buffered_time.includes('T') ? b.end_buffered_time.split('T')[1].substring(0, 5) : eTime;
 
   const customer = b.customer_name ? `คุณ ${b.customer_name}` : 'ลูกค้า';
   const nameLabel = roomName ? `ห้อง "${roomName}"` : 'ห้องนี้';
