@@ -2355,8 +2355,13 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     <Clock size={16} style={{ color: '#f59e0b', flexShrink: 0, marginTop: '2px' }} />
                     <div style={{ fontSize: '0.78rem' }}>
                       <div style={{ fontWeight: 800, color: '#d97706' }}>🧹 ช่วงเวลานี้ติดทำความสะอาด / เคลียร์ห้อง ({currentSlotOverlap.bufferMinutes || 30} นาที)</div>
-                      <div style={{ color: 'var(--text-main)', marginTop: '2px' }}>
-                        ต่อจากคิวของ: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong> (เสร็จสิ้นรอบก่อนหน้า)
+                      <div style={{ color: 'var(--text-main)', marginTop: '3px', lineHeight: 1.4 }}>
+                        คิวก่อนหน้าใช้งานถึง <strong>{new Date(currentSlotOverlap.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</strong>
+                        {currentSlotOverlap.booking.customer_name && ` (คุณ ${currentSlotOverlap.booking.customer_name})`}
+                        <br />
+                        <span style={{ color: '#b45309', fontWeight: 700 }}>
+                          ✨ สามารถจองได้ตั้งแต่เวลา {new Date(new Date(currentSlotOverlap.booking.end_time).getTime() + (currentSlotOverlap.bufferMinutes || 30) * 60000).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น. เป็นต้นไป
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -2374,7 +2379,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     <div style={{ fontSize: '0.78rem' }}>
                       <div style={{ fontWeight: 800, color: '#ef4444' }}>ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง)</div>
                       <div style={{ color: 'var(--text-main)', marginTop: '2px' }}>
-                        ผู้เข้าใช้: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong>
+                        ผู้เข้าใช้: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong> ({new Date(currentSlotOverlap.booking.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(currentSlotOverlap.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.)
                       </div>
                     </div>
                   </div>
@@ -2472,7 +2477,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 )}
                 <span>
                   {currentSlotOverlap.isOverlap 
-                    ? (currentSlotOverlap.isCleaningBuffer ? `ติดทำความสะอาด (${currentSlotOverlap.bufferMinutes || 30} น.)` : 'ช่วงนี้ไม่ว่าง (ติดจอง)') 
+                    ? 'ช่วงเวลานี้ไม่สามารถจองได้' 
                     : 'ยืนยันจองทันที'}
                 </span>
               </button>

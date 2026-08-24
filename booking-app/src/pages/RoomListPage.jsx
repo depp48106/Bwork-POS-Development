@@ -309,7 +309,7 @@ export default function RoomListPage() {
           return { 
             isOccupied: true, 
             reason: 'cleaning',
-            label: `🟡 ติดทำความสะอาด (${bEndHHMM} - ${cleanEndHHMM} น.)` 
+            label: `🟡 ติดทำความสะอาด (คิวก่อนหน้าใช้ถึง ${bEndHHMM} น. • พร้อมจอง ${cleanEndHHMM} น.)` 
           };
         }
       }
@@ -861,7 +861,7 @@ export default function RoomListPage() {
                 backgroundColor: isOccupied ? '#cbd5e1' : undefined
               }}
             >
-              <span>{isOccupied ? (reason === 'cleaning' ? 'ติดทำความสะอาด' : (reason === 'past' ? 'เวลาผ่านมาแล้ว' : 'ติดจองเวลานี้')) : 'เลือกห้องนี้'}</span>
+              <span>{isOccupied ? 'ช่วงเวลานี้ไม่สามารถจองได้' : 'เลือกห้องนี้'}</span>
               {!isOccupied && <ChevronRight size={18} />}
             </button>
           </div>

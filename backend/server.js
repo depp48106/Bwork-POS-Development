@@ -529,6 +529,23 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
   return { hasOverlap: false, bufferMinutes: bufferMins };
 }
 
+function formatOverlapErrorMessage(roomName, overlapResult) {
+  const b = (overlapResult && overlapResult.booking) || {};
+  const sTime = b.start_time ? new Date(b.start_time.replace(' ', 'T')).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '';
+  const eTime = b.end_time ? new Date(b.end_time.replace(' ', 'T')).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '';
+  const nextAvail = b.end_buffered_time 
+    ? new Date(b.end_buffered_time.replace(' ', 'T')).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+    : (b.end_time ? new Date(new Date(b.end_time.replace(' ', 'T')).getTime() + (overlapResult.bufferMinutes || 30) * 60000).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '');
+
+  const customer = b.customer_name ? `คุณ ${b.customer_name}` : 'ลูกค้า';
+  const nameLabel = roomName ? `ห้อง "${roomName}"` : 'ห้องนี้';
+
+  if (overlapResult.isCleaningBuffer) {
+    return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
+  }
+  return `${nameLabel} ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: ${customer} ช่วงเวลา ${sTime} - ${eTime} น.)`;
+}
+
 app.post('/api/bookings', async (req, res) => {
   const { customer_name, department, contact, total_amount, payment_status, payment_method, items, line_user_id, guest_count } = req.body;
 
@@ -559,13 +576,7 @@ app.post('/api/bookings', async (req, res) => {
             await dbQuery.run('ROLLBACK');
             const roomObj = await dbQuery.get('SELECT name FROM rooms WHERE id = ?', [item.room_id]);
             const roomName = roomObj ? roomObj.name : `ID: ${item.room_id}`;
-            const sTime = new Date(overlapResult.booking.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-            const eTime = new Date(overlapResult.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-            const nextAvail = new Date(overlapResult.booking.end_buffered_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-            const msg = overlapResult.isCleaningBuffer
-              ? `ห้อง "${roomName}" ติดช่วงทำความสะอาดห้อง (${overlapResult.bufferMinutes} นาที) ต่อจากคุณ ${overlapResult.booking.customer_name} (เลิก ${eTime} น.) สามารถจองได้ตั้งแต่ ${nextAvail} น. เป็นต้นไป`
-              : `ห้อง "${roomName}" ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: คุณ ${overlapResult.booking.customer_name} ช่วง ${sTime} - ${eTime} น.)`;
-            return res.status(409).json({ error: msg });
+            return res.status(409).json({ error: formatOverlapErrorMessage(roomName, overlapResult) });
           }
         }
       }
@@ -2351,12 +2362,7 @@ app.post('/api/public/bookings', async (req, res) => {
       const overlapResult = await checkRoomOverlap(room_id, fullStart, fullEnd);
       if (overlapResult.hasOverlap) {
         await dbQuery.run('ROLLBACK');
-        const eTime = new Date(overlapResult.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-        const nextAvail = new Date(overlapResult.booking.end_buffered_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-        const msg = overlapResult.isCleaningBuffer
-          ? `ห้องนี้ติดช่วงเวลาทำความสะอาดห้อง (${overlapResult.bufferMinutes} นาที) ต่อจากคิวเดิมที่เลิก ${eTime} น. สามารถจองได้ตั้งแต่ ${nextAvail} น. เป็นต้นไป`
-          : 'ห้องนี้ถูกจองในช่วงเวลาดังกล่าวแล้ว กรุณาเลือกเวลาอื่น';
-        return res.status(409).json({ error: msg });
+        return res.status(409).json({ error: formatOverlapErrorMessage(room.name, overlapResult) });
       }
 
       // Calculate price
