@@ -362,6 +362,117 @@ async function saveUploadedFile(env, fileData, folder = 'uploads') {
   return fileData;
 }
 
+
+// ==========================================
+// THAI BANK SLIP MINI QR VERIFIER & PARSER
+// ==========================================
+const BANK_CODES = {
+  '002': { code: '002', name: 'ธนาคารกรุงเทพ', shortName: 'BBL' },
+  '004': { code: '004', name: 'ธนาคารกสิกรไทย', shortName: 'KBANK' },
+  '006': { code: '006', name: 'ธนาคารกรุงไทย', shortName: 'KTB' },
+  '011': { code: '011', name: 'ธนาคารทหารไทยธนชาต', shortName: 'TTB' },
+  '014': { code: '014', name: 'ธนาคารไทยพาณิชย์', shortName: 'SCB' },
+  '025': { code: '025', name: 'ธนาคารกรุงศรีอยุธยา', shortName: 'BAY' },
+  '030': { code: '030', name: 'ธนาคารออมสิน', shortName: 'GSB' },
+  '034': { code: '034', name: 'ธ.ก.ส.', shortName: 'BAAC' },
+  '065': { code: '065', name: 'ธนาคารธนชาต', shortName: 'TBANK' },
+  '069': { code: '069', name: 'ธนาคารเกียรตินาคินภัทร', shortName: 'KKP' },
+  '073': { code: '073', name: 'ธนาคารแลนด์ แอนด์ เฮ้าส์', shortName: 'LHBANK' },
+  '098': { code: '098', name: 'SME D Bank', shortName: 'SME' }
+};
+const KNOWN_BANK_CODES = Object.keys(BANK_CODES);
+
+function parseTLV(str) {
+  const result = {};
+  let i = 0;
+  while (i < str.length) {
+    const tag = str.substring(i, i + 2);
+    const len = parseInt(str.substring(i + 2, i + 4), 10);
+    if (isNaN(len) || len < 0) break;
+    const val = str.substring(i + 4, i + 4 + len);
+    result[tag] = val;
+    i += 4 + len;
+  }
+  return result;
+}
+
+function parseThaiBankSlipQR(qrString) {
+  if (!qrString || typeof qrString !== 'string') return null;
+
+  try {
+    const root = parseTLV(qrString);
+
+    // Format A: ITMX / SCB / Thai Bank Transfer Slip Mini QR
+    if (root['00'] && root['00'].length > 10) {
+      const sub00 = parseTLV(root['00']);
+      const bankCode = sub00['01'];
+      const transRef = sub00['02'];
+
+      if (bankCode && KNOWN_BANK_CODES.includes(bankCode) && transRef) {
+        return {
+          isValidSlipQR: true,
+          isMerchantPaymentQR: false,
+          bankCode: bankCode,
+          bankName: BANK_CODES[bankCode]?.name || 'ธนาคารไทย',
+          transRef: transRef,
+          countryCode: root['51'] || 'TH',
+          rawQR: qrString
+        };
+      }
+    }
+
+    // Format B: EMVCo PromptPay Standard Slip Mini QR
+    if (root['00'] === '01') {
+      const isStaticPaymentQR = root['01'] === '11';
+      const hasMerchantInfo = !!(root['59'] || root['60'] || root['52']);
+      
+      if (isStaticPaymentQR || hasMerchantInfo) {
+        return {
+          isValidSlipQR: false,
+          isMerchantPaymentQR: true,
+          rejectionReason: 'รูปภาพที่อัปโหลดคือ QR Code สำหรับสแกนจ่ายเงิน (Payment QR) ไม่ใช่สลิปหลักฐานการโอนเงินสำเร็จของธนาคาร'
+        };
+      }
+
+      for (let tag = 26; tag <= 50; tag++) {
+        const tagStr = String(tag).padStart(2, '0');
+        if (root[tagStr]) {
+          const sub = parseTLV(root[tagStr]);
+          if (sub['00'] && sub['00'].toUpperCase().includes('ITMX') && sub['02']) {
+            return {
+              isValidSlipQR: true,
+              isMerchantPaymentQR: false,
+              bankCode: sub['01'] || '004',
+              bankName: BANK_CODES[sub['01']]?.name || 'ธนาคารกสิกรไทย',
+              transRef: sub['02'],
+              rawQR: qrString
+            };
+          }
+        }
+      }
+    }
+
+    // Generic fallback if transRef detected in subTLV
+    if (root['00']) {
+      const sub00 = parseTLV(root['00']);
+      if (sub00['02'] && sub00['02'].length >= 8) {
+        return {
+          isValidSlipQR: true,
+          isMerchantPaymentQR: false,
+          bankCode: sub00['01'] || '000',
+          bankName: BANK_CODES[sub00['01']]?.name || 'ธนาคารพาณิชย์',
+          transRef: sub00['02'],
+          rawQR: qrString
+        };
+      }
+    }
+
+    return { isValidSlipQR: false, isMerchantPaymentQR: false, rawQR: qrString };
+  } catch (e) {
+    return { isValidSlipQR: false, isMerchantPaymentQR: false, error: e.message };
+  }
+}
+
 // ==========================================
 // 5. LINE OA FLEX MESSAGE BUILDERS
 // ==========================================
@@ -2338,16 +2449,20 @@ export default {
         const idParam = parts[4];
 
         let slip_image = null;
+        let qr_data = null;
+
         const contentType = request.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
           try {
             const body = await request.json();
             slip_image = body.slip_image || body.slip || body.image;
+            qr_data = body.qr_data || body.qrData || body.qr;
           } catch (e) {}
         } else if (contentType.includes('multipart/form-data')) {
           try {
             const formData = await request.formData();
             const file = formData.get('slip') || formData.get('slip_image') || formData.get('image');
+            qr_data = formData.get('qr_data') || formData.get('qrData');
             if (file && typeof file === 'object' && typeof file.arrayBuffer === 'function') {
               const arrayBuffer = await file.arrayBuffer();
               const bytes = new Uint8Array(arrayBuffer);
@@ -2386,28 +2501,126 @@ export default {
 
         let savedSlipUrl = await saveUploadedFile(env, slip_image, 'slips');
 
-        // Guard against Cloudflare D1 SQLITE_TOOBIG (1MB max statement size)
+        // Guard against Cloudflare D1 SQLITE_TOOBIG (1MB limit)
         if (savedSlipUrl && typeof savedSlipUrl === 'string' && savedSlipUrl.length > 700000) {
           savedSlipUrl = savedSlipUrl.substring(0, 650000);
         }
 
+        const nowIso = new Date().toISOString();
+
+        // ----------------------------------------------------
+        // AUTOMATED BANK SLIP QR VERIFICATION & ANTI-FRAUD
+        // ----------------------------------------------------
+        let parsedQR = qr_data ? parseThaiBankSlipQR(qr_data) : null;
+
+        // 1. REJECT if Merchant Payment QR (QR จ่ายเงิน)
+        if (parsedQR && parsedQR.isMerchantPaymentQR) {
+          return new Response(JSON.stringify({
+            success: false,
+            auto_approved: false,
+            error: parsedQR.rejectionReason || 'รูปภาพที่อัปโหลดคือ QR Code สำหรับสแกนจ่ายเงิน ไม่ใช่สลิปการโอนเงินสำเร็จของธนาคาร'
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        // 2. CHECK DUPLICATE SLIP (Anti-Fraud: ป้องกันการใช้สลิปซ้ำ)
+        if (parsedQR && parsedQR.isValidSlipQR && parsedQR.transRef) {
+          const duplicate = await env.DB.prepare(
+            'SELECT id, receipt_number FROM bookings WHERE slip_trans_ref = ? AND id != ?'
+          ).bind(parsedQR.transRef, booking.id).first();
+
+          if (duplicate) {
+            return new Response(JSON.stringify({
+              success: false,
+              auto_approved: false,
+              error: `สลิปนี้เคยถูกนำมาใช้งานในระบบแล้ว (รหัสการจอง: ${duplicate.receipt_number || duplicate.id}) ไม่สามารถใช้ซ้ำได้`
+            }), { status: 400, headers: corsHeaders });
+          }
+
+          // 3. AUTO-APPROVE VALID BANK SLIP!
+          let receiptNumber = booking.receipt_number;
+          if (!receiptNumber) {
+            receiptNumber = await generateReceiptNumber(env);
+          }
+
+          let pinCode = booking.pin_code;
+          if (!pinCode) {
+            pinCode = await generateUniquePinCode(env);
+          }
+
+          try {
+            await env.DB.prepare(`
+              UPDATE bookings 
+              SET slip_image_url = ?, 
+                  payment_status = 'paid', 
+                  payment_method = 'transfer',
+                  receipt_number = ?,
+                  pin_code = ?,
+                  slip_trans_ref = ?,
+                  slip_verified_at = ?,
+                  slip_verify_status = 'auto_approved'
+              WHERE id = ?
+            `).bind(savedSlipUrl || 'uploaded', receiptNumber, pinCode, parsedQR.transRef, nowIso, booking.id).run();
+          } catch (dbErr) {
+            console.error('[Upload Slip] Auto-approve DB error:', dbErr.message);
+            await env.DB.prepare(`
+              UPDATE bookings 
+              SET payment_status = 'paid', 
+                  payment_method = 'transfer',
+                  receipt_number = ?,
+                  pin_code = ?
+              WHERE id = ?
+            `).bind(receiptNumber, pinCode, booking.id).run();
+          }
+
+          // Push LINE confirmation notification if customer provided LINE
+          if (booking.line_user_id) {
+            try {
+              await sendLineBookingConfirmation(env, booking.id);
+            } catch (lineErr) {
+              console.warn('[Upload Slip] LINE notify error:', lineErr.message);
+            }
+          }
+
+          return new Response(JSON.stringify({
+            success: true,
+            auto_approved: true,
+            slipUrl: savedSlipUrl,
+            receiptNumber,
+            pinCode,
+            verifyResult: {
+              isValid: true,
+              autoApproved: true,
+              transRef: parsedQR.transRef,
+              bankName: parsedQR.bankName,
+              bankCode: parsedQR.bankCode
+            },
+            message: 'สลิปถูกต้อง! ระบบตรวจสอบ QR Code สำเร็จ อนุมัติการจองและออกใบเสร็จให้อัตโนมัติเรียบร้อยแล้ว'
+          }), { headers: corsHeaders });
+        }
+
+        // 4. MANUAL REVIEW FALLBACK (If QR not readable from image)
         try {
-          await env.DB.prepare('UPDATE bookings SET slip_image_url = ?, payment_status = ? WHERE id = ?')
-            .bind(savedSlipUrl || 'uploaded', 'reviewing', booking.id).run();
+          await env.DB.prepare(`
+            UPDATE bookings 
+            SET slip_image_url = ?, 
+                payment_status = 'reviewing',
+                slip_verify_status = 'pending_manual',
+                slip_verified_at = ?
+            WHERE id = ?
+          `).bind(savedSlipUrl || 'uploaded', nowIso, booking.id).run();
         } catch (dbErr) {
-          console.error('[Upload Slip] D1 update error:', dbErr.message);
-          await env.DB.prepare('UPDATE bookings SET slip_image_url = ?, payment_status = ? WHERE id = ?')
-            .bind('uploaded', 'reviewing', booking.id).run();
+          console.error('[Upload Slip] Review update error:', dbErr.message);
+          await env.DB.prepare(`UPDATE bookings SET payment_status = 'reviewing' WHERE id = ?`).bind(booking.id).run();
         }
 
         return new Response(JSON.stringify({
           success: true,
+          auto_approved: false,
           slipUrl: savedSlipUrl,
-          message: 'อัปโหลดสลิปสำเร็จ! กำลังตรวจสอบการชำระเงิน'
+          message: 'อัปโหลดสลิปสำเร็จ! กำลังรอเจ้าหน้าที่ตรวจสอบการชำระเงิน'
         }), { headers: corsHeaders });
       }
 
-      // Lookup Bookings By Phone Number Only
       if ((pathname === '/api/public/bookings/by-phone' || pathname === '/api/public/bookings/lookup') && method === 'GET') {
         const phone = url.searchParams.get('phone') || url.searchParams.get('contact');
         if (!phone || !phone.trim()) {

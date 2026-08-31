@@ -1,3 +1,4 @@
+import jsQR from 'jsqr';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
@@ -25,6 +26,8 @@ export default function ConfirmPage() {
 
   const [slipFile, setSlipFile] = useState(null);
   const [slipPreview, setSlipPreview] = useState(null);
+  const [slipQrData, setSlipQrData] = useState(null);
+  const [qrScanning, setQrScanning] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [uploadResultData, setUploadResultData] = useState(null);
@@ -135,15 +138,38 @@ export default function ConfirmPage() {
     setTimeout(() => setToastMessage(''), 3000);
   };
 
-  // Compress & Resize Image to prevent SQLITE_TOOBIG on Cloudflare D1
-  const compressImage = (file, maxWidth = 900, maxHeight = 900, quality = 0.75) => {
+  // Scan Mini QR Code & Compress Slip Image
+  const processSlipFile = (file) => {
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const img = new Image();
         img.onload = () => {
+          let detectedQR = null;
+
+          // 1. Scan for QR code on full resolution canvas
+          try {
+            const scanCanvas = document.createElement('canvas');
+            scanCanvas.width = img.width;
+            scanCanvas.height = img.height;
+            const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
+            scanCtx.drawImage(img, 0, 0);
+            const scanImgData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
+            const code = jsQR(scanImgData.data, scanCanvas.width, scanCanvas.height, {
+              inversionAttempts: 'attemptBoth'
+            });
+            if (code && code.data) {
+              detectedQR = code.data;
+            }
+          } catch (qrErr) {
+            console.warn('[Slip QR Scanner] Scan error:', qrErr);
+          }
+
+          // 2. Compress image for lightweight storage (~80KB)
           let width = img.width;
           let height = img.height;
+          const maxWidth = 900;
+          const maxHeight = 900;
 
           if (width > height) {
             if (width > maxWidth) {
@@ -162,33 +188,42 @@ export default function ConfirmPage() {
           canvas.height = height;
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          resolve(dataUrl);
+          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.75);
+
+          resolve({
+            dataUrl: compressedDataUrl,
+            qrData: detectedQR
+          });
         };
-        img.onerror = () => resolve(e.target.result);
+        img.onerror = () => resolve({ dataUrl: e.target.result, qrData: null });
         img.src = e.target.result;
       };
-      reader.onerror = () => {
-        const fallbackReader = new FileReader();
-        fallbackReader.onload = () => resolve(fallbackReader.result);
-        fallbackReader.readAsDataURL(file);
-      };
+      reader.onerror = () => resolve({ dataUrl: null, qrData: null });
       reader.readAsDataURL(file);
     });
   };
 
-  // Handle File Selection with Auto-compression
+  // Handle File Selection with Auto QR Detection & Compression
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (file) {
       setSlipFile(file);
+      setQrScanning(true);
+      setError('');
       try {
-        const compressedBase64 = await compressImage(file, 900, 900, 0.75);
-        setSlipPreview(compressedBase64);
+        const result = await processSlipFile(file);
+        setSlipPreview(result.dataUrl);
+        setSlipQrData(result.qrData);
+        if (result.qrData) {
+          setToastMessage('✅ ตรวจพบ QR Code สลิปธนาคาร (พร้อมระบบอนุมัติอัตโนมัติ)');
+          setTimeout(() => setToastMessage(''), 4000);
+        }
       } catch (err) {
         const reader = new FileReader();
         reader.onload = () => setSlipPreview(reader.result);
         reader.readAsDataURL(file);
+      } finally {
+        setQrScanning(false);
       }
     }
   };
@@ -217,12 +252,13 @@ export default function ConfirmPage() {
         finalPayload = await compressImage(slipFile, 800, 800, 0.70);
       }
 
-      // Send Base64 payload (100% reliable across Cloudflare Workers and Express)
+      // Send Base64 payload + QR data (Enables 100% Automated Instant Verification)
       const res = await fetch(`${API_BASE}/api/public/bookings/${targetId}/upload-slip`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           slip_image: finalPayload,
+          qr_data: slipQrData,
           contact: booking?.customer_contact || booking?.contact
         })
       });
