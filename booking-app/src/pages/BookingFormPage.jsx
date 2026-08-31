@@ -171,6 +171,14 @@ export default function BookingFormPage() {
           customer_contact: contact.trim(),
           line_user_id: lineUserId
         }));
+        localStorage.setItem('bwork_pending_booking', JSON.stringify({
+          id: finalBookingId,
+          code: finalBookingCode,
+          roomName: bookingData?.room?.name || 'ห้องประชุม',
+          totalAmount: bookingData?.totalPrice || bookingData?.total_amount || 0,
+          createdAt: Date.now(),
+          status: 'pending'
+        }));
         navigate(`/confirm?id=${finalBookingId}&code=${encodeURIComponent(finalBookingCode)}`);
       } else {
         setError(data.error || 'ไม่สามารถทำรายการจองได้ กรุณาลองใหม่อีกครั้ง');
@@ -294,7 +302,7 @@ export default function BookingFormPage() {
                   {lineUserName ? `ซิงค์กับ LINE: ${lineUserName}` : 'เชื่อมต่อด้วย LINE Official Account'}
                 </div>
                 <div style={{ fontSize: '0.74rem', color: '#065f46' }}>
-                  {lineUserName ? '✓ ระบบจะส่งรหัสผ่านเปิดประตูเข้า LINE OA นี้อัตโนมัติ' : 'เพื่อรับรหัสผ่านเปิดประตูเข้าห้องประชุมอัตโนมัติ'}
+                  {lineUserName ? 'ระบบจะส่งรหัสผ่านเปิดประตูเข้า LINE OA นี้อัตโนมัติ' : 'เพื่อรับรหัสผ่านเปิดประตูเข้าห้องประชุมอัตโนมัติ'}
                 </div>
               </div>
             </div>
@@ -388,7 +396,7 @@ export default function BookingFormPage() {
               <label className="form-label">หมายเหตุเพิ่มเติม / ข้อความถึงเจ้าหน้าที่</label>
               <textarea
                 rows="2"
-                placeholder="เช่น ขอสาย HDMI เพิ่มเติม, เตรียมแก้วน้ำ 6 ใบ ฯลฯ"
+                placeholder="เช่น ขอสาย HDMI เพิ่มเติม, เตรียมปลั๊กพ่วง ฯลฯ"
                 value={notes}
                 onChange={e => setNotes(e.target.value)}
                 className="form-input"
@@ -499,7 +507,7 @@ export default function BookingFormPage() {
                             gap: '3px'
                           }}
                         >
-                          📋 ใช้เบอร์เดียวกับผู้จอง
+                          ใช้เบอร์เดียวกับผู้จอง
                         </button>
                       )}
                     </div>
@@ -526,8 +534,8 @@ export default function BookingFormPage() {
                         className="form-input"
                         style={{ height: '46px', fontSize: '0.88rem', fontWeight: 700, cursor: 'pointer', paddingRight: '28px' }}
                       >
-                        <option value="online">📧 จัดส่งออนไลน์ (E-Tax / อีเมล / LINE)</option>
-                        <option value="postal">📮 จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)</option>
+                        <option value="online">จัดส่งออนไลน์ (E-Tax / อีเมล / LINE)</option>
+                        <option value="postal">จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)</option>
                       </select>
                       <ChevronDown size={15} style={{ position: 'absolute', right: '12px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
                     </div>
@@ -546,7 +554,7 @@ export default function BookingFormPage() {
                     }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                         <label className="form-label" style={{ fontSize: '0.82rem', margin: 0, color: 'var(--primary)', fontWeight: 800 }}>
-                          📮 ที่อยู่สำหรับจัดส่งทางไปรษณีย์ <span style={{ color: 'var(--danger)' }}>*</span>
+                          ที่อยู่สำหรับจัดส่งทางไปรษณีย์ <span style={{ color: 'var(--danger)' }}>*</span>
                         </label>
                         <button
                           type="button"
@@ -572,7 +580,7 @@ export default function BookingFormPage() {
                           onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.08)'}
                           onMouseLeave={e => e.currentTarget.style.backgroundColor = '#ffffff'}
                         >
-                          📋 ใช้ที่อยู่เดียวกับที่อยู่บริษัท
+                          ใช้ที่อยู่เดียวกับที่อยู่บริษัท
                         </button>
                       </div>
                       <textarea

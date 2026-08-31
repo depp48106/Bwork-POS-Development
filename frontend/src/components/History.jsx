@@ -3,6 +3,7 @@ import { Search, ChevronDown, RotateCcw, Ban, Clock, Calendar, Eye, DollarSign, 
 import * as XLSX from 'xlsx';
 import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
+import CustomSelect from './CustomSelect';
 
 function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [bookings, setBookings] = useState([]);
@@ -50,7 +51,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     { key: 'created_at', label: 'วันที่ทำรายการ' },
     { key: 'usage_date', label: 'วัน/เวลาที่ใช้งาน' },
     { key: 'room_name', label: 'ห้องประชุม' },
-    { key: 'booking_source', label: 'ช่องทางการจอง' },
+    { key: 'booking_source', label: 'ประเภทลูกค้า' },
     { key: 'customer_name', label: 'ชื่อผู้จอง' },
     { key: 'contact', label: 'เบอร์ติดต่อ' },
     { key: 'total_amount', label: 'ยอดชำระสุทธิ' },
@@ -63,14 +64,16 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   useEffect(() => {
     fetchBookings(appliedFilters);
   }, []);
-
   const fetchBookings = async (activeFilters = appliedFilters) => {
     setLoading(true);
     try {
-      const { startDate, endDate, search, status } = activeFilters;
+      const { startDate, endDate, search, status, customerType } = activeFilters;
       let url = `/api/bookings?start_date=${startDate || ''}&end_date=${endDate || ''}`;
       if (status && status !== 'all') {
         url += `&payment_status=${status}`;
+      }
+      if (customerType && customerType !== 'all') {
+        url += `&customer_type=${encodeURIComponent(customerType)}`;
       }
       if (search) {
         url += `&search=${encodeURIComponent(search)}`;
@@ -88,7 +91,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     }
   };
 
-  // Explicit Search Trigger on Form Submit / Button Click
+
   const handleSearchSubmit = (e) => {
     if (e) e.preventDefault();
     setAppliedFilters({ ...filterInputs });
@@ -98,7 +101,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
   // Explicit Clear All Filters
   const handleClearFilters = () => {
-    const defaultFilters = { startDate: '', endDate: '', search: '', searchType: 'all', status: 'all' };
+    const defaultFilters = { startDate: '', endDate: '', search: '', searchType: 'all', customerType: 'all', status: 'all' };
     setFilterInputs(defaultFilters);
     setAppliedFilters(defaultFilters);
     setCurrentPage(1);
@@ -209,18 +212,29 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     }
   };
 
+  // Safe Local Date Parser (Prevents UTC 7-hour timezone offset distortion)
+  const parseLocalDate = (dateStr) => {
+    if (!dateStr) return null;
+    const str = String(dateStr).trim().replace(' ', 'T');
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+    if (match) {
+      const year = parseInt(match[1], 10);
+      const month = parseInt(match[2], 10) - 1;
+      const day = parseInt(match[3], 10);
+      const hour = match[4] !== undefined ? parseInt(match[4], 10) : 0;
+      const minute = match[5] !== undefined ? parseInt(match[5], 10) : 0;
+      const second = match[6] !== undefined ? parseInt(match[6], 10) : 0;
+      return new Date(year, month, day, hour, minute, second);
+    }
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
   const formatDate = (dateStr) => {
     if (!dateStr) return '-';
     try {
-      let str = String(dateStr).trim();
-      if (!str.includes('T') && str.includes(' ')) {
-        str = str.replace(' ', 'T');
-      }
-      if (!str.endsWith('Z') && !/\+\d{2}:?\d{2}$/.test(str)) {
-        str = str + 'Z';
-      }
-      const d = new Date(str);
-      if (isNaN(d.getTime())) return dateStr;
+      const d = parseLocalDate(dateStr);
+      if (!d) return dateStr;
       const year = d.getFullYear() + 543;
       const monthNames = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
       const month = monthNames[d.getMonth()];
@@ -242,11 +256,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     if (!startStr) return { dateStr: '-', timeStr: '', roomName: '' };
 
     try {
-      let str = String(startStr).trim();
-      if (!str.includes('T') && str.includes(' ')) str = str.replace(' ', 'T');
-      if (!str.endsWith('Z') && !/\+\d{2}:?\d{2}$/.test(str)) str = str + 'Z';
-      const s = new Date(str);
-      if (isNaN(s.getTime())) return { dateStr: '-', timeStr: '', roomName: '' };
+      const s = parseLocalDate(startStr);
+      if (!s) return { dateStr: '-', timeStr: '', roomName: '' };
 
       const year = s.getFullYear() + 543;
       const monthNames = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
@@ -257,11 +268,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
       let timeText = `${sHours}:${sMins} น.`;
       if (endStr) {
-        let eStr = String(endStr).trim();
-        if (!eStr.includes('T') && eStr.includes(' ')) eStr = eStr.replace(' ', 'T');
-        if (!eStr.endsWith('Z') && !/\+\d{2}:?\d{2}$/.test(eStr)) eStr = eStr + 'Z';
-        const e = new Date(eStr);
-        if (!isNaN(e.getTime())) {
+        const e = parseLocalDate(endStr);
+        if (e) {
           const eHours = String(e.getHours()).padStart(2, '0');
           const eMins = String(e.getMinutes()).padStart(2, '0');
           timeText = `${sHours}:${sMins} - ${eHours}:${eMins} น.`;
@@ -290,15 +298,23 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     }
   };
 
-  // Stats calculation
-  const totalAmountPaid = bookings.reduce((sum, b) => sum + (b.payment_status === 'cancelled' ? 0 : Number(b.total_amount || 0)), 0);
-  const paidCount = bookings.length;
-
   // Filtering by searchType & status on frontend using appliedFilters
   const filteredBookings = bookings.filter(b => {
     // Status filter
     if (appliedFilters.status === 'paid' && b.payment_status !== 'paid') return false;
     if (appliedFilters.status === 'cancelled' && b.payment_status !== 'cancelled') return false;
+
+    // Customer Type filter
+    if (appliedFilters.customerType && appliedFilters.customerType !== 'all') {
+      const cType = b.customer_type || (b.booking_source === 'online' ? 'online' : 'walkin');
+      if (appliedFilters.customerType === 'online') {
+        if (cType !== 'online' && b.booking_source !== 'online') return false;
+      } else if (appliedFilters.customerType === 'walkin') {
+        if (cType !== 'walkin' || b.booking_source === 'online') return false;
+      } else {
+        if (cType !== appliedFilters.customerType) return false;
+      }
+    }
 
     // Search filter
     if (!appliedFilters.search) return true;
@@ -321,6 +337,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       return receipt.includes(q) || idStr.includes(q) || customer.includes(q) || contact.includes(q) || room.includes(q);
     }
   });
+
+  // Stats calculation
+  const totalAmountPaid = filteredBookings.reduce((sum, b) => sum + (b.payment_status === 'cancelled' ? 0 : Number(b.total_amount || 0)), 0);
+  const paidCount = filteredBookings.length;
 
   // Sorting
   const getSortedBookings = () => {
@@ -372,7 +392,11 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       const usageDateStr = usage && usage.dateStr !== '-' ? usage.dateStr : '-';
       const usageTimeStr = usage && usage.timeStr ? usage.timeStr : '-';
       const roomName = (b.items?.[0]?.room_name || b.room_name || '-');
-      const source = b.booking_source === 'online' ? 'จองออนไลน์' : 'Walk-in';
+      const cType = b.customer_type || (b.booking_source === 'online' ? 'online' : 'walkin');
+      let source = 'Walk-in';
+      if (cType === 'builtland') source = `Builtland (${b.internal_department || 'พนักงาน'})`;
+      else if (cType === 'basecamp') source = `Basecamp (${b.basecamp_sub_type === 'hotdesk' ? 'Hotdesk ' : 'Office '}${b.basecamp_unit || ''})`;
+      else if (cType === 'online' || b.booking_source === 'online') source = 'จองออนไลน์';
       const status = b.payment_status === 'paid' ? 'สำเร็จ' : (b.payment_status === 'cancelled' ? 'ยกเลิก' : (b.payment_status || 'รอชำระ'));
       const method = b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : (b.payment_method || '-'));
       const taxReq = b.tax_invoice_required === 1 ? 'ขอใบกำกับภาษี' : 'ไม่ขอ';
@@ -533,107 +557,90 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
         </div>
       </div>
 
-      {/* Filter and Search Bar Card (Single Row Layout) */}
-      <div className="card" style={{ padding: '12px 16px', position: 'relative', zIndex: 10, borderRadius: '16px' }}>
+      {/* Filter and Search Bar Card (Clean WebApp CustomSelect Layout) */}
+      <div className="card" style={{ padding: '14px 18px', position: 'relative', zIndex: 10, borderRadius: '16px' }}>
         <form onSubmit={handleSearchSubmit} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           
-          {/* 1. Search Category Type Dropdown */}
-          <div style={{ position: 'relative', width: '130px', flexShrink: 0 }}>
-            <div 
-              className="form-control"
-              onClick={() => { setIsSearchTypeDropdownOpen(!isSearchTypeDropdownOpen); setIsStatusDropdownOpen(false); }}
-              style={{
-                height: '38px',
-                borderRadius: '10px',
-                fontSize: '0.82rem',
-                border: '1px solid var(--border-color)',
-                background: 'var(--bg-card)',
-                padding: '0 10px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                cursor: 'pointer',
-                fontWeight: 700,
-                color: 'var(--text-main)'
-              }}
-            >
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {filterInputs.searchType === 'receipt' ? 'เลขที่ใบเสร็จ' :
-                 filterInputs.searchType === 'customer' ? 'ชื่อผู้จอง' :
-                 filterInputs.searchType === 'contact' ? 'เบอร์ติดต่อ' :
-                 filterInputs.searchType === 'room' ? 'ห้องประชุม' : 'ค้นหาทั้งหมด'}
-              </span>
-              <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-            </div>
-
-            {isSearchTypeDropdownOpen && (
-              <>
-                <div onClick={() => setIsSearchTypeDropdownOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                <div className="action-dropdown-menu" style={{
-                  position: 'absolute',
-                  top: 'calc(100% + 4px)',
-                  left: 0,
-                  width: '150px',
-                  zIndex: 2000,
-                  borderRadius: '12px',
-                  padding: '4px',
+          {/* 1. Date Range: 2 CustomDatePicker Input Boxes matching webapp standards */}
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+            <div style={{ width: '140px' }}>
+              <CustomDatePicker 
+                value={filterInputs.startDate}
+                onChange={val => setFilterInputs(prev => ({ ...prev, startDate: val }))}
+                placeholder="วันเริ่มต้น"
+                className="form-control"
+                style={{
+                  height: '38px',
+                  borderRadius: '10px',
+                  fontSize: '0.82rem',
+                  border: '1px solid var(--border-color)',
+                  background: 'var(--bg-card)',
+                  padding: '0 10px',
                   display: 'flex',
-                  flexDirection: 'column',
-                  gap: '2px'
-                }}>
-                  {[
-                    { id: 'all', label: 'ค้นหาทั้งหมด' },
-                    { id: 'receipt', label: 'เลขที่ใบเสร็จ' },
-                    { id: 'customer', label: 'ชื่อผู้จอง' },
-                    { id: 'contact', label: 'เบอร์ติดต่อ' },
-                    { id: 'room', label: 'ห้องประชุม' }
-                  ].map(item => (
-                    <div
-                      key={item.id}
-                      onClick={() => {
-                        setFilterInputs(prev => ({ ...prev, searchType: item.id }));
-                        setIsSearchTypeDropdownOpen(false);
-                      }}
-                      style={{
-                        padding: '7px 10px',
-                        borderRadius: '8px',
-                        fontSize: '0.8rem',
-                        fontWeight: (filterInputs.searchType || 'all') === item.id ? 800 : 500,
-                        color: (filterInputs.searchType || 'all') === item.id ? 'var(--primary-color)' : 'var(--text-main)',
-                        cursor: 'pointer',
-                        background: (filterInputs.searchType || 'all') === item.id ? 'var(--bg-hover)' : 'transparent',
-                        transition: 'background 0.15s'
-                      }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = (filterInputs.searchType || 'all') === item.id ? 'var(--bg-hover)' : 'transparent'}
-                    >
-                      {item.label}
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+                  alignItems: 'center',
+                  cursor: 'pointer'
+                }}
+              />
+            </div>
+            
+            <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 600 }}>-</span>
+
+            <div style={{ width: '140px' }}>
+              <CustomDatePicker 
+                value={filterInputs.endDate}
+                onChange={val => setFilterInputs(prev => ({ ...prev, endDate: val }))}
+                placeholder="วันสิ้นสุด"
+                className="form-control"
+                style={{
+                  height: '38px',
+                  borderRadius: '10px',
+                  fontSize: '0.82rem',
+                  border: '1px solid var(--border-color)',
+                  background: 'var(--bg-card)',
+                  padding: '0 10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  cursor: 'pointer'
+                }}
+              />
+            </div>
           </div>
 
-          {/* 2. Search Input */}
+          {/* 2. Search Category Selector (CustomSelect) */}
+          <div style={{ width: '130px', flexShrink: 0 }}>
+            <CustomSelect
+              value={filterInputs.searchType || 'all'}
+              onChange={val => setFilterInputs(prev => ({ ...prev, searchType: val }))}
+              options={[
+                { value: 'all', label: 'ค้นหาทั้งหมด' },
+                { value: 'receipt', label: 'เลขที่ใบเสร็จ' },
+                { value: 'customer', label: 'ชื่อผู้จอง' },
+                { value: 'contact', label: 'เบอร์ติดต่อ' },
+                { value: 'room', label: 'ห้องประชุม' }
+              ]}
+              triggerStyle={{ height: '38px', borderRadius: '10px', fontSize: '0.8rem', fontWeight: 700 }}
+            />
+          </div>
+
+          {/* 3. Search Input */}
           <div style={{
             position: 'relative',
             flex: '1 1 180px',
-            minWidth: '160px',
+            minWidth: '150px',
             display: 'flex',
             alignItems: 'center'
           }}>
-            <Search size={14} style={{ position: 'absolute', left: '12px', color: 'var(--text-muted)' }} />
+            <Search size={14} style={{ position: 'absolute', left: '10px', color: 'var(--text-muted)' }} />
             <input 
               type="text" 
               className="form-control"
               style={{
                 width: '100%',
-                paddingLeft: '34px',
-                paddingRight: filterInputs.search ? '30px' : '10px',
+                paddingLeft: '30px',
+                paddingRight: filterInputs.search ? '28px' : '8px',
                 height: '38px',
                 borderRadius: '10px',
-                fontSize: '0.82rem',
+                fontSize: '0.8rem',
                 border: '1px solid var(--border-color)',
                 background: 'var(--bg-card)'
               }}
@@ -653,7 +660,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 onClick={() => setFilterInputs({ ...filterInputs, search: '' })}
                 style={{ 
                   position: 'absolute', 
-                  right: '8px', 
+                  right: '6px', 
                   background: 'transparent', 
                   border: 'none', 
                   color: 'var(--text-muted)', 
@@ -668,234 +675,76 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
             )}
           </div>
 
-          {/* 3. Status Dropdown */}
-          <div style={{ position: 'relative', width: '125px', flexShrink: 0 }}>
-            <div 
-              className="form-control"
-              onClick={() => { setIsStatusDropdownOpen(!isStatusDropdownOpen); setIsSearchTypeDropdownOpen(false); }}
+          {/* 4. Customer Type Filter Selector (CustomSelect - Clean, No Icons/Emojis) */}
+          <div style={{ width: '185px', flexShrink: 0 }}>
+            <CustomSelect
+              value={filterInputs.customerType || 'all'}
+              onChange={val => setFilterInputs(prev => ({ ...prev, customerType: val }))}
+              options={[
+                { value: 'all', label: 'ประเภทลูกค้าทั้งหมด' },
+                { value: 'walkin', label: 'Walk-in (บุคคลภายนอก)' },
+                { value: 'builtland', label: 'Builtland (พนักงาน)' },
+                { value: 'basecamp', label: 'Basecamp (ผู้เช่าชั้น 4)' },
+                { value: 'online', label: 'จองออนไลน์ (Online)' }
+              ]}
+              triggerStyle={{ height: '38px', borderRadius: '10px', fontSize: '0.8rem', fontWeight: 700 }}
+            />
+          </div>
+
+          {/* 5. Status Selector (CustomSelect) */}
+          <div style={{ width: '125px', flexShrink: 0 }}>
+            <CustomSelect
+              value={filterInputs.status || 'all'}
+              onChange={val => setFilterInputs(prev => ({ ...prev, status: val }))}
+              options={[
+                { value: 'all', label: 'สถานะทั้งหมด' },
+                { value: 'paid', label: 'สำเร็จ' },
+                { value: 'cancelled', label: 'ยกเลิก' }
+              ]}
+              triggerStyle={{ height: '38px', borderRadius: '10px', fontSize: '0.8rem', fontWeight: 700 }}
+            />
+          </div>
+
+          {/* 6. Action Buttons */}
+          <div style={{ display: 'flex', gap: '6px', flexShrink: 0, marginLeft: 'auto' }}>
+            <button 
+              type="submit" 
+              className="btn btn-primary"
               style={{
                 height: '38px',
+                padding: '0 14px',
                 borderRadius: '10px',
-                fontSize: '0.82rem',
-                border: '1px solid var(--border-color)',
-                background: 'var(--bg-card)',
-                padding: '0 10px',
+                fontSize: '0.8rem',
+                fontWeight: 800,
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'space-between',
+                gap: '6px',
                 cursor: 'pointer',
-                fontWeight: 700,
-                color: filterInputs.status === 'paid' ? '#10b981' : filterInputs.status === 'cancelled' ? '#ef4444' : 'var(--text-main)'
+                whiteSpace: 'nowrap'
               }}
             >
-              <span>
-                {filterInputs.status === 'paid' ? 'สำเร็จ' : filterInputs.status === 'cancelled' ? 'ยกเลิก' : 'สถานะทั้งหมด'}
-              </span>
-              <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-            </div>
-
-            {isStatusDropdownOpen && (
-              <>
-                <div onClick={() => setIsStatusDropdownOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                <div className="action-dropdown-menu" style={{
-                  position: 'absolute',
-                  top: 'calc(100% + 4px)',
-                  left: 0,
-                  width: '100%',
-                  zIndex: 2000,
-                  borderRadius: '12px',
-                  padding: '4px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '2px'
-                }}>
-                  {[
-                    { id: 'all', label: 'สถานะทั้งหมด', color: 'var(--text-main)' },
-                    { id: 'paid', label: 'สำเร็จ', color: '#10b981' },
-                    { id: 'cancelled', label: 'ยกเลิก', color: '#ef4444' }
-                  ].map(item => (
-                    <div
-                      key={item.id}
-                      onClick={() => {
-                        setFilterInputs(prev => ({ ...prev, status: item.id }));
-                        setIsStatusDropdownOpen(false);
-                      }}
-                      style={{
-                        padding: '7px 10px',
-                        borderRadius: '8px',
-                        fontSize: '0.8rem',
-                        fontWeight: (filterInputs.status || 'all') === item.id ? 800 : 500,
-                        color: item.color,
-                        cursor: 'pointer',
-                        background: (filterInputs.status || 'all') === item.id ? 'var(--bg-hover)' : 'transparent',
-                        transition: 'background 0.15s'
-                      }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = (filterInputs.status || 'all') === item.id ? 'var(--bg-hover)' : 'transparent'}
-                    >
-                      {item.label}
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+              <Search size={14} /> ค้นหา
+            </button>
+            <button 
+              type="button" 
+              onClick={handleClearFilters}
+              className="btn btn-secondary"
+              style={{
+                height: '38px',
+                padding: '0 12px',
+                borderRadius: '10px',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <RotateCcw size={13} /> ล้างค่า
+            </button>
           </div>
-
-          {/* 4. Date Range: 2 Separate Clean Input Boxes */}
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-            <div style={{ width: '135px' }}>
-              <CustomDatePicker 
-                value={filterInputs.startDate}
-                onChange={val => setFilterInputs({ ...filterInputs, startDate: val })}
-                placeholder="วันเริ่มต้น"
-                className="form-control"
-                style={{
-                  height: '38px',
-                  borderRadius: '10px',
-                  fontSize: '0.82rem',
-                  border: '1px solid var(--border-color)',
-                  background: 'var(--bg-card)',
-                  padding: '0 10px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  cursor: 'pointer'
-                }}
-              />
-            </div>
-            
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 600 }}>-</span>
-
-            <div style={{ width: '135px' }}>
-              <CustomDatePicker 
-                value={filterInputs.endDate}
-                onChange={val => setFilterInputs({ ...filterInputs, endDate: val })}
-                placeholder="วันสิ้นสุด"
-                className="form-control"
-                style={{
-                  height: '38px',
-                  borderRadius: '10px',
-                  fontSize: '0.82rem',
-                  border: '1px solid var(--border-color)',
-                  background: 'var(--bg-card)',
-                  padding: '0 10px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  cursor: 'pointer'
-                }}
-              />
-            </div>
-          </div>
-
-          {/* 5. Action Buttons: Search & Clear (Compact) */}
-          <button 
-            type="submit" 
-            className="btn btn-primary" 
-            style={{ 
-              padding: '0 14px', 
-              borderRadius: '10px', 
-              fontSize: '0.82rem', 
-              fontWeight: 700,
-              height: '38px', 
-              gap: '5px', 
-              display: 'inline-flex', 
-              alignItems: 'center', 
-              justifyContent: 'center',
-              cursor: 'pointer',
-              boxShadow: '0 2px 8px rgba(37, 99, 235, 0.25)',
-              flexShrink: 0
-            }}
-          >
-            <Search size={13} />
-            <span>ค้นหา</span>
-          </button>
-
-          <button 
-            type="button" 
-            className="btn btn-secondary" 
-            style={{ 
-              padding: '0 12px', 
-              borderRadius: '10px', 
-              fontSize: '0.82rem', 
-              fontWeight: 600,
-              height: '38px', 
-              gap: '4px',
-              backgroundColor: 'var(--bg-hover)',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-muted)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              flexShrink: 0
-            }}
-            onClick={handleClearFilters}
-            title="ล้างค่าตัวกรองทั้งหมด"
-          >
-            <RotateCcw size={12} />
-            <span>ล้างค่า</span>
-          </button>
-
-          {/* Divider */}
-          <div style={{ width: '1px', height: '24px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
-
-          {/* Export to Excel (.xlsx) */}
-          <button
-            type="button"
-            onClick={exportToExcel}
-            className="btn"
-            style={{
-              height: '38px',
-              padding: '0 14px',
-              borderRadius: '10px',
-              fontSize: '0.82rem',
-              fontWeight: 800,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              backgroundColor: '#059669',
-              color: '#ffffff',
-              border: 'none',
-              cursor: 'pointer',
-              boxShadow: '0 2px 8px rgba(5, 150, 105, 0.25)',
-              transition: 'all 0.15s ease',
-              flexShrink: 0
-            }}
-            title="ส่งออกรายงานเป็นไฟล์ Excel (.xlsx)"
-          >
-            <Download size={14} />
-            <span>Export Excel</span>
-          </button>
-
-          {/* Export to PDF */}
-          <button
-            type="button"
-            onClick={exportToPDF}
-            disabled={isExportingPdf}
-            className="btn"
-            style={{
-              height: '38px',
-              padding: '0 14px',
-              borderRadius: '10px',
-              fontSize: '0.82rem',
-              fontWeight: 800,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              backgroundColor: '#dc2626',
-              color: '#ffffff',
-              border: 'none',
-              cursor: isExportingPdf ? 'not-allowed' : 'pointer',
-              opacity: isExportingPdf ? 0.7 : 1,
-              boxShadow: '0 2px 8px rgba(220, 38, 38, 0.25)',
-              transition: 'all 0.15s ease',
-              flexShrink: 0
-            }}
-            title="ส่งออกรายงานเป็นไฟล์ PDF"
-          >
-            <Printer size={14} />
-            <span>{isExportingPdf ? 'กำลังสร้าง...' : 'Export PDF'}</span>
-          </button>
-
         </form>
       </div>
 
@@ -1053,22 +902,46 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                           );
                         }
                         if (key === 'booking_source') {
-                          const isOnline = b.booking_source === 'online';
+                          const isOnline = (b.booking_source === 'online' || b.customer_type === 'online');
+                          const cType = isOnline ? 'online' : (b.customer_type || 'walkin');
+                          
+                          let badgeBg = 'rgba(37, 99, 235, 0.08)';
+                          let badgeColor = '#2563eb';
+                          let badgeBorder = 'rgba(37, 99, 235, 0.25)';
+                          let badgeText = 'Walk-in';
+
+                          if (cType === 'builtland') {
+                            badgeBg = 'rgba(217, 119, 6, 0.08)';
+                            badgeColor = '#d97706';
+                            badgeBorder = 'rgba(217, 119, 6, 0.25)';
+                            badgeText = 'Builtland';
+                          } else if (cType === 'basecamp') {
+                            badgeBg = 'rgba(147, 51, 234, 0.08)';
+                            badgeColor = '#9333ea';
+                            badgeBorder = 'rgba(147, 51, 234, 0.25)';
+                            const uText = b.basecamp_unit ? (b.basecamp_sub_type === 'hotdesk' ? `Hotdesk ${b.basecamp_unit}` : `Office ${b.basecamp_unit}`) : 'ชั้น 4';
+                            badgeText = `Basecamp (${uText})`;
+                          } else if (isOnline) {
+                            badgeBg = 'rgba(16, 185, 129, 0.08)';
+                            badgeColor = '#059669';
+                            badgeBorder = 'rgba(16, 185, 129, 0.25)';
+                            badgeText = 'จองออนไลน์';
+                          }
+
                           return (
                             <td key={key} style={{ textAlign: 'center', padding: cellPadding, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
                               <span style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
-                                gap: '4px',
                                 padding: '4px 10px',
-                                borderRadius: '99px',
-                                fontSize: '0.75rem',
+                                borderRadius: '6px',
+                                fontSize: '0.74rem',
                                 fontWeight: 700,
-                                backgroundColor: isOnline ? 'rgba(14, 165, 233, 0.12)' : 'rgba(16, 185, 129, 0.12)',
-                                color: isOnline ? '#0ea5e9' : '#10b981',
-                                border: `1px solid ${isOnline ? 'rgba(14, 165, 233, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`
+                                backgroundColor: badgeBg,
+                                color: badgeColor,
+                                border: `1px solid ${badgeBorder}`
                               }}>
-                                {isOnline ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
+                                {badgeText}
                               </span>
                             </td>
                           );
@@ -1346,6 +1219,22 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   <span style={{ color: 'var(--text-muted)' }}>ลูกค้า:</span>
                   <strong style={{ color: 'var(--text-main)' }}>{selectedBooking.customer_name}</strong>
                 </div>
+                {selectedBooking.customer_type && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>ประเภทลูกค้า:</span>
+                    <strong style={{ color: selectedBooking.customer_type === 'builtland' ? '#fb923c' : selectedBooking.customer_type === 'basecamp' ? '#c084fc' : '#60a5fa' }}>
+                      {selectedBooking.customer_type === 'builtland' ? 'พนักงาน Builtland' :
+                       selectedBooking.customer_type === 'basecamp' ? `ผู้เช่า Basecamp (${selectedBooking.basecamp_sub_type === 'hotdesk' ? 'Hotdesk ' : 'Office '}${selectedBooking.basecamp_unit || ''})` :
+                       selectedBooking.customer_type === 'online' ? 'จองออนไลน์' : 'ลูกค้า Walk-in'}
+                    </strong>
+                  </div>
+                )}
+                {Number(selectedBooking.quota_hours_used) > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>โควต้าฟรีที่ใช้:</span>
+                    <strong style={{ color: '#10b981' }}>{selectedBooking.quota_hours_used} ชั่วโมง (ฟรี)</strong>
+                  </div>
+                )}
                 {selectedBooking.contact && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
                     <span style={{ color: 'var(--text-muted)' }}>เบอร์ติดต่อ:</span>

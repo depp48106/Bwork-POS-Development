@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ใบเสนอราคา (Quotation) - B-WORK</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Google Fonts: Prompt & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Prompt', 'Inter', 'sans-serif'],
+            mono: ['Inter', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    @media print {
+      @page {
+        size: A4 portrait;
+        margin: 0;
+      }
+      body {
+        background: #ffffff !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      .no-print {
+        display: none !important;
+      }
+      .a4-document-canvas {
+        box-shadow: none !important;
+        border: none !important;
+        margin: 0 !important;
+        width: 210mm !important;
+        height: 296mm !important;
+        max-height: 296mm !important;
+        padding: 10mm 14mm 8mm 14mm !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+      }
+    }
+    
+    .tab-nums {
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen py-8 px-4 font-sans text-slate-800 antialiased flex flex-col items-center justify-center">
+
+  <!-- Action Bar (Top Controls) -->
+  <div class="w-full max-w-4xl flex items-center justify-between mb-4 no-print">
+    <div class="flex items-center gap-3">
+      <div class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></div>
+      <h2 class="text-sm font-semibold text-slate-700">พรีวิวใบเสนอราคาแบบมาตรฐานสากล (A4 Precision Format)</h2>
+    </div>
+    <div class="flex items-center gap-2">
+      <button onclick="window.print()" class="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg shadow-sm transition-all">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+        <span>พิมพ์เอกสาร (Print A4)</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- A4 DOCUMENT CONTAINER -->
+  <div class="a4-document-canvas bg-white w-full max-w-4xl shadow-xl border border-slate-200/80 rounded-xl py-10 px-12 flex flex-col justify-between" style="min-height: 296mm; box-sizing: border-box;">
+    
+    <div>
+      <!-- 1. TOP HEADER & METADATA (2-Column Balanced Grid) -->
+      <div class="flex items-start justify-between pb-4 border-b-2 border-slate-900">
+        
+        <!-- Left: Logo & Company Info (Built Heart on top, Bwork on bottom) -->
+        <div class="flex items-center gap-4">
+          <div class="flex flex-col gap-1 items-start">
+            <img src="/BH-LOGO.png" alt="BUILT HEART" class="h-6 w-auto object-contain">
+            <img src="/BWORK-LOGO.png" alt="B-WORK" class="h-7 w-auto object-contain">
+          </div>
+          <div class="w-px h-11 bg-slate-200"></div>
+          <div>
+            <div class="text-[13px] font-bold text-slate-900 leading-snug">
+              บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)
+            </div>
+            <div class="text-[11px] text-slate-500 font-normal">
+              Enterprise Solutions & Co-Working Space
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Title & Subtitle -->
+        <div class="text-right">
+          <span class="text-[11px] text-slate-400 font-medium tracking-wider uppercase block leading-none">QUOTATION</span>
+          <h1 class="text-2xl font-bold text-slate-900 tracking-tight mt-1 leading-none">ใบเสนอราคา</h1>
+        </div>
+      </div>
+
+      <!-- 2. TWO-COLUMN METADATA & PARTIES GRID -->
+      <div class="grid grid-cols-12 gap-8 mt-5">
+        
+        <!-- Left 7 Cols: Company Address & Client Info -->
+        <div class="col-span-7 flex flex-col justify-between">
+          
+          <!-- Company Details -->
+          <div class="space-y-0.5">
+            <div class="text-[12px] text-slate-600 leading-relaxed">
+              98 หมู่ 2 อาคารบีเวิร์ค ยูนิต602 ซอยแจ้งวัฒนะ-ปากเกร็ด 35
+            </div>
+            <div class="text-[12px] text-slate-600 leading-relaxed">
+              ต.คลองเกลือ อ.ปากเกร็ด จ.นนทบุรี 11120
+            </div>
+            <div class="text-[12px] text-slate-700 font-medium pt-0.5">
+              เลขประจำตัวผู้เสียภาษี: <span class="font-mono text-slate-900 font-semibold">0125554000401</span>
+            </div>
+          </div>
+
+          <!-- Divider -->
+          <div class="w-full border-b border-slate-100 my-2.5"></div>
+
+          <!-- Client Details (ลูกค้า/องค์กร) -->
+          <div class="space-y-1">
+            <div class="flex items-start">
+              <span class="w-24 text-[12px] font-bold text-slate-800 shrink-0">ลูกค้า / องค์กร:</span>
+              <span class="text-[12px] font-semibold text-slate-900">บริษัท อินโนเวทีฟ โซลูชั่นส์ จำกัด (มหาชน)</span>
+            </div>
+            <div class="flex items-start">
+              <span class="w-24 text-[12px] font-bold text-slate-800 shrink-0">ที่อยู่:</span>
+              <span class="text-[11.5px] text-slate-600 leading-relaxed">88/19 ถนนแจ้งวัฒนะ แขวงทุ่งสองห้อง เขตหลักสี่ กรุงเทพมหานคร 10210</span>
+            </div>
+            <div class="flex items-center justify-between gap-4">
+              <div class="flex items-center">
+                <span class="w-24 text-[12px] font-bold text-slate-800 shrink-0">เลขผู้เสียภาษี:</span>
+                <span class="font-mono text-[12px] text-slate-700">0105562089123</span>
+              </div>
+              <div class="text-[11.5px] text-slate-600">
+                <strong class="font-bold text-slate-800">โทร:</strong> 081-987-6543
+              </div>
+            </div>
+            <div class="flex items-center">
+              <span class="w-24 text-[12px] font-bold text-slate-800 shrink-0">ผู้ติดต่อ / เรียน:</span>
+              <span class="text-[12px] text-slate-800">คุณธนพล เจริญทรัพย์</span>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Right 5 Cols: Quotation Metadata Card -->
+        <div class="col-span-5 flex flex-col justify-start">
+          <div class="bg-slate-50/90 border border-slate-200/90 rounded-lg p-3.5 space-y-2 text-xs">
+            <div class="flex items-center justify-between pb-1.5 border-b border-slate-200/60">
+              <span class="font-bold text-slate-700">เลขที่ใบเสนอราคา:</span>
+              <span class="font-mono font-bold text-slate-900 text-[13px]">QT-2608001</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="font-medium text-slate-600">วันที่ออกเอกสาร:</span>
+              <span class="text-slate-800">28/08/2026</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="font-medium text-slate-600">ยืนยันราคาถึง:</span>
+              <span class="text-rose-600 font-semibold">04/09/2026</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span class="font-medium text-slate-600">ชื่องาน / อ้างอิง:</span>
+              <span class="text-slate-800">Meeting Room</span>
+            </div>
+            <div class="flex items-center justify-between pt-1.5 border-t border-slate-200/60">
+              <span class="font-medium text-slate-600">ผู้เสนอราคา:</span>
+              <span class="text-slate-800 font-medium">ผู้ดูแลระบบหลัก</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 3. FULL-WIDTH PRODUCT & SERVICE TABLE -->
+      <div class="mt-6 border border-slate-300 rounded-lg overflow-hidden bg-white min-h-[280px] flex flex-col justify-between">
+        <table class="w-full border-collapse text-left">
+          <thead>
+            <tr class="bg-slate-50/90 border-b border-slate-300 text-slate-700 text-xs font-bold whitespace-nowrap">
+              <th class="py-2.5 px-3 w-[5%] text-center border-r border-slate-200">#</th>
+              <th class="py-2.5 px-3.5 w-[45%] border-r border-slate-200">รายการสินค้า / บริการ</th>
+              <th class="py-2.5 px-3 w-[20%] text-left border-r border-slate-200">วัน/เวลาที่ใช้งาน</th>
+              <th class="py-2.5 px-3.5 w-[15%] text-right border-r border-slate-200">ราคาต่อหน่วย</th>
+              <th class="py-2.5 px-3.5 w-[15%] text-right">รวมจำนวนเงิน</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100 text-[12.5px] text-slate-800">
+            <!-- Row 1 -->
+            <tr class="hover:bg-slate-50/50 transition-colors">
+              <td class="py-3 px-3 text-center text-slate-400 font-mono border-r border-slate-100">1</td>
+              <td class="py-3 px-3.5 border-r border-slate-100">
+                <div class="font-normal text-slate-900">ห้องประชุม Boardroom A (ความจุ 12 ท่าน)</div>
+                <div class="text-[11px] text-slate-500 mt-0.5">รวมโปรเจกเตอร์ 4K, ไวท์บอร์ดกระจก และบริการชา/กาแฟฟรี</div>
+              </td>
+              <td class="py-3 px-3 border-r border-slate-100 text-[11.5px] text-slate-600">
+                <div class="font-medium text-slate-800">28/08/2026</div>
+                <div class="text-slate-500 text-[11px]">เวลา 09:00 - 12:00 น. (3 ชม.)</div>
+              </td>
+              <td class="py-3 px-3.5 text-right font-mono tab-nums border-r border-slate-100">1,200.00</td>
+              <td class="py-3 px-3.5 text-right font-mono font-semibold text-slate-900 tab-nums">3,600.00</td>
+            </tr>
+
+            <!-- Row 2 -->
+            <tr class="hover:bg-slate-50/50 transition-colors">
+              <td class="py-3 px-3 text-center text-slate-400 font-mono border-r border-slate-100">2</td>
+              <td class="py-3 px-3.5 border-r border-slate-100">
+                <div class="font-normal text-slate-900">ชุดอาหารว่างและเครื่องดื่มพรีเมียม (Coffee Break Set)</div>
+                <div class="text-[11px] text-slate-500 mt-0.5">เบเกอรี่อบสด 2 ชิ้น พร้อมน้ำสมุนไพรและกาแฟสด</div>
+              </td>
+              <td class="py-3 px-3 border-r border-slate-100 text-[11.5px] text-slate-600">
+                <div class="font-medium text-slate-800">28/08/2026</div>
+                <div class="text-slate-500 text-[11px]">จำนวน 12 ชุด</div>
+              </td>
+              <td class="py-3 px-3.5 text-right font-mono tab-nums border-r border-slate-100">150.00</td>
+              <td class="py-3 px-3.5 text-right font-mono font-semibold text-slate-900 tab-nums">1,800.00</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 4. FINANCIAL SUMMARY ROW -->
+      <div class="flex items-start justify-between mt-6 gap-8">
+        
+        <!-- Left Side: Thai Baht Text Badge -->
+        <div class="flex-1">
+          <div class="inline-block bg-slate-50 border border-slate-200/90 rounded-md px-3.5 py-1.5 text-xs text-slate-700">
+            <span class="font-bold text-slate-900">จำนวนเงินตัวอักษร:</span>
+            <span class="text-slate-700 ml-1">(หนึ่งพันเจ็ดสิบบาทถ้วน)</span>
+          </div>
+        </div>
+
+        <!-- Right Side: Financial Calculation Rows -->
+        <div class="w-72 space-y-1.5 text-xs text-slate-600">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-700">รวมเป็นเงิน:</span>
+            <span class="font-mono text-slate-900 font-medium tab-nums">1,000.00 บาท</span>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-700">จำนวนเงินหลังหักส่วนลด:</span>
+            <span class="font-mono text-slate-900 font-medium tab-nums">1,000.00 บาท</span>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-700">ภาษีมูลค่าเพิ่ม (VAT 7%):</span>
+            <span class="font-mono text-slate-900 font-medium tab-nums">70.00 บาท</span>
+          </div>
+
+          <!-- Grand Total Line -->
+          <div class="border-t-2 border-slate-900 pt-2 mt-1 flex items-center justify-between text-[13.5px] font-bold text-slate-900">
+            <span>จำนวนเงินรวมทั้งสิ้น:</span>
+            <span class="font-mono text-base font-extrabold text-slate-900 tab-nums">1,070.00 บาท</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 5. PAYMENT REMARKS (Below Grand Total in Purple Box Area) -->
+      <div class="mt-4 text-[11.5px] text-slate-600 leading-relaxed space-y-0.5">
+        <div class="text-xs font-bold text-amber-600 mb-1">หมายเหตุ</div>
+        <div>กรุณาโอนเงินเข้าบัญชี บริษัท บิลท์ ฮาร์ท จำกัด (บัญชีออมทรัพย์)</div>
+        <div>ธนาคารกรุงศรีอยุธยา | เลขที่บัญชี: <span class="font-mono font-bold text-slate-800">329-1-38429-0</span> | สาขา: ซอฟต์แวร์พาร์ค</div>
+        <div>ส่งหลักฐานการชำระเงินได้ที่: <span class="font-semibold text-slate-800">coworking@bwork.biz</span></div>
+      </div>
+
+    </div>
+
+    <!-- 6. AUTHORIZED SIGNATURE SECTION (Perfect Alignment) -->
+    <div class="pt-5 mt-4 border-t border-slate-200">
+      <div class="grid grid-cols-2 gap-10 items-start">
+        
+        <!-- Left: Customer Side (ผู้สั่งซื้อสินค้า) -->
+        <div class="flex flex-col">
+          <div class="text-xs font-bold text-slate-900 min-h-[32px] flex items-start leading-snug">
+            <span>ในนาม <span class="font-bold text-slate-900">บริษัท อินโนเวทีฟ โซลูชั่นส์ จำกัด (มหาชน)</span></span>
+          </div>
+          <div class="grid grid-cols-2 gap-4 text-center mt-3">
+            <div>
+              <div class="h-8"></div>
+              <div class="border-t border-slate-300 w-full"></div>
+              <div class="text-[11.5px] font-bold text-slate-800 mt-1.5">ผู้สั่งซื้อสินค้า</div>
+            </div>
+            <div>
+              <div class="h-8"></div>
+              <div class="border-t border-slate-300 w-full"></div>
+              <div class="text-[11.5px] font-bold text-slate-800 mt-1.5">วันที่</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Company Side (ผู้อนุมัติ) -->
+        <div class="flex flex-col">
+          <div class="text-xs font-bold text-slate-900 min-h-[32px] flex items-start leading-snug">
+            <span>ในนาม <span class="font-bold text-slate-900">บริษัท บิลท์ ฮาร์ท จำกัด</span></span>
+          </div>
+          <div class="grid grid-cols-2 gap-4 text-center mt-3">
+            <div>
+              <div class="h-8 flex items-end justify-center pb-1">
+                <svg width="60" height="22" viewBox="0 0 100 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M10 25 C30 5, 40 35, 60 15 C70 5, 80 25, 90 20" stroke="#0F172A" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+                </svg>
+              </div>
+              <div class="border-t border-slate-300 w-full"></div>
+              <div class="text-[11.5px] font-bold text-slate-800 mt-1.5">ผู้อนุมัติ</div>
+            </div>
+            <div>
+              <div class="h-8 flex items-end justify-center pb-1 text-[11.5px] font-medium text-slate-800 font-mono">
+                28/08/2026
+              </div>
+              <div class="border-t border-slate-300 w-full"></div>
+              <div class="text-[11.5px] font-bold text-slate-800 mt-1.5">วันที่</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+        <!-- Right: Company Side (ผู้อนุมัติ) -->
+        <div>
+          <div class="text-xs font-bold text-slate-900 mb-8">
+            ในนาม <span class="text-slate-900">บริษัท บิลท์ ฮาร์ท จำกัด</span>
+          </div>
+          <div class="grid grid-cols-2 gap-4 text-center">
+            <div>
+              <div class="h-8 flex items-end justify-center pb-1">
+                <svg width="65" height="24" viewBox="0 0 100 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M10 25 C30 5, 40 35, 60 15 C70 5, 80 25, 90 20" stroke="#0F172A" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+                </svg>
+              </div>
+              <div class="border-t border-slate-300 w-full"></div>
+              <div class="text-[11.5px] font-bold text-slate-800 mt-1.5">ผู้อนุมัติ</div>
+            </div>
+            <div>
+              <div class="h-8 flex items-end justify-center pb-1 text-[11.5px] font-medium text-slate-800">
+                28/08/2026
+              </div>
+              <div class="border-t border-slate-300 w-full"></div>
+              <div class="text-[11.5px] font-bold text-slate-800 mt-1.5">วันที่</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>

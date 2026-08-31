@@ -8,9 +8,11 @@ import ManagementPanel from './components/Management';
 import RoomLayout from './components/RoomLayout';
 import PendingBookings from './components/PendingBookings';
 import Quotations from './components/Quotations';
+import BasecampQuotaModal from './components/BasecampQuotaModal';
 
 function App() {
   const [activeTab, setActiveTab] = useState('pos');
+  const [showBasecampQuotaModal, setShowBasecampQuotaModal] = useState(false);
   const [theme, setTheme] = useState('light');
   const [activeSettingsSubTab, setActiveSettingsSubTab] = useState('manage');
   
@@ -364,6 +366,7 @@ function App() {
     setUser(null);
     localStorage.removeItem('pos_user');
     localStorage.removeItem('pos_token');
+    localStorage.removeItem('token');
     setIsTransitioning(false);
   };
 
@@ -416,7 +419,10 @@ function App() {
         setActiveTab('pos');
         setActiveSettingsSubTab(getFirstAllowedSettingsTab(data.user));
         localStorage.setItem('pos_user', JSON.stringify(data.user));
-        if (data.token) localStorage.setItem('pos_token', data.token);
+        if (data.token) {
+          localStorage.setItem('pos_token', data.token);
+          localStorage.setItem('token', data.token);
+        }
         triggerTransition();
       } else {
         setLoginError(data.error || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
@@ -435,6 +441,7 @@ function App() {
       setActiveSettingsSubTab('manage');
       localStorage.removeItem('pos_user');
       localStorage.removeItem('pos_token');
+    localStorage.removeItem('token');
       setIsTransitioning(false);
       
       // Force theme to light on logout

@@ -16,12 +16,18 @@ window.fetch = function(url, options = {}) {
 
   // Attach JWT token to all API requests except login and public endpoints
   if (typeof url === 'string' && url.includes('/api/') && !url.includes('/api/auth/login') && !url.includes('/api/public/')) {
-    const token = localStorage.getItem('pos_token');
+    const token = localStorage.getItem('pos_token') || localStorage.getItem('token');
     if (token) {
-      options.headers = {
-        ...options.headers,
-        'Authorization': `Bearer ${token}`
-      };
+      if (options.headers instanceof Headers) {
+        if (!options.headers.has('Authorization')) {
+          options.headers.set('Authorization', `Bearer ${token}`);
+        }
+      } else {
+        options.headers = {
+          ...(options.headers || {}),
+          'Authorization': `Bearer ${token}`
+        };
+      }
     }
   }
   return ORIGINAL_FETCH(targetUrl, options);

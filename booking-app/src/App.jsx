@@ -1,13 +1,61 @@
-import React, { useEffect } from 'react';
-import { Routes, Route, Link } from 'react-router-dom';
-import { Search, Building2, ShieldCheck, Sparkles } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import { Search, CreditCard, ChevronRight, X, Clock } from 'lucide-react';
 import HomePage from './pages/HomePage';
 import RoomListPage from './pages/RoomListPage';
 import BookingFormPage from './pages/BookingFormPage';
 import ConfirmPage from './pages/ConfirmPage';
 import StatusPage from './pages/StatusPage';
+import { API_BASE } from './apiConfig';
 
 function App() {
+  const location = useLocation();
+  const [pendingBooking, setPendingBooking] = useState(null);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+
+  // Check pending booking in localStorage (Strict 15-Minute Expiration & Status Sync)
+  useEffect(() => {
+    const checkPending = async () => {
+      try {
+        const stored = localStorage.getItem('bwork_pending_booking');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          const elapsed = Date.now() - (parsed.createdAt || 0);
+
+          // Strictly Expire after 15 minutes (15 * 60 * 1000 ms)
+          if (elapsed >= 15 * 60 * 1000) {
+            localStorage.removeItem('bwork_pending_booking');
+            setPendingBooking(null);
+            return;
+          }
+
+          // Check live status from backend if booking ID is present
+          if (parsed.id) {
+            try {
+              const res = await fetch(`${API_BASE}/api/public/bookings/${parsed.id}`);
+              const data = await res.json();
+              if (data) {
+                if (data.payment_status === 'cancelled' || data.payment_status === 'paid' || data.error) {
+                  localStorage.removeItem('bwork_pending_booking');
+                  setPendingBooking(null);
+                  return;
+                }
+              }
+            } catch (err) {}
+          }
+
+          setPendingBooking(parsed);
+        } else {
+          setPendingBooking(null);
+        }
+      } catch (e) {
+        setPendingBooking(null);
+      }
+    };
+
+    checkPending();
+  }, [location.pathname]);
+
   // Safe LIFF initialization on app launch
   useEffect(() => {
     const initLiff = async () => {
@@ -42,12 +90,14 @@ function App() {
     initLiff();
   }, []);
 
+  const isConfirmPage = location.pathname.startsWith('/confirm');
+
   return (
     <div className="app-container">
       {/* HEADER */}
       <header className="app-header">
         <div className="header-inner">
-          <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none' }}>
             <img 
               src="/BWORK-LOGO.png" 
               alt="B-WORK" 
@@ -70,40 +120,132 @@ function App() {
             </div>
           </Link>
 
-          <Link 
-            to="/status" 
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              background: 'rgba(255, 255, 255, 0.14)',
-              border: '1px solid rgba(255, 255, 255, 0.3)',
-              color: '#ffffff',
-              padding: '6px 12px',
-              borderRadius: '999px',
-              fontSize: '0.76rem',
-              fontWeight: 800,
-              whiteSpace: 'nowrap',
-              flexShrink: 0,
-              backdropFilter: 'blur(8px)',
-              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-              transition: 'all 0.15s ease',
-              cursor: 'pointer'
-            }}
-            onMouseEnter={e => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.24)';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.5)';
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.14)';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.3)';
-            }}
-          >
-            <Search size={13} strokeWidth={2.5} />
-            <span>เช็คสถานะการจอง</span>
-          </Link>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {pendingBooking && !isConfirmPage && (
+              <Link 
+                to={`/confirm?id=${pendingBooking.id}&code=${encodeURIComponent(pendingBooking.code || '')}`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'linear-gradient(135deg, #10b981, #059669)',
+                  border: '1px solid rgba(255, 255, 255, 0.4)',
+                  color: '#ffffff',
+                  padding: '6px 14px',
+                  borderRadius: '999px',
+                  fontSize: '0.78rem',
+                  fontWeight: 800,
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                  boxShadow: '0 4px 12px rgba(16, 185, 129, 0.4)',
+                  textDecoration: 'none',
+                  animation: 'pulse 2s infinite'
+                }}
+              >
+                <CreditCard size={14} />
+                <span>แนบสลิปชำระเงิน</span>
+              </Link>
+            )}
+
+            <Link 
+              to="/status" 
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: 'rgba(255, 255, 255, 0.14)',
+                border: '1px solid rgba(255, 255, 255, 0.3)',
+                color: '#ffffff',
+                padding: '6px 12px',
+                borderRadius: '999px',
+                fontSize: '0.76rem',
+                fontWeight: 800,
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                backdropFilter: 'blur(8px)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+                textDecoration: 'none',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              <Search size={13} strokeWidth={2.5} />
+              <span>เช็คสถานะการจอง</span>
+            </Link>
+          </div>
         </div>
       </header>
+
+      {/* FLOATING / STICKY RESUME PAYMENT BANNER */}
+      {pendingBooking && !isConfirmPage && !bannerDismissed && (
+        <div style={{
+          backgroundColor: '#0284c7',
+          backgroundImage: 'linear-gradient(90deg, #0284c7, #0369a1)',
+          color: '#ffffff',
+          padding: '10px 16px',
+          boxShadow: '0 4px 16px rgba(2, 132, 199, 0.3)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          zIndex: 90
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.84rem' }}>
+            <div style={{ 
+              width: '28px', 
+              height: '28px', 
+              borderRadius: '8px', 
+              backgroundColor: 'rgba(255,255,255,0.2)', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center',
+              flexShrink: 0
+            }}>
+              <Clock size={16} color="#ffffff" />
+            </div>
+            <div>
+              <span style={{ fontWeight: 800 }}>คุณมีรายการจองที่รอการแนบสลิป:</span>{' '}
+              <span style={{ color: '#bae6fd' }}>#{pendingBooking.code} ({pendingBooking.roomName})</span>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Link 
+              to={`/confirm?id=${pendingBooking.id}&code=${encodeURIComponent(pendingBooking.code || '')}`}
+              style={{
+                backgroundColor: '#ffffff',
+                color: '#0284c7',
+                padding: '6px 14px',
+                borderRadius: '8px',
+                fontSize: '0.8rem',
+                fontWeight: 900,
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                boxShadow: '0 2px 6px rgba(0,0,0,0.15)'
+              }}
+            >
+              <span>ไปที่หน้าแนบสลิป</span>
+              <ChevronRight size={14} />
+            </Link>
+
+            <button 
+              onClick={() => setBannerDismissed(true)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#bae6fd',
+                cursor: 'pointer',
+                padding: '4px',
+                display: 'flex',
+                alignItems: 'center'
+              }}
+              title="ปิดการแจ้งเตือนนี้"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* MAIN CONTENT ROUTES */}
       <main style={{ flex: 1 }}>

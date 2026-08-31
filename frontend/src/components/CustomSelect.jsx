@@ -8,10 +8,13 @@ function CustomSelect({
   placeholder = 'เลือก...', 
   icon: Icon,
   style = {},
+  triggerStyle = {},
   className = '',
   disabled = false,
   menuStyle = {},
-  align = 'left'
+  align = 'left',
+  size = 'medium',
+  wrap = false
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef(null);
@@ -54,6 +57,9 @@ function CustomSelect({
     return null;
   };
 
+  const isSmall = size === 'small';
+  const shouldWrap = wrap || triggerStyle.whiteSpace === 'normal';
+
   return (
     <div 
       ref={containerRef} 
@@ -76,33 +82,49 @@ function CustomSelect({
             setIsOpen(prev => !prev);
           }
         }}
+        title={selectedOption ? String(getLabel(selectedOption)) : ''}
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: '8px',
-          height: '40px',
-          padding: '0 12px',
-          borderRadius: '12px',
+          gap: isSmall ? '6px' : '8px',
+          height: shouldWrap ? 'auto' : (isSmall ? '32px' : '40px'),
+          minHeight: isSmall ? '32px' : '40px',
+          padding: isSmall ? '4px 8px' : '0 12px',
+          borderRadius: isSmall ? '8px' : '12px',
           backgroundColor: 'var(--bg-color)',
           border: isOpen ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
           boxShadow: isOpen ? '0 0 0 3px rgba(37, 99, 235, 0.15)' : 'none',
           cursor: disabled ? 'not-allowed' : 'pointer',
           opacity: disabled ? 0.6 : 1,
           color: 'var(--text-main)',
-          fontSize: '0.82rem',
+          fontSize: isSmall ? '0.75rem' : '0.82rem',
           fontWeight: 600,
           transition: 'all 0.15s ease',
-          outline: 'none'
+          outline: 'none',
+          boxSizing: 'border-box',
+          ...triggerStyle
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
+        <div style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: '8px', 
+          overflow: shouldWrap ? 'visible' : 'hidden', 
+          textOverflow: shouldWrap ? 'clip' : 'ellipsis', 
+          whiteSpace: shouldWrap ? 'normal' : 'nowrap', 
+          flex: 1, 
+          minWidth: 0,
+          textAlign: 'left'
+        }}>
           {Icon && <Icon size={15} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />}
           {selectedOption && getOptionIcon(selectedOption)}
           <span style={{ 
-            overflow: 'hidden', 
-            textOverflow: 'ellipsis', 
-            whiteSpace: 'nowrap',
+            overflow: shouldWrap ? 'visible' : 'hidden', 
+            textOverflow: shouldWrap ? 'clip' : 'ellipsis', 
+            whiteSpace: shouldWrap ? 'normal' : 'nowrap',
+            wordBreak: shouldWrap ? 'break-word' : 'normal',
+            lineHeight: shouldWrap ? 1.35 : 'inherit',
             color: selectedOption ? 'var(--text-main)' : 'var(--text-muted)' 
           }}>
             {getLabel(selectedOption)}
@@ -127,8 +149,9 @@ function CustomSelect({
             position: 'absolute',
             top: 'calc(100% + 6px)',
             ...(align === 'right' ? { right: 0 } : { left: 0 }),
-            width: '100%',
+            width: 'max-content',
             minWidth: '100%',
+            maxWidth: '380px',
             maxHeight: '260px',
             overflowY: 'auto',
             backgroundColor: 'var(--bg-card)',
@@ -185,7 +208,16 @@ function CustomSelect({
                     if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '8px', 
+                    overflow: 'hidden', 
+                    whiteSpace: shouldWrap ? 'normal' : 'nowrap',
+                    wordBreak: shouldWrap ? 'break-word' : 'normal',
+                    lineHeight: shouldWrap ? 1.35 : 'inherit',
+                    flex: 1 
+                  }}>
                     {getOptionIcon(opt)}
                     <span>{getLabel(opt)}</span>
                   </div>

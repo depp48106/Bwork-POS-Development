@@ -1,33 +1,42 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { 
-  Phone, Search, ArrowLeft, CheckCircle2, Clock, 
-  AlertCircle, Key, Calendar, Building, ChevronRight, Upload 
-} from 'lucide-react';
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Search, AlertCircle, ArrowLeft, Upload, CheckCircle2, Clock, Calendar, XCircle } from 'lucide-react';
 import { API_BASE } from '../apiConfig';
+
+const THAI_MONTHS = [
+  'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+  'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'
+];
+
+const formatThaiDate = (dateStr) => {
+  if (!dateStr) return '-';
+  const clean = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr.split(' ')[0];
+  const [y, m, d] = clean.split('-').map(Number);
+  if (!y || !m || !d) return dateStr;
+  return `${d} ${THAI_MONTHS[m - 1]} ${y + 543}`;
+};
+
+const formatThaiDateTime = (dateTimeStr) => {
+  if (!dateTimeStr) return '-';
+  const clean = dateTimeStr.replace('T', ' ');
+  const parts = clean.split(' ');
+  const datePart = formatThaiDate(parts[0]);
+  const timePart = parts[1] ? parts[1].substring(0, 5) + ' น.' : '';
+  return `${datePart} ${timePart}`.trim();
+};
 
 export default function StatusPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const initialPhone = searchParams.get('phone') || searchParams.get('contact') || '';
-
-  const [phone, setPhone] = useState(initialPhone);
+  const [phone, setPhone] = useState('');
   const [loading, setLoading] = useState(false);
   const [bookings, setBookings] = useState([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState('');
 
-  // Auto-search if phone number is provided
-  useEffect(() => {
-    if (initialPhone) {
-      fetchBookingsByPhone(initialPhone);
-    }
-  }, [initialPhone]);
-
-  const fetchBookingsByPhone = async (phoneToQuery) => {
-    const cleanNumber = (phoneToQuery || phone || '').trim();
-    if (!cleanNumber) {
-      setError('กรุณากรอกเบอร์โทรศัพท์มือถือ');
+  const fetchBookingsByPhone = async (phoneNumber) => {
+    const clean = phoneNumber.replace(/\D/g, '');
+    if (!clean || clean.length < 9) {
+      setError('กรุณากรอกเบอร์โทรศัพท์มือถือให้ถูกต้อง (อย่างน้อย 9-10 หลัก)');
       return;
     }
 
@@ -36,17 +45,20 @@ export default function StatusPage() {
     setHasSearched(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/public/bookings/by-phone?phone=${encodeURIComponent(cleanNumber)}`);
+      const res = await fetch(`${API_BASE}/api/public/bookings/by-phone?phone=${encodeURIComponent(clean)}`);
       const data = await res.json();
 
-      if (res.ok && data.success && data.bookings?.length) {
-        setBookings(data.bookings);
+      if (res.ok && data.success) {
+        setBookings(data.bookings || []);
+        if (!data.bookings || data.bookings.length === 0) {
+          setError('ไม่พบรายการจองสำหรับเบอร์โทรศัพท์นี้');
+        }
       } else {
-        setError(data.error || 'ไม่พบประวัติการจองสำหรับเบอร์โทรศัพท์นี้');
+        setError(data.error || 'ไม่พบรายการจองสำหรับเบอร์โทรศัพท์นี้');
         setBookings([]);
       }
     } catch (err) {
-      setError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่อีกครั้ง');
+      setError('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง');
       setBookings([]);
     } finally {
       setLoading(false);
@@ -58,31 +70,80 @@ export default function StatusPage() {
     fetchBookingsByPhone(phone);
   };
 
-  const getStatusBadge = (status, hasSlip) => {
-    if (status === 'paid') {
+  const getStatusBadge = (status, hasSlip, slipVerifyStatus) => {
+    const s = String(status || '').toLowerCase();
+    if (s === 'paid') {
       return (
-        <span style={{ backgroundColor: 'rgba(16, 185, 129, 0.12)', color: '#10b981', padding: '4px 10px', borderRadius: '20px', fontSize: '0.74rem', fontWeight: 800, border: '1px solid rgba(16, 185, 129, 0.3)' }}>
-          ✅ อนุมัติ & ชำระแล้ว
+        <span style={{ 
+          backgroundColor: 'rgba(16, 185, 129, 0.12)', 
+          color: '#059669', 
+          padding: '5px 12px', 
+          borderRadius: '20px', 
+          fontSize: '0.76rem', 
+          fontWeight: 800, 
+          border: '1px solid rgba(16, 185, 129, 0.3)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '4px'
+        }}>
+          <CheckCircle2 size={13} />
+          <span>อนุมัติ & ชำระแล้ว</span>
         </span>
       );
     }
-    if (status === 'reviewing' || hasSlip) {
+    if (s === 'reviewing' || (hasSlip && s !== 'paid' && s !== 'cancelled')) {
       return (
-        <span style={{ backgroundColor: 'rgba(14, 165, 233, 0.12)', color: '#0284c7', padding: '4px 10px', borderRadius: '20px', fontSize: '0.74rem', fontWeight: 800, border: '1px solid rgba(14, 165, 233, 0.3)' }}>
-          ⏳ รอตรวจสอบสลิป
+        <span style={{ 
+          backgroundColor: 'rgba(14, 165, 233, 0.12)', 
+          color: '#0284c7', 
+          padding: '5px 12px', 
+          borderRadius: '20px', 
+          fontSize: '0.76rem', 
+          fontWeight: 800, 
+          border: '1px solid rgba(14, 165, 233, 0.3)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '4px'
+        }}>
+          <Clock size={13} />
+          <span>รอตรวจสอบสลิป</span>
         </span>
       );
     }
-    if (status === 'cancelled') {
+    if (s === 'cancelled') {
       return (
-        <span style={{ backgroundColor: 'rgba(239, 68, 68, 0.12)', color: '#ef4444', padding: '4px 10px', borderRadius: '20px', fontSize: '0.74rem', fontWeight: 800, border: '1px solid rgba(239, 68, 68, 0.3)' }}>
-          ❌ ยกเลิกการจอง
+        <span style={{ 
+          backgroundColor: 'rgba(239, 68, 68, 0.12)', 
+          color: '#ef4444', 
+          padding: '5px 12px', 
+          borderRadius: '20px', 
+          fontSize: '0.76rem', 
+          fontWeight: 800, 
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '4px'
+        }}>
+          <XCircle size={13} />
+          <span>ยกเลิกการจอง</span>
         </span>
       );
     }
     return (
-      <span style={{ backgroundColor: 'rgba(245, 158, 11, 0.12)', color: '#d97706', padding: '4px 10px', borderRadius: '20px', fontSize: '0.74rem', fontWeight: 800, border: '1px solid rgba(245, 158, 11, 0.3)' }}>
-        ⚠️ รอชำระเงิน
+      <span style={{ 
+        backgroundColor: 'rgba(245, 158, 11, 0.12)', 
+        color: '#d97706', 
+        padding: '5px 12px', 
+        borderRadius: '20px', 
+        fontSize: '0.76rem', 
+        fontWeight: 800, 
+        border: '1px solid rgba(245, 158, 11, 0.3)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '4px'
+      }}>
+        <AlertCircle size={13} />
+        <span>รอชำระเงิน</span>
       </span>
     );
   };
@@ -103,10 +164,10 @@ export default function StatusPage() {
       {/* Header */}
       <div style={{ textAlign: 'center', marginBottom: '20px' }}>
         <h2 style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--text-main)', margin: 0 }}>
-          🔍 ตรวจสอบสถานะการจองห้องประชุม
+          ตรวจสอบสถานะการจองห้องประชุม
         </h2>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '4px 0 0 0' }}>
-          กรอกเบอร์โทรศัพท์ที่ใช้ทำการจอง เพื่อตรวจสอบสถานะและดูรหัสผ่านเปิดห้อง
+          กรอกเบอร์โทรศัพท์ที่ใช้ทำการจอง เพื่อตรวจสอบสถานะและรายละเอียดการจอง
         </p>
       </div>
 
@@ -115,7 +176,7 @@ export default function StatusPage() {
         <form onSubmit={handleCheck} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <div>
             <label className="form-label">
-              📱 เบอร์โทรศัพท์มือถือที่ใช้ทำการจอง
+              เบอร์โทรศัพท์มือถือที่ใช้ทำการจอง
             </label>
             <input
               type="tel"
@@ -167,7 +228,13 @@ export default function StatusPage() {
           {bookings.map(item => {
             const bookingCode = item.receipt_number || item.bookingCode || `BK-${String(item.id).padStart(6, '0')}`;
             const isPaid = item.payment_status === 'paid';
-            const isPending = item.payment_status === 'pending' || item.payment_status === 'unpaid';
+            const isCancelled = item.payment_status === 'cancelled';
+            const isPending = !isPaid && !isCancelled && (item.payment_status === 'pending' || item.payment_status === 'unpaid' || !item.payment_status);
+
+            const usageDateStr = item.usage_date || (item.items && item.items[0]?.start_time?.split('T')[0]) || item.created_at?.split(' ')[0];
+            const startTimeStr = item.start_time || (item.items && item.items[0]?.start_time?.includes('T') ? item.items[0].start_time.split('T')[1].substring(0, 5) : '08:00');
+            const endTimeStr = item.end_time || (item.items && item.items[0]?.end_time?.includes('T') ? item.items[0].end_time.split('T')[1].substring(0, 5) : '17:00');
+            const createdDateStr = item.created_date || item.created_at;
 
             return (
               <div 
@@ -175,7 +242,7 @@ export default function StatusPage() {
                 className="booking-card"
                 style={{
                   padding: '20px',
-                  borderLeft: `5px solid ${isPaid ? '#10b981' : isPending ? '#f59e0b' : '#0284c7'}`
+                  borderLeft: `5px solid ${isPaid ? '#10b981' : isCancelled ? '#ef4444' : isPending ? '#f59e0b' : '#0284c7'}`
                 }}
               >
                 {/* Header */}
@@ -184,52 +251,73 @@ export default function StatusPage() {
                     <span style={{ fontSize: '1.05rem', fontWeight: 900, color: 'var(--primary)', letterSpacing: '0.5px' }}>
                       {bookingCode.startsWith('BK-') ? bookingCode : `#${bookingCode}`}
                     </span>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: '8px' }}>
-                      ({item.room_name})
+                    <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginLeft: '8px' }}>
+                      ({item.room_name || (item.items && item.items[0]?.room_name) || 'ห้องประชุม'})
                     </span>
                   </div>
-                  {getStatusBadge(item.payment_status, !!item.slip_image_url)}
+                  {getStatusBadge(item.payment_status, !!item.slip_image_url, item.slip_verify_status)}
                 </div>
 
-                {/* Details */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
-                  <div>
-                    วันที่: <strong style={{ color: 'var(--text-main)' }}>{item.start_time?.split('T')[0] || item.start_time?.split(' ')[0]}</strong>
-                  </div>
-                  <div>
-                    เวลา: <strong style={{ color: 'var(--text-main)' }}>
-                      {new Date(item.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(item.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+                {/* Details Grid */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+                  
+                  {/* วันที่เข้าใช้งาน */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ minWidth: '100px', color: '#64748b' }}>วันที่เข้าใช้งาน:</span>
+                    <strong style={{ color: '#0f172a', fontSize: '0.88rem' }}>
+                      {formatThaiDate(usageDateStr)}
                     </strong>
                   </div>
-                  <div>
-                    ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{item.customer_name}</strong> ({item.customer_contact})
+
+                  {/* เวลาที่ใช้บริการ */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ minWidth: '100px', color: '#64748b' }}>เวลาที่ใช้บริการ:</span>
+                    <strong style={{ color: '#0284c7', fontSize: '0.88rem' }}>
+                      {startTimeStr} - {endTimeStr} น.
+                    </strong>
                   </div>
-                  <div>
-                    ยอดเงิน: <strong style={{ color: 'var(--primary)' }}>฿{Number(item.total_amount || 0).toLocaleString()}</strong>
+
+                  {/* วันที่ทำรายการจอง */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ minWidth: '100px', color: '#64748b' }}>วันที่จอง:</span>
+                    <span style={{ color: '#334155' }}>
+                      {formatThaiDateTime(createdDateStr)}
+                    </span>
+                  </div>
+
+                  {/* ผู้จอง */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ minWidth: '100px', color: '#64748b' }}>ชื่อผู้จอง:</span>
+                    <span style={{ color: '#334155' }}>
+                      {item.customer_name} ({item.contact || item.customer_contact})
+                    </span>
+                  </div>
+
+                  {/* ยอดเงิน */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed var(--border)' }}>
+                    <span style={{ minWidth: '100px', color: '#64748b' }}>ยอดชำระ:</span>
+                    <strong style={{ color: 'var(--primary)', fontSize: '1rem' }}>
+                      ฿{Number(item.total_amount || 0).toLocaleString()}
+                    </strong>
                   </div>
                 </div>
 
-                {/* PIN Code Box (if paid) */}
-                {isPaid && item.door_pin && (
+                {/* Reception Contact Box (if paid) */}
+                {isPaid && (
                   <div style={{
                     marginTop: '14px',
-                    padding: '12px 16px',
+                    padding: '12px 14px',
                     borderRadius: '12px',
-                    backgroundColor: 'rgba(16, 185, 129, 0.08)',
-                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                    backgroundColor: 'rgba(14, 165, 233, 0.08)',
+                    border: '1px solid rgba(14, 165, 233, 0.25)',
                     display: 'flex',
                     alignItems: 'center',
-                    justifyContent: 'space-between'
+                    gap: '10px'
                   }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <Key size={18} style={{ color: '#10b981' }} />
-                      <span style={{ fontSize: '0.84rem', fontWeight: 800, color: '#047857' }}>
-                        รหัสผ่านเปิดประตูห้อง (Door PIN):
-                      </span>
+                    <span style={{ fontSize: '1.2rem' }}></span>
+                    <div style={{ fontSize: '0.8rem', color: '#0369a1' }}>
+                      <strong>การรับรหัสเข้าห้อง:</strong> กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์ (ชั้น 3) เมื่อถึงเวลาใช้งาน เจ้าหน้าที่จะทำการส่งรหัส PIN ปลดล็อกประตูให้ท่านครับ
                     </div>
-                    <span style={{ fontSize: '1.25rem', fontWeight: 900, color: '#047857', letterSpacing: '2px', fontFamily: 'monospace' }}>
-                      {item.door_pin}
-                    </span>
                   </div>
                 )}
 
@@ -238,19 +326,20 @@ export default function StatusPage() {
                   <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'flex-end' }}>
                     <button
                       type="button"
-                      onClick={() => navigate(`/confirm?id=${item.id}`)}
+                      onClick={() => navigate(`/confirm?id=${item.id}&code=${encodeURIComponent(bookingCode)}`)}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
                         gap: '6px',
-                        padding: '6px 14px',
+                        padding: '8px 16px',
                         borderRadius: '8px',
-                        backgroundColor: 'var(--primary)',
+                        backgroundColor: '#0284c7',
                         color: '#ffffff',
                         border: 'none',
-                        fontSize: '0.8rem',
+                        fontSize: '0.82rem',
                         fontWeight: 800,
-                        cursor: 'pointer'
+                        cursor: 'pointer',
+                        boxShadow: '0 2px 6px rgba(2, 132, 199, 0.3)'
                       }}
                     >
                       <Upload size={14} />

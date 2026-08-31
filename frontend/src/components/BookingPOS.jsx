@@ -1,7 +1,8 @@
+import BasecampQuotaModal from './BasecampQuotaModal';
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Plus, Minus, Trash2, Calendar, ShoppingCart, Printer, X, CreditCard, 
-  User, Users, Building, Phone, FileText, Check, ChevronLeft, ChevronRight, 
+  User, Users, Building, Building2, Phone, FileText, Check, ChevronLeft, ChevronRight, 
   Clock, Search, ChevronUp, ChevronDown, Image, CheckCircle2, Key, Send, 
   AlertTriangle, LayoutGrid, Columns, Sparkles, Layers, Presentation, Laptop, Coffee, Car, BookmarkPlus, Zap,
   Banknote, Smartphone
@@ -52,15 +53,34 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   
   // View Modes: 'matrix' (Unified Timeline Matrix & Rich Room Cards) | 'calendar' (Monthly Calendar Overview)
   const [mainViewMode, setMainViewMode] = useState('matrix');
+  const [showBasecampQuotaModal, setShowBasecampQuotaModal] = useState(false);
   const [timelineCategory, setTimelineCategory] = useState('all');
   const [timelineDate, setTimelineDate] = useState(formatDateToYYYYMMDD(new Date()));
 
-  // Customer details
+  // Customer details (Walk-in / Builtland / Basecamp)
   const [customer, setCustomer] = useState({
     name: '',
     department: '',
-    contact: ''
+    contact: '',
+    customer_type: 'walkin', // 'walkin', 'builtland', 'basecamp'
+    basecamp_sub_type: 'office', // 'office', 'hotdesk'
+    basecamp_unit: '401', // Office 401-414, Hotdesk 419-422, 427-430
+    internal_department: 'ฝ่ายการเงินและบัญชี',
+    billing_option: 'paid' // 'paid', 'tenant_bill', 'quota'
   });
+
+  const [basecampQuota, setBasecampQuota] = useState({ max_quota: 4, used_quota: 0, remaining_quota: 4 });
+
+  const BASECAMP_OFFICE_UNITS = ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'];
+  const BASECAMP_HOTDESK_UNITS = ['419', '420', '421', '422', '427', '428', '429', '430'];
+  const BUILTLAND_DEPARTMENTS = [
+    'ฝ่ายการเงินและบัญชี',
+    'ฝ่ายขายและการตลาด',
+    'ฝ่ายทรัพยากรบุคคลและธุรการ (HR)',
+    'ฝ่ายเทคโนโลยีสารสนเทศ (IT)',
+    'ฝ่ายบริหารโครงการและก่อสร้าง',
+    'สำนักกรรมการผู้จัดการ / ผู้บริหาร'
+  ];
 
   const [paymentStatus, setPaymentStatus] = useState('paid');
   const [paymentMethod, setPaymentMethod] = useState('cash');
@@ -102,6 +122,26 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     endMinute: '00',
     guestCount: ''
   });
+
+
+  // Fetch Basecamp Quota when unit/subtype changes
+  useEffect(() => {
+    if (customer.customer_type === 'basecamp') {
+      const subType = customer.basecamp_sub_type || 'office';
+      const unit = customer.basecamp_unit || (subType === 'office' ? '401' : '419');
+      const curMonth = roomSchedule.date ? roomSchedule.date.substring(5, 7) : String(new Date().getMonth() + 1).padStart(2, '0');
+      const curYear = roomSchedule.date ? roomSchedule.date.substring(0, 4) : String(new Date().getFullYear());
+
+      fetch(`/api/basecamp/quota?sub_type=${subType}&unit=${unit}&month=${curMonth}&year=${curYear}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data && !data.error) {
+            setBasecampQuota(data);
+          }
+        })
+        .catch(err => console.error('Failed to fetch quota:', err));
+    }
+  }, [customer.customer_type, customer.basecamp_sub_type, customer.basecamp_unit, roomSchedule.date]);
 
   // Service selection modal
   const [showServicePicker, setShowServicePicker] = useState(false);
@@ -706,13 +746,20 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     if (!singleItem) return;
 
     try {
+      const isBuiltland = customer.customer_type === 'builtland';
+      const isBasecamp = customer.customer_type === 'basecamp';
+
       const payload = {
         customer_name: customer.name,
-        customer_department: customer.department || '',
-        customer_contact: customer.contact || '',
-        payment_status: paymentStatus,
-        payment_method: paymentStatus === 'paid' ? paymentMethod : '',
-        total_amount: singleItem.subtotal,
+        department: customer.department || '',
+        contact: customer.contact || '',
+        customer_type: customer.customer_type || 'walkin',
+        basecamp_sub_type: isBasecamp ? (customer.basecamp_sub_type || 'office') : null,
+        basecamp_unit: isBasecamp ? (customer.basecamp_unit || (customer.basecamp_sub_type === 'office' ? '401' : '419')) : null,
+        internal_department: isBuiltland ? (customer.internal_department || null) : null,
+        payment_status: isBuiltland ? 'internal_free' : (isBasecamp ? 'paid' : paymentStatus),
+        payment_method: (isBuiltland || isBasecamp) ? '' : (paymentStatus === 'paid' ? paymentMethod : ''),
+        total_amount: isBuiltland ? 0 : singleItem.subtotal,
         guest_count: singleItem.guest_count || null,
         items: [singleItem]
       };
@@ -740,7 +787,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         setPrintBooking(fullBooking);
         setShowReceiptModal(true);
         closeRoomModal();
-        setCustomer({ name: '', department: '', contact: '' });
+        setCustomer({
+          name: '',
+          department: '',
+          contact: '',
+          customer_type: 'walkin',
+          basecamp_sub_type: 'office',
+          basecamp_unit: '401',
+          internal_department: ''
+        });
         fetchCalendarEvents();
       } else {
         const errData = await res.json();
@@ -802,13 +857,20 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     }
 
     try {
+      const isBuiltland = customer.customer_type === 'builtland';
+      const isBasecamp = customer.customer_type === 'basecamp';
+
       const payload = {
         customer_name: customer.name,
-        customer_department: customer.department || '',
-        customer_contact: customer.contact || '',
-        payment_status: paymentStatus,
-        payment_method: paymentStatus === 'paid' ? paymentMethod : '',
-        total_amount: totalAmount,
+        department: customer.department || '',
+        contact: customer.contact || '',
+        customer_type: customer.customer_type || 'walkin',
+        basecamp_sub_type: isBasecamp ? (customer.basecamp_sub_type || 'office') : null,
+        basecamp_unit: isBasecamp ? (customer.basecamp_unit || (customer.basecamp_sub_type === 'office' ? '401' : '419')) : null,
+        internal_department: isBuiltland ? (customer.internal_department || null) : null,
+        payment_status: isBuiltland ? 'internal_free' : (isBasecamp ? 'paid' : paymentStatus),
+        payment_method: (isBuiltland || isBasecamp) ? '' : (paymentStatus === 'paid' ? paymentMethod : ''),
+        total_amount: isBuiltland ? 0 : totalAmount,
         guest_count: cart.find(c => c.guest_count)?.guest_count || null,
         items: cart
       };
@@ -1027,6 +1089,30 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               >
                 <Calendar size={15} />
                 <span>ปฏิทินเดือน</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowBasecampQuotaModal(true)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 14px',
+                  borderRadius: '9px',
+                  fontSize: '0.8rem',
+                  fontWeight: 700,
+                  border: '1px solid rgba(147, 51, 234, 0.35)',
+                  cursor: 'pointer',
+                  backgroundColor: 'rgba(147, 51, 234, 0.08)',
+                  color: '#9333ea',
+                  boxShadow: '0 2px 6px rgba(147, 51, 234, 0.12)',
+                  transition: 'all 0.15s ease'
+                }}
+                title="ตรวจสอบโควต้าห้องประชุมผู้เช่าชั้น 4 (Basecamp Quota Hub)"
+              >
+                <Building2 size={15} />
+                <span>โควต้าชั้น 4 (Basecamp)</span>
               </button>
             </div>
 
@@ -1613,21 +1699,59 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  padding: '8px 14px',
+                  padding: '10px 16px',
                   borderBottom: '1px solid var(--border-color)',
                   backgroundColor: 'var(--bg-card)',
-                  flexShrink: 0
+                  flexShrink: 0,
+                  gap: '12px',
+                  flexWrap: 'wrap'
                 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 900, color: 'var(--text-main)' }}>
-                      {monthNames[calendarMonth]} {calendarYear + 543}
-                    </h3>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-                      ({monthNamesEng[calendarMonth]} {calendarYear})
-                    </span>
+                  {/* Month & Year Title with Glass Icon */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div style={{
+                      width: '36px',
+                      height: '36px',
+                      borderRadius: '10px',
+                      background: 'linear-gradient(135deg, rgba(37, 99, 235, 0.15), rgba(99, 102, 241, 0.1))',
+                      border: '1px solid rgba(37, 99, 235, 0.25)',
+                      color: 'var(--primary-color)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0
+                    }}>
+                      <Calendar size={18} />
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 850, color: 'var(--text-main)', letterSpacing: '-0.02em' }}>
+                        {monthNames[calendarMonth]} {calendarYear + 543}
+                      </h3>
+                      <span style={{ 
+                        fontSize: '0.74rem', 
+                        fontWeight: 700, 
+                        color: 'var(--text-muted)', 
+                        backgroundColor: 'var(--bg-color)', 
+                        padding: '2px 8px', 
+                        borderRadius: '6px', 
+                        border: '1px solid var(--border-color)' 
+                      }}>
+                        {monthNamesEng[calendarMonth]} {calendarYear}
+                      </span>
+                    </div>
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  {/* Modern Segmented Capsule Toolbar */}
+                  <div style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    backgroundColor: 'var(--bg-color)',
+                    borderRadius: '12px',
+                    padding: '3px',
+                    border: '1px solid var(--border-color)',
+                    boxShadow: 'var(--glass-shadow, 0 2px 8px rgba(0,0,0,0.04))',
+                    gap: '2px'
+                  }}>
+                    {/* Previous Month */}
                     <button
                       type="button"
                       onClick={() => {
@@ -1638,32 +1762,71 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                           setCalendarMonth(calendarMonth - 1);
                         }
                       }}
-                      className="btn-secondary"
-                      style={{ height: '32px', padding: '0 10px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      style={{
+                        height: '32px',
+                        padding: '0 12px',
+                        fontSize: '0.78rem',
+                        fontWeight: 600,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        borderRadius: '9px',
+                        border: 'none',
+                        backgroundColor: 'transparent',
+                        color: 'var(--text-main)',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease'
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.08)'}
+                      onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                       title="เดือนก่อนหน้า"
                     >
-                      <ChevronLeft size={15} />
+                      <ChevronLeft size={15} style={{ color: 'var(--primary-color)' }} />
                       <span>เดือนก่อนหน้า</span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const now = new Date();
-                        setCalendarMonth(now.getMonth());
-                        setCalendarYear(now.getFullYear());
-                        const todayStr = formatDateToYYYYMMDD(now);
-                        setTimelineDate(todayStr);
-                        setSelectedDay({ day: now.getDate(), month: now.getMonth(), year: now.getFullYear(), isOtherMonth: false });
-                        setSidebarSelectedDay({ day: now.getDate(), month: now.getMonth(), year: now.getFullYear(), isOtherMonth: false });
-                      }}
-                      className="btn-secondary"
-                      style={{ height: '32px', padding: '0 10px', fontSize: '0.78rem', fontWeight: 700 }}
-                      title="กลับมาเดือนปัจจุบัน"
-                    >
-                      เดือนปัจจุบัน
-                    </button>
+                    {/* Current Month / Today */}
+                    {(() => {
+                      const isCurrentMonth = calendarMonth === (new Date()).getMonth() && calendarYear === (new Date()).getFullYear();
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const now = new Date();
+                            setCalendarMonth(now.getMonth());
+                            setCalendarYear(now.getFullYear());
+                            const todayStr = formatDateToYYYYMMDD(now);
+                            setTimelineDate(todayStr);
+                            setSelectedDay({ day: now.getDate(), month: now.getMonth(), year: now.getFullYear(), isOtherMonth: false });
+                            setSidebarSelectedDay({ day: now.getDate(), month: now.getMonth(), year: now.getFullYear(), isOtherMonth: false });
+                          }}
+                          style={{
+                            height: '32px',
+                            padding: '0 14px',
+                            fontSize: '0.78rem',
+                            fontWeight: 800,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            borderRadius: '9px',
+                            border: isCurrentMonth ? 'none' : '1px solid rgba(37, 99, 235, 0.25)',
+                            background: isCurrentMonth 
+                              ? 'linear-gradient(135deg, var(--primary-color, #2563EB), #1D4ED8)' 
+                              : 'rgba(37, 99, 235, 0.1)',
+                            color: isCurrentMonth ? '#FFFFFF' : 'var(--primary-color)',
+                            boxShadow: isCurrentMonth ? '0 2px 8px rgba(37, 99, 235, 0.35)' : 'none',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease'
+                          }}
+                          title="กลับมาเดือนปัจจุบัน"
+                        >
+                          <Calendar size={13} />
+                          <span>เดือนปัจจุบัน</span>
+                        </button>
+                      );
+                    })()}
 
+                    {/* Next Month */}
                     <button
                       type="button"
                       onClick={() => {
@@ -1674,12 +1837,27 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                           setCalendarMonth(calendarMonth + 1);
                         }
                       }}
-                      className="btn-secondary"
-                      style={{ height: '32px', padding: '0 10px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      style={{
+                        height: '32px',
+                        padding: '0 12px',
+                        fontSize: '0.78rem',
+                        fontWeight: 600,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        borderRadius: '9px',
+                        border: 'none',
+                        backgroundColor: 'transparent',
+                        color: 'var(--text-main)',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease'
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.08)'}
+                      onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                       title="เดือนถัดไป"
                     >
                       <span>เดือนถัดไป</span>
-                      <ChevronRight size={15} />
+                      <ChevronRight size={15} style={{ color: 'var(--primary-color)' }} />
                     </button>
                   </div>
                 </div>
@@ -2334,66 +2512,373 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 );
               })()}
 
-              {/* Group E: Customer Information */}
+              {/* Group E: Customer Categorization & Information */}
               <div style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                backgroundColor: 'var(--bg-card)',
                 border: '1px solid var(--border-color)',
                 borderRadius: '16px',
-                padding: '14px',
+                padding: '16px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '10px'
+                gap: '14px',
+                boxShadow: 'var(--glass-shadow)'
               }}>
                 <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '5px' }}>
-                    <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
-                      ชื่อผู้จอง <span style={{ color: 'var(--danger-color)' }}>*</span>
-                    </label>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '8px', display: 'block' }}>
+                    ประเภทลูกค้า (Customer Type) <span style={{ color: 'var(--danger-color)' }}>*</span>
+                  </label>
+                  
+                  {/* 3-Way Segmented Switcher */}
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr 1fr',
+                    gap: '6px',
+                    backgroundColor: 'var(--bg-main)',
+                    padding: '4px',
+                    borderRadius: '12px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    {/* 1. Walk-in */}
                     <button
                       type="button"
-                      onClick={() => setCustomer({ ...customer, name: 'ลูกค้า Walk-in' })}
+                      onClick={() => setCustomer({ ...customer, customer_type: 'walkin' })}
                       style={{
-                        fontSize: '0.68rem',
-                        fontWeight: 700,
-                        color: 'var(--primary-color)',
-                        background: 'rgba(37,99,235,0.1)',
-                        border: '1px solid rgba(37,99,235,0.25)',
-                        padding: '2px 8px',
-                        borderRadius: '6px',
-                        cursor: 'pointer'
+                        padding: '10px 4px',
+                        borderRadius: '9px',
+                        border: customer.customer_type === 'walkin' ? '1px solid var(--primary-color)' : '1px solid transparent',
+                        backgroundColor: customer.customer_type === 'walkin' ? 'var(--primary-color)' : 'transparent',
+                        color: customer.customer_type === 'walkin' ? '#ffffff' : 'var(--text-muted)',
+                        fontWeight: customer.customer_type === 'walkin' ? 800 : 600,
+                        fontSize: '0.78rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '2px',
+                        transition: 'all 0.15s ease',
+                        boxShadow: customer.customer_type === 'walkin' ? '0 2px 8px rgba(37,99,235,0.3)' : 'none'
                       }}
                     >
-                      + ใส่ชื่อ Walk-in
+                      <span>Walk-in</span>
+                      <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'walkin' ? 0.95 : 0.7 }}>ลูกค้านอก</span>
+                    </button>
+
+                    {/* 2. Builtland */}
+                    <button
+                      type="button"
+                      onClick={() => setCustomer({ ...customer, customer_type: 'builtland' })}
+                      style={{
+                        padding: '10px 4px',
+                        borderRadius: '9px',
+                        border: customer.customer_type === 'builtland' ? '1px solid #ea580c' : '1px solid transparent',
+                        backgroundColor: customer.customer_type === 'builtland' ? '#ea580c' : 'transparent',
+                        color: customer.customer_type === 'builtland' ? '#ffffff' : 'var(--text-muted)',
+                        fontWeight: customer.customer_type === 'builtland' ? 800 : 600,
+                        fontSize: '0.78rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '2px',
+                        transition: 'all 0.15s ease',
+                        boxShadow: customer.customer_type === 'builtland' ? '0 2px 8px rgba(234,88,12,0.3)' : 'none'
+                      }}
+                    >
+                      <span>Builtland</span>
+                      <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'builtland' ? 0.95 : 0.7 }}>พนักงาน</span>
+                    </button>
+
+                    {/* 3. Basecamp */}
+                    <button
+                      type="button"
+                      onClick={() => setCustomer({ ...customer, customer_type: 'basecamp' })}
+                      style={{
+                        padding: '10px 4px',
+                        borderRadius: '9px',
+                        border: customer.customer_type === 'basecamp' ? '1px solid #9333ea' : '1px solid transparent',
+                        backgroundColor: customer.customer_type === 'basecamp' ? '#9333ea' : 'transparent',
+                        color: customer.customer_type === 'basecamp' ? '#ffffff' : 'var(--text-muted)',
+                        fontWeight: customer.customer_type === 'basecamp' ? 800 : 600,
+                        fontSize: '0.78rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '2px',
+                        transition: 'all 0.15s ease',
+                        boxShadow: customer.customer_type === 'basecamp' ? '0 2px 8px rgba(147,51,234,0.3)' : 'none'
+                      }}
+                    >
+                      <span>Basecamp</span>
+                      <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'basecamp' ? 0.95 : 0.7 }}>ผู้เช่าชั้น 4</span>
                     </button>
                   </div>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '0 10px', backgroundColor: 'var(--bg-color)', height: '40px' }}>
-                    <User size={15} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                    <input 
-                      type="text"
-                      placeholder="กรอกชื่อผู้จอง / องค์กร"
-                      value={customer.name}
-                      onChange={e => setCustomer({ ...customer, name: e.target.value })}
-                      style={{ border: 'none', background: 'transparent', outline: 'none', width: '100%', fontSize: '0.82rem', color: 'var(--text-main)' }}
-                    />
-                  </div>
                 </div>
 
-                <div>
-                  <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
-                    เบอร์ติดต่อ
-                  </label>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '0 10px', backgroundColor: 'var(--bg-color)', height: '40px' }}>
-                    <Phone size={15} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                    <input 
-                      type="text"
-                      placeholder="08x-xxx-xxxx"
-                      value={customer.contact}
-                      onChange={e => setCustomer({ ...customer, contact: e.target.value })}
-                      style={{ border: 'none', background: 'transparent', outline: 'none', width: '100%', fontSize: '0.82rem', color: 'var(--text-main)' }}
-                    />
+                {/* --- CASE A: BASECAMP (Office / Hotdesk) --- */}
+                {customer.customer_type === 'basecamp' && (
+                  <div style={{
+                    backgroundColor: 'var(--bg-main)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '14px',
+                    padding: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px'
+                  }}>
+                    {/* Sub-Type Selector: Office vs Hotdesk */}
+                    <div>
+                      <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                        ประเภทยูนิต Basecamp ชั้น 4 <span style={{ color: 'var(--danger-color)' }}>*</span>
+                      </label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                        <button
+                          type="button"
+                          onClick={() => setCustomer({ ...customer, basecamp_sub_type: 'office', basecamp_unit: '401' })}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: '9px',
+                            border: customer.basecamp_sub_type === 'office' ? '1.5px solid #9333ea' : '1px solid var(--border-color)',
+                            backgroundColor: customer.basecamp_sub_type === 'office' ? 'rgba(147, 51, 234, 0.12)' : 'var(--bg-card)',
+                            color: customer.basecamp_sub_type === 'office' ? '#9333ea' : 'var(--text-main)',
+                            fontSize: '0.8rem',
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          Office (401–414)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCustomer({ ...customer, basecamp_sub_type: 'hotdesk', basecamp_unit: '419' })}
+                          style={{
+                            padding: '8px 10px',
+                            borderRadius: '9px',
+                            border: customer.basecamp_sub_type === 'hotdesk' ? '1.5px solid #3b82f6' : '1px solid var(--border-color)',
+                            backgroundColor: customer.basecamp_sub_type === 'hotdesk' ? 'rgba(59, 130, 246, 0.12)' : 'var(--bg-card)',
+                            color: customer.basecamp_sub_type === 'hotdesk' ? '#3b82f6' : 'var(--text-main)',
+                            fontSize: '0.8rem',
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          Hotdesk (419–430)
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Room/Seat Dropdown with WebApp CustomSelect */}
+                    <div>
+                      <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                        {customer.basecamp_sub_type === 'office' ? 'เลือกห้อง Office ชั้น 4 *' : 'เลือกที่นั่ง Hotdesk ชั้น 4 *'}
+                      </label>
+                      <CustomSelect
+                        value={customer.basecamp_unit || (customer.basecamp_sub_type === 'office' ? '401' : '419')}
+                        onChange={val => setCustomer({ ...customer, basecamp_unit: val })}
+                        options={customer.basecamp_sub_type === 'office' ? (
+                          BASECAMP_OFFICE_UNITS.map(u => ({
+                            value: u,
+                            label: `Office ${u} (ห้องเช่าประจำชั้น 4)`
+                          }))
+                        ) : (
+                          BASECAMP_HOTDESK_UNITS.map(u => ({
+                            value: u,
+                            label: `Hotdesk ${u} (ที่นั่งประจำชั้น 4)`
+                          }))
+                        )}
+                      />
+                    </div>
+
+                    {/* Monthly Quota Status Info Card */}
+                    <div style={{
+                      padding: '10px 14px',
+                      backgroundColor: 'var(--bg-card)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '10px',
+                      fontSize: '0.78rem',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}>
+                      <div>
+                        <div style={{ fontWeight: 800, color: 'var(--text-main)' }}>
+                          สิทธิ์โควต้าประจำเดือน: {customer.basecamp_sub_type === 'office' ? '4' : '2'} ชม./เดือน
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          ใช้ไปแล้ว {basecampQuota.used_quota || 0} ชม. | คงเหลือ {basecampQuota.remaining_quota !== undefined ? basecampQuota.remaining_quota : (customer.basecamp_sub_type === 'office' ? 4 : 2)} ชม.
+                        </div>
+                      </div>
+                      <span style={{
+                        fontWeight: 800,
+                        fontSize: '0.76rem',
+                        color: (basecampQuota.remaining_quota || 0) > 0 ? '#10b981' : '#ef4444',
+                        backgroundColor: (basecampQuota.remaining_quota || 0) > 0 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                        border: (basecampQuota.remaining_quota || 0) > 0 ? '1px solid rgba(16, 185, 129, 0.25)' : '1px solid rgba(239, 68, 68, 0.25)',
+                        padding: '4px 10px',
+                        borderRadius: '6px'
+                      }}>
+                        {(basecampQuota.remaining_quota || 0) > 0 ? `เหลือ ${basecampQuota.remaining_quota} ชม.` : 'โควต้าหมดแล้ว'}
+                      </span>
+                    </div>
+
+                    {/* Tenant Company / Name */}
+                    <div>
+                      <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                        ชื่อผู้จอง / บริษัท <span style={{ color: 'var(--danger-color)' }}>*</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder={customer.basecamp_sub_type === 'office' ? `เช่น บจก. ผู้เช่าห้อง ${customer.basecamp_unit}` : `ชื่อผู้เช่า Hotdesk ${customer.basecamp_unit}`}
+                        value={customer.name}
+                        onChange={e => setCustomer({ ...customer, name: e.target.value })}
+                        style={{
+                          width: '100%',
+                          height: '40px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          backgroundColor: 'var(--bg-card)',
+                          padding: '0 12px',
+                          fontSize: '0.84rem',
+                          color: 'var(--text-main)',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+
+                    {/* Auto-Deduct Quota Notice */}
+                    <div style={{
+                      backgroundColor: 'rgba(147, 51, 234, 0.08)',
+                      border: '1px solid rgba(147, 51, 234, 0.25)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      fontSize: '0.74rem',
+                      color: '#9333ea',
+                      fontWeight: 700
+                    }}>
+                      ระบบจะทำการตัดชั่วโมงโควต้าให้อัตโนมัติเมื่อกดยืนยันการจอง
+                    </div>
                   </div>
-                </div>
+                )}
+
+                {/* --- CASE B: BUILTLAND STAFF --- */}
+                {customer.customer_type === 'builtland' && (
+                  <div style={{
+                    backgroundColor: 'var(--bg-main)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '14px',
+                    padding: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px'
+                  }}>
+                    <div>
+                      <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                        ชื่อพนักงานผู้จอง <span style={{ color: 'var(--danger-color)' }}>*</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="ชื่อ-นามสกุล พนักงาน"
+                        value={customer.name}
+                        onChange={e => setCustomer({ ...customer, name: e.target.value })}
+                        style={{
+                          width: '100%',
+                          height: '40px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          backgroundColor: 'var(--bg-card)',
+                          padding: '0 12px',
+                          fontSize: '0.84rem',
+                          color: 'var(--text-main)',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+
+                    <div style={{
+                      backgroundColor: 'rgba(234, 88, 12, 0.08)',
+                      border: '1px solid rgba(234, 88, 12, 0.25)',
+                      borderRadius: '10px',
+                      padding: '10px 14px',
+                      color: '#ea580c',
+                      fontSize: '0.78rem',
+                      fontWeight: 800
+                    }}>
+                      สิทธิ์การใช้งานภายในบริษัท Builtland
+                    </div>
+                  </div>
+                )}
+
+                {/* --- CASE C: WALK-IN CUSTOMER --- */}
+                {customer.customer_type === 'walkin' && (
+                  <>
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                        <label style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+                          ชื่อผู้จอง <span style={{ color: 'var(--danger-color)' }}>*</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setCustomer({ ...customer, name: 'ลูกค้า Walk-in' })}
+                          style={{
+                            fontSize: '0.7rem',
+                            fontWeight: 700,
+                            color: 'var(--primary-color)',
+                            background: 'rgba(37,99,235,0.1)',
+                            border: '1px solid rgba(37,99,235,0.25)',
+                            padding: '2px 8px',
+                            borderRadius: '6px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          + ใส่ชื่อ Walk-in
+                        </button>
+                      </div>
+
+                      <input 
+                        type="text"
+                        placeholder="กรอกชื่อผู้จอง / องค์กร"
+                        value={customer.name}
+                        onChange={e => setCustomer({ ...customer, name: e.target.value })}
+                        style={{
+                          width: '100%',
+                          height: '40px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          backgroundColor: 'var(--bg-main)',
+                          padding: '0 12px',
+                          fontSize: '0.84rem',
+                          color: 'var(--text-main)',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                        เบอร์ติดต่อ
+                      </label>
+                      <input 
+                        type="text"
+                        placeholder="08x-xxx-xxxx"
+                        value={customer.contact}
+                        onChange={e => setCustomer({ ...customer, contact: e.target.value })}
+                        style={{
+                          width: '100%',
+                          height: '40px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          backgroundColor: 'var(--bg-main)',
+                          padding: '0 12px',
+                          fontSize: '0.84rem',
+                          color: 'var(--text-main)',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Group F: Payment Status & Method */}
@@ -2706,6 +3191,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           </div>
         </div>
       )}
+
+      {/* Basecamp Quota Hub Modal */}
+      <BasecampQuotaModal isOpen={showBasecampQuotaModal} onClose={() => setShowBasecampQuotaModal(false)} />
 
     </div>
   );

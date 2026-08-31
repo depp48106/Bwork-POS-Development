@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>B-WORK POS | ระบบแยกประเภทลูกค้า (Customer Categorization)</title>
+  <!-- Google Fonts: Sarabun & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sarabun:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
+  
+  <style>
+    :root {
+      --bg-dark: #0f172a;
+      --bg-card: #ffffff;
+      --bg-hover: #f1f5f9;
+      --border-color: #e2e8f0;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      
+      --primary-color: #2563eb;
+      --primary-bg: #eff6ff;
+      --primary-border: #bfdbfe;
+      
+      --builtland-color: #d97706;
+      --builtland-bg: #fffbeb;
+      --builtland-border: #fde68a;
+      
+      --basecamp-color: #9333ea;
+      --basecamp-bg: #faf5ff;
+      --basecamp-border: #e9d5ff;
+      
+      --online-color: #059669;
+      --online-bg: #ecfdf5;
+      --online-border: #a7f3d0;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Sarabun', 'Inter', -apple-system, sans-serif;
+      background: #f8fafc;
+      color: var(--text-main);
+      min-height: 100vh;
+      padding: 24px;
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    .app-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 18px 24px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand-logo {
+      height: 38px;
+      background: #0f172a;
+      padding: 4px 12px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      font-weight: 800;
+      color: #ffffff;
+      font-size: 1.1rem;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-info h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-bottom: 2px;
+    }
+
+    .brand-info p {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    /* Grid Layout */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 20px;
+    }
+
+    @media (max-width: 1024px) {
+      .main-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 22px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .card-title {
+      font-size: 0.98rem;
+      font-weight: 700;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    /* Clean Segmented Control */
+    .segmented-control {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      background: var(--bg-hover);
+      padding: 4px;
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+    }
+
+    .segment-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 10px 6px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      transition: all 0.15s ease;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    .segment-btn:hover {
+      background: rgba(0, 0, 0, 0.03);
+      color: var(--text-main);
+    }
+
+    .segment-btn .title {
+      font-size: 0.85rem;
+      font-weight: 700;
+    }
+
+    .segment-btn .sub {
+      font-size: 0.68rem;
+      opacity: 0.85;
+      font-weight: 500;
+    }
+
+    .segment-btn.active.walkin {
+      background: var(--bg-card);
+      border-color: var(--primary-color);
+      color: var(--primary-color);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+
+    .segment-btn.active.builtland {
+      background: var(--bg-card);
+      border-color: var(--builtland-color);
+      color: var(--builtland-color);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+
+    .segment-btn.active.basecamp {
+      background: var(--bg-card);
+      border-color: var(--basecamp-color);
+      color: var(--basecamp-color);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+
+    .form-box {
+      background: #f8fafc;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .form-label {
+      font-size: 0.76rem;
+      font-weight: 700;
+      color: var(--text-main);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .form-input, .form-select {
+      width: 100%;
+      height: 40px;
+      background: #ffffff;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 0 12px;
+      color: var(--text-main);
+      font-family: inherit;
+      font-size: 0.84rem;
+      outline: none;
+      transition: border 0.15s;
+    }
+
+    .form-input:focus, .form-select:focus {
+      border-color: var(--primary-color);
+    }
+
+    .btn-quick {
+      background: var(--primary-bg);
+      border: 1px solid var(--primary-border);
+      color: var(--primary-color);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .sub-btn-group {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .sub-btn {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+      background: #ffffff;
+      font-size: 0.78rem;
+      font-weight: 700;
+      cursor: pointer;
+      color: var(--text-muted);
+      text-align: center;
+      transition: all 0.15s;
+    }
+
+    .sub-btn.active {
+      border-color: var(--basecamp-color);
+      color: var(--basecamp-color);
+      background: var(--basecamp-bg);
+    }
+
+    .pill-group {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 4px;
+    }
+
+    .pill-btn {
+      padding: 6px 4px;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      background: #ffffff;
+      font-size: 0.72rem;
+      font-weight: 700;
+      cursor: pointer;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    .pill-btn.active {
+      border-color: var(--primary-color);
+      color: var(--primary-color);
+      background: var(--primary-bg);
+    }
+
+    .pill-btn.active.purple {
+      border-color: var(--basecamp-color);
+      color: var(--basecamp-color);
+      background: var(--basecamp-bg);
+    }
+
+    .price-box {
+      background: #f8fafc;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 14px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .price-amount {
+      font-size: 1.45rem;
+      font-weight: 800;
+      font-family: 'Inter', monospace;
+      color: var(--text-main);
+    }
+
+    .btn-submit {
+      width: 100%;
+      height: 44px;
+      background: #2563eb;
+      border: none;
+      border-radius: 10px;
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-submit:hover {
+      background: #1d4ed8;
+    }
+
+    /* Timeline Badges */
+    .timeline-item {
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border-color);
+      background: #ffffff;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 700;
+    }
+
+    .badge.walkin {
+      background: var(--primary-bg);
+      color: var(--primary-color);
+      border: 1px solid var(--primary-border);
+    }
+
+    .badge.builtland {
+      background: var(--builtland-bg);
+      color: var(--builtland-color);
+      border: 1px solid var(--builtland-border);
+    }
+
+    .badge.basecamp {
+      background: var(--basecamp-bg);
+      color: var(--basecamp-color);
+      border: 1px solid var(--basecamp-border);
+    }
+
+    .badge.online {
+      background: var(--online-bg);
+      color: var(--online-color);
+      border: 1px solid var(--online-border);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-logo">B-WORK</div>
+        <div class="brand-info">
+          <h1>ระบบแยกประเภทลูกค้า (Customer Categorization)</h1>
+          <p>Walk-in / Builtland / Basecamp (Office 401-414, Hotdesk 419-422, 427-430)</p>
+        </div>
+      </div>
+    </header>
+
+    <div class="main-grid">
+      
+      <!-- LEFT: Booking Form -->
+      <div class="card">
+        <div class="card-title">
+          <span>แบบฟอร์มการเลือกประเภทลูกค้า (POS)</span>
+        </div>
+
+        <!-- Clean Segmented Control -->
+        <div class="segmented-control">
+          <button type="button" class="segment-btn active walkin" onclick="selectType('walkin')">
+            <span class="title">Walk-in</span>
+            <span class="sub">บุคคลภายนอก</span>
+          </button>
+          <button type="button" class="segment-btn builtland" onclick="selectType('builtland')">
+            <span class="title">Builtland</span>
+            <span class="sub">พนักงาน</span>
+          </button>
+          <button type="button" class="segment-btn basecamp" onclick="selectType('basecamp')">
+            <span class="title">Basecamp</span>
+            <span class="sub">ผู้เช่าชั้น 4</span>
+          </button>
+        </div>
+
+        <!-- Room & Duration -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <div class="form-group">
+            <label class="form-label">ห้องประชุม</label>
+            <select id="roomSelect" class="form-select" onchange="calculatePrice()">
+              <option value="4" data-price="500">Mars (301) - 500 บาท/ชม.</option>
+              <option value="5" data-price="500">Mercury (302) - 500 บาท/ชม.</option>
+              <option value="10" data-price="1700">Jupiter (300) - 1,700 บาท/ชม.</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">ระยะเวลาใช้งาน</label>
+            <select id="durationSelect" class="form-select" onchange="calculatePrice()">
+              <option value="1">1 ชั่วโมง (09:00 - 10:00 น.)</option>
+              <option value="2" selected>2 ชั่วโมง (10:00 - 12:00 น.)</option>
+              <option value="4">ครึ่งวัน (09:00 - 13:00 น.)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Dynamic Form Box -->
+        <div id="dynamicForm" class="form-box">
+          <!-- Populated by JS -->
+        </div>
+
+        <!-- Price Summary Box -->
+        <div class="price-box">
+          <div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">ยอดชำระสุทธิ</div>
+            <div id="priceDesc" style="font-size: 0.75rem; color: var(--primary-color); font-weight: 700; margin-top: 2px;">
+              อัตราปกติ
+            </div>
+          </div>
+          <div id="priceAmount" class="price-amount">1,000 บาท</div>
+        </div>
+
+        <button type="button" class="btn-submit" onclick="submitSim()">
+          บันทึกรายการจอง
+        </button>
+
+      </div>
+
+      <!-- RIGHT: History / Calendar Log -->
+      <div class="card">
+        <div class="card-title">
+          <span>ประวัติการจองและแสดงผล Badge (History & Badges)</span>
+        </div>
+
+        <!-- Filter -->
+        <div style="display: flex; gap: 6px;">
+          <button class="btn-quick" onclick="renderHistory('all')">ทั้งหมด</button>
+          <button class="btn-quick" onclick="renderHistory('walkin')">Walk-in</button>
+          <button class="btn-quick" onclick="renderHistory('builtland')">Builtland</button>
+          <button class="btn-quick" onclick="renderHistory('basecamp')">Basecamp</button>
+          <button class="btn-quick" onclick="renderHistory('online')">จองออนไลน์</button>
+        </div>
+
+        <!-- History List -->
+        <div id="historyList">
+          <!-- Populated by JS -->
+        </div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    let currentType = 'walkin';
+    let basecampSubType = 'office';
+    let basecampUnit = '401';
+    let basecampBilling = 'paid';
+
+    const officeUnits = ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'];
+    const hotdeskUnits = ['419', '420', '421', '422', '427', '428', '429', '430'];
+    const departments = [
+      'ฝ่ายการเงินและบัญชี',
+      'ฝ่ายขายและการตลาด',
+      'ฝ่ายทรัพยากรบุคคลและธุรการ (HR)',
+      'ฝ่ายเทคโนโลยีสารสนเทศ (IT)',
+      'ฝ่ายบริหารโครงการและก่อสร้าง',
+      'สำนักกรรมการผู้จัดการ / ผู้บริหาร'
+    ];
+
+    let historyEvents = [
+      {
+        type: 'online',
+        badge: 'จองออนไลน์',
+        name: 'คุณกิตติศักดิ์ ภักดี',
+        room: 'Mars (301)',
+        time: '08:30 - 10:00 น.',
+        price: '750 บาท',
+        status: 'ชำระมัดจำแล้ว'
+      },
+      {
+        type: 'walkin',
+        badge: 'Walk-in',
+        name: 'คุณสมชาย ลูกค้าทั่วไป',
+        room: 'Mercury (302)',
+        time: '10:00 - 12:00 น.',
+        price: '1,000 บาท',
+        status: 'ชำระเงินแล้ว (เงินสด)'
+      },
+      {
+        type: 'builtland',
+        badge: 'Builtland',
+        name: 'ฝ่ายการเงินและบัญชี - คุณณภัทร',
+        room: 'Mars (301)',
+        time: '13:00 - 14:30 น.',
+        price: '0 บาท',
+        status: 'ใช้งานภายใน (ฟรี)'
+      },
+      {
+        type: 'basecamp',
+        badge: 'Basecamp (Office 405)',
+        name: 'บจก. เทค สตูดิโอ (คุณวิภา)',
+        room: 'Jupiter (300)',
+        time: '15:00 - 17:00 น.',
+        price: '3,400 บาท',
+        status: 'ลงบิลรอบเดือน'
+      }
+    ];
+
+    function selectType(t) {
+      currentType = t;
+      document.querySelectorAll('.segment-btn').forEach(b => b.classList.remove('active'));
+      document.querySelector('.segment-btn.' + t).classList.add('active');
+      renderForm();
+      calculatePrice();
+    }
+
+    function renderForm() {
+      const container = document.getElementById('dynamicForm');
+
+      if (currentType === 'walkin') {
+        container.innerHTML = `
+          <div class="form-group">
+            <div class="form-label">
+              <span>ชื่อผู้จอง / องค์กร <span style="color: #ef4444;">*</span></span>
+              <button type="button" class="btn-quick" onclick="document.getElementById('cName').value='ลูกค้า Walk-in'">+ ใส่ชื่อ Walk-in</button>
+            </div>
+            <input id="cName" type="text" class="form-input" placeholder="กรอกชื่อผู้จอง / องค์กร" value="คุณสมชาย เจริญสุข">
+          </div>
+          <div class="form-group">
+            <label class="form-label">เบอร์ติดต่อ</label>
+            <input id="cPhone" type="text" class="form-input" placeholder="08x-xxx-xxxx" value="081-111-2222">
+          </div>
+        `;
+      } else if (currentType === 'builtland') {
+        container.innerHTML = `
+          <div class="form-group">
+            <label class="form-label">ชื่อผู้จอง *</label>
+            <input id="cName" type="text" class="form-input" placeholder="กรอกชื่อพนักงาน" value="คุณณภัทร">
+          </div>
+          <div class="form-group">
+            <label class="form-label">เบอร์ติดต่อ</label>
+            <input id="cPhone" type="text" class="form-input" placeholder="08x-xxx-xxxx" value="089-333-4444">
+          </div>
+        `;
+      } else if (currentType === 'basecamp') {
+        const units = basecampSubType === 'office' ? officeUnits : hotdeskUnits;
+        let unitOpts = units.map(u => `<option value="${u}" ${u === basecampUnit ? 'selected' : ''}>${basecampSubType === 'office' ? 'Office ' + u + ' (ห้องเช่าชั้น 4)' : 'Hotdesk ' + u + ' (ที่นั่งชั้น 4)'}</option>`).join('');
+
+        container.innerHTML = `
+          <div class="form-group">
+            <label class="form-label">ประเภทยูนิต Basecamp ชั้น 4</label>
+            <div class="sub-btn-group">
+              <button type="button" class="sub-btn ${basecampSubType === 'office' ? 'active' : ''}" onclick="setBasecampSubType('office')">Private Office (401 - 414)</button>
+              <button type="button" class="sub-btn ${basecampSubType === 'hotdesk' ? 'active' : ''}" onclick="setBasecampSubType('hotdesk')">Hotdesk (419-422, 427-430)</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">${basecampSubType === 'office' ? 'เลือกห้อง Office ชั้น 4' : 'เลือกที่นั่ง Hotdesk ชั้น 4'}</label>
+            <select id="cUnit" class="form-select" onchange="basecampUnit = this.value">${unitOpts}</select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">ชื่อบริษัท / ผู้เช่า *</label>
+            <input id="cName" type="text" class="form-input" placeholder="เช่น บจก. เทค สตูดิโอ" value="บจก. เทค สตูดิโอ">
+          </div>
+          <div class="form-group">
+            <label class="form-label">เบอร์ติดต่อ</label>
+            <input id="cPhone" type="text" class="form-input" placeholder="08x-xxx-xxxx" value="086-555-6666">
+          </div>
+          <div class="form-group">
+            <label class="form-label">รูปแบบการคิดเงิน (Billing Option)</label>
+            <div class="pill-group">
+              <button type="button" class="pill-btn ${basecampBilling === 'paid' ? 'active' : ''}" onclick="setBasecampBilling('paid')">ชำระทันที</button>
+              <button type="button" class="pill-btn purple ${basecampBilling === 'tenant_bill' ? 'active' : ''}" onclick="setBasecampBilling('tenant_bill')">ลงบิลรอบเดือน</button>
+              <button type="button" class="pill-btn purple ${basecampBilling === 'quota' ? 'active' : ''}" onclick="setBasecampBilling('quota')">โควต้าฟรี (0 บาท)</button>
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    function setBasecampSubType(st) {
+      basecampSubType = st;
+      basecampUnit = st === 'office' ? '401' : '419';
+      renderForm();
+      calculatePrice();
+    }
+
+    function setBasecampBilling(b) {
+      basecampBilling = b;
+      renderForm();
+      calculatePrice();
+    }
+
+    function calculatePrice() {
+      const roomSelect = document.getElementById('roomSelect');
+      const durationSelect = document.getElementById('durationSelect');
+      const rate = Number(roomSelect.selectedOptions[0].getAttribute('data-price')) || 500;
+      const hours = Number(durationSelect.value) || 2;
+      const baseTotal = rate * hours;
+
+      const priceAmount = document.getElementById('priceAmount');
+      const priceDesc = document.getElementById('priceDesc');
+
+      if (currentType === 'walkin') {
+        priceAmount.textContent = baseTotal.toLocaleString() + ' บาท';
+        priceDesc.textContent = 'อัตราปกติ (ชำระทันที)';
+      } else if (currentType === 'builtland') {
+        priceAmount.textContent = '0 บาท';
+        priceDesc.textContent = 'สิทธิ์พนักงาน Builtland ใช้งานภายใน (ฟรี)';
+      } else if (currentType === 'basecamp') {
+        if (basecampBilling === 'quota') {
+          priceAmount.textContent = '0 บาท';
+          priceDesc.textContent = 'ตัดสิทธิ์โควต้าชั่วโมงฟรีของผู้เช่าชั้น 4';
+        } else if (basecampBilling === 'tenant_bill') {
+          priceAmount.textContent = baseTotal.toLocaleString() + ' บาท';
+          priceDesc.textContent = 'ลงบิลรอบเดือนผู้เช่า Basecamp';
+        } else {
+          priceAmount.textContent = baseTotal.toLocaleString() + ' บาท';
+          priceDesc.textContent = 'ชำระเงินทันทีหน้าเคาน์เตอร์';
+        }
+      }
+    }
+
+    function submitSim() {
+      const name = document.getElementById('cName')?.value || 'ลูกค้า';
+      let badge = 'Walk-in';
+      let status = 'ชำระเงินแล้ว';
+
+      if (currentType === 'builtland') {
+        badge = 'Builtland';
+        status = 'ใช้งานภายใน (ฟรี)';
+      } else if (currentType === 'basecamp') {
+        badge = `Basecamp (${basecampSubType === 'office' ? 'Office ' : 'Hotdesk '}${basecampUnit})`;
+        status = basecampBilling === 'tenant_bill' ? 'ลงบิลรอบเดือน' : basecampBilling === 'quota' ? 'โควต้าฟรี' : 'ชำระเงินแล้ว';
+      }
+
+      historyEvents.unshift({
+        type: currentType,
+        badge: badge,
+        name: name,
+        room: document.getElementById('roomSelect').selectedOptions[0].textContent.split('-')[0].trim(),
+        time: '10:00 - 12:00 น.',
+        price: document.getElementById('priceAmount').textContent,
+        status: status
+      });
+
+      renderHistory();
+    }
+
+    function renderHistory(filter = 'all') {
+      const container = document.getElementById('historyList');
+      const items = filter === 'all' ? historyEvents : historyEvents.filter(e => e.type === filter);
+
+      container.innerHTML = items.map(ev => `
+        <div class="timeline-item">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span class="badge ${ev.type}">${ev.badge}</span>
+            <span style="font-size: 0.76rem; font-weight: 600; color: var(--text-muted);">${ev.time}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 4px;">
+            <div>
+              <div style="font-size: 0.88rem; font-weight: 700; color: var(--text-main);">${ev.name}</div>
+              <div style="font-size: 0.76rem; color: var(--text-muted);">ห้อง: ${ev.room}</div>
+            </div>
+            <div style="text-align: right;">
+              <div style="font-size: 0.9rem; font-weight: 800; color: var(--text-main);">${ev.price}</div>
+              <div style="font-size: 0.72rem; font-weight: 600; color: var(--text-muted);">${ev.status}</div>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    renderForm();
+    calculatePrice();
+    renderHistory();
+  </script>
+</body>
+</html>

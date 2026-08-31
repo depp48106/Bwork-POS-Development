@@ -269,6 +269,27 @@ async function initDatabase() {
     console.log('Migration: Added layout column to booking_items table.');
   } catch (e) {}
 
+  // Migration: Add customer categorization fields to bookings
+  try {
+    await dbQuery.run("ALTER TABLE bookings ADD COLUMN customer_type TEXT DEFAULT 'walkin'");
+    console.log('Migration: Added customer_type to bookings table.');
+  } catch (e) {}
+  try {
+    await dbQuery.run("ALTER TABLE bookings ADD COLUMN basecamp_sub_type TEXT");
+  } catch (e) {}
+  try {
+    await dbQuery.run("ALTER TABLE bookings ADD COLUMN basecamp_unit TEXT");
+  } catch (e) {}
+  try {
+    await dbQuery.run("ALTER TABLE bookings ADD COLUMN internal_department TEXT");
+  } catch (e) {}
+  try {
+    await dbQuery.run("ALTER TABLE bookings ADD COLUMN billing_option TEXT DEFAULT 'paid'");
+  } catch (e) {}
+  try {
+    await dbQuery.run("ALTER TABLE bookings ADD COLUMN quota_hours_used REAL DEFAULT 0");
+  } catch (e) {}
+
   // Migration: Add booking_type column to booking_items if not exists
   try {
     await dbQuery.run("ALTER TABLE booking_items ADD COLUMN booking_type TEXT DEFAULT 'hourly'");
@@ -287,6 +308,13 @@ async function initDatabase() {
     await dbQuery.run("ALTER TABLE quotations ADD COLUMN job_name TEXT");
     await dbQuery.run("ALTER TABLE quotations ADD COLUMN customer_address TEXT");
     await dbQuery.run("ALTER TABLE quotations ADD COLUMN quotation_no TEXT");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN overall_discount REAL DEFAULT 0");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN overall_discount_percent REAL DEFAULT 0");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN has_vat INTEGER DEFAULT 1");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN wht_rate REAL DEFAULT 0");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN customer_tax_id TEXT");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN customer_phone TEXT");
+    await dbQuery.run("ALTER TABLE quotations ADD COLUMN issue_date TEXT");
   } catch (e) {}
 
   try {
@@ -342,11 +370,59 @@ async function initDatabase() {
     console.log('Migration: Added approved_at column to quotations table.');
   } catch (e) {}
 
-  // Performance: Add index for room overlap detection queries
+  // Migration: Add description column to services if not exists
   try {
-    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_booking_items_room_time ON booking_items(room_id, start_time, end_time)');
-    console.log('Index: Created idx_booking_items_room_time for fast overlap detection.');
+    await dbQuery.run('ALTER TABLE services ADD COLUMN description TEXT');
+    console.log('Migration: Added description column to services table.');
   } catch (e) {}
+
+  // Migration: Slip verifications table for AI/OCR and duplicate protection
+  try {
+    await dbQuery.run(`
+      CREATE TABLE IF NOT EXISTS slip_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER,
+        trans_ref TEXT,
+        bank_code TEXT,
+        bank_name TEXT,
+        amount REAL,
+        slip_image_url TEXT,
+        is_auto_approved INTEGER DEFAULT 0,
+        confidence_score REAL DEFAULT 0,
+        raw_qr_data TEXT,
+        ocr_text TEXT,
+        verification_status TEXT DEFAULT 'pending',
+        rejection_reason TEXT,
+        created_at TEXT,
+        FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE
+      )
+    `);
+    console.log('Migration: Created slip_verifications table.');
+  } catch (e) {}
+
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN slip_trans_ref TEXT'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN slip_verified_at TEXT'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN slip_verify_status TEXT'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN cancellation_reason TEXT'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_slip_verifications_trans_ref ON slip_verifications(trans_ref)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_slip_verifications_booking_id ON slip_verifications(booking_id)'); } catch (e) {}
+
+  // Performance: Database Indexes for High-Speed Queries
+  try {
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_booking_items_booking_id ON booking_items(booking_id)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_booking_items_room_id ON booking_items(room_id)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_booking_items_room_time ON booking_items(room_id, start_time, end_time)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_created_at ON bookings(created_at DESC)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_payment_status ON bookings(payment_status)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_receipt_number ON bookings(receipt_number)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_pin_code ON bookings(pin_code)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_quotation_items_quotation_id ON quotation_items(quotation_id)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_quotations_created_at ON quotations(created_at DESC)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_quotations_status ON quotations(status)');
+    console.log('Index: Created performance indexes successfully.');
+  } catch (e) {
+    console.warn('Failed to create some indexes:', e.message);
+  }
 
   // Seed default rooms if empty
   const roomCount = await dbQuery.get('SELECT COUNT(*) as count FROM rooms');

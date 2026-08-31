@@ -12,18 +12,29 @@ function ReceiptPrint({ booking, settings }) {
   const monthNamesThai = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 
   // Format Created At Date (Local Time with Thai year & timezone conversion)
+  // Safe Local Date Parser
+  const parseLocalDate = (dateStr) => {
+    if (!dateStr) return null;
+    const str = String(dateStr).trim().replace(' ', 'T');
+    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+    if (match) {
+      const year = parseInt(match[1], 10);
+      const month = parseInt(match[2], 10) - 1;
+      const day = parseInt(match[3], 10);
+      const hour = match[4] !== undefined ? parseInt(match[4], 10) : 0;
+      const minute = match[5] !== undefined ? parseInt(match[5], 10) : 0;
+      const second = match[6] !== undefined ? parseInt(match[6], 10) : 0;
+      return new Date(year, month, day, hour, minute, second);
+    }
+    const d = new Date(str);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
   const formatDateTime = (dateString) => {
     if (!dateString) return '';
     try {
-      let str = String(dateString).trim();
-      if (!str.includes('T') && str.includes(' ')) {
-        str = str.replace(' ', 'T');
-      }
-      if (!str.endsWith('Z') && !/\+\d{2}:?\d{2}$/.test(str)) {
-        str = str + 'Z';
-      }
-      const d = new Date(str);
-      if (isNaN(d.getTime())) return String(dateString);
+      const d = parseLocalDate(dateString);
+      if (!d) return String(dateString);
       const year = d.getFullYear() + 543;
       const month = monthNamesThai[d.getMonth()];
       const day = d.getDate();
@@ -39,32 +50,16 @@ function ReceiptPrint({ booking, settings }) {
   const formatPeriod = (start, end) => {
     if (!start || !end) return '';
     try {
-      let datePart = '';
-      let startTimeStr = '';
-      let endTimeStr = '';
-
-      if (typeof start === 'string' && start.includes('T')) {
-        const [dPart, tPart] = start.split('T');
-        const [y, m, day] = dPart.split('-').map(Number);
-        const thaiYear = y + 543;
-        datePart = `${day} ${monthNamesThai[m - 1]} ${thaiYear}`;
-        startTimeStr = tPart.substring(0, 5);
-      } else {
-        const s = new Date(start);
-        const thaiYear = s.getFullYear() + 543;
-        datePart = `${s.getDate()} ${monthNamesThai[s.getMonth()]} ${thaiYear}`;
-        startTimeStr = s.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-      }
-
-      if (typeof end === 'string' && end.includes('T')) {
-        const [, tPart] = end.split('T');
-        endTimeStr = tPart.substring(0, 5);
-      } else {
-        const e = new Date(end);
-        endTimeStr = e.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-      }
-
-      return `${datePart} (${startTimeStr} - ${endTimeStr})`;
+      const s = parseLocalDate(start);
+      const e = parseLocalDate(end);
+      if (!s || !e) return `${start} - ${end}`;
+      const thaiYear = s.getFullYear() + 543;
+      const datePart = `${s.getDate()} ${monthNamesThai[s.getMonth()]} ${thaiYear}`;
+      const sHours = String(s.getHours()).padStart(2, '0');
+      const sMins = String(s.getMinutes()).padStart(2, '0');
+      const eHours = String(e.getHours()).padStart(2, '0');
+      const eMins = String(e.getMinutes()).padStart(2, '0');
+      return `${datePart} (${sHours}:${sMins} - ${eHours}:${eMins})`;
     } catch (err) {
       return `${start} - ${end}`;
     }

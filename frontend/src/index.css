@@ -36,8 +36,8 @@
   
   --border-radius: 20px;
   --border-radius-sm: 12px;
-  --font-family: 'Noto Sans Thai', 'Inter', sans-serif;
-  --font-sarabun: 'Sarabun', sans-serif;
+  --font-family: 'Sarabun', 'TH Sarabun New', 'TH SarabunPSK', 'Inter', sans-serif;
+  --font-sarabun: 'Sarabun', 'TH Sarabun New', 'TH SarabunPSK', sans-serif;
 }
 
 [data-theme="dark"] {
@@ -78,6 +78,10 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
 }
 
 body {
@@ -1706,13 +1710,19 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 
 /* Printing styling - Optimized to strictly print 1 page on thermal roll paper */
 @media print {
-  @page {
-    size: 72mm 200mm;
-    margin: 0;
+  body:not(.printing-quotation) {
+    background: #ffffff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+    width: 100% !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: flex-start !important;
   }
 
-  /* Force transparent background and remove shadows on all elements to prevent dark theme bleed-through */
-  * {
+  body:not(.printing-quotation) * {
     background: transparent !important;
     color: #000000 !important;
     box-shadow: none !important;
@@ -1721,26 +1731,26 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     print-color-adjust: exact !important;
   }
 
-  .sidebar,
-  .brand,
-  .nav-links,
-  .logout-btn,
-  .pos-layout,
-  .tab-header,
-  .card:not(.print-modal-overlay),
-  .table-container,
-  .bg-glow-orb-1,
-  .bg-glow-orb-2,
-  .top-navbar,
-  .no-print {
+  body:not(.printing-quotation) .sidebar,
+  body:not(.printing-quotation) .brand,
+  body:not(.printing-quotation) .nav-links,
+  body:not(.printing-quotation) .logout-btn,
+  body:not(.printing-quotation) .pos-layout,
+  body:not(.printing-quotation) .tab-header,
+  body:not(.printing-quotation) .card:not(.print-modal-overlay),
+  body:not(.printing-quotation) .table-container,
+  body:not(.printing-quotation) .bg-glow-orb-1,
+  body:not(.printing-quotation) .bg-glow-orb-2,
+  body:not(.printing-quotation) .top-navbar,
+  body:not(.printing-quotation) .no-print {
     display: none !important;
   }
 
   /* Reset layout constraints of all parents to shrink height to match the receipt content */
-  #root,
-  .app-container,
-  .main-content,
-  .pos-container {
+  body:not(.printing-quotation) #root,
+  body:not(.printing-quotation) .app-container,
+  body:not(.printing-quotation) .main-content,
+  body:not(.printing-quotation) .pos-container {
     display: block !important;
     position: relative !important;
     height: auto !important;
@@ -1786,18 +1796,6 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     border: none !important;
     background: transparent !important;
     display: block !important;
-  }
-
-  html, body {
-    background: #ffffff !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    height: auto !important;
-    overflow: visible !important;
-    width: 100% !important;
-    display: flex !important;
-    justify-content: center !important;
-    align-items: flex-start !important;
   }
 
   /* Print area styling - 100% Parity with PDF Export */
@@ -2568,12 +2566,19 @@ select option {
 }
 
 select.form-control {
-  background-color: rgba(255, 255, 255, 0.75) !important;
+  background-color: rgba(255, 255, 255, 0.95) !important;
   color: #0f172a !important;
+  padding: 8px 14px !important;
+  height: 44px !important;
+  line-height: 1.5 !important;
+  font-size: 0.875rem !important;
+  font-family: 'Prompt', sans-serif !important;
+  display: flex !important;
+  align-items: center !important;
 }
 
 [data-theme="dark"] select.form-control {
-  background-color: rgba(15, 23, 42, 0.45) !important;
+  background-color: rgba(15, 23, 42, 0.85) !important;
   color: #f8fafc !important;
 }/* Premium Liquidglass Quotation Editor Header */
 .quotation-editor-header {

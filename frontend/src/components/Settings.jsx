@@ -12,9 +12,22 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     company_address: '',
     company_tax_id: '',
     logo_image: '',
+    quotation_company_name: 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)',
+    quotation_company_address: '98 หมู่ 2 อาคารบีเวิร์ค ยูนิต 602 ซอยแจ้งวัฒนะ-ปากเกร็ด 35 ต.คลองเกลือ อ.ปากเกร็ด จ.นนทบุรี 11120',
+    quotation_company_tax_id: '0125554000401',
+    quotation_company_phone: '02-123-4567',
+    quotation_company_email: 'coworking@bwork.biz',
+    quotation_bank_name: 'ธนาคารกรุงศรีอยุธยา (Krungsri Bank) สาขา ซอฟต์แวร์ ปาร์ค',
+    quotation_bank_account_name: 'บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.)',
+    quotation_bank_account_no: '329-1-38429-0',
+    quotation_payment_notice: 'coworking@bwork.biz หรือ LINE Official: @bwork',
     quotation_terms: '',
-    quotation_signer: '',
-    quotation_valid_days: '',
+    quotation_signer: 'คุณสมชาย ชื่นใจ (ฝ่ายขาย), คุณโอ ภัทรพล (ผู้จัดการ), คุณนภัสสรณ์ (บริการลูกค้า)',
+    quotation_valid_days: '7',
+    quotation_default_vat: '1',
+    quotation_default_wht: '0',
+    quotation_signature_image: '',
+    quotation_signature_image2: '',
     room_alert_minutes: '15',
     cleaning_buffer_minutes: '30',
     promptpay_id: '',
@@ -62,7 +75,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
   // Quotation Sellers input state
   const [sellerInput, setSellerInput] = useState('');
 
-  const handleAddSeller = () => {
+  const handleAddSeller = async () => {
     if (!sellerInput.trim()) return;
     const newName = sellerInput.trim();
     const currentList = configs.quotation_signer
@@ -73,16 +86,48 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
       return;
     }
     const updated = [...currentList, newName];
-    setConfigs(prev => ({ ...prev, quotation_signer: updated.join(', ') }));
+    const updatedSigners = updated.join(', ');
+    setConfigs(prev => ({ ...prev, quotation_signer: updatedSigners }));
     setSellerInput('');
+
+    try {
+      const token = localStorage.getItem('token') || '';
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ quotation_signer: updatedSigners })
+      });
+      if (onSettingsUpdate) onSettingsUpdate();
+    } catch (err) {
+      console.error('Failed to auto-save signer:', err);
+    }
   };
 
-  const handleRemoveSeller = (indexToRemove) => {
+  const handleRemoveSeller = async (indexToRemove) => {
     const currentList = configs.quotation_signer
       ? configs.quotation_signer.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
       : [];
     const updated = currentList.filter((_, i) => i !== indexToRemove);
-    setConfigs(prev => ({ ...prev, quotation_signer: updated.join(', ') }));
+    const updatedSigners = updated.join(', ');
+    setConfigs(prev => ({ ...prev, quotation_signer: updatedSigners }));
+
+    try {
+      const token = localStorage.getItem('token') || '';
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ quotation_signer: updatedSigners })
+      });
+      if (onSettingsUpdate) onSettingsUpdate();
+    } catch (err) {
+      console.error('Failed to auto-save signer removal:', err);
+    }
   };
 
   useEffect(() => {
@@ -95,7 +140,10 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
 
   const fetchConfigs = async () => {
     try {
-      const res = await fetch('/api/settings');
+      const token = localStorage.getItem('token') || '';
+      const res = await fetch('/api/settings', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         const data = await res.json();
         setConfigs(prev => ({
@@ -113,7 +161,10 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
 
   const fetchUsers = async () => {
     try {
-      const res = await fetch('/api/users');
+      const token = localStorage.getItem('token') || '';
+      const res = await fetch('/api/users', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         setUsers(await res.json());
       }
@@ -124,7 +175,10 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
 
   const fetchRoles = async () => {
     try {
-      const res = await fetch('/api/roles');
+      const token = localStorage.getItem('token') || '';
+      const res = await fetch('/api/roles', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         setRoles(await res.json());
       }
@@ -137,19 +191,25 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
   const handleSaveConfigs = async (e) => {
     e.preventDefault();
     try {
+      const token = localStorage.getItem('token') || '';
       const res = await fetch('/api/settings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify(configs)
       });
       if (res.ok) {
-        await sysAlert('บันทึกการตั้งค่าระบบเรียบร้อยแล้ว');
-        if (onSettingsUpdate) onSettingsUpdate(); // notify parent
+        if (sysAlert) await sysAlert('บันทึกการตั้งค่าระบบเรียบร้อยแล้ว');
+        if (onSettingsUpdate) await onSettingsUpdate(); // notify parent
+        fetchConfigs();
       } else {
-        await sysAlert('บันทึกการตั้งค่าล้มเหลว');
+        const data = await res.json().catch(() => ({}));
+        if (sysAlert) await sysAlert(data.error || 'บันทึกการตั้งค่าล้มเหลว');
       }
     } catch (err) {
-      await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+      if (sysAlert) await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
     }
   };
 
@@ -1178,8 +1238,6 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                 </div>
               )}
             </div>
-
-            {/* 💾 2. DIRECT SQL DATABASE EXPORT SECTION */}
             <div className="card" style={{ padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -1272,7 +1330,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
               </div>
             </div>
 
-            {/* 🚨 2. SYSTEM RESET / CLEAR OPERATION HISTORY SECTION */}
+            {/* 🚨 4. SYSTEM RESET / CLEAR OPERATION HISTORY SECTION */}
             <div className="card" style={{ 
               padding: '24px', 
               borderRadius: '24px', 
@@ -1353,256 +1411,438 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
         )}
 
         {viewMode === 'quotation' && (
-          <div className="card" style={{ maxWidth: '680px', padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)' }}>
-            <h2 style={{ fontSize: '1.1rem', fontWeight: 800, marginBottom: '18px', color: 'var(--primary-color)', borderBottom: '1px solid var(--border-color)', paddingBottom: '10px' }}>
-              ตั้งค่าเอกสารใบเสนอราคาและข้อมูลบริษัท
-            </h2>
-            <form onSubmit={handleSaveConfigs} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '850px' }}>
+            
+            <form onSubmit={handleSaveConfigs} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ชื่อบริษัทของเรา (สำหรับใบเสนอราคา)</label>
-                <input 
-                  type="text" 
-                  className="form-control" 
-                  value={configs.quotation_company_name || ''} 
-                  onChange={e => setConfigs({ ...configs, quotation_company_name: e.target.value })} 
-                  placeholder="เช่น บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)..."
-                />
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ชื่อบริษัทที่แสดงบริเวณส่วนหัวของเอกสารใบเสนอราคา (แยกอิสระจากใบเสร็จรับเงิน)</span>
-              </div>
+              {/* CARD 1: 🏢 ข้อมูลบริษัทและส่วนหัวเอกสาร */}
+              <div className="card" style={{ padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)', boxShadow: 'var(--glass-shadow)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                  <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(234, 88, 12, 0.1)', color: '#ea580c', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Building2 size={20} />
+                  </div>
+                  <div>
+                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                      1. ข้อมูลบริษัทและส่วนหัวเอกสาร (Company & Header Branding)
+                    </h2>
+                    <p style={{ margin: '2px 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      ข้อมูลชื่อบริษัท ที่อยู่ และเลขผู้เสียภาษี สำหรับแสดงในเอกสารใบเสนอราคา (แยกอิสระจากใบเสร็จรับเงิน)
+                    </p>
+                  </div>
+                </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ที่อยู่บริษัทของเรา (สำหรับใบเสนอราคา)</label>
-                <textarea 
-                  className="form-control" 
-                  rows="2"
-                  value={configs.quotation_company_address || ''} 
-                  onChange={e => setConfigs({ ...configs, quotation_company_address: e.target.value })} 
-                  placeholder="เช่น 98 หมู่ 2 อาคารบีเวิร์ค ยูนิต602 ซอยแจ้งวัฒนะ-ปากเกร็ด 35..."
-                  style={{ borderRadius: '12px', padding: '10px', fontSize: '0.85rem' }}
-                />
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ที่อยู่บริษัทที่แสดงใต้ชื่อบริษัทในใบเสนอราคา</span>
-              </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '14px' }}>
+                  <div className="form-group">
+                    <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ชื่อบริษัทของเรา (Company Name)</label>
+                    <input 
+                      type="text" 
+                      className="form-control" 
+                      value={configs.quotation_company_name || ''} 
+                      onChange={e => setConfigs({ ...configs, quotation_company_name: e.target.value })} 
+                      placeholder="เช่น บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)"
+                    />
+                  </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>เลขประจำตัวผู้เสียภาษี (สำหรับใบเสนอราคา)</label>
-                <input 
-                  type="text" 
-                  className="form-control" 
-                  value={configs.quotation_company_tax_id || ''} 
-                  onChange={e => setConfigs({ ...configs, quotation_company_tax_id: e.target.value })} 
-                  placeholder="เช่น 0125554000401..."
-                />
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>เลขประจำตัวผู้เสียภาษีอากร 13 หลัก สำหรับแสดงในใบเสนอราคา</span>
-              </div>
+                  <div className="form-group">
+                    <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ที่อยู่บริษัทของเรา (Company Address)</label>
+                    <textarea 
+                      className="form-control" 
+                      rows="2"
+                      value={configs.quotation_company_address || ''} 
+                      onChange={e => setConfigs({ ...configs, quotation_company_address: e.target.value })} 
+                      placeholder="เช่น 98 หมู่ 2 อาคารบีเวิร์ค ยูนิต 602 ซอยแจ้งวัฒนะ-ปากเกร็ด 35 ต.คลองเกลือ อ.ปากเกร็ด จ.นนทบุรี 11120"
+                      style={{ borderRadius: '12px', padding: '10px', fontSize: '0.85rem' }}
+                    />
+                  </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ภาพลายเซ็นผู้อนุมัติ 1 (Signature 1)</label>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '6px' }}>
-                  {configs.quotation_signature_image ? (
-                    <div style={{ position: 'relative', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '8px', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <img 
-                        src={configs.quotation_signature_image} 
-                        alt="ลายเซ็นผู้อนุมัติ 1" 
-                        style={{ height: '48px', maxWidth: '180px', objectFit: 'contain' }} 
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setConfigs({ ...configs, quotation_signature_image: '' })}
-                        style={{ position: 'absolute', top: '-6px', right: '-6px', background: 'var(--danger-color)', color: '#ffffff', border: 'none', borderRadius: '50%', width: '22px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.2)' }}
-                        title="ลบลายเซ็น"
-                      >
-                        <X size={12} />
-                      </button>
-                    </div>
-                  ) : (
-                    <div style={{ flex: 1 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                    <div className="form-group">
+                      <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>เลขประจำตัวผู้เสียภาษี (Tax ID)</label>
                       <input 
-                        type="file" 
-                        accept="image/*"
-                        className="form-control"
-                        onChange={e => {
-                          const file = e.target.files[0];
-                          if (file) {
-                            if (file.size > 2 * 1024 * 1024) {
-                              if (sysAlert) sysAlert('ขนาดไฟล์ลายเซ็นต้องไม่เกิน 2MB');
-                              return;
-                            }
-                            const reader = new FileReader();
-                            reader.onload = (uploadEvent) => {
-                              setConfigs({ ...configs, quotation_signature_image: uploadEvent.target.result });
-                            };
-                            reader.readAsDataURL(file);
+                        type="text" 
+                        className="form-control" 
+                        value={configs.quotation_company_tax_id || ''} 
+                        onChange={e => setConfigs({ ...configs, quotation_company_tax_id: e.target.value })} 
+                        placeholder="เช่น 0125554000401"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>เบอร์โทรศัพท์ / อีเมลติดต่อ</label>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        value={configs.quotation_company_phone || ''} 
+                        onChange={e => setConfigs({ ...configs, quotation_company_phone: e.target.value })} 
+                        placeholder="เช่น 02-123-4567, coworking@bwork.biz"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* CARD 2: 🏦 บัญชีธนาคารและการชำระเงิน */}
+              <div className="card" style={{ padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)', boxShadow: 'var(--glass-shadow)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                  <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <CreditCard size={20} />
+                  </div>
+                  <div>
+                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                      2. บัญชีธนาคารและเงื่อนไขการชำระเงิน (Bank Account & Payment Terms)
+                    </h2>
+                    <p style={{ margin: '2px 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      ข้อมูลบัญชีรับโอนเงินที่จะปรากฏในกล่องเงื่อนไขการชำระเงินท้ายใบเสนอราคา
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '14px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                    <div className="form-group">
+                      <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ชื่อบัญชีรับโอน (Account Name)</label>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        value={configs.quotation_bank_account_name || ''} 
+                        onChange={e => setConfigs({ ...configs, quotation_bank_account_name: e.target.value })} 
+                        placeholder="เช่น บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.)"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>เลขที่บัญชี (Account Number)</label>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        value={configs.quotation_bank_account_no || ''} 
+                        onChange={e => setConfigs({ ...configs, quotation_bank_account_no: e.target.value })} 
+                        placeholder="เช่น 329-1-38429-0"
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                    <div className="form-group">
+                      <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ชื่อธนาคารและสาขา (Bank & Branch)</label>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        value={configs.quotation_bank_name || ''} 
+                        onChange={e => setConfigs({ ...configs, quotation_bank_name: e.target.value })} 
+                        placeholder="เช่น ธนาคารกรุงศรีอยุธยา (Krungsri Bank) สาขา ซอฟต์แวร์ ปาร์ค"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ช่องทางแจ้งสลิปโอนเงิน (Slip Notice)</label>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        value={configs.quotation_payment_notice || ''} 
+                        onChange={e => setConfigs({ ...configs, quotation_payment_notice: e.target.value })} 
+                        placeholder="เช่น coworking@bwork.biz หรือ LINE Official: @bwork"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ข้อกำหนดและเงื่อนไขเพิ่มเติม (Terms & Conditions)</label>
+                    <textarea 
+                      className="form-control" 
+                      rows="3"
+                      value={configs.quotation_terms || ''} 
+                      onChange={e => setConfigs({ ...configs, quotation_terms: e.target.value })} 
+                      placeholder="เช่น &#10;- ชำระเงินมัดจำ 50% เมื่อยืนยันใบเสนอราคา&#10;- ยอดคงเหลือชำระก่อนวันเริ่มใช้บริการ 1 วัน"
+                      style={{ borderRadius: '12px', padding: '10px', fontSize: '0.85rem' }}
+                    />
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ข้อความเงื่อนไขเสริมที่จะแสดงใต้ข้อมูลการโอนเงิน (เว้นว่างได้หากไม่ต้องการระบุ)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* CARD 3: ⚖️ การคำนวณภาษีและอายุเอกสาร */}
+              <div className="card" style={{ padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)', boxShadow: 'var(--glass-shadow)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                  <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(16, 185, 129, 0.1)', color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Clock size={20} />
+                  </div>
+                  <div>
+                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                      3. การคำนวณภาษีและวันหมดอายุเริ่มต้น (Default Taxes & Validity)
+                    </h2>
+                    <p style={{ margin: '2px 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      กำหนดค่ามาตรฐานสำหรับการเปิดใบเสนอราคาใหม่ทุกครั้ง
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px' }}>
+                  <div className="form-group">
+                    <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>จำนวนวันเสนอราคาเริ่มต้น (Valid Days)</label>
+                    <input 
+                      type="number" 
+                      className="form-control" 
+                      min="1"
+                      value={configs.quotation_valid_days || '7'} 
+                      onChange={e => setConfigs({ ...configs, quotation_valid_days: e.target.value })} 
+                      placeholder="เช่น 7, 15, 30 วัน"
+                      style={{ height: '44px', padding: '8px 14px', fontSize: '0.9rem', fontWeight: 700 }}
+                    />
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>คำนวณวันยืนยันราคาอัตโนมัติตั้งแต่วันที่ออกเอกสาร</span>
+                  </div>
+
+                  <div className="form-group">
+                    <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ภาษีมูลค่าเพิ่ม (VAT 7%) เริ่มต้น</label>
+                    <select
+                      className="form-control"
+                      value={configs.quotation_default_vat !== undefined ? String(configs.quotation_default_vat) : '1'}
+                      onChange={e => setConfigs({ ...configs, quotation_default_vat: e.target.value })}
+                      style={{ height: '44px', padding: '6px 14px', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}
+                    >
+                      <option value="1">เปิดใช้งาน VAT 7% เสมอ (แนะนำ)</option>
+                      <option value="0">ปิดการคำนวณ VAT 7%</option>
+                    </select>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>สถานะเริ่มต้นของสวิตช์ VAT เมื่อเปิดหน้าสร้างใบเสนอราคา</span>
+                  </div>
+
+                  <div className="form-group">
+                    <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>หักภาษี ณ ที่จ่ายเริ่มต้น (Withholding Tax)</label>
+                    <select
+                      className="form-control"
+                      value={configs.quotation_default_wht !== undefined ? String(configs.quotation_default_wht) : '0'}
+                      onChange={e => setConfigs({ ...configs, quotation_default_wht: e.target.value })}
+                      style={{ height: '44px', padding: '6px 14px', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}
+                    >
+                      <option value="0">ไม่หัก ณ ที่จ่าย (0%)</option>
+                      <option value="1">หัก ณ ที่จ่าย 1% (ค่าขนส่ง/บริการ)</option>
+                      <option value="3">หัก ณ ที่จ่าย 3% (ค่าบริการนิติบุคคล)</option>
+                    </select>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>อัตราหัก ณ ที่จ่ายเริ่มต้นสำหรับเอกสารใหม่</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* CARD 4: ✍️ ผู้มีอำนาจลงนามและภาพลายเซ็น */}
+              <div className="card" style={{ padding: '24px', borderRadius: '24px', border: '1px solid var(--glass-border)', background: 'var(--bg-card)', boxShadow: 'var(--glass-shadow)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                  <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(168, 85, 247, 0.1)', color: '#a855f7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <ShieldCheck size={20} />
+                  </div>
+                  <div>
+                    <h2 style={{ fontSize: '1.05rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                      4. ผู้มีอำนาจลงนามและภาพลายเซ็น (Sellers & Signatures)
+                    </h2>
+                    <p style={{ margin: '2px 0 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      จัดการรายชื่อผู้ขายสำหรับเลือกในเอกสาร และอัปโหลดไฟล์ภาพลายเซ็นผู้อนุมัติ
+                    </p>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                  
+                  {/* Sellers List Management */}
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.825rem', fontWeight: 650, marginBottom: '6px', display: 'block' }}>
+                      รายชื่อผู้มีอำนาจลงนาม / ผู้ขาย (Salespeople / Signers)
+                    </label>
+                    
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        value={sellerInput} 
+                        onChange={e => setSellerInput(e.target.value)} 
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddSeller();
                           }
                         }}
-                        style={{ fontSize: '0.85rem', padding: '6px 12px' }}
+                        placeholder="พิมพ์ชื่อ-นามสกุล / ตำแหน่ง แล้วกดปุ่มแอด..."
+                        style={{ flex: 1, height: '40px', borderRadius: '12px', fontSize: '0.85rem' }}
                       />
-                    </div>
-                  )}
-                </div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
-                  อัปโหลดไฟล์ภาพลายเซ็นหลัก สำหรับแสดงตรงช่อง 'ผู้อนุมัติ' ในเอกสารใบเสนอราคา
-                </span>
-              </div>
-
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ภาพลายเซ็นผู้อนุมัติ 2 (Signature 2 - ถ้ามี)</label>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '6px' }}>
-                  {configs.quotation_signature_image2 ? (
-                    <div style={{ position: 'relative', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '8px', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <img 
-                        src={configs.quotation_signature_image2} 
-                        alt="ลายเซ็นผู้อนุมัติ 2" 
-                        style={{ height: '48px', maxWidth: '180px', objectFit: 'contain' }} 
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setConfigs({ ...configs, quotation_signature_image2: '' })}
-                        style={{ position: 'absolute', top: '-6px', right: '-6px', background: 'var(--danger-color)', color: '#ffffff', border: 'none', borderRadius: '50%', width: '22px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.2)' }}
-                        title="ลบลายเซ็น"
+                      <button 
+                        type="button" 
+                        onClick={handleAddSeller}
+                        className="btn btn-primary"
+                        title="เพิ่มรายชื่อผู้ขาย"
+                        style={{ width: '40px', height: '40px', padding: 0, borderRadius: '12px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
                       >
-                        <X size={12} />
+                        <Plus size={20} />
                       </button>
                     </div>
-                  ) : (
-                    <div style={{ flex: 1 }}>
-                      <input 
-                        type="file" 
-                        accept="image/*"
-                        className="form-control"
-                        onChange={e => {
-                          const file = e.target.files[0];
-                          if (file) {
-                            if (file.size > 2 * 1024 * 1024) {
-                              if (sysAlert) sysAlert('ขนาดไฟล์ลายเซ็นต้องไม่เกิน 2MB');
-                              return;
-                            }
-                            const reader = new FileReader();
-                            reader.onload = (uploadEvent) => {
-                              setConfigs({ ...configs, quotation_signature_image2: uploadEvent.target.result });
-                            };
-                            reader.readAsDataURL(file);
-                          }
-                        }}
-                        style={{ fontSize: '0.85rem', padding: '6px 12px' }}
-                      />
-                    </div>
-                  )}
-                </div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
-                  อัปโหลดภาพลายเซ็นที่ 2 (หากต้องการให้มี 2 ลายเซ็นบนเอกสารใบเสนอราคา)
-                </span>
-              </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>จำนวนวันเสนอราคาเริ่มต้น (Valid Days)</label>
-                <input 
-                  type="number" 
-                  className="form-control" 
-                  min="1"
-                  value={configs.quotation_valid_days || ''} 
-                  onChange={e => setConfigs({ ...configs, quotation_valid_days: e.target.value })} 
-                  placeholder="เช่น 7, 15, 30 วัน..."
-                />
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>จำนวนวันเสนอราคานับตั้งแต่วันที่ออกเอกสารใบเสนอราคา</span>
-              </div>
+                    {/* Display list of added sellers */}
+                    {(() => {
+                      const currentList = configs.quotation_signer
+                        ? configs.quotation_signer.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
+                        : [];
+                      return (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', minHeight: '42px', padding: '10px', background: 'rgba(0,0,0,0.03)', borderRadius: '12px', border: '1px solid var(--border-color)', alignItems: 'center' }}>
+                          {currentList.length === 0 ? (
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>ยังไม่มีรายชื่อ (กรุณาพิมพ์ชื่อแล้วกดปุ่มแอด)</span>
+                          ) : (
+                            currentList.map((name, idx) => (
+                              <div 
+                                key={idx} 
+                                style={{ 
+                                  display: 'inline-flex', 
+                                  alignItems: 'center', 
+                                  gap: '6px', 
+                                  padding: '5px 12px', 
+                                  background: 'var(--bg-card)', 
+                                  border: '1px solid var(--border-color)', 
+                                  borderRadius: '99px',
+                                  fontSize: '0.8rem',
+                                  fontWeight: 'bold',
+                                  color: 'var(--text-main)',
+                                  boxShadow: '0 2px 6px rgba(0,0,0,0.04)'
+                                }}
+                              >
+                                <span>{name}</span>
+                                <button 
+                                  type="button" 
+                                  onClick={() => handleRemoveSeller(idx)}
+                                  style={{ background: 'transparent', border: 'none', color: 'var(--danger-color)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2px', borderRadius: '50%' }}
+                                  title="ลบรายชื่อนี้"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      );
+                    })()}
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '6px', display: 'block' }}>
+                      รายชื่อที่เพิ่มไว้ตรงนี้ จะถูกนำไปเป็นตัวเลือก Dropdown ในช่อง 'ผู้เสนอราคา' ในหน้าสร้างใบเสนอราคา
+                    </span>
+                  </div>
 
-              <div className="form-group" style={{ margin: 0 }}>
-                <label style={{ fontSize: '0.825rem', fontWeight: 650, marginBottom: '6px', display: 'block' }}>
-                  รายชื่อผู้มีอำนาจลงนาม / ผู้ขาย
-                </label>
-                
-                {/* Input box and Add button */}
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
-                  <input 
-                    type="text" 
-                    className="form-control" 
-                    value={sellerInput} 
-                    onChange={e => setSellerInput(e.target.value)} 
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        handleAddSeller();
-                      }
-                    }}
-                    placeholder="พิมพ์ชื่อ-นามสกุล ผู้มีอำนาจลงนาม/ผู้ขาย แล้วกดปุ่มแอด..."
-                    style={{ flex: 1, height: '40px', borderRadius: '12px', fontSize: '0.85rem' }}
-                  />
-                  <button 
-                    type="button" 
-                    onClick={handleAddSeller}
-                    className="btn btn-primary"
-                    title="เพิ่มรายชื่อผู้ขาย"
-                    style={{ width: '40px', height: '40px', padding: 0, borderRadius: '12px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
-                  >
-                    <Plus size={20} />
-                  </button>
-                </div>
-
-                {/* Display list of added sellers */}
-                {(() => {
-                  const currentList = configs.quotation_signer
-                    ? configs.quotation_signer.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean)
-                    : [];
-                  return (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', minHeight: '42px', padding: '10px', background: 'rgba(0,0,0,0.03)', borderRadius: '12px', border: '1px solid var(--border-color)', alignItems: 'center' }}>
-                      {currentList.length === 0 ? (
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>ยังไม่มีรายชื่อ (กรุณาพิมพ์ชื่อแล้วกดปุ่มแอด)</span>
-                      ) : (
-                        currentList.map((name, idx) => (
-                          <div 
-                            key={idx} 
-                            style={{ 
-                              display: 'inline-flex', 
-                              alignItems: 'center', 
-                              gap: '6px', 
-                              padding: '5px 12px', 
-                              background: 'var(--bg-card)', 
-                              border: '1px solid var(--border-color)', 
-                              borderRadius: '99px',
-                              fontSize: '0.8rem',
-                              fontWeight: 'bold',
-                              color: 'var(--text-main)',
-                              boxShadow: '0 2px 6px rgba(0,0,0,0.04)'
-                            }}
-                          >
-                            <span>{name}</span>
-                            <button 
-                              type="button" 
-                              onClick={() => handleRemoveSeller(idx)}
-                              style={{ background: 'transparent', border: 'none', color: 'var(--danger-color)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2px', borderRadius: '50%' }}
-                              title="ลบรายชื่อนี้"
+                  {/* Signature 1 & 2 Uploads */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                    
+                    {/* Signature 1 */}
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ภาพลายเซ็นผู้อนุมัติ 1 (Signature 1)</label>
+                      <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '6px' }}>
+                        {configs.quotation_signature_image ? (
+                          <div style={{ position: 'relative', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '8px', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+                            <img 
+                              src={configs.quotation_signature_image} 
+                              alt="ลายเซ็นผู้อนุมัติ 1" 
+                              style={{ height: '48px', maxWidth: '180px', objectFit: 'contain' }} 
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setConfigs({ ...configs, quotation_signature_image: '' })}
+                              style={{ position: 'absolute', top: '-6px', right: '-6px', background: 'var(--danger-color)', color: '#ffffff', border: 'none', borderRadius: '50%', width: '22px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.2)' }}
+                              title="ลบลายเซ็น"
                             >
-                              <X size={14} />
+                              <X size={12} />
                             </button>
                           </div>
-                        ))
-                      )}
+                        ) : (
+                          <div style={{ flex: 1 }}>
+                            <input 
+                              type="file" 
+                              accept="image/*"
+                              className="form-control"
+                              onChange={e => {
+                                const file = e.target.files[0];
+                                if (file) {
+                                  if (file.size > 2 * 1024 * 1024) {
+                                    if (sysAlert) sysAlert('ขนาดไฟล์ลายเซ็นต้องไม่เกิน 2MB');
+                                    return;
+                                  }
+                                  const reader = new FileReader();
+                                  reader.onload = (uploadEvent) => {
+                                    setConfigs({ ...configs, quotation_signature_image: uploadEvent.target.result });
+                                  };
+                                  reader.readAsDataURL(file);
+                                }
+                              }}
+                              style={{ fontSize: '0.85rem', padding: '6px 12px' }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                        ไฟล์ภาพ PNG/JPG พื้นหลังโปร่งใส (ขนาดไม่เกิน 2MB)
+                      </span>
                     </div>
-                  );
-                })()}
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '6px', display: 'block' }}>
-                  รายชื่อผู้มีอำนาจลงนาม/ผู้ขายที่แอดไว้ที่นี่ จะถูกนำไปเป็นตัวเลือก Liquidglass Dropdown ในช่อง 'ผู้ขาย' ของใบเสนอราคา
-                </span>
+
+                    {/* Signature 2 */}
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>ภาพลายเซ็นผู้อนุมัติ 2 (Signature 2 - ถ้ามี)</label>
+                      <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '6px' }}>
+                        {configs.quotation_signature_image2 ? (
+                          <div style={{ position: 'relative', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '8px', background: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+                            <img 
+                              src={configs.quotation_signature_image2} 
+                              alt="ลายเซ็นผู้อนุมัติ 2" 
+                              style={{ height: '48px', maxWidth: '180px', objectFit: 'contain' }} 
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setConfigs({ ...configs, quotation_signature_image2: '' })}
+                              style={{ position: 'absolute', top: '-6px', right: '-6px', background: 'var(--danger-color)', color: '#ffffff', border: 'none', borderRadius: '50%', width: '22px', height: '22px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.2)' }}
+                              title="ลบลายเซ็น"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ flex: 1 }}>
+                            <input 
+                              type="file" 
+                              accept="image/*"
+                              className="form-control"
+                              onChange={e => {
+                                const file = e.target.files[0];
+                                if (file) {
+                                  if (file.size > 2 * 1024 * 1024) {
+                                    if (sysAlert) sysAlert('ขนาดไฟล์ลายเซ็นต้องไม่เกิน 2MB');
+                                    return;
+                                  }
+                                  const reader = new FileReader();
+                                  reader.onload = (uploadEvent) => {
+                                    setConfigs({ ...configs, quotation_signature_image2: uploadEvent.target.result });
+                                  };
+                                  reader.readAsDataURL(file);
+                                }
+                              }}
+                              style={{ fontSize: '0.85rem', padding: '6px 12px' }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                        ไฟล์ภาพสำหรับช่องผู้อนุมัติร่วมคนที่ 2 (เว้นว่างได้)
+                      </span>
+                    </div>
+
+                  </div>
+
+                </div>
               </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.825rem', fontWeight: 650 }}>เงื่อนไขการจองและชำระเงินเริ่มต้น (Terms & Conditions)</label>
-                <textarea 
-                  className="form-control" 
-                  rows="4"
-                  value={configs.quotation_terms || ''} 
-                  onChange={e => setConfigs({ ...configs, quotation_terms: e.target.value })} 
-                  placeholder="เช่น &#10;- ชำระมัดจำ 50% &#10;- ส่วนที่เหลือชำระวันเข้างาน..."
-                  style={{ borderRadius: '12px', padding: '10px', fontSize: '0.85rem' }}
-                />
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>เงื่อนไขต่าง ๆ ที่ระบุตรงช่องเงื่อนไขด้านซ้ายในเอกสารใบเสนอราคา (สามารถกดขึ้นบรรทัดใหม่ได้)</span>
-              </div>
-
-              <button type="submit" className="btn btn-primary" style={{ width: '100%', padding: '12px', borderRadius: '12px', marginTop: '8px', gap: '8px' }}>
-                <Save size={16} />
-                บันทึกการตั้งค่าใบเสนอราคา
+              {/* SAVE BUTTON */}
+              <button 
+                type="submit" 
+                className="btn btn-primary" 
+                style={{
+                  width: '100%',
+                  padding: '14px',
+                  borderRadius: '16px',
+                  fontSize: '0.95rem',
+                  fontWeight: 800,
+                  gap: '8px',
+                  boxShadow: '0 4px 14px rgba(234, 88, 12, 0.35)'
+                }}
+              >
+                <Save size={18} />
+                บันทึกการตั้งค่าใบเสนอราคาทั้งหมด
               </button>
+
             </form>
           </div>
         )}

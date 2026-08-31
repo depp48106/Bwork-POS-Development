@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, CheckCircle, AlertCircle, Users, DollarSign, Calendar, RefreshCw, X, Plus } from 'lucide-react';
+import { Clock, CheckCircle, AlertCircle, Users, DollarSign, Calendar, RefreshCw, X, Plus, ChevronLeft, ChevronRight } from 'lucide-react';
 
 function RoomLayout({ sysAlert, onNavigateToBook }) {
   const [rooms, setRooms] = useState([]);
@@ -779,41 +779,77 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
               {/* Right Column: Month Calendar view */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {/* Month/Year selector */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <button 
-                    type="button" 
-                    className="btn btn-secondary" 
-                    style={{ padding: '4px 8px', minWidth: 'auto', borderRadius: '8px' }}
-                    onClick={() => {
-                      if (calendarMonth === 0) {
-                        setCalendarMonth(11);
-                        setCalendarYear(calendarYear - 1);
-                      } else {
-                        setCalendarMonth(calendarMonth - 1);
-                      }
-                    }}
-                  >
-                    ◀
-                  </button>
-                  <span style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>
-                    {["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"][calendarMonth]} {calendarYear + 543}
-                  </span>
-                  <button 
-                    type="button" 
-                    className="btn btn-secondary" 
-                    style={{ padding: '4px 8px', minWidth: 'auto', borderRadius: '8px' }}
-                    onClick={() => {
-                      if (calendarMonth === 11) {
-                        setCalendarMonth(0);
-                        setCalendarYear(calendarYear + 1);
-                      } else {
-                        setCalendarMonth(calendarMonth + 1);
-                      }
-                    }}
-                  >
-                    ▶
-                  </button>
-                </div>
+                <div style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '4px 6px',
+                    backgroundColor: 'var(--bg-color)',
+                    borderRadius: '12px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <button 
+                      type="button" 
+                      style={{ 
+                        width: '28px', 
+                        height: '28px', 
+                        borderRadius: '8px', 
+                        border: 'none', 
+                        backgroundColor: 'transparent', 
+                        color: 'var(--text-main)', 
+                        cursor: 'pointer', 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        transition: 'all 0.15s ease'
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.1)'}
+                      onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                      onClick={() => {
+                        if (calendarMonth === 0) {
+                          setCalendarMonth(11);
+                          setCalendarYear(calendarYear - 1);
+                        } else {
+                          setCalendarMonth(calendarMonth - 1);
+                        }
+                      }}
+                      title="เดือนก่อนหน้า"
+                    >
+                      <ChevronLeft size={16} style={{ color: 'var(--primary-color)' }} />
+                    </button>
+                    <span style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                      {["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"][calendarMonth]} {calendarYear + 543}
+                    </span>
+                    <button 
+                      type="button" 
+                      style={{ 
+                        width: '28px', 
+                        height: '28px', 
+                        borderRadius: '8px', 
+                        border: 'none', 
+                        backgroundColor: 'transparent', 
+                        color: 'var(--text-main)', 
+                        cursor: 'pointer', 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        transition: 'all 0.15s ease'
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.1)'}
+                      onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                      onClick={() => {
+                        if (calendarMonth === 11) {
+                          setCalendarMonth(0);
+                          setCalendarYear(calendarYear + 1);
+                        } else {
+                          setCalendarMonth(calendarMonth + 1);
+                        }
+                      }}
+                      title="เดือนถัดไป"
+                    >
+                      <ChevronRight size={16} style={{ color: 'var(--primary-color)' }} />
+                    </button>
+                  </div>
 
                 {/* Days Grid */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>

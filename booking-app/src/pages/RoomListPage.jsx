@@ -260,11 +260,11 @@ export default function RoomListPage() {
 
   // Check if a room has booking overlap for its specific active times
   const getRoomOccupiedInfo = (roomId, effStart, effEnd) => {
-    if (!schedule || !schedule.rooms) return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };
+    if (!schedule || !schedule.rooms) return { isOccupied: false, label: 'ว่างพร้อมจอง' };
 
     const startHHMM = extractHHMM(effStart || globalStartTime || '09:00');
     const endHHMM = extractHHMM(effEnd || globalEndTime || '11:00');
-    if (!startHHMM || !endHHMM) return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };
+    if (!startHHMM || !endHHMM) return { isOccupied: false, label: 'ว่างพร้อมจอง' };
 
     const [sH, sM] = startHHMM.split(':').map(Number);
     const [eH, eM] = endHHMM.split(':').map(Number);
@@ -273,12 +273,12 @@ export default function RoomListPage() {
 
     // Real-time past time check for today
     if (isToday && reqStartMins < currentMins) {
-      return { isOccupied: true, reason: 'past', label: '⛔ เวลานี้ผ่านมาแล้ว' };
+      return { isOccupied: true, reason: 'past', label: 'เวลานี้ผ่านมาแล้ว' };
     }
 
     const roomObj = schedule.rooms.find(r => r.id === roomId);
     if (!roomObj || !roomObj.bookings || roomObj.bookings.length === 0) {
-      return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };
+      return { isOccupied: false, label: 'ว่างพร้อมจอง' };
     }
 
     const bufferMins = Number(schedule.cleaning_buffer_minutes || schedule.buffer_minutes) || 30;
@@ -304,7 +304,7 @@ export default function RoomListPage() {
           return { 
             isOccupied: true, 
             reason: 'booked',
-            label: `🔴 ติดจอง (${bStartHHMM} - ${bEndHHMM} น.)` 
+            label: `ติดจอง (${bStartHHMM} - ${bEndHHMM} น.)` 
           };
         } else {
           const cleanEndH = Math.floor(bEndBufferedMins / 60);
@@ -313,52 +313,96 @@ export default function RoomListPage() {
           return { 
             isOccupied: true, 
             reason: 'cleaning',
-            label: `🟡 ติดทำความสะอาด (คิวก่อนหน้าใช้ถึง ${bEndHHMM} น. • พร้อมจอง ${cleanEndHHMM} น.)` 
+            label: `ติดทำความสะอาด (คิวก่อนหน้าใช้ถึง ${bEndHHMM} น. • พร้อมจอง ${cleanEndHHMM} น.)` 
           };
         }
       }
     }
-    return { isOccupied: false, label: '🟢 ว่างพร้อมจอง' };
+    return { isOccupied: false, label: 'ว่างพร้อมจอง' };
   };
 
-  // Smart Room Categorization & Tier Matching
-  const { recommendedRooms, upgradeRooms } = useMemo(() => {
+  // Strict Room Sorting Sequence: 201, 300, 301, 302, 303, 304, 305, 306
+  const ROOM_SEQUENCE = ['201', '300', '301', '302', '303', '304', '305', '306'];
+
+  const getRoomSortRank = (room) => {
+    const name = String(room?.name || '');
+    for (let i = 0; i < ROOM_SEQUENCE.length; i++) {
+      const code = ROOM_SEQUENCE[i];
+      if (name.includes(`(${code})`)) {
+        return i;
+      }
+    }
+    return 999;
+  };
+
+  const sortRoomsByStandardOrder = (roomList) => {
+    return [...roomList].sort((a, b) => getRoomSortRank(a) - getRoomSortRank(b));
+  };
+
+  // Smart Room Categorization & Tier Matching (with Special Offers)
+  const { recommendedRooms, upgradeRooms, recommendedLabel, upgradeLabel } = useMemo(() => {
     const recommended = [];
     const upgrade = [];
+    let recLabel = `ห้องขนาดพอดี (${guests} ท่าน)`;
+    let upgLabel = 'ข้อเสนอพิเศษ: ห้องขนาดใหญ่ขึ้น เพิ่มความสะดวกสบาย';
 
-    rooms.forEach(room => {
+    const sortedAll = sortRoomsByStandardOrder(rooms);
+
+    sortedAll.forEach(room => {
       const cap = room.capacity || 4;
 
-      if (guests <= 4) {
-        // 1 - 4 People
+      if (guests === 1) {
+        // 1 Person: 4-person rooms as Perfect Match, 8-12 person rooms as Special Offers
+        recLabel = 'ห้องขนาดพอดี (1 ท่าน) - โซนส่วนตัว/โฟกัสงาน';
+        upgLabel = 'ข้อเสนอพิเศษ: ห้องขนาด 8-12 ท่าน (สำหรับประชุมสัมมนา/ต้องการจอใหญ่)';
         if (cap <= 4) {
           recommended.push(room);
-        } else if (cap >= 5 && cap <= 12) {
+        } else if (cap >= 8 && cap <= 12) {
+          upgrade.push(room);
+        }
+      } else if (guests <= 4) {
+        // 2 - 4 People: 4-person rooms as Perfect Match, 8-12 person rooms as Special Offers
+        recLabel = `ห้องขนาดพอดี (${guests} ท่าน)`;
+        upgLabel = 'ข้อเสนอพิเศษ: ห้องขนาด 8-12 ท่าน (พื้นที่กว้างขวาง เพิ่มความสบาย)';
+        if (cap <= 4) {
+          recommended.push(room);
+        } else if (cap >= 8 && cap <= 12) {
           upgrade.push(room);
         }
       } else if (guests <= 8) {
-        // 5 - 8 People
-        if (cap >= 5 && cap <= 8) {
+        // 5 - 8 People: 8-10 person rooms as Perfect Match, 12-40 person rooms as Special Offers
+        recLabel = `ห้องขนาดพอดี (${guests} ท่าน)`;
+        upgLabel = 'ข้อเสนอพิเศษ: ห้องขนาด 12-40 ท่าน (สำหรับกลุ่มใหญ่)';
+        if (cap >= 5 && cap <= 10) {
           recommended.push(room);
-        } else if (cap >= 9 && cap <= 12) {
+        } else if (cap > 10) {
           upgrade.push(room);
         }
       } else if (guests <= 12) {
         // 9 - 12 People
-        if (cap >= 9 && cap <= 12) {
+        recLabel = `ห้องขนาดพอดี (${guests} ท่าน)`;
+        upgLabel = 'ข้อเสนอพิเศษ: ห้องประชุมใหญ่ 40 ท่าน';
+        if (cap >= 10 && cap <= 12) {
           recommended.push(room);
         } else if (cap > 12) {
           upgrade.push(room);
         }
       } else {
         // > 12 People
+        recLabel = `ห้องประชุมใหญ่ / อีเวนต์ (${guests} ท่าน)`;
+        upgLabel = 'ข้อเสนอพิเศษ';
         if (cap > 12) {
           recommended.push(room);
         }
       }
     });
 
-    return { recommendedRooms: recommended, upgradeRooms: upgrade };
+    return {
+      recommendedRooms: sortRoomsByStandardOrder(recommended),
+      upgradeRooms: sortRoomsByStandardOrder(upgrade),
+      recommendedLabel: recLabel,
+      upgradeLabel: upgLabel
+    };
   }, [rooms, guests]);
 
   // Handle Room Selection and navigate to Step 3 Form
@@ -591,7 +635,7 @@ export default function RoomListPage() {
                       whiteSpace: 'nowrap'
                     }}
                   >
-                    <span style={{ whiteSpace: 'nowrap' }}>🌗 ครึ่งวัน (฿{Number(sel.halfDayPrice).toLocaleString()})</span>
+                    <span style={{ whiteSpace: 'nowrap' }}>ครึ่งวัน (฿{Number(sel.halfDayPrice).toLocaleString()})</span>
                   </button>
                 )}
 
@@ -622,7 +666,7 @@ export default function RoomListPage() {
                       whiteSpace: 'nowrap'
                     }}
                   >
-                    <span style={{ whiteSpace: 'nowrap' }}>☀️ เหมาทั้งวัน (฿{sel.dailyPrice.toLocaleString()})</span>
+                    <span style={{ whiteSpace: 'nowrap' }}>เหมาทั้งวัน (฿{sel.dailyPrice.toLocaleString()})</span>
                   </button>
                 )}
               </div>
@@ -745,7 +789,7 @@ export default function RoomListPage() {
                         minHeight: '38px'
                       }}
                     >
-                      ☀️ รอบเช้า (08:00 - 12:00 น.)
+                      รอบเช้า (08:00 - 12:00 น.)
                     </button>
                     <button
                       type="button"
@@ -766,7 +810,7 @@ export default function RoomListPage() {
                         minHeight: '38px'
                       }}
                     >
-                      ⛅ รอบบ่าย (13:00 - 17:00 น.)
+                      รอบบ่าย (13:00 - 17:00 น.)
                     </button>
                   </div>
                 </div>
@@ -803,7 +847,7 @@ export default function RoomListPage() {
                         minHeight: '38px'
                       }}
                     >
-                      ☀️ 08:00 - 17:00 น.
+                      08:00 - 17:00 น.
                     </button>
                     <button
                       type="button"
@@ -824,7 +868,7 @@ export default function RoomListPage() {
                         minHeight: '38px'
                       }}
                     >
-                      ☀️ 09:00 - 18:00 น.
+                      09:00 - 18:00 น.
                     </button>
                   </div>
                 </div>
@@ -844,7 +888,7 @@ export default function RoomListPage() {
           }}>
             <div>
               <div style={{ fontSize: '0.78rem', color: 'var(--primary)', fontWeight: 700 }}>
-                ✓ {sel.rateLabel}
+                {sel.rateLabel}
               </div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginTop: '2px' }}>
                 <span style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--primary)' }}>
@@ -1010,7 +1054,7 @@ export default function RoomListPage() {
                   gap: '4px'
                 }}>
                   <CheckCircle2 size={13} />
-                  <span>ห้องขนาดพอดี ({guests} ท่าน)</span>
+                  <span>{recommendedLabel}</span>
                 </span>
                 <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                   พบ {recommendedRooms.length} ห้องที่ตรงกับจำนวนผู้เข้าใช้
@@ -1044,7 +1088,7 @@ export default function RoomListPage() {
                   gap: '4px'
                 }}>
                   <Sparkles size={13} />
-                  <span>ข้อเสนอพิเศษ: ห้องกว้างขึ้น</span>
+                  <span>{upgradeLabel}</span>
                 </span>
                 <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                   ตัวเลือกสำหรับผู้ที่ต้องการพื้นที่กว้างขวาง ปลอดโปร่งขึ้น

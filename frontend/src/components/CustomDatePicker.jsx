@@ -232,8 +232,8 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
           width: '100%'
         }}
       >
-        <Calendar size={15} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
-        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: actualValue ? 'var(--text-main)' : 'var(--text-muted)' }}>
+        <Calendar size={14} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
+        <span style={{ fontSize: '0.8rem', fontWeight: 600, color: actualValue ? 'var(--text-main)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}>
           {actualValue ? formatDateDisplay(actualValue) : placeholder}
         </span>
       </div>

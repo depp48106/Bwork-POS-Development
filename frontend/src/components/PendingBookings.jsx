@@ -68,7 +68,44 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   const [isPayMethodOpen, setIsPayMethodOpen] = useState(false);
 
   // Active Dropdown Action Menu in table row
-  const [activeActionMenuId, setActiveActionMenuId] = useState(null);
+  const [activeActionMenuBooking, setActiveActionMenuBooking] = useState(null);
+  const [actionMenuPos, setActionMenuPos] = useState(null);
+
+  const handleToggleActionMenu = (e, booking) => {
+    e.stopPropagation();
+    if (activeActionMenuBooking?.id === booking.id) {
+      setActiveActionMenuBooking(null);
+      setActionMenuPos(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const menuHeight = 280;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const isUpward = spaceBelow < menuHeight && rect.top > menuHeight;
+
+    setActionMenuPos({
+      top: isUpward ? undefined : rect.bottom + 6,
+      bottom: isUpward ? (window.innerHeight - rect.top) + 6 : undefined,
+      right: Math.max(12, window.innerWidth - rect.right),
+      isUpward
+    });
+    setActiveActionMenuBooking(booking);
+  };
+
+  useEffect(() => {
+    const handleCloseOnScrollOrResize = () => {
+      if (activeActionMenuBooking) {
+        setActiveActionMenuBooking(null);
+        setActionMenuPos(null);
+      }
+    };
+    window.addEventListener('scroll', handleCloseOnScrollOrResize, true);
+    window.addEventListener('resize', handleCloseOnScrollOrResize);
+    return () => {
+      window.removeEventListener('scroll', handleCloseOnScrollOrResize, true);
+      window.removeEventListener('resize', handleCloseOnScrollOrResize);
+    };
+  }, [activeActionMenuBooking]);
 
   // Cancellation Modal state
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -1553,112 +1590,28 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                                 <span>ตรวจสอบ</span>
                               </button>
 
-                              {/* More Actions Dropdown (...) */}
-                              <div style={{ position: 'relative' }}>
-                                <button 
-                                  className="btn btn-secondary"
-                                  onClick={() => setActiveActionMenuId(activeActionMenuId === b.id ? null : b.id)}
-                                  title="เมนูการทำงานเพิ่มเติม"
-                                  style={{
-                                    padding: '6px 10px',
-                                    borderRadius: '10px',
-                                    fontSize: '0.8rem',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    border: activeActionMenuId === b.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
-                                    backgroundColor: activeActionMenuId === b.id ? 'rgba(37, 99, 235, 0.15)' : 'rgba(255, 255, 255, 0.05)',
-                                    color: 'var(--text-main)'
-                                  }}
-                                >
-                                  <MoreHorizontal size={16} />
-                                </button>
-
-                                {activeActionMenuId === b.id && (
-                                  <>
-                                    <div onClick={() => setActiveActionMenuId(null)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                                    <div className="action-dropdown-menu" style={{
-                                      position: 'absolute',
-                                      top: 'calc(100% + 6px)',
-                                      right: 0,
-                                      minWidth: '220px',
-                                      zIndex: 2000,
-                                      borderRadius: '14px',
-                                      padding: '6px',
-                                      display: 'flex',
-                                      flexDirection: 'column',
-                                      gap: '2px',
-                                      textAlign: 'left'
-                                    }}>
-                                      <div 
-                                        onClick={() => { setActiveActionMenuId(null); handleOpenReschedule(b); }}
-                                        style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)', transition: 'all 0.15s' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                      >
-                                        <Edit3 size={14} style={{ color: '#6366f1' }} />
-                                        <span>แก้ไขวัน/เวลาการจอง</span>
-                                      </div>
-
-                                      
-                                      {b.tax_invoice_required === 1 && (
-                                        <div 
-                                          onClick={() => { setActiveActionMenuId(null); setSelectedTaxBooking(b); }}
-                                          style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#2563eb', fontWeight: 700, transition: 'all 0.15s' }}
-                                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.1)'}
-                                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                        >
-                                          <FileText size={14} style={{ color: '#2563eb' }} />
-                                          <span>ดูข้อมูลใบกำกับภาษี</span>
-                                        </div>
-                                      )}
-                                      {b.slip_image_url && (
-                                        <div 
-                                          onClick={() => { setActiveActionMenuId(null); setViewingSlipBooking(b); }}
-                                          style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)', transition: 'all 0.15s' }}
-                                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                        >
-                                          <Eye size={14} style={{ color: '#0ea5e9' }} />
-                                          <span>ดูรูปภาพสลิปโอนเงิน</span>
-                                        </div>
-                                      )}
-
-                                      <div 
-                                        onClick={() => { setActiveActionMenuId(null); handleOpenReceipt(b); }}
-                                        style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)', transition: 'all 0.15s' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                      >
-                                        <Printer size={14} style={{ color: 'var(--text-muted)' }} />
-                                        <span>ดูรายละเอียดใบจอง</span>
-                                      </div>
-
-                                      <div style={{ height: '1px', backgroundColor: 'var(--border-color)', margin: '4px 0' }} />
-
-                                      <div 
-                                        onClick={() => { setActiveActionMenuId(null); handleOpenCancelModal(b); }}
-                                        style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#ef4444', transition: 'all 0.15s' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                      >
-                                        <Ban size={14} />
-                                        <span>ยกเลิกการจอง</span>
-                                      </div>
-
-                                      <div 
-                                        onClick={() => { setActiveActionMenuId(null); handlePermanentDelete(b); }}
-                                        style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#dc2626', transition: 'all 0.15s' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(220, 38, 38, 0.12)'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                      >
-                                        <Trash2 size={14} />
-                                        <span>ลบรายการออกจากระบบ</span>
-                                      </div>
-                                    </div>
-                                  </>
-                                )}
-                              </div>
+                              <button 
+                                className="btn btn-secondary"
+                                onClick={(e) => handleToggleActionMenu(e, b)}
+                                title="เมนูการทำงานเพิ่มเติม"
+                                style={{
+                                  width: '34px',
+                                  height: '34px',
+                                  padding: 0,
+                                  borderRadius: '10px',
+                                  fontSize: '0.8rem',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  border: activeActionMenuBooking?.id === b.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                  backgroundColor: activeActionMenuBooking?.id === b.id ? 'rgba(37, 99, 235, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                                  color: 'var(--text-main)',
+                                  cursor: 'pointer',
+                                  flexShrink: 0
+                                }}
+                              >
+                                <MoreHorizontal size={16} />
+                              </button>
                             </>
                           ) : (
                             /* Case 2: Paid -> Send PIN + Receipt + Tax Invoice (if requested) + More Dropdown */
@@ -1719,7 +1672,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                                     fontSize: '0.8rem', 
                                     display: 'inline-flex', 
                                     alignItems: 'center', 
-                                    justifyContent: 'center',
+                                    justifyContent: 'center', 
                                     gap: '5px', 
                                     fontWeight: 700, 
                                     backgroundColor: 'rgba(37, 99, 235, 0.12)', 
@@ -1735,103 +1688,28 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                                 </button>
                               )}
 
-                              {/* More Actions Dropdown (...) */}
-                              <div style={{ position: 'relative', flexShrink: 0 }}>
-                                <button 
-                                  className="btn btn-secondary"
-                                  onClick={() => setActiveActionMenuId(activeActionMenuId === b.id ? null : b.id)}
-                                  title="เมนูการทำงานเพิ่มเติม"
-                                  style={{
-                                    width: '34px',
-                                    height: '34px',
-                                    padding: 0,
-                                    borderRadius: '10px',
-                                    fontSize: '0.8rem',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    border: activeActionMenuId === b.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
-                                    backgroundColor: activeActionMenuId === b.id ? 'rgba(37, 99, 235, 0.15)' : 'rgba(255, 255, 255, 0.05)',
-                                    color: 'var(--text-main)',
-                                    cursor: 'pointer'
-                                  }}
-                                >
-                                  <MoreHorizontal size={16} />
-                                </button>
-
-                                {activeActionMenuId === b.id && (
-                                  <>
-                                    <div onClick={() => setActiveActionMenuId(null)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
-                                    <div className="action-dropdown-menu" style={{
-                                      position: 'absolute',
-                                      top: 'calc(100% + 6px)',
-                                      right: 0,
-                                      minWidth: '220px',
-                                      zIndex: 2000,
-                                      borderRadius: '14px',
-                                      padding: '6px',
-                                      display: 'flex',
-                                      flexDirection: 'column',
-                                      gap: '2px',
-                                      textAlign: 'left'
-                                    }}>
-                                      <div 
-                                        onClick={() => { setActiveActionMenuId(null); handleOpenReschedule(b); }}
-                                        style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)', transition: 'all 0.15s' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                      >
-                                        <Edit3 size={14} style={{ color: '#6366f1' }} />
-                                        <span>แก้ไขวัน/เวลาการจอง</span>
-                                      </div>
-
-                                      {b.slip_image_url && (
-                                        <div 
-                                          onClick={() => { setActiveActionMenuId(null); setViewingSlipBooking(b); }}
-                                          style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)', transition: 'all 0.15s' }}
-                                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                        >
-                                          <Eye size={14} style={{ color: '#0ea5e9' }} />
-                                          <span>ดูรูปภาพสลิปโอนเงิน</span>
-                                        </div>
-                                      )}
-
-                                      <div 
-                                        onClick={() => { setActiveActionMenuId(null); revertPayment(b); }}
-                                        style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#f59e0b', transition: 'all 0.15s' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(245, 158, 11, 0.1)'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                      >
-                                        <RotateCcw size={14} />
-                                        <span>ยกเลิกการยืนยันชำระ (คืนสถานะ)</span>
-                                      </div>
-
-                                      <div style={{ height: '1px', backgroundColor: 'var(--border-color)', margin: '4px 0' }} />
-
-                                      <div 
-                                        onClick={() => { setActiveActionMenuId(null); handleOpenCancelModal(b); }}
-                                        style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#ef4444', transition: 'all 0.15s' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                      >
-                                        <Ban size={14} />
-                                        <span>ยกเลิกการจอง</span>
-                                      </div>
-
-                                      <div 
-                                        onClick={() => { setActiveActionMenuId(null); handlePermanentDelete(b); }}
-                                        style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#dc2626', transition: 'all 0.15s' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(220, 38, 38, 0.12)'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                                      >
-                                        <Trash2 size={14} />
-                                        <span>ลบรายการออกจากระบบ</span>
-                                      </div>
-                                    </div>
-                                  </>
-                                )}
-                              </div>
+                              <button 
+                                className="btn btn-secondary"
+                                onClick={(e) => handleToggleActionMenu(e, b)}
+                                title="เมนูการทำงานเพิ่มเติม"
+                                style={{
+                                  width: '34px',
+                                  height: '34px',
+                                  padding: 0,
+                                  borderRadius: '10px',
+                                  fontSize: '0.8rem',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  border: activeActionMenuBooking?.id === b.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                  backgroundColor: activeActionMenuBooking?.id === b.id ? 'rgba(37, 99, 235, 0.15)' : 'rgba(255, 255, 255, 0.05)',
+                                  color: 'var(--text-main)',
+                                  cursor: 'pointer',
+                                  flexShrink: 0
+                                }}
+                              >
+                                <MoreHorizontal size={16} />
+                              </button>
                             </>
                           )}
 
@@ -1872,6 +1750,111 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
           </div>
         )}
       </div>
+
+      {/* ========================================================= */}
+      {/*  GLOBAL FIXED ACTION DROPDOWN MENU                        */}
+      {/* ========================================================= */}
+      {activeActionMenuBooking && actionMenuPos && (
+        <>
+          <div 
+            onClick={(e) => { e.stopPropagation(); setActiveActionMenuBooking(null); setActionMenuPos(null); }} 
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9998 }} 
+          />
+          <div className="action-dropdown-menu" style={{
+            position: 'fixed',
+            ...(actionMenuPos.top !== undefined ? { top: `${actionMenuPos.top}px` } : { bottom: `${actionMenuPos.bottom}px` }),
+            right: `${actionMenuPos.right}px`,
+            minWidth: '220px',
+            zIndex: 9999,
+            borderRadius: '14px',
+            padding: '6px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '2px',
+            textAlign: 'left',
+            boxShadow: '0 16px 40px rgba(0,0,0,0.35), 0 0 0 1px var(--border-color)',
+            animation: 'fadeIn 0.12s ease-out'
+          }}>
+            <div 
+              onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenReschedule(b); }}
+              style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)', transition: 'all 0.15s' }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+            >
+              <Edit3 size={14} style={{ color: '#6366f1' }} />
+              <span>แก้ไขวัน/เวลาการจอง</span>
+            </div>
+
+            {activeActionMenuBooking.tax_invoice_required === 1 && (
+              <div 
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); setSelectedTaxBooking(b); }}
+                style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#2563eb', fontWeight: 700, transition: 'all 0.15s' }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+              >
+                <FileText size={14} style={{ color: '#2563eb' }} />
+                <span>ดูข้อมูลใบกำกับภาษี</span>
+              </div>
+            )}
+
+            {activeActionMenuBooking.slip_image_url && (
+              <div 
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); setViewingSlipBooking(b); }}
+                style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)', transition: 'all 0.15s' }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+              >
+                <Eye size={14} style={{ color: '#0ea5e9' }} />
+                <span>ดูรูปภาพสลิปโอนเงิน</span>
+              </div>
+            )}
+
+            {activeActionMenuBooking.payment_status === 'paid' && (
+              <div 
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); revertPayment(b); }}
+                style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#f59e0b', transition: 'all 0.15s' }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(245, 158, 11, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+              >
+                <RotateCcw size={14} />
+                <span>ยกเลิกการยืนยันชำระ (คืนสถานะ)</span>
+              </div>
+            )}
+
+            <div 
+              onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenReceipt(b); }}
+              style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-main)', transition: 'all 0.15s' }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+            >
+              <Printer size={14} style={{ color: 'var(--text-muted)' }} />
+              <span>ดูรายละเอียดใบจอง</span>
+            </div>
+
+            <div style={{ height: '1px', backgroundColor: 'var(--border-color)', margin: '4px 0' }} />
+
+            <div 
+              onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenCancelModal(b); }}
+              style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#ef4444', transition: 'all 0.15s' }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+            >
+              <Ban size={14} />
+              <span>ยกเลิกการจอง</span>
+            </div>
+
+            <div 
+              onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handlePermanentDelete(b); }}
+              style={{ padding: '9px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '8px', color: '#dc2626', transition: 'all 0.15s' }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(220, 38, 38, 0.12)'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+            >
+              <Trash2 size={14} />
+              <span>ลบรายการออกจากระบบ</span>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ========================================================= */}
       {/*  PAYMENT / SLIP VERIFICATION MODAL                        */}

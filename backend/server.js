@@ -1,4 +1,5 @@
 const express = require('express');
+const { verifySlip, decodeMiniQR } = require('./slipVerifier');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
@@ -414,6 +415,20 @@ async function generateUniquePinCode() {
   }
   return pin;
 }
+// Helper: Get Bangkok Local ISO string (YYYY-MM-DDTHH:mm:ss)
+function getBangkokLocalISO(d = new Date()) {
+  const now = (d instanceof Date) ? d : new Date(d);
+  const bkkMs = now.getTime() + (7 * 60 + now.getTimezoneOffset()) * 60 * 1000;
+  const bkk = new Date(bkkMs);
+  const y = bkk.getFullYear();
+  const m = String(bkk.getMonth() + 1).padStart(2, '0');
+  const day = String(bkk.getDate()).padStart(2, '0');
+  const h = String(bkk.getHours()).padStart(2, '0');
+  const min = String(bkk.getMinutes()).padStart(2, '0');
+  const sec = String(bkk.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day}T${h}:${min}:${sec}`;
+}
+
 // Helper: Normalize any timestamp to consistent Local ISO format YYYY-MM-DDTHH:mm:00
 function normalizeToLocalISO(dateStr, timeStr) {
   if (!dateStr) return '';
@@ -562,7 +577,15 @@ function formatOverlapErrorMessage(roomName, overlapResult) {
 }
 
 app.post('/api/bookings', async (req, res) => {
-  const { customer_name, department, contact, total_amount, payment_status, payment_method, items, line_user_id, guest_count } = req.body;
+  const { 
+    customer_name, department, contact, total_amount, payment_status, payment_method, 
+    items, line_user_id, guest_count,
+    customer_type = 'walkin',
+    basecamp_sub_type = null,
+    basecamp_unit = null,
+    internal_department = null,
+    billing_option = 'paid'
+  } = req.body;
 
   if (!customer_name || !items || !items.length) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลผู้จองและเลือกรายการอย่างน้อย 1 รายการ' });
@@ -627,7 +650,71 @@ app.post('/api/bookings', async (req, res) => {
           }
         }
       }
-      const verifiedTotal = Math.round(serverTotal * 100) / 100;
+      let totalBookingHours = 0;
+      for (const item of items) {
+        if (item.room_id && item.start_time && item.end_time) {
+          const s = new Date(item.start_time);
+          const e = new Date(item.end_time);
+          const diffHours = Math.max(0, (e.getTime() - s.getTime()) / (1000 * 60 * 60));
+          totalBookingHours += diffHours;
+        } else if (item.quantity) {
+          totalBookingHours += item.quantity;
+        }
+      }
+
+      let verifiedTotal = Math.round(serverTotal * 100) / 100;
+      let quotaHoursUsed = 0;
+      let effectiveBillingOption = billing_option || 'paid';
+
+      if (customer_type === 'basecamp') {
+        const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
+        const firstItemDate = items[0]?.start_time || getBangkokLocalISO(new Date());
+        const targetMonthStr = normalizeToLocalISO(firstItemDate).substring(0, 7);
+
+        const quotaRow = await dbQuery.get(
+          `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
+           FROM bookings b
+           WHERE b.customer_type = 'basecamp'
+             AND b.basecamp_sub_type = ?
+             AND b.basecamp_unit = ?
+             AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+             AND (
+               EXISTS (
+                 SELECT 1 FROM booking_items bi 
+                 WHERE bi.booking_id = b.id 
+                   AND strftime('%Y-%m', bi.start_time) = ?
+               )
+               OR (
+                 NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+                 AND strftime('%Y-%m', b.created_at) = ?
+               )
+             )`,
+          [basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr]
+        );
+        const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
+        const remainingQuota = Math.max(0, maxQuota - usedQuota);
+
+        quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
+        const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+
+        if (totalBookingHours > 0) {
+          verifiedTotal = Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100;
+        } else {
+          verifiedTotal = 0;
+        }
+
+        if (quotaHoursUsed > 0 && verifiedTotal === 0) {
+          effectiveBillingOption = 'quota';
+        } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
+          effectiveBillingOption = 'quota_partial';
+        } else {
+          effectiveBillingOption = 'standard';
+        }
+      } else if (customer_type === 'builtland') {
+        verifiedTotal = 0;
+        quotaHoursUsed = 0;
+        effectiveBillingOption = 'internal_free';
+      }
 
       const receiptNumber = await generateReceiptNumber();
       const roomItem = items.find(it => !!it.room_id);
@@ -647,10 +734,36 @@ app.post('/api/bookings', async (req, res) => {
         ? parseInt(guest_count, 10)
         : (items.find(it => it.guest_count)?.guest_count ? parseInt(items.find(it => it.guest_count).guest_count, 10) : null);
 
-      // Insert master booking (with optional guest_count)
+      // Determine effective payment status
+      const effectivePaymentStatus = customer_type === 'builtland' 
+        ? 'internal_free' 
+        : (verifiedTotal === 0 ? 'paid' : (payment_status || 'pending'));
+
+      // Insert master booking (with optional customer categorization fields and quota_hours_used)
       const bookingResult = await dbQuery.run(
-        'INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [customer_name, department || '', contact || '', verifiedTotal, payment_status || 'pending', payment_method || 'cash', receiptNumber, pinCode, line_user_id || null, effectiveGuestCount, 'pending', normalizeToLocalISO(new Date())]
+        `INSERT INTO bookings 
+         (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          customer_name, 
+          department || internal_department || '', 
+          contact || '', 
+          verifiedTotal, 
+          effectivePaymentStatus, 
+          payment_method || 'cash', 
+          receiptNumber, 
+          pinCode, 
+          line_user_id || null, 
+          effectiveGuestCount, 
+          'pending',
+          customer_type || 'walkin',
+          basecamp_sub_type || null,
+          basecamp_unit || null,
+          internal_department || null,
+          effectiveBillingOption,
+          quotaHoursUsed,
+          getBangkokLocalISO(new Date())
+        ]
       );
       const bookingId = bookingResult.id;
 
@@ -669,10 +782,10 @@ app.post('/api/bookings', async (req, res) => {
             item.room_id || null,
             item.service_id || null,
             item.quantity || 1,
-            item.price,
+            item.price || 0,
             normStart,
             normEnd,
-            item.subtotal,
+            item.subtotal || 0,
             item.layout || 'standard',
             item.booking_type || 'hourly',
             itemGuestCount,
@@ -686,7 +799,7 @@ app.post('/api/bookings', async (req, res) => {
 
       const savedBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
       const savedItems = await dbQuery.all(`
-        SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.description as service_description, s.category as service_category
+        SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.category as service_category
         FROM booking_items bi
         LEFT JOIN rooms r ON bi.room_id = r.id
         LEFT JOIN services s ON bi.service_id = s.id
@@ -717,8 +830,166 @@ app.post('/api/bookings', async (req, res) => {
   }
 });
 
+// Query Basecamp Monthly Quota Status (Office: 4 hrs/month, Hotdesk: 2 hrs/month)
+
+// 1. Get Basecamp Quota Overview for all Floor 4 units in a given month
+app.get('/api/basecamp/quota/overview', async (req, res) => {
+  const { month, year } = req.query;
+  try {
+    const officeUnits = ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'];
+    const hotdeskUnits = ['419', '420', '421', '422', '427', '428', '429', '430'];
+
+    const now = new Date();
+    const targetMonth = month ? String(month).padStart(2, '0') : String(now.getMonth() + 1).padStart(2, '0');
+    const targetYear = year ? String(year) : String(now.getFullYear());
+    const targetMonthStr = `${targetYear}-${targetMonth}`;
+
+    const rows = await dbQuery.all(
+      `SELECT b.basecamp_sub_type, b.basecamp_unit, COALESCE(SUM(b.quota_hours_used), 0) as used_hours, COUNT(DISTINCT b.id) as booking_count
+       FROM bookings b
+       WHERE b.customer_type = 'basecamp'
+         AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+         AND (
+           EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id AND strftime('%Y-%m', bi.start_time) = ?)
+           OR (NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id) AND strftime('%Y-%m', b.created_at) = ?)
+         )
+       GROUP BY b.basecamp_sub_type, b.basecamp_unit`,
+      [targetMonthStr, targetMonthStr]
+    );
+
+    const usageMap = {};
+    (rows || []).forEach(r => {
+      const key = `${r.basecamp_sub_type}_${r.basecamp_unit}`;
+      usageMap[key] = {
+        used_hours: Number(r.used_hours),
+        booking_count: Number(r.booking_count)
+      };
+    });
+
+    const units = [];
+    officeUnits.forEach(u => {
+      const usage = usageMap[`office_${u}`] || { used_hours: 0, booking_count: 0 };
+      units.push({
+        unit: u,
+        sub_type: 'office',
+        label: `Office ${u}`,
+        max_quota: 4,
+        used_quota: usage.used_hours,
+        remaining_quota: Math.max(0, 4 - usage.used_hours),
+        booking_count: usage.booking_count
+      });
+    });
+
+    hotdeskUnits.forEach(u => {
+      const usage = usageMap[`hotdesk_${u}`] || { used_hours: 0, booking_count: 0 };
+      units.push({
+        unit: u,
+        sub_type: 'hotdesk',
+        label: `Hotdesk ${u}`,
+        max_quota: 2,
+        used_quota: usage.used_hours,
+        remaining_quota: Math.max(0, 2 - usage.used_hours),
+        booking_count: usage.booking_count
+      });
+    });
+
+    res.json({
+      success: true,
+      target_month: targetMonthStr,
+      units
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Get Detailed Booking History for a specific Basecamp unit in a month
+app.get('/api/basecamp/quota/history', async (req, res) => {
+  const { sub_type = 'office', unit = '401', month, year } = req.query;
+  try {
+    const now = new Date();
+    const targetMonth = month ? String(month).padStart(2, '0') : String(now.getMonth() + 1).padStart(2, '0');
+    const targetYear = year ? String(year) : String(now.getFullYear());
+    const targetMonthStr = `${targetYear}-${targetMonth}`;
+
+    const bookings = await dbQuery.all(
+      `SELECT b.id, b.receipt_number, b.customer_name, b.created_at, b.quota_hours_used,
+              bi.start_time, bi.end_time, r.name as room_name
+       FROM bookings b
+       LEFT JOIN booking_items bi ON bi.booking_id = b.id
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE b.customer_type = 'basecamp'
+         AND b.basecamp_sub_type = ?
+         AND b.basecamp_unit = ?
+         AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+         AND (
+           strftime('%Y-%m', bi.start_time) = ?
+           OR (bi.start_time IS NULL AND strftime('%Y-%m', b.created_at) = ?)
+         )
+       ORDER BY bi.start_time DESC, b.id DESC`,
+      [sub_type, unit, targetMonthStr, targetMonthStr]
+    );
+
+    res.json({
+      success: true,
+      sub_type,
+      unit,
+      target_month: targetMonthStr,
+      bookings: bookings || []
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/basecamp/quota', async (req, res) => {
+  const { sub_type = 'office', unit = '401', month, year } = req.query;
+  try {
+    const maxQuota = sub_type === 'office' ? 4 : 2;
+    const now = new Date();
+    const targetMonth = month ? String(month).padStart(2, '0') : String(now.getMonth() + 1).padStart(2, '0');
+    const targetYear = year ? String(year) : String(now.getFullYear());
+    const targetMonthStr = `${targetYear}-${targetMonth}`;
+
+    const quotaRow = await dbQuery.get(
+      `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
+       FROM bookings b
+       WHERE b.customer_type = 'basecamp'
+         AND b.basecamp_sub_type = ?
+         AND b.basecamp_unit = ?
+         AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+         AND (
+           EXISTS (
+             SELECT 1 FROM booking_items bi 
+             WHERE bi.booking_id = b.id 
+               AND strftime('%Y-%m', bi.start_time) = ?
+           )
+           OR (
+             NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+             AND strftime('%Y-%m', b.created_at) = ?
+           )
+         )`,
+      [sub_type, unit, targetMonthStr, targetMonthStr]
+    );
+
+    const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
+    const remainingQuota = Math.max(0, maxQuota - usedQuota);
+
+    res.json({
+      sub_type,
+      unit,
+      target_month: targetMonthStr,
+      max_quota: maxQuota,
+      used_quota: usedQuota,
+      remaining_quota: remainingQuota
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/bookings', async (req, res) => {
-  const { start_date, end_date, search, payment_status } = req.query;
+  const { start_date, end_date, search, payment_status, customer_type } = req.query;
   try {
     let sql = `
       SELECT DISTINCT b.* 
@@ -748,9 +1019,11 @@ app.get('/api/bookings', async (req, res) => {
         b.pin_code LIKE ? OR 
         r.name LIKE ? OR 
         r.category LIKE ? OR
-        bi.room_name LIKE ?
+        bi.room_name LIKE ? OR
+        b.basecamp_unit LIKE ? OR
+        b.internal_department LIKE ?
       )`;
-      params.push(q, q, q, q, q, q, q, q, q);
+      params.push(q, q, q, q, q, q, q, q, q, q, q);
     }
     if (payment_status) {
       if (payment_status === 'pending' || payment_status === 'unpaid') {
@@ -758,6 +1031,16 @@ app.get('/api/bookings', async (req, res) => {
       } else if (payment_status !== 'all') {
         sql += ' AND b.payment_status = ?';
         params.push(payment_status);
+      }
+    }
+    if (customer_type && customer_type !== 'all') {
+      if (customer_type === 'online') {
+        sql += " AND (b.booking_source = 'online' OR b.customer_type = 'online')";
+      } else if (customer_type === 'walkin') {
+        sql += " AND (b.customer_type = 'walkin' OR (b.customer_type IS NULL AND (b.booking_source != 'online' OR b.booking_source IS NULL)))";
+      } else {
+        sql += ' AND b.customer_type = ?';
+        params.push(customer_type);
       }
     }
 
@@ -818,7 +1101,8 @@ app.get('/api/bookings/calendar', async (req, res) => {
       `SELECT bi.start_time, bi.end_time, bi.room_id, bi.subtotal, bi.price, bi.quantity, bi.layout, bi.booking_type,
               bi.guest_count as item_guest_count,
               r.name as room_name,
-              b.id as booking_id, b.customer_name, b.payment_status, b.booking_source, b.department, b.contact, b.guest_count
+              b.id as booking_id, b.customer_name, b.payment_status, b.booking_source, b.department, b.contact, b.guest_count,
+              b.customer_type, b.basecamp_sub_type, b.basecamp_unit, b.internal_department, b.billing_option
        FROM booking_items bi
        JOIN bookings b ON bi.booking_id = b.id
        LEFT JOIN rooms r ON bi.room_id = r.id
@@ -867,7 +1151,8 @@ app.get('/api/bookings/upcoming-alerts', async (req, res) => {
 
     // 2. Incoming online bookings (Pending or Reviewing slip)
     const incomingBookings = await dbQuery.all(
-      `SELECT b.id as booking_id, b.customer_name, b.payment_status, b.total_amount, b.booking_source, b.created_at, b.slip_image_url,
+      `SELECT b.id as booking_id, b.customer_name, b.payment_status, b.total_amount, b.booking_source, b.created_at, 
+              b.slip_image_url,
               bi.start_time, bi.end_time, r.name as room_name
        FROM bookings b
        LEFT JOIN booking_items bi ON bi.booking_id = b.id
@@ -1086,33 +1371,24 @@ function buildLineConfirmationFlex(booking, item, room) {
             layout: 'vertical',
             margin: 'md',
             paddingAll: '14px',
-            backgroundColor: '#f0fdf4',
+            backgroundColor: '#f0f9ff',
             cornerRadius: '12px',
-            borderColor: '#86efac',
+            borderColor: '#bae6fd',
             borderWidth: '1px',
             contents: [
               {
                 type: 'text',
-                text: '🔑 รหัสผ่านปลดล็อกประตู (Door PIN)',
+                text: '🏢 ติดต่อรับรหัสผ่านเข้าห้อง',
                 size: 'xs',
-                color: '#15803d',
+                color: '#0369a1',
                 weight: 'bold',
                 align: 'center'
               },
               {
                 type: 'text',
-                text: pinCode,
-                size: 'xxl',
-                color: '#166534',
-                weight: 'bold',
-                align: 'center',
-                margin: 'xs'
-              },
-              {
-                type: 'text',
-                text: 'กดรหัส PIN 6 หลักที่หน้าจอแท็บเล็ตหน้าห้องเพื่อเข้าใช้งาน',
-                size: 'xxs',
-                color: '#16a34a',
+                text: 'เมื่อถึงเวลาใช้งาน กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์ (ชั้น 3) เจ้าหน้าที่จะกดส่งรหัส PIN เข้าห้องให้ท่าน',
+                size: 'xs',
+                color: '#0284c7',
                 align: 'center',
                 wrap: true,
                 margin: 'xs'
@@ -1147,16 +1423,16 @@ async function sendLineNotification(bookingId) {
     const item = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL LIMIT 1', [bookingId]);
     const room = item ? await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [item.room_id]) : null;
 
-    // Ensure PIN code exists
-    let pinCode = booking.pin_code;
+    // Always ensure PIN matches the assigned room if the room has a PIN configured
+    let pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : booking.pin_code;
     if (!pinCode || !pinCode.trim()) {
-      pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : await generateUniquePinCode();
-      await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [pinCode, bookingId]);
-      if (item) {
-        await dbQuery.run('UPDATE booking_items SET pin_code = ? WHERE id = ?', [pinCode, item.id]);
-      }
-      booking.pin_code = pinCode;
+      pinCode = await generateUniquePinCode();
     }
+    await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [pinCode, bookingId]);
+    if (item) {
+      await dbQuery.run('UPDATE booking_items SET pin_code = ? WHERE id = ?', [pinCode, item.id]);
+    }
+    booking.pin_code = pinCode;
 
     const flexCard = buildLineConfirmationFlex(booking, item, room);
 
@@ -1232,6 +1508,273 @@ app.post('/api/line/webhook', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal) {
+  const roomName = room ? `${room.name} (${room.room_number || ''})`.replace(' ()', '') : 'ห้องประชุม B-WORK';
+  const bookingCode = booking.receipt_number || `#BK-${String(booking.id).padStart(6, '0')}`;
+  const pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : (booking.pin_code || '------');
+
+  let oldTimeDisplay = '-';
+  if (oldStartTime) {
+    const sStr = String(oldStartTime).replace(' ', 'T');
+    const sTime = sStr.includes('T') ? sStr.split('T')[1].substring(0, 5) : '';
+    const eStr = oldEndTime ? String(oldEndTime).replace(' ', 'T') : '';
+    const eTime = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : '';
+    oldTimeDisplay = `${sStr.split('T')[0]} (${sTime} - ${eTime} น.)`;
+  }
+
+  let newTimeDisplay = '-';
+  if (newStartTime) {
+    const sStr = String(newStartTime).replace(' ', 'T');
+    const sTime = sStr.includes('T') ? sStr.split('T')[1].substring(0, 5) : '';
+    const eStr = newEndTime ? String(newEndTime).replace(' ', 'T') : '';
+    const eTime = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : '';
+    newTimeDisplay = `${sStr.split('T')[0]} (${sTime} - ${eTime} น.)`;
+  }
+
+  return {
+    type: 'flex',
+    altText: `🔄 แจ้งเปลี่ยนแปลงข้อมูลการจอง ${bookingCode} (${roomName} รหัสเข้าห้อง: ${pinCode})`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#2563eb',
+        paddingAll: '16px',
+        contents: [
+          {
+            type: 'text',
+            text: '🔄 เปลี่ยนแปลงข้อมูลการจองสำเร็จ',
+            weight: 'bold',
+            color: '#ffffff',
+            size: 'md'
+          },
+          {
+            type: 'text',
+            text: `รหัสการจอง: ${bookingCode}`,
+            color: '#bfdbfe',
+            size: 'xs',
+            margin: 'xs'
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        paddingAll: '16px',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'ชื่อผู้จอง', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: booking.customer_name || 'ลูกค้า', size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'ห้องประชุม', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: roomName, size: 'sm', color: '#0284c7', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'วัน/เวลาเดิม', size: 'sm', color: '#94a3b8', flex: 2 },
+              { type: 'text', text: oldTimeDisplay, size: 'sm', color: '#94a3b8', weight: 'regular', flex: 4, align: 'end', wrap: true }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'วัน/เวลาใหม่', size: 'sm', color: '#2563eb', flex: 2, weight: 'bold' },
+              { type: 'text', text: newTimeDisplay, size: 'sm', color: '#2563eb', weight: 'bold', flex: 4, align: 'end', wrap: true }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'ยอดสุทธิ', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: `฿${Number(newTotal !== undefined ? newTotal : booking.total_amount || 0).toLocaleString()}`, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            paddingAll: '12px',
+            backgroundColor: '#f0fdf4',
+            cornerRadius: '12px',
+            borderColor: '#86efac',
+            borderWidth: '1px',
+            contents: [
+              {
+                type: 'text',
+                text: '🔑 รหัสผ่านปลดล็อกประตูห้องใหม่ (Door PIN)',
+                size: 'xs',
+                color: '#15803d',
+                weight: 'bold',
+                align: 'center'
+              },
+              {
+                type: 'text',
+                text: pinCode,
+                size: 'xl',
+                color: '#166534',
+                weight: 'bold',
+                align: 'center',
+                margin: 'xs'
+              },
+              {
+                type: 'text',
+                text: 'กดรหัส PIN ตามด้วยเครื่องหมาย # ที่หน้าจอแท็บเล็ตหน้าห้องเพื่อปลดล็อก',
+                size: 'xxs',
+                color: '#16a34a',
+                align: 'center',
+                wrap: true,
+                margin: 'xs'
+              }
+            ]
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: 'ระบบได้อัปเดตข้อมูลการใช้งานห้องประชุมให้เรียบร้อยแล้วค่ะ',
+            size: 'xxs',
+            color: '#94a3b8',
+            align: 'center'
+          }
+        ]
+      }
+    }
+  };
+}
+
+async function sendLineBookingRescheduleServer(bookingId, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal) {
+  try {
+    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    if (!booking || !booking.line_user_id) return null;
+
+    const item = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL LIMIT 1', [bookingId]);
+    const room = item?.room_id ? await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [item.room_id]) : null;
+
+    const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+    const channelAccessToken = tokenSetting?.value;
+    if (!channelAccessToken) return null;
+
+    const flexCard = buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal);
+
+    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${channelAccessToken}`
+      },
+      body: JSON.stringify({
+        to: booking.line_user_id,
+        messages: [flexCard]
+      })
+    });
+
+    return { success: lineRes.ok, status: lineRes.status };
+  } catch (err) {
+    console.error('Error sending reschedule LINE notification:', err);
+    return null;
+  }
+}
+
+// Reschedule booking date/time and room endpoint
+const handleReschedule = async (req, res) => {
+  try {
+    const bookingId = req.params.id;
+    const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id } = req.body;
+
+    if (!date || !start_time || !end_time) {
+      return res.status(400).json({ error: 'กรุณาระบุ วันที่, เวลาเริ่มต้น และเวลาสิ้นสุด ให้ครบถ้วน' });
+    }
+
+    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    if (!booking) return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+
+    const currentItem = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1', [bookingId]);
+    if (!currentItem) return res.status(404).json({ error: 'ไม่พบรายการห้องในการจองนี้' });
+
+    const targetRoomId = room_id || currentItem.room_id;
+    const targetRoomObj = await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [targetRoomId]);
+
+    const cleanStart = start_time.length === 5 ? `${start_time}:00` : start_time;
+    const cleanEnd = end_time.length === 5 ? `${end_time}:00` : end_time;
+    const newStartISO = `${date}T${cleanStart}`;
+    const newEndISO = `${date}T${cleanEnd}`;
+
+    const overlapResult = await checkRoomOverlap(targetRoomId, newStartISO, newEndISO, bookingId);
+    if (overlapResult && overlapResult.hasOverlap) {
+      const targetRoomName = targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`;
+      return res.status(400).json({ error: formatOverlapErrorMessage(targetRoomName, overlapResult) });
+    }
+
+    const oldStart = currentItem.start_time;
+    const oldEnd = currentItem.end_time;
+
+    // Synchronize PIN code with the target room
+    let newPinCode = (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim())
+      ? targetRoomObj.pin_code.trim()
+      : (booking.pin_code || await generateUniquePinCode());
+
+    await dbQuery.run(
+      `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`,
+      [
+        targetRoomId,
+        newStartISO,
+        newEndISO,
+        total_amount !== undefined ? total_amount : currentItem.subtotal,
+        total_amount !== undefined ? total_amount : currentItem.price,
+        booking_type || currentItem.booking_type || 'hourly',
+        layout || currentItem.layout || 'standard',
+        newPinCode,
+        currentItem.id
+      ]
+    );
+
+    if (total_amount !== undefined) {
+      await dbQuery.run('UPDATE bookings SET pin_code = ?, total_amount = ? WHERE id = ?', [newPinCode, total_amount, bookingId]);
+    } else {
+      await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [newPinCode, bookingId]);
+    }
+    booking.pin_code = newPinCode;
+
+    let lineData = null;
+    if (send_line !== false && booking.line_user_id) {
+      lineData = await sendLineBookingRescheduleServer(bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount);
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
+      line_sent: lineData?.success || false,
+      pin_code: newPinCode
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+app.put('/api/bookings/:id/reschedule', handleReschedule);
+app.post('/api/bookings/:id/reschedule', handleReschedule);
 
 // Public endpoint to get LINE OA confirmation card preview for a booking
 app.get('/api/public/bookings/:id/line-notification', async (req, res) => {
@@ -1325,7 +1868,7 @@ app.post('/api/access/verify-pin', async (req, res) => {
     }
 
     // Mark as checked in
-    const checkinTime = new Date().toISOString();
+    const checkinTime = getBangkokLocalISO(new Date());
     await dbQuery.run('UPDATE bookings SET checkin_status = "checked_in", checkin_at = ? WHERE id = ?', [checkinTime, bookingRow.booking_id]);
     await dbQuery.run('UPDATE booking_items SET checkin_status = "checked_in", checkin_at = ? WHERE id = ?', [checkinTime, bookingRow.item_id]);
 
@@ -1342,7 +1885,7 @@ app.post('/api/access/verify-pin', async (req, res) => {
   }
 });
 
-// Check-in via LINE OA (Within customizable mins before start time) -> Returns 6-digit PIN Code Flex Card
+// Check-in via LINE OA
 app.post('/api/line/checkin', async (req, res) => {
   const { line_user_id, booking_id } = req.body;
 
@@ -1417,28 +1960,31 @@ app.post('/api/line/checkin', async (req, res) => {
 app.get('/api/quotations/next-number', async (req, res) => {
   try {
     const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const datePrefix = `QT${year}${month}`;
+    const year2 = String(now.getFullYear()).slice(-2);
+    const month2 = String(now.getMonth() + 1).padStart(2, '0');
+    const prefix = `QT-${year2}${month2}`;
 
     const rows = await dbQuery.all(
-      "SELECT quotation_no FROM quotations WHERE quotation_no LIKE ?",
-      [`${datePrefix}%`]
+      "SELECT quotation_no FROM quotations WHERE quotation_no LIKE ? OR quotation_no LIKE ? OR quotation_no LIKE ? OR quotation_no LIKE ?",
+      [`${prefix}%`, `QT-${year2}${month2}%`, `QT${year2}${month2}%`, `QT${now.getFullYear()}${month2}%`]
     );
 
     let maxSeq = 0;
     rows.forEach(r => {
-      if (r.quotation_no && r.quotation_no.startsWith(datePrefix)) {
-        const seqStr = r.quotation_no.replace(datePrefix, '').trim();
-        const seqNum = parseInt(seqStr, 10);
-        if (!isNaN(seqNum) && seqNum > maxSeq) {
-          maxSeq = seqNum;
+      if (r.quotation_no) {
+        const cleanNo = r.quotation_no.replace(`QT-${year2}${month2}-`, '').replace(`QT-${year2}${month2}`, '').replace(`QT${year2}${month2}`, '');
+        const match = cleanNo.match(/(\d+)$/);
+        if (match) {
+          const seq = parseInt(match[1], 10);
+          if (!isNaN(seq) && seq > maxSeq) {
+            maxSeq = seq;
+          }
         }
       }
     });
 
-    const nextSeqStr = String(maxSeq + 1).padStart(4, '0');
-    res.json({ quotation_no: `${datePrefix}${nextSeqStr}` });
+    const nextSeqStr = String(maxSeq + 1).padStart(3, '0');
+    res.json({ quotation_no: `${prefix}${nextSeqStr}` });
   } catch (err) {
     console.error('Failed to generate next quotation number:', err);
     res.status(500).json({ error: err.message });
@@ -1446,7 +1992,25 @@ app.get('/api/quotations/next-number', async (req, res) => {
 });
 
 app.post('/api/quotations', async (req, res) => {
-  const { customer_name, department, contact, total_amount, valid_until, items, seller_name, job_name, customer_address, quotation_no } = req.body;
+  const {
+    customer_name,
+    department,
+    contact,
+    customer_phone,
+    customer_tax_id,
+    customer_address,
+    seller_name,
+    job_name,
+    quotation_no,
+    total_amount,
+    overall_discount,
+    overall_discount_percent,
+    has_vat,
+    wht_rate,
+    valid_until,
+    issue_date,
+    items
+  } = req.body;
 
   if (!customer_name || !items || !items.length) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลลูกค้าและเลือกรายการอย่างน้อย 1 รายการ' });
@@ -1456,29 +2020,51 @@ app.post('/api/quotations', async (req, res) => {
     let finalQuotationNo = quotation_no;
     if (!finalQuotationNo || !finalQuotationNo.trim()) {
       const now = new Date();
-      const year = now.getFullYear();
-      const month = String(now.getMonth() + 1).padStart(2, '0');
-      const datePrefix = `QT${year}${month}`;
+      const year2 = String(now.getFullYear()).slice(-2);
+      const month2 = String(now.getMonth() + 1).padStart(2, '0');
+      const prefix = `QT-${year2}${month2}`;
       const rows = await dbQuery.all(
-        "SELECT quotation_no FROM quotations WHERE quotation_no LIKE ?",
-        [`${datePrefix}%`]
+        "SELECT quotation_no FROM quotations WHERE quotation_no LIKE ? OR quotation_no LIKE ? OR quotation_no LIKE ?",
+        [`${prefix}%`, `QT${year2}${month2}%`, `QT${now.getFullYear()}${month2}%`]
       );
       let maxSeq = 0;
       rows.forEach(r => {
-        if (r.quotation_no && r.quotation_no.startsWith(datePrefix)) {
-          const seqStr = r.quotation_no.replace(datePrefix, '').trim();
-          const seqNum = parseInt(seqStr, 10);
-          if (!isNaN(seqNum) && seqNum > maxSeq) {
-            maxSeq = seqNum;
+        if (r.quotation_no) {
+          const match = r.quotation_no.match(/(\d+)$/);
+          if (match) {
+            const seq = parseInt(match[1], 10);
+            if (!isNaN(seq) && seq > maxSeq) {
+              maxSeq = seq;
+            }
           }
         }
       });
-      finalQuotationNo = `${datePrefix}${String(maxSeq + 1).padStart(4, '0')}`;
+      finalQuotationNo = `${prefix}-${String(maxSeq + 1).padStart(4, '0')}`;
     }
 
     const result = await dbQuery.run(
-      'INSERT INTO quotations (customer_name, department, contact, total_amount, status, valid_until, seller_name, job_name, customer_address, quotation_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [customer_name, department || '', contact || '', total_amount, 'draft', valid_until || '', seller_name || '', job_name || '', customer_address || '', finalQuotationNo]
+      `INSERT INTO quotations 
+       (customer_name, department, contact, customer_phone, customer_tax_id, customer_address, seller_name, job_name, quotation_no, total_amount, overall_discount, overall_discount_percent, has_vat, wht_rate, status, valid_until, issue_date) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        customer_name,
+        department || '',
+        contact || customer_phone || '',
+        customer_phone || contact || '',
+        customer_tax_id || '',
+        customer_address || '',
+        seller_name || '',
+        job_name || '',
+        finalQuotationNo,
+        total_amount || 0,
+        overall_discount || 0,
+        overall_discount_percent || 0,
+        has_vat !== undefined ? (has_vat ? 1 : 0) : 1,
+        wht_rate || 0,
+        'draft',
+        valid_until || '',
+        issue_date || ''
+      ]
     );
     const quotationId = result.id;
 
@@ -1559,7 +2145,7 @@ app.get('/api/quotations/:id', async (req, res) => {
 app.patch('/api/quotations/:id/status', async (req, res) => {
   const { status } = req.body;
   try {
-    const approvedAt = status === 'accepted' ? new Date().toISOString() : null;
+    const approvedAt = status === 'accepted' ? getBangkokLocalISO(new Date()) : null;
     await dbQuery.run('UPDATE quotations SET status = ?, approved_at = ? WHERE id = ?', [status, approvedAt, req.params.id]);
     res.json({ success: true, message: 'อัปเดตสถานะสำเร็จ' });
   } catch (err) {
@@ -1568,7 +2154,25 @@ app.patch('/api/quotations/:id/status', async (req, res) => {
 });
 
 app.put('/api/quotations/:id', async (req, res) => {
-  const { customer_name, department, contact, total_amount, valid_until, items, seller_name, job_name, customer_address, quotation_no } = req.body;
+  const {
+    customer_name,
+    department,
+    contact,
+    customer_phone,
+    customer_tax_id,
+    customer_address,
+    seller_name,
+    job_name,
+    quotation_no,
+    total_amount,
+    overall_discount,
+    overall_discount_percent,
+    has_vat,
+    wht_rate,
+    valid_until,
+    issue_date,
+    items
+  } = req.body;
   const quotationId = req.params.id;
 
   if (!customer_name || !items || !items.length) {
@@ -1577,8 +2181,43 @@ app.put('/api/quotations/:id', async (req, res) => {
 
   try {
     await dbQuery.run(
-      'UPDATE quotations SET customer_name = ?, department = ?, contact = ?, total_amount = ?, valid_until = ?, seller_name = ?, job_name = ?, customer_address = ?, quotation_no = ? WHERE id = ?',
-      [customer_name, department || '', contact || '', total_amount, valid_until || '', seller_name || '', job_name || '', customer_address || '', quotation_no || '', quotationId]
+      `UPDATE quotations SET 
+        customer_name = ?,
+        department = ?,
+        contact = ?,
+        customer_phone = ?,
+        customer_tax_id = ?,
+        customer_address = ?,
+        seller_name = ?,
+        job_name = ?,
+        quotation_no = ?,
+        total_amount = ?,
+        overall_discount = ?,
+        overall_discount_percent = ?,
+        has_vat = ?,
+        wht_rate = ?,
+        valid_until = ?,
+        issue_date = ?
+       WHERE id = ?`,
+      [
+        customer_name,
+        department || '',
+        contact || customer_phone || '',
+        customer_phone || contact || '',
+        customer_tax_id || '',
+        customer_address || '',
+        seller_name || '',
+        job_name || '',
+        quotation_no || '',
+        total_amount || 0,
+        overall_discount || 0,
+        overall_discount_percent || 0,
+        has_vat !== undefined ? (has_vat ? 1 : 0) : 1,
+        wht_rate || 0,
+        valid_until || '',
+        issue_date || '',
+        quotationId
+      ]
     );
 
     await dbQuery.run('DELETE FROM quotation_items WHERE quotation_id = ?', [quotationId]);
@@ -1650,7 +2289,7 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
       // 1. Insert into bookings
       const bookingResult = await dbQuery.run(
         'INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [quotation.customer_name, quotation.department, quotation.contact, quotation.total_amount, payment_status || 'pending', payment_method || 'cash', receiptNumber, new Date().toISOString()]
+        [quotation.customer_name, quotation.department, quotation.contact, quotation.total_amount, payment_status || 'pending', payment_method || 'cash', receiptNumber, getBangkokLocalISO(new Date())]
       );
       const bookingId = bookingResult.id;
 
@@ -1676,7 +2315,7 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
       }
 
       // 3. Update quotation status to converted
-      await dbQuery.run("UPDATE quotations SET status = 'accepted', approved_at = ? WHERE id = ?", [new Date().toISOString(), req.params.id]);
+      await dbQuery.run("UPDATE quotations SET status = 'accepted', approved_at = ? WHERE id = ?", [getBangkokLocalISO(new Date()), req.params.id]);
 
       await dbQuery.run('COMMIT');
       res.json({ success: true, bookingId, receiptNumber, message: 'แปลงเป็นรายการจองสำเร็จ' });
@@ -2236,7 +2875,7 @@ app.post('/api/users/:id/reset-password', async (req, res) => {
 // Auto-run backup daily at midnight / hourly check (local time & OneDrive cloud)
 let lastBackupDate = '';
 async function runDailyAutomatedBackup() {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = getBangkokLocalISO(new Date()).slice(0, 10);
   if (lastBackupDate === todayStr) return;
 
   console.log('Automated Daily Backup started...');
@@ -2358,7 +2997,7 @@ app.get('/api/public/rooms', async (req, res) => {
 // Get daily room schedule matrix (shows booked intervals for a specific date)
 app.get('/api/public/rooms/schedule', async (req, res) => {
   const { date } = req.query;
-  const targetDate = date || new Date().toISOString().split('T')[0];
+  const targetDate = date || getBangkokLocalISO(new Date()).split('T')[0];
 
   try {
     const rawRooms = await dbQuery.all(
@@ -2586,7 +3225,7 @@ app.post('/api/public/bookings', async (req, res) => {
           tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
           tax_delivery_method || null, tax_postal_address || null,
           parsedGuests,
-          normalizeToLocalISO(new Date())
+          getBangkokLocalISO(new Date())
         ]
       );
       const bookingId = bookingResult.id;
@@ -2609,8 +3248,9 @@ app.post('/api/public/bookings', async (req, res) => {
         bookingCode,
         receiptNumber,
         totalAmount: subtotal,
-        paymentDeadline: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        message: 'จองห้องประชุมสำเร็จ! กรุณาชำระเงินภายใน 24 ชั่วโมง'
+        paymentDeadline: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        payment_window_minutes: 15,
+        message: 'จองห้องประชุมสำเร็จ! กรุณาชำระเงินและแนบสลิปภายใน 15 นาที'
       });
     } catch (innerErr) {
       await dbQuery.run('ROLLBACK').catch(() => {});
@@ -2656,9 +3296,12 @@ app.get(['/api/public/bookings/by-phone', '/api/public/bookings/lookup'], async 
       if (items && items.length && items[0].room_name) {
         b.room_name = items[0].room_name;
         b.room = { id: items[0].room_id, name: items[0].room_name, capacity: items[0].capacity, image_url: items[0].image_url };
+        b.raw_start_time = items[0].start_time;
+        b.raw_end_time = items[0].end_time;
         b.start_time = items[0].start_time?.includes('T') ? items[0].start_time.split('T')[1].substring(0, 5) : items[0].start_time;
         b.end_time = items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time;
-        b.booking_date = items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : b.created_at?.split('T')[0];
+        b.usage_date = items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : (b.booking_date || b.created_at?.split('T')[0] || b.created_at?.split(' ')[0]);
+        b.created_date = b.created_at ? (b.created_at.includes('T') ? b.created_at.replace('T', ' ').substring(0, 19) : b.created_at) : '';
       }
     }
 
@@ -2772,7 +3415,7 @@ app.get('/api/public/bookings/:id', async (req, res) => {
   }
 });
 
-// Upload payment slip for a booking
+// Upload payment slip for a booking with automated Smart Verification
 app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
   const { id } = req.params;
   const { slip_image } = req.body;
@@ -2802,6 +3445,12 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     }
     const targetBookingId = booking.id;
 
+    if (booking.payment_status === 'cancelled') {
+      return res.status(400).json({ 
+        error: 'รายการจองนี้ถูกยกเลิกแล้ว เนื่องจากเกินกำหนดเวลาชำระเงิน 15 นาที กรุณาทำรายการจองใหม่' 
+      });
+    }
+
     // Save slip image
     const slipDir = path.join(__dirname, 'uploads', 'slips');
     if (!fs.existsSync(slipDir)) {
@@ -2825,19 +3474,138 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
 
     const slipUrl = `/uploads/slips/${fileName}`;
 
-    // Update booking with slip URL and change status to 'reviewing'
-    await dbQuery.run(
-      'UPDATE bookings SET slip_image_url = ?, payment_status = ? WHERE id = ?',
-      [slipUrl, 'reviewing', targetBookingId]
-    );
+    // Run Local 5-Tier Automated Slip Verification
+    const verifyResult = await verifySlip(imageBuffer, booking, dbQuery);
+    const nowIso = getBangkokLocalISO(new Date());
 
-    res.json({
-      success: true,
-      slipUrl,
-      message: 'อัปโหลดสลิปสำเร็จ! กำลังตรวจสอบการชำระเงิน'
-    });
+    // 1. REJECT IMMEDIATELY if NOT a valid bank slip (e.g. meme image, animal photo, payment QR, or no QR code)
+    if (!verifyResult.isValid || verifyResult.confidence === 0) {
+      // Clean up saved file if invalid
+      if (fs.existsSync(filePath)) {
+        try { fs.unlinkSync(filePath); } catch (e) {}
+      }
+
+      return res.status(400).json({
+        success: false,
+        auto_approved: false,
+        error: verifyResult.reasons[0] || 'รูปภาพที่เลือกไม่ใช่สลิปโอนเงินของธนาคาร กรุณาแนบสลิปจริงที่มี Mini QR Code ชัดเจน'
+      });
+    }
+
+    // 2. AUTO-APPROVE if valid bank slip and all criteria pass
+    if (verifyResult.autoApproved) {
+      // Auto-approved! Generate receipt_number and pin_code if not present
+      let receiptNumber = booking.receipt_number;
+      if (!receiptNumber) {
+        receiptNumber = await generateReceiptNumber();
+      }
+
+      let pinCode = booking.pin_code;
+      if (!pinCode) {
+        pinCode = await generateUniquePinCode();
+      }
+
+      await dbQuery.run(
+        `UPDATE bookings 
+         SET slip_image_url = ?, 
+             payment_status = 'paid', 
+             payment_method = 'transfer',
+             receipt_number = ?,
+             pin_code = ?,
+             slip_trans_ref = ?,
+             slip_verified_at = ?,
+             slip_verify_status = 'auto_approved'
+         WHERE id = ?`,
+        [slipUrl, receiptNumber, pinCode, verifyResult.transRef, nowIso, targetBookingId]
+      );
+
+      // Send LINE confirmation if customer has line_user_id
+      if (booking.line_user_id) {
+        try {
+          const tokenSetting = await dbQuery.get('SELECT value FROM settings WHERE key = ?', ['line_channel_access_token']);
+          if (tokenSetting && tokenSetting.value) {
+            await sendPaymentConfirmedNotification(targetBookingId);
+          }
+        } catch (lineErr) {
+          console.warn('LINE notification warning:', lineErr.message);
+        }
+      }
+
+      return res.json({
+        success: true,
+        auto_approved: true,
+        slipUrl,
+        receiptNumber,
+        pinCode,
+        verifyResult,
+        message: 'สลิปถูกต้อง! ระบบอนุมัติการจองและออกใบเสร็จให้อัตโนมัติเรียบร้อยแล้ว'
+      });
+    } else {
+      // Real bank slip with valid QR but amount mismatch
+      const verifyStatus = verifyResult.isValid ? 'flagged' : 'rejected';
+      await dbQuery.run(
+        `UPDATE bookings 
+         SET slip_image_url = ?, 
+             payment_status = 'reviewing',
+             slip_trans_ref = ?,
+             slip_verified_at = ?,
+             slip_verify_status = ?
+         WHERE id = ?`,
+        [slipUrl, verifyResult.transRef, nowIso, verifyStatus, targetBookingId]
+      );
+
+      return res.json({
+        success: true,
+        auto_approved: false,
+        slipUrl,
+        verifyResult,
+        message: verifyResult.reasons.length > 0 
+          ? `อัปโหลดสลิปสำเร็จ! (${verifyResult.reasons.join(', ')}) กำลังรอเจ้าหน้าที่ตรวจสอบ`
+          : 'อัปโหลดสลิปสำเร็จ! กำลังรอเจ้าหน้าที่ตรวจสอบการชำระเงิน'
+      });
+    }
   } catch (err) {
     res.status(500).json({ error: 'เกิดข้อผิดพลาด: ' + err.message });
+  }
+});
+
+// Live test slip verification API
+app.post('/api/slip/verify-test', async (req, res) => {
+  const { slip_image, expected_amount } = req.body;
+  if (!slip_image) {
+    return res.status(400).json({ error: 'กรุณาส่งรูปสลิป (base64)' });
+  }
+
+  try {
+    const matches = slip_image.match(/^data:(image\/(png|jpeg|jpg|webp));base64,(.+)$/);
+    const imageBuffer = matches ? Buffer.from(matches[3], 'base64') : Buffer.from(slip_image, 'base64');
+    
+    const mockBooking = {
+      id: 999999,
+      total_amount: expected_amount ? parseFloat(expected_amount) : 0
+    };
+
+    const result = await verifySlip(imageBuffer, mockBooking, dbQuery);
+    res.json({
+      success: true,
+      result
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get slip verification history for a booking
+app.get('/api/bookings/:id/slip-verification', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const records = await dbQuery.all(
+      'SELECT * FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC',
+      [id]
+    );
+    res.json(records || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2879,3 +3647,324 @@ app.listen(PORT, () => {
   console.log(`Server is running locally at http://localhost:${PORT}`);
   console.log(`Open your browser to start using the system.`);
 });
+
+
+// Build LINE Door PIN Flex message (Sent by staff when customer arrives at counter)
+function buildLineDoorPinFlex(booking, item, room) {
+  const customerName = booking?.customer_name || 'ลูกค้าผู้มีอุปการคุณ';
+  const roomName = room?.name || item?.room_name || 'ห้องประชุม';
+  const pinCode = booking?.pin_code || '------';
+
+  return {
+    type: 'flex',
+    altText: `รหัสผ่านเข้าห้องประชุม: ${pinCode} (${roomName})`,
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#0284c7',
+        paddingAll: '16px',
+        contents: [
+          {
+            type: 'text',
+            text: 'B-WORK COWORKING & MEETING',
+            weight: 'bold',
+            color: '#ffffff',
+            size: 'xs',
+            letterSpacing: '1px'
+          },
+          {
+            type: 'text',
+            text: 'รหัสผ่านเปิดประตูห้องประชุม 🔑',
+            weight: 'bold',
+            color: '#ffffff',
+            size: 'lg',
+            margin: 'xs'
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '18px',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'ชื่อผู้จอง', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: customerName, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'ห้องประชุม', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: roomName, size: 'sm', color: '#0284c7', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          { type: 'separator', margin: 'md' },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            paddingAll: '14px',
+            backgroundColor: '#f0fdf4',
+            cornerRadius: '12px',
+            borderColor: '#86efac',
+            borderWidth: '1px',
+            contents: [
+              {
+                type: 'text',
+                text: '🔑 รหัสผ่านปลดล็อกประตู (Door PIN)',
+                size: 'xs',
+                color: '#15803d',
+                weight: 'bold',
+                align: 'center'
+              },
+              {
+                type: 'text',
+                text: pinCode,
+                size: 'xxl',
+                color: '#166534',
+                weight: 'bold',
+                align: 'center',
+                margin: 'xs'
+              },
+              {
+                type: 'text',
+                text: 'กดรหัส PIN ตามด้วยเครื่องหมาย # ที่หน้าจอแท็บเล็ตหน้าห้องเพื่อปลดล็อกประตู',
+                size: 'xxs',
+                color: '#16a34a',
+                align: 'center',
+                wrap: true,
+                margin: 'xs'
+              }
+            ]
+          }
+        ]
+      }
+    }
+  };
+}
+
+// Staff endpoint: Send Door PIN to customer's LINE OA
+app.post('/api/bookings/:id/send-pin', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [id]);
+    if (!booking) return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+
+    const item = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL LIMIT 1', [id]);
+    const room = item?.room_id ? await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [item.room_id]) : null;
+
+    // Always ensure PIN matches the assigned room if the room has a PIN configured
+    let pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : booking.pin_code;
+    if (!pinCode || !pinCode.trim()) {
+      pinCode = await generateUniquePinCode();
+    }
+    await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [pinCode, id]);
+    if (item) {
+      await dbQuery.run('UPDATE booking_items SET pin_code = ? WHERE id = ?', [pinCode, item.id]);
+    }
+    booking.pin_code = pinCode;
+
+    let lineSent = false;
+    if (booking.line_user_id) {
+      const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+      const channelAccessToken = tokenSetting?.value;
+      if (channelAccessToken) {
+        try {
+          const flexMessage = buildLineDoorPinFlex(booking, item, room);
+          const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${channelAccessToken}`
+            },
+            body: JSON.stringify({
+              to: booking.line_user_id,
+              messages: [flexMessage]
+            })
+          });
+          lineSent = lineRes.ok;
+        } catch (e) {
+          console.warn('LINE Door PIN push error:', e.message);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      pin_code: pinCode,
+      line_sent: lineSent,
+      message: lineSent ? 'ส่งรหัส PIN เข้า LINE OA ลูกค้าสำเร็จ' : 'สร้างรหัส PIN สำเร็จ (ลูกค้ารายนี้ไม่ได้เชื่อม LINE OA)'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// Helper to build LINE OA Flex Message for Auto-Cancelled booking due to 15-min expiration
+function buildLineBookingCancelledFlex(booking, roomName, reason) {
+  const customerName = booking?.customer_name || 'ลูกค้าผู้มีอุปการคุณ';
+  const displayRoom = roomName || 'ห้องประชุม';
+  const bookingCode = booking?.receipt_number || `BK-${String(booking?.id || 0).padStart(6, '0')}`;
+  const cancelReason = reason || 'ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)';
+
+  return {
+    type: 'flex',
+    altText: `แจ้งยกเลิกการจอง #${bookingCode} (${displayRoom})`,
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#ef4444',
+        paddingAll: '16px',
+        contents: [
+          {
+            type: 'text',
+            text: 'B-WORK COWORKING & MEETING',
+            weight: 'bold',
+            color: '#ffffff',
+            size: 'xs',
+            letterSpacing: '1px'
+          },
+          {
+            type: 'text',
+            text: 'แจ้งยกเลิกการจองอัตโนมัติ',
+            weight: 'bold',
+            color: '#ffffff',
+            size: 'lg',
+            margin: 'xs'
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '18px',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'text',
+            text: 'ขออภัยค่ะ รายการจองของท่านถูกยกเลิกอัตโนมัติ เนื่องจากไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)',
+            size: 'sm',
+            color: '#334155',
+            wrap: true
+          },
+          { type: 'separator', margin: 'md' },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'รหัสการจอง', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: bookingCode, size: 'sm', color: '#ef4444', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'ชื่อผู้จอง', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: customerName, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'ห้องประชุม', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: displayRoom, size: 'sm', color: '#0284c7', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'สาเหตุ', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: cancelReason, size: 'sm', color: '#ef4444', flex: 4, align: 'end', wrap: true }
+            ]
+          }
+        ]
+      }
+    }
+  };
+}
+
+// Background Worker: Automatically Cancel Expired Pending Bookings (> 15 Minutes) and Notify LINE OA
+async function checkAndCancelExpiredBookings() {
+  try {
+    const pendingBookings = await dbQuery.all(`
+      SELECT b.*, bi.room_id, r.name as room_name, bi.start_time, bi.end_time
+      FROM bookings b
+      LEFT JOIN booking_items bi ON bi.booking_id = b.id
+      LEFT JOIN rooms r ON bi.room_id = r.id
+      WHERE (b.payment_status = 'pending' OR b.payment_status = 'unpaid' OR b.payment_status IS NULL)
+        AND (b.slip_image_url IS NULL OR b.slip_image_url = '')
+        AND b.booking_source = 'online'
+    `);
+
+    const now = Date.now();
+    const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+
+    for (const b of pendingBookings) {
+      if (!b.created_at) continue;
+      const cleanCreated = b.created_at.replace(' ', 'T');
+      const createdAtTime = new Date(cleanCreated).getTime();
+      if (isNaN(createdAtTime)) continue;
+
+      if (now - createdAtTime >= FIFTEEN_MINUTES_MS) {
+        console.log(`[Auto-Cancel] Booking #${b.id} (${b.receipt_number || b.id}) expired after 15 minutes. Cancelling...`);
+        
+        await dbQuery.run(`
+          UPDATE bookings 
+          SET payment_status = 'cancelled', 
+              checkin_status = 'cancelled',
+              cancellation_reason = 'ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)'
+          WHERE id = ?
+        `, [b.id]);
+
+        await dbQuery.run(`
+          UPDATE booking_items 
+          SET checkin_status = 'cancelled'
+          WHERE booking_id = ?
+        `, [b.id]);
+
+        // Push LINE Cancellation Notification
+        if (b.line_user_id) {
+          try {
+            const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+            const channelAccessToken = tokenSetting?.value;
+            if (channelAccessToken) {
+              const flexCancel = buildLineBookingCancelledFlex(b, b.room_name, 'ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)');
+              await fetch('https://api.line.me/v2/bot/message/push', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${channelAccessToken}`
+                },
+                body: JSON.stringify({
+                  to: b.line_user_id,
+                  messages: [flexCancel]
+                })
+              });
+            }
+          } catch (lineErr) {
+            console.warn('[Auto-Cancel] LINE notification warning:', lineErr.message);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Auto-Cancel] Worker error:', err.message);
+  }
+}
+
+// Start background cron worker (Runs every 30 seconds)
+setInterval(checkAndCancelExpiredBookings, 30 * 1000);

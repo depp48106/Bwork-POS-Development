@@ -48,8 +48,12 @@ html, body, #root {
   min-height: 100%;
 }
 
+button, input, select, textarea {
+  font-family: inherit;
+}
+
 body {
-  font-family: 'Prompt', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Sarabun', 'TH Sarabun New', 'TH SarabunPSK', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background-color: var(--bg-page);
   color: var(--text-main);
   line-height: 1.5;

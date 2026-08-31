@@ -294,8 +294,9 @@ async function generateReceiptNumber(env) {
 
 async function generateQuotationNumber(env) {
   const now = new Date();
-  const yyyy = now.getFullYear();
-  const prefix = `QT-${yyyy}-`;
+  const year2 = String(now.getFullYear()).slice(-2);
+  const month2 = String(now.getMonth() + 1).padStart(2, '0');
+  const prefix = `QT-${year2}${month2}-`;
 
   const lastRow = await env.DB.prepare(
     "SELECT quotation_no FROM quotations WHERE quotation_no LIKE ? ORDER BY id DESC LIMIT 1"
@@ -303,9 +304,11 @@ async function generateQuotationNumber(env) {
 
   let seq = 1;
   if (lastRow && lastRow.quotation_no) {
-    const parts = lastRow.quotation_no.split('-');
-    const lastNum = parseInt(parts[parts.length - 1], 10);
-    if (!isNaN(lastNum)) seq = lastNum + 1;
+    const match = lastRow.quotation_no.match(/(\d+)$/);
+    if (match) {
+      const lastNum = parseInt(match[1], 10);
+      if (!isNaN(lastNum)) seq = lastNum + 1;
+    }
   }
   return `${prefix}${String(seq).padStart(4, '0')}`;
 }
@@ -972,36 +975,6 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
               { type: 'text', text: 'ยอดสุทธิ', size: 'sm', color: '#64748b', flex: 2 },
               { type: 'text', text: `฿${Number(newTotal !== undefined ? newTotal : booking.total_amount || 0).toLocaleString()}`, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
             ]
-          },
-          { type: 'separator', margin: 'md' },
-          {
-            type: 'box',
-            layout: 'vertical',
-            margin: 'md',
-            paddingAll: '14px',
-            backgroundColor: '#f0fdf4',
-            cornerRadius: '12px',
-            borderColor: '#86efac',
-            borderWidth: '1px',
-            contents: [
-              {
-                type: 'text',
-                text: '🔑 รหัส PIN ปลดล็อกประตูเข้าห้อง',
-                size: 'xs',
-                color: '#15803d',
-                weight: 'bold',
-                align: 'center'
-              },
-              {
-                type: 'text',
-                text: pinCode,
-                size: '3xl',
-                color: '#166534',
-                weight: 'bold',
-                align: 'center',
-                margin: 'sm'
-              }
-            ]
           }
         ]
       },
@@ -1598,7 +1571,8 @@ export default {
 
         // 3. Incoming LINE OA / Online bookings (pending or reviewing)
         const { results: incomingList } = await env.DB.prepare(`
-          SELECT b.id as booking_id, b.customer_name, b.total_amount, b.payment_status, b.created_at, b.booking_source, b.slip_image_url,
+          SELECT b.id as booking_id, b.customer_name, b.total_amount, b.payment_status, b.created_at, b.booking_source, 
+                 (CASE WHEN b.slip_image_url IS NOT NULL AND b.slip_image_url != '' THEN 'uploaded' ELSE NULL END) as slip_image_url,
                  r.name as room_name, bi.start_time, bi.end_time
           FROM bookings b
           LEFT JOIN booking_items bi ON bi.booking_id = b.id
@@ -1627,29 +1601,68 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         const status = url.searchParams.get('payment_status') || url.searchParams.get('status');
-        let query = `SELECT * FROM bookings`;
+        const startDate = url.searchParams.get('start_date');
+        const endDate = url.searchParams.get('end_date');
+        const search = url.searchParams.get('search');
+
+        let query = `SELECT DISTINCT b.* FROM bookings b LEFT JOIN booking_items bi ON b.id = bi.booking_id LEFT JOIN rooms r ON bi.room_id = r.id WHERE 1=1`;
         const params = [];
+
+        if (startDate) {
+          query += ` AND (datetime(b.created_at) >= datetime(?) OR bi.start_time >= ? OR b.booking_date >= ?)`;
+          params.push(startDate + ' 00:00:00', startDate, startDate);
+        }
+        if (endDate) {
+          query += ` AND (datetime(b.created_at) <= datetime(?) OR bi.start_time <= ? OR b.booking_date <= ?)`;
+          params.push(endDate + ' 23:59:59', endDate + ' 23:59:59', endDate);
+        }
+        if (search) {
+          const q = `%${search}%`;
+          query += ` AND (b.customer_name LIKE ? OR b.contact LIKE ? OR b.department LIKE ? OR b.receipt_number LIKE ? OR CAST(b.id AS TEXT) LIKE ? OR b.pin_code LIKE ? OR r.name LIKE ? OR r.category LIKE ?)`;
+          params.push(q, q, q, q, q, q, q, q);
+        }
         if (status) {
-          if (status === 'pending') {
-            query += ` WHERE payment_status IN ('pending', 'reviewing', 'unpaid')`;
-          } else {
-            query += ` WHERE payment_status = ?`;
+          if (status === 'pending' || status === 'unpaid') {
+            query += ` AND (b.payment_status IN ('pending', 'reviewing', 'unpaid') OR b.payment_status IS NULL)`;
+          } else if (status !== 'all') {
+            query += ` AND b.payment_status = ?`;
             params.push(status);
           }
         }
-        query += ` ORDER BY created_at DESC LIMIT 100`;
+        query += ` ORDER BY b.created_at DESC LIMIT 150`;
 
         const { results: bookings } = await env.DB.prepare(query).bind(...params).all();
 
-        for (let b of (bookings || [])) {
+        if (bookings && bookings.length > 0) {
+          const bookingIds = bookings.map(b => b.id);
+          const placeholders = bookingIds.map(() => '?').join(',');
           const { results: items } = await env.DB.prepare(
-            `SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.description as service_description, s.category as service_category
+            `SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.category as service_category
              FROM booking_items bi
              LEFT JOIN rooms r ON bi.room_id = r.id
              LEFT JOIN services s ON bi.service_id = s.id
-             WHERE bi.booking_id = ?`
-          ).bind(b.id).all();
-          b.items = items || [];
+             WHERE bi.booking_id IN (${placeholders})
+             ORDER BY bi.id ASC`
+          ).bind(...bookingIds).all();
+
+          const itemsMap = {};
+          (items || []).forEach(it => {
+            if (!itemsMap[it.booking_id]) itemsMap[it.booking_id] = [];
+            itemsMap[it.booking_id].push(it);
+          });
+
+          bookings.forEach(b => {
+            b.items = itemsMap[b.id] || [];
+            if (b.items.length > 0) {
+              const first = b.items[0];
+              b.room_name = first.room_name;
+              b.room_capacity = first.room_capacity;
+              b.booking_type = first.booking_type;
+              b.layout = first.layout;
+              b.start_time = first.start_time;
+              b.end_time = first.end_time;
+            }
+          });
         }
 
         return new Response(JSON.stringify(bookings || []), { headers: corsHeaders });
@@ -1660,7 +1673,14 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         const body = await request.json();
-        const { customer_name, department, contact, payment_status, payment_method, items, line_user_id, booking_source } = body;
+        const { 
+          customer_name, department, contact, payment_status, payment_method, items, line_user_id, booking_source,
+          customer_type = 'walkin',
+          basecamp_sub_type = null,
+          basecamp_unit = null,
+          internal_department = null,
+          billing_option = 'paid'
+        } = body;
 
         if (!customer_name || !items || !items.length) {
           return new Response(JSON.stringify({ error: 'กรุณากรอกข้อมูลผู้จองและเลือกรายการอย่างน้อย 1 รายการ' }), { status: 400, headers: corsHeaders });
@@ -1680,6 +1700,7 @@ export default {
 
         // 2. Server-side price calculation
         let serverTotal = 0;
+        let totalBookingHours = 0;
         for (const item of items) {
           if (item.room_id) {
             const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first();
@@ -1699,6 +1720,14 @@ export default {
               item.subtotal = Math.round(itemPrice * qty * 100) / 100;
               serverTotal += item.subtotal;
             }
+            if (item.start_time && item.end_time) {
+              const s = new Date(item.start_time);
+              const e = new Date(item.end_time);
+              const diffHours = Math.max(0, (e.getTime() - s.getTime()) / (1000 * 60 * 60));
+              totalBookingHours += diffHours;
+            } else if (item.quantity) {
+              totalBookingHours += item.quantity;
+            }
           } else if (item.service_id) {
             const service = await env.DB.prepare('SELECT * FROM services WHERE id = ?').bind(item.service_id).first();
             if (service) {
@@ -1709,7 +1738,58 @@ export default {
             }
           }
         }
-        const verifiedTotal = body.total_amount || Math.round(serverTotal * 100) / 100;
+
+        let verifiedTotal = body.total_amount !== undefined ? body.total_amount : Math.round(serverTotal * 100) / 100;
+        let quotaHoursUsed = 0;
+        let effectiveBillingOption = billing_option || 'paid';
+
+        if (customer_type === 'basecamp') {
+          const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
+          const firstItemDate = items[0]?.start_time || new Date().toISOString();
+          const targetMonthStr = normalizeToLocalISO(firstItemDate).substring(0, 7);
+
+          try {
+            const quotaRow = await env.DB.prepare(
+              `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
+               FROM bookings b
+               WHERE b.customer_type = 'basecamp'
+                 AND b.basecamp_sub_type = ?
+                 AND b.basecamp_unit = ?
+                 AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+                 AND (
+                   EXISTS (
+                     SELECT 1 FROM booking_items bi 
+                     WHERE bi.booking_id = b.id 
+                       AND strftime('%Y-%m', bi.start_time) = ?
+                   )
+                   OR (
+                     NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+                     AND strftime('%Y-%m', b.created_at) = ?
+                   )
+                 )`
+            ).bind(basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr).first();
+
+            const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
+            const remainingQuota = Math.max(0, maxQuota - usedQuota);
+
+            quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
+            const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+
+            if (totalBookingHours > 0) {
+              verifiedTotal = Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100;
+            } else {
+              verifiedTotal = 0;
+            }
+
+            effectiveBillingOption = quotaHoursUsed > 0 ? (verifiedTotal === 0 ? 'quota' : 'quota_partial') : 'paid';
+          } catch (qErr) {
+            console.error('Error fetching quota in worker:', qErr);
+          }
+        } else if (customer_type === 'builtland') {
+          verifiedTotal = 0;
+          quotaHoursUsed = 0;
+          effectiveBillingOption = 'internal_free';
+        }
 
         const receiptNumber = await generateReceiptNumber(env);
         const roomItem = items.find(it => !!it.room_id);
@@ -1730,17 +1810,40 @@ export default {
           : (items.find(it => it.guest_count)?.guest_count ? parseInt(items.find(it => it.guest_count).guest_count, 10) : null);
 
         const nowIso = new Date().toISOString();
+        const effectivePaymentStatus = customer_type === 'builtland' 
+          ? 'internal_free' 
+          : (verifiedTotal === 0 ? 'paid' : (payment_status || 'pending'));
+
         let insBooking;
         try {
           insBooking = await env.DB.prepare(
-            `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
-          ).bind(customer_name, department || '', contact || '', verifiedTotal, payment_status || 'pending', payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, effectiveGuestCount, nowIso).run();
+            `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(
+            customer_name, 
+            department || internal_department || '', 
+            contact || '', 
+            verifiedTotal, 
+            effectivePaymentStatus, 
+            payment_method || 'cash', 
+            receiptNumber, 
+            pinCode, 
+            booking_source || 'walkin', 
+            line_user_id || null, 
+            effectiveGuestCount,
+            customer_type || 'walkin',
+            basecamp_sub_type || null,
+            basecamp_unit || null,
+            internal_department || null,
+            effectiveBillingOption,
+            quotaHoursUsed,
+            nowIso
+          ).run();
         } catch (dbErr) {
           insBooking = await env.DB.prepare(
             `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, checkin_status, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
-          ).bind(customer_name, department || '', contact || '', verifiedTotal, payment_status || 'pending', payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
+          ).bind(customer_name, department || '', contact || '', verifiedTotal, effectivePaymentStatus, payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
         }
 
         const bookingId = insBooking.meta.last_row_id;
@@ -1790,7 +1893,7 @@ export default {
 
         const savedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         const { results: savedItems } = await env.DB.prepare(`
-          SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.description as service_description, s.category as service_category
+          SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.category as service_category
           FROM booking_items bi
           LEFT JOIN rooms r ON bi.room_id = r.id
           LEFT JOIN services s ON bi.service_id = s.id
@@ -1985,7 +2088,7 @@ export default {
           const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
           if (!booking) return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
           const { results: items } = await env.DB.prepare(`
-            SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.description as service_description, s.category as service_category
+            SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.category as service_category
             FROM booking_items bi
             LEFT JOIN rooms r ON bi.room_id = r.id
             LEFT JOIN services s ON bi.service_id = s.id
@@ -2098,22 +2201,33 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบรายการจองสำหรับเบอร์โทรศัพท์นี้ กรุณาตรวจสอบเบอร์อีกครั้ง' }), { status: 404, headers: corsHeaders });
         }
 
-        for (let b of bookings) {
-          const { results: items } = await env.DB.prepare(
-            `SELECT bi.*, r.name as room_name, r.capacity, r.image_url, r.description
-             FROM booking_items bi
-             LEFT JOIN rooms r ON bi.room_id = r.id
-             WHERE bi.booking_id = ?`
-          ).bind(b.id).all();
-          b.items = items || [];
+        const bookingIds = bookings.map(b => b.id);
+        const placeholders = bookingIds.map(() => '?').join(',');
+        const { results: items } = await env.DB.prepare(
+          `SELECT bi.*, r.name as room_name, r.capacity, r.image_url, r.description
+           FROM booking_items bi
+           LEFT JOIN rooms r ON bi.room_id = r.id
+           WHERE bi.booking_id IN (${placeholders})
+           ORDER BY bi.id ASC`
+        ).bind(...bookingIds).all();
+
+        const itemsMap = {};
+        (items || []).forEach(it => {
+          if (!itemsMap[it.booking_id]) itemsMap[it.booking_id] = [];
+          itemsMap[it.booking_id].push(it);
+        });
+
+        bookings.forEach(b => {
+          const bItems = itemsMap[b.id] || [];
+          b.items = bItems;
           b.bookingCode = `BK-${String(b.id).padStart(6, '0')}`;
-          if (items && items.length && items[0].room_name) {
-            b.room_name = items[0].room_name;
-            b.start_time = items[0].start_time?.includes('T') ? items[0].start_time.split('T')[1].substring(0, 5) : items[0].start_time;
-            b.end_time = items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time;
-            b.booking_date = items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : b.created_at?.split('T')[0];
+          if (bItems.length > 0 && bItems[0].room_name) {
+            b.room_name = bItems[0].room_name;
+            b.start_time = bItems[0].start_time?.includes('T') ? bItems[0].start_time.split('T')[1].substring(0, 5) : bItems[0].start_time;
+            b.end_time = bItems[0].end_time?.includes('T') ? bItems[0].end_time.split('T')[1].substring(0, 5) : bItems[0].end_time;
+            b.booking_date = bItems[0].start_time?.includes('T') ? bItems[0].start_time.split('T')[0] : b.created_at?.split('T')[0];
           }
-        }
+        });
 
         return new Response(JSON.stringify({ success: true, bookings }), { headers: corsHeaders });
       }
@@ -2356,7 +2470,7 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         const nextNum = await generateQuotationNumber(env);
-        return new Response(JSON.stringify({ quotationNo: nextNum }), { headers: corsHeaders });
+        return new Response(JSON.stringify({ quotationNo: nextNum, quotation_no: nextNum }), { headers: corsHeaders });
       }
 
       if (pathname === '/api/quotations') {
@@ -2371,9 +2485,35 @@ export default {
           const body = await request.json();
           const qNo = body.quotation_no || await generateQuotationNumber(env);
           const ins = await env.DB.prepare(
-            "INSERT INTO quotations (customer_name, department, contact, total_amount, status, quotation_no) VALUES (?, ?, ?, ?, 'draft', ?)"
-          ).bind(body.customer_name, body.department || '', body.contact || '', body.total_amount || 0, qNo).run();
-          return new Response(JSON.stringify({ success: true, id: ins.meta.last_row_id, quotation_no: qNo }), { status: 201, headers: corsHeaders });
+            "INSERT INTO quotations (customer_name, department, contact, total_amount, status, quotation_no, valid_until, seller_name, job_name, customer_address) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)"
+          ).bind(body.customer_name, body.department || '', body.contact || '', body.total_amount || 0, qNo, body.valid_until || '', body.seller_name || '', body.job_name || '', body.customer_address || '').run();
+          
+          const qId = ins.meta.last_row_id;
+          if (body.items && body.items.length) {
+            for (const item of body.items) {
+              await env.DB.prepare(
+                `INSERT INTO quotation_items 
+                 (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              ).bind(
+                qId,
+                item.room_id || null,
+                item.service_id || null,
+                item.quantity || 1,
+                item.price || 0,
+                item.start_time || null,
+                item.end_time || null,
+                item.subtotal || 0,
+                item.layout || 'standard',
+                item.booking_type || 'hourly',
+                item.discount || 0,
+                item.item_date || null,
+                item.discount_type || 'amount'
+              ).run();
+            }
+          }
+
+          return new Response(JSON.stringify({ success: true, id: qId, quotation_no: qNo }), { status: 201, headers: corsHeaders });
         }
       }
 
@@ -2384,7 +2524,19 @@ export default {
         const qId = pathname.replace('/api/quotations/', '').split('/')[0];
         if (method === 'GET') {
           const q = await env.DB.prepare("SELECT * FROM quotations WHERE id = ?").bind(qId).first();
-          return new Response(JSON.stringify(q || {}), { headers: corsHeaders });
+          if (!q) {
+            return new Response(JSON.stringify({ error: 'ไม่พบใบเสนอราคา' }), { status: 404, headers: corsHeaders });
+          }
+
+          const { results: items } = await env.DB.prepare(
+            `SELECT qi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name 
+             FROM quotation_items qi
+             LEFT JOIN rooms r ON qi.room_id = r.id
+             LEFT JOIN services s ON qi.service_id = s.id
+             WHERE qi.quotation_id = ?`
+          ).bind(qId).all();
+
+          return new Response(JSON.stringify({ ...q, items: items || [] }), { headers: corsHeaders });
         }
         if (method === 'PUT') {
           const body = await request.json();
@@ -2392,12 +2544,38 @@ export default {
             await env.DB.prepare("UPDATE quotations SET status = 'approved', approved_at = ? WHERE id = ?").bind(new Date().toISOString(), qId).run();
           } else {
             await env.DB.prepare(
-              "UPDATE quotations SET customer_name=?, department=?, contact=?, total_amount=?, status=? WHERE id=?"
-            ).bind(body.customer_name, body.department || '', body.contact || '', body.total_amount || 0, body.status || 'draft', qId).run();
+              "UPDATE quotations SET customer_name=?, department=?, contact=?, total_amount=?, status=?, valid_until=?, seller_name=?, job_name=?, customer_address=?, quotation_no=? WHERE id=?"
+            ).bind(body.customer_name, body.department || '', body.contact || '', body.total_amount || 0, body.status || 'draft', body.valid_until || '', body.seller_name || '', body.job_name || '', body.customer_address || '', body.quotation_no || '', qId).run();
+
+            if (body.items) {
+              await env.DB.prepare("DELETE FROM quotation_items WHERE quotation_id = ?").bind(qId).run();
+              for (const item of body.items) {
+                await env.DB.prepare(
+                  `INSERT INTO quotation_items 
+                   (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                ).bind(
+                  qId,
+                  item.room_id || null,
+                  item.service_id || null,
+                  item.quantity || 1,
+                  item.price || 0,
+                  item.start_time || null,
+                  item.end_time || null,
+                  item.subtotal || 0,
+                  item.layout || 'standard',
+                  item.booking_type || 'hourly',
+                  item.discount || 0,
+                  item.item_date || null,
+                  item.discount_type || 'amount'
+                ).run();
+              }
+            }
           }
           return new Response(JSON.stringify({ success: true, message: 'อัปเดตใบเสนอราคาสำเร็จ' }), { headers: corsHeaders });
         }
         if (method === 'DELETE') {
+          await env.DB.prepare("DELETE FROM quotation_items WHERE quotation_id = ?").bind(qId).run();
           await env.DB.prepare("DELETE FROM quotations WHERE id = ?").bind(qId).run();
           return new Response(JSON.stringify({ success: true, message: 'ลบใบเสนอราคาสำเร็จ' }), { headers: corsHeaders });
         }

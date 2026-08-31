@@ -28,14 +28,23 @@ Thumbs.db
 *.bak
 booking-app.backup/
 
-# Cache
+# Cache & Cloudflare state
 .cache/
 */.cache/
 .wrangler/
 */.wrangler/
+**/.wrangler/**
+
+# Database & Large model files
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.traineddata
+backups/
 
 # User uploads & slips
 backend/uploads/slips/*
 !backend/uploads/slips/.gitkeep
 backend/uploads/*
 !backend/uploads/.gitkeep
+
