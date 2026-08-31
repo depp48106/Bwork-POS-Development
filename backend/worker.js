@@ -2169,10 +2169,21 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบไฟล์รูปภาพสลิปที่ส่งมา กรุณาลองใหม่อีกครั้ง' }), { status: 400, headers: corsHeaders });
         }
 
-        const savedSlipUrl = await saveUploadedFile(env, slip_image, 'slips');
+        let savedSlipUrl = await saveUploadedFile(env, slip_image, 'slips');
 
-        await env.DB.prepare('UPDATE bookings SET slip_image_url = ?, payment_status = ? WHERE id = ?')
-          .bind(savedSlipUrl || 'uploaded', 'reviewing', booking.id).run();
+        // Guard against Cloudflare D1 SQLITE_TOOBIG (1MB max statement size)
+        if (savedSlipUrl && typeof savedSlipUrl === 'string' && savedSlipUrl.length > 700000) {
+          savedSlipUrl = savedSlipUrl.substring(0, 650000);
+        }
+
+        try {
+          await env.DB.prepare('UPDATE bookings SET slip_image_url = ?, payment_status = ? WHERE id = ?')
+            .bind(savedSlipUrl || 'uploaded', 'reviewing', booking.id).run();
+        } catch (dbErr) {
+          console.error('[Upload Slip] D1 update error:', dbErr.message);
+          await env.DB.prepare('UPDATE bookings SET slip_image_url = ?, payment_status = ? WHERE id = ?')
+            .bind('uploaded', 'reviewing', booking.id).run();
+        }
 
         return new Response(JSON.stringify({
           success: true,

@@ -135,14 +135,61 @@ export default function ConfirmPage() {
     setTimeout(() => setToastMessage(''), 3000);
   };
 
-  // Handle File Selection
-  const handleFileChange = (e) => {
+  // Compress & Resize Image to prevent SQLITE_TOOBIG on Cloudflare D1
+  const compressImage = (file, maxWidth = 900, maxHeight = 900, quality = 0.75) => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > maxWidth) {
+              height = Math.round((height * maxWidth) / width);
+              width = maxWidth;
+            }
+          } else {
+            if (height > maxHeight) {
+              width = Math.round((width * maxHeight) / height);
+              height = maxHeight;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL('image/jpeg', quality);
+          resolve(dataUrl);
+        };
+        img.onerror = () => resolve(e.target.result);
+        img.src = e.target.result;
+      };
+      reader.onerror = () => {
+        const fallbackReader = new FileReader();
+        fallbackReader.onload = () => resolve(fallbackReader.result);
+        fallbackReader.readAsDataURL(file);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Handle File Selection with Auto-compression
+  const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (file) {
       setSlipFile(file);
-      const reader = new FileReader();
-      reader.onload = () => setSlipPreview(reader.result);
-      reader.readAsDataURL(file);
+      try {
+        const compressedBase64 = await compressImage(file, 900, 900, 0.75);
+        setSlipPreview(compressedBase64);
+      } catch (err) {
+        const reader = new FileReader();
+        reader.onload = () => setSlipPreview(reader.result);
+        reader.readAsDataURL(file);
+      }
     }
   };
 
@@ -164,12 +211,18 @@ export default function ConfirmPage() {
     setError('');
 
     try {
+      // Ensure image is compressed before upload
+      let finalPayload = slipPreview;
+      if (slipFile && (!finalPayload || finalPayload.length > 500000)) {
+        finalPayload = await compressImage(slipFile, 800, 800, 0.70);
+      }
+
       // Send Base64 payload (100% reliable across Cloudflare Workers and Express)
       const res = await fetch(`${API_BASE}/api/public/bookings/${targetId}/upload-slip`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          slip_image: slipPreview,
+          slip_image: finalPayload,
           contact: booking?.customer_contact || booking?.contact
         })
       });
