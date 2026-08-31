@@ -878,9 +878,9 @@ async function sendLineBookingCancellation(env, bookingId, reason = '') {
 
 // 4. Flex Message: แจ้งเปลี่ยนแปลงวัน/เวลาการจองสำเร็จ
 function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal) {
-  const roomName = room ? `${room.name} (${room.room_number || ''})` : 'ห้องประชุม B-WORK';
+  const roomName = room ? `${room.name} (${room.room_number || ''})`.replace(' ()', '') : 'ห้องประชุม B-WORK';
   const bookingCode = booking.receipt_number || `#BK-${String(booking.id).padStart(6, '0')}`;
-  const pinCode = booking.pin_code || '1234';
+  const pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : (booking.pin_code || '------');
 
   let oldTimeDisplay = '-';
   if (oldStartTime) {
@@ -904,7 +904,7 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
 
   return {
     type: 'flex',
-    altText: `🔄 แจ้งเปลี่ยนแปลงวัน/เวลาการจอง ${bookingCode}`,
+    altText: `🔄 แจ้งเปลี่ยนแปลงข้อมูลการจอง ${bookingCode} (${roomName} รหัสเข้าห้อง: ${pinCode})`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -916,7 +916,7 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
         contents: [
           {
             type: 'text',
-            text: '🔄 เปลี่ยนแปลงวัน/เวลาการจองสำเร็จ',
+            text: '🔄 เปลี่ยนแปลงข้อมูลการจองสำเร็จ',
             weight: 'bold',
             color: '#ffffff',
             size: 'md'
@@ -949,7 +949,7 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
             layout: 'horizontal',
             contents: [
               { type: 'text', text: 'ห้องประชุม', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: roomName, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+              { type: 'text', text: roomName, size: 'sm', color: '#0284c7', weight: 'bold', flex: 4, align: 'end' }
             ]
           },
           {
@@ -975,6 +975,44 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
               { type: 'text', text: 'ยอดสุทธิ', size: 'sm', color: '#64748b', flex: 2 },
               { type: 'text', text: `฿${Number(newTotal !== undefined ? newTotal : booking.total_amount || 0).toLocaleString()}`, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
             ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            paddingAll: '12px',
+            backgroundColor: '#f0fdf4',
+            cornerRadius: '12px',
+            borderColor: '#86efac',
+            borderWidth: '1px',
+            contents: [
+              {
+                type: 'text',
+                text: '🔑 รหัสผ่านปลดล็อกประตูห้องใหม่ (Door PIN)',
+                size: 'xs',
+                color: '#15803d',
+                weight: 'bold',
+                align: 'center'
+              },
+              {
+                type: 'text',
+                text: pinCode,
+                size: 'xl',
+                color: '#166534',
+                weight: 'bold',
+                align: 'center',
+                margin: 'xs'
+              },
+              {
+                type: 'text',
+                text: 'กดรหัส PIN ตามด้วยเครื่องหมาย # ที่หน้าจอแท็บเล็ตหน้าห้องเพื่อปลดล็อก',
+                size: 'xxs',
+                color: '#16a34a',
+                align: 'center',
+                wrap: true,
+                margin: 'xs'
+              }
+            ]
           }
         ]
       },
@@ -984,7 +1022,7 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
         contents: [
           {
             type: 'text',
-            text: 'ระบบได้อัปเดตวันและเวลาการใช้งานห้องประชุมให้เรียบร้อยแล้วค่ะ',
+            text: 'ระบบได้อัปเดตข้อมูลการใช้งานห้องประชุมให้เรียบร้อยแล้วค่ะ',
             size: 'xxs',
             color: '#94a3b8',
             align: 'center'
@@ -1596,6 +1634,172 @@ export default {
       // ----------------------------------------------------
       // 4. POS BOOKINGS (STAFF SIDE - REQUIRES AUTH)
       // ----------------------------------------------------
+      
+      // ----------------------------------------------------
+      // BASECAMP QUOTA HUB ENDPOINTS
+      // ----------------------------------------------------
+      if (pathname === '/api/basecamp/quota' && method === 'GET') {
+        const subType = url.searchParams.get('sub_type') || 'office';
+        const unit = url.searchParams.get('unit') || '401';
+        const now = new Date();
+        const month = url.searchParams.get('month') || String(now.getMonth() + 1);
+        const year = url.searchParams.get('year') || String(now.getFullYear());
+        const targetMonthStr = `${year}-${String(month).padStart(2, '0')}`;
+        const maxQuota = subType === 'office' ? 4 : 2;
+
+        try {
+          const quotaRow = await env.DB.prepare(
+            `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
+             FROM bookings b
+             WHERE b.customer_type = 'basecamp'
+               AND b.basecamp_sub_type = ?
+               AND b.basecamp_unit = ?
+               AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM booking_items bi 
+                   WHERE bi.booking_id = b.id 
+                     AND strftime('%Y-%m', bi.start_time) = ?
+                 )
+                 OR (
+                   NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+                   AND strftime('%Y-%m', b.created_at) = ?
+                 )
+               )`
+          ).bind(subType, unit, targetMonthStr, targetMonthStr).first();
+
+          const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
+          const remainingQuota = Math.max(0, maxQuota - usedQuota);
+
+          return new Response(JSON.stringify({
+            sub_type: subType,
+            unit: unit,
+            target_month: targetMonthStr,
+            max_quota: maxQuota,
+            used_quota: usedQuota,
+            remaining_quota: remainingQuota
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({
+            sub_type: subType,
+            unit: unit,
+            target_month: targetMonthStr,
+            max_quota: maxQuota,
+            used_quota: 0,
+            remaining_quota: maxQuota
+          }), { headers: corsHeaders });
+        }
+      }
+
+      if (pathname === '/api/basecamp/quota/overview' && method === 'GET') {
+        const now = new Date();
+        const month = url.searchParams.get('month') || String(now.getMonth() + 1);
+        const year = url.searchParams.get('year') || String(now.getFullYear());
+        const targetMonthStr = `${year}-${String(month).padStart(2, '0')}`;
+
+        const OFFICE_UNITS = ['401','402','403','404','405','406','407','408','409','410','411','412','413','414'];
+        const HOTDESK_UNITS = ['419','420','421','422','427','428','429','430'];
+
+        try {
+          const { results: rows } = await env.DB.prepare(
+            `SELECT b.basecamp_sub_type, b.basecamp_unit, COALESCE(SUM(b.quota_hours_used), 0) as used_hours, COUNT(DISTINCT b.id) as booking_count
+             FROM bookings b
+             WHERE b.customer_type = 'basecamp'
+               AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM booking_items bi 
+                   WHERE bi.booking_id = b.id 
+                     AND strftime('%Y-%m', bi.start_time) = ?
+                 )
+                 OR (
+                   NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+                   AND strftime('%Y-%m', b.created_at) = ?
+                 )
+               )
+             GROUP BY b.basecamp_sub_type, b.basecamp_unit`
+          ).bind(targetMonthStr, targetMonthStr).all();
+
+          const usageMap = {};
+          (rows || []).forEach(r => {
+            usageMap[`${r.basecamp_sub_type}_${r.basecamp_unit}`] = {
+              used_quota: Number(r.used_hours),
+              booking_count: Number(r.booking_count)
+            };
+          });
+
+          const units = [];
+          OFFICE_UNITS.forEach(u => {
+            const usage = usageMap[`office_${u}`] || { used_quota: 0, booking_count: 0 };
+            const maxQuota = 4;
+            units.push({
+              sub_type: 'office',
+              unit: u,
+              label: `Office ${u}`,
+              max_quota: maxQuota,
+              used_quota: usage.used_quota,
+              remaining_quota: Math.max(0, maxQuota - usage.used_quota),
+              used_count: usage.booking_count
+            });
+          });
+
+          HOTDESK_UNITS.forEach(u => {
+            const usage = usageMap[`hotdesk_${u}`] || { used_quota: 0, booking_count: 0 };
+            const maxQuota = 2;
+            units.push({
+              sub_type: 'hotdesk',
+              unit: u,
+              label: `Hotdesk ${u}`,
+              max_quota: maxQuota,
+              used_quota: usage.used_quota,
+              remaining_quota: Math.max(0, maxQuota - usage.used_quota),
+              used_count: usage.booking_count
+            });
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            target_month: targetMonthStr,
+            units
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      if (pathname === '/api/basecamp/quota/history' && method === 'GET') {
+        const subType = url.searchParams.get('sub_type');
+        const unit = url.searchParams.get('unit');
+        const month = url.searchParams.get('month');
+        const year = url.searchParams.get('year');
+        const targetMonthStr = (month && year) ? `${year}-${String(month).padStart(2, '0')}` : null;
+
+        try {
+          let sql = `
+            SELECT b.id, b.receipt_number, b.customer_name, b.created_at, b.quota_hours_used,
+                   bi.start_time, bi.end_time, bi.price, bi.subtotal, r.name as room_name
+            FROM bookings b
+            LEFT JOIN booking_items bi ON b.id = bi.booking_id
+            LEFT JOIN rooms r ON bi.room_id = r.id
+            WHERE b.customer_type = 'basecamp'
+              AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+          `;
+          const params = [];
+          if (subType) { sql += ` AND b.basecamp_sub_type = ?`; params.push(subType); }
+          if (unit) { sql += ` AND b.basecamp_unit = ?`; params.push(unit); }
+          if (targetMonthStr) {
+            sql += ` AND (strftime('%Y-%m', bi.start_time) = ? OR strftime('%Y-%m', b.created_at) = ?)`;
+            params.push(targetMonthStr, targetMonthStr);
+          }
+          sql += ` ORDER BY b.created_at DESC`;
+
+          const { results: bookings } = await env.DB.prepare(sql).bind(...params).all();
+          return new Response(JSON.stringify({ success: true, bookings: bookings || [] }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ success: false, error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
       if (pathname === '/api/bookings' && method === 'GET') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -2030,6 +2234,8 @@ export default {
         if (!currentItem) return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องในการจองนี้' }), { status: 404, headers: corsHeaders });
 
         const targetRoomId = room_id || currentItem.room_id;
+        const targetRoomObj = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(targetRoomId).first();
+
         const cleanStart = start_time.length === 5 ? `${start_time}:00` : start_time;
         const cleanEnd = end_time.length === 5 ? `${end_time}:00` : end_time;
         const newStartISO = `${date}T${cleanStart}`;
@@ -2038,7 +2244,6 @@ export default {
         // Overlap check (exclude this booking)
         const overlapResult = await checkRoomOverlap(env, targetRoomId, newStartISO, newEndISO, bookingId);
         if (overlapResult.hasOverlap) {
-          const targetRoomObj = await env.DB.prepare('SELECT name FROM rooms WHERE id = ?').bind(targetRoomId).first();
           const targetRoomName = targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`;
           return new Response(JSON.stringify({ error: formatOverlapErrorMessage(targetRoomName, overlapResult) }), { status: 400, headers: corsHeaders });
         }
@@ -2046,9 +2251,14 @@ export default {
         const oldStart = currentItem.start_time;
         const oldEnd = currentItem.end_time;
 
+        // Synchronize PIN code with the target room
+        let newPinCode = (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim())
+          ? targetRoomObj.pin_code.trim()
+          : (booking.pin_code || await generateUniquePinCode(env));
+
         // Update booking_items
         await env.DB.prepare(
-          `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ? WHERE id = ?`
+          `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`
         ).bind(
           targetRoomId,
           newStartISO,
@@ -2057,13 +2267,17 @@ export default {
           total_amount !== undefined ? total_amount : currentItem.price,
           booking_type || currentItem.booking_type || 'hourly',
           layout || currentItem.layout || 'standard',
+          newPinCode,
           currentItem.id
         ).run();
 
-        // Update bookings total_amount if specified
+        // Update bookings total_amount & pin_code
         if (total_amount !== undefined) {
-          await env.DB.prepare('UPDATE bookings SET total_amount = ? WHERE id = ?').bind(total_amount, bookingId).run();
+          await env.DB.prepare('UPDATE bookings SET pin_code = ?, total_amount = ? WHERE id = ?').bind(newPinCode, total_amount, bookingId).run();
+        } else {
+          await env.DB.prepare('UPDATE bookings SET pin_code = ? WHERE id = ?').bind(newPinCode, bookingId).run();
         }
+        booking.pin_code = newPinCode;
 
         let lineData = null;
         if (send_line !== false && booking.line_user_id) {
@@ -2072,8 +2286,9 @@ export default {
 
         return new Response(JSON.stringify({ 
           success: true, 
-          message: 'เปลี่ยนแปลงวันและเวลาการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
-          line_sent: lineData?.success || false
+          message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
+          line_sent: lineData?.success || false,
+          pin_code: newPinCode
         }), { headers: corsHeaders });
       }
 
