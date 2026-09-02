@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { KeyRound, Smartphone, FileSpreadsheet, Save, CheckCircle2, ShieldCheck, Clock, ExternalLink, HelpCircle, Lock, RefreshCw } from 'lucide-react';
+import { KeyRound, Smartphone, FileSpreadsheet, Save, CheckCircle2, ShieldCheck, Clock, ExternalLink, HelpCircle, Lock, RefreshCw, AlertCircle } from 'lucide-react';
+import { authManager } from '../authManager';
 
 function DoorAccessSettings({ sysAlert }) {
   const [configs, setConfigs] = useState({
@@ -11,7 +12,11 @@ function DoorAccessSettings({ sysAlert }) {
     early_checkin_minutes: '15'
   });
 
+  const [hasTokenSaved, setHasTokenSaved] = useState(false);
+  const [hasSecretSaved, setHasSecretSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [lineTesting, setLineTesting] = useState(false);
+  const [lineTestResult, setLineTestResult] = useState(null);
   const [testPin, setTestPin] = useState('');
   const [testResult, setTestResult] = useState(null);
   const [testLoading, setTestLoading] = useState(false);
@@ -22,14 +27,26 @@ function DoorAccessSettings({ sysAlert }) {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch('/api/settings');
+      const token = authManager.getToken() || localStorage.getItem('token') || '';
+      const res = await fetch('/api/settings', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         const data = await res.json();
+        const tokenExists = !!data.has_line_channel_access_token || (typeof data.line_channel_access_token === 'string' && data.line_channel_access_token.includes('•'));
+        const secretExists = !!data.has_line_channel_secret || (typeof data.line_channel_secret === 'string' && data.line_channel_secret.includes('•'));
+        setHasTokenSaved(tokenExists);
+        setHasSecretSaved(secretExists);
+
         setConfigs(prev => ({
           ...prev,
           ...data,
+          line_channel_access_token: data.line_channel_access_token || '',
+          line_channel_secret: data.line_channel_secret || '',
           early_checkin_minutes: data.early_checkin_minutes || '15'
         }));
+      } else {
+        console.warn('[DoorAccessSettings] Failed to fetch settings: HTTP', res.status);
       }
     } catch (err) {
       console.error('Failed to load door access settings:', err);
@@ -40,20 +57,75 @@ function DoorAccessSettings({ sysAlert }) {
     e.preventDefault();
     setSaving(true);
     try {
+      const token = authManager.getToken() || localStorage.getItem('token') || '';
+      const payload = { ...configs };
+
+      // MASK PROTECTION: Never send mask placeholder string to avoid overwriting real credentials!
+      if (payload.line_channel_access_token && payload.line_channel_access_token.includes('•')) {
+        delete payload.line_channel_access_token;
+      }
+      if (payload.line_channel_secret && payload.line_channel_secret.includes('•')) {
+        delete payload.line_channel_secret;
+      }
+
       const res = await fetch('/api/settings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(configs)
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
         if (sysAlert) sysAlert('บันทึกการตั้งค่าระบบจอง LINE OA & รหัสเข้าห้องเรียบร้อยแล้ว');
+        fetchSettings();
       } else {
-        if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการบันทึกการตั้งค่า');
+        const errData = await res.json().catch(() => ({}));
+        if (sysAlert) sysAlert(errData.error || 'เกิดข้อผิดพลาดในการบันทึกการตั้งค่า');
       }
     } catch (err) {
       if (sysAlert) sysAlert('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleTestLineConnection = async () => {
+    setLineTesting(true);
+    setLineTestResult(null);
+    try {
+      const token = authManager.getToken() || localStorage.getItem('token') || '';
+      const testPayload = {};
+
+      // Send current input values if user entered new plaintext (unmasked) values
+      if (configs.line_channel_access_token && !configs.line_channel_access_token.includes('•') && configs.line_channel_access_token.trim()) {
+        testPayload.channel_access_token = configs.line_channel_access_token.trim();
+      }
+      if (configs.line_channel_secret && !configs.line_channel_secret.includes('•') && configs.line_channel_secret.trim()) {
+        testPayload.channel_secret = configs.line_channel_secret.trim();
+      }
+      if (configs.line_liff_id && configs.line_liff_id.trim()) {
+        testPayload.liff_id = configs.line_liff_id.trim();
+      }
+
+      const res = await fetch('/api/settings/line/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(testPayload)
+      });
+      const data = await res.json();
+      setLineTestResult(data);
+    } catch (err) {
+      setLineTestResult({
+        success: false,
+        connected: false,
+        error: 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์เพื่อทดสอบการเชื่อมต่อได้'
+      });
+    } finally {
+      setLineTesting(false);
     }
   };
 
@@ -65,9 +137,13 @@ function DoorAccessSettings({ sysAlert }) {
     setTestLoading(true);
     setTestResult(null);
     try {
+      const token = authManager.getToken() || localStorage.getItem('token') || '';
       const res = await fetch('/api/access/verify-pin', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify({ pin_code: testPin.trim() })
       });
       const data = await res.json();
@@ -138,28 +214,52 @@ function DoorAccessSettings({ sysAlert }) {
             </h3>
 
             <div className="form-group" style={{ margin: 0 }}>
-              <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>
-                LINE Channel Access Token
-              </label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                  LINE Channel Access Token
+                </label>
+                {hasTokenSaved && (
+                  <span style={{ fontSize: '0.72rem', color: '#10b981', fontWeight: 700 }}>
+                    (ตั้งค่าแล้ว)
+                  </span>
+                )}
+              </div>
               <textarea
                 rows={2}
                 className="form-control"
-                placeholder="วาง Long-lived Channel Access Token จาก LINE Developers"
+                placeholder={hasTokenSaved ? "•••••••••••••••••••••••• (ตั้งค่าแล้ว - กรอกใหม่เฉพาะเมื่อต้องการเปลี่ยน)" : "วาง Long-lived Channel Access Token จาก LINE Developers"}
                 value={configs.line_channel_access_token || ''}
+                onFocus={() => {
+                  if (configs.line_channel_access_token && configs.line_channel_access_token.includes('•')) {
+                    setConfigs({ ...configs, line_channel_access_token: '' });
+                  }
+                }}
                 onChange={e => setConfigs({ ...configs, line_channel_access_token: e.target.value })}
                 style={{ fontSize: '0.8rem', padding: '10px 12px', borderRadius: '12px', resize: 'none' }}
               />
             </div>
 
             <div className="form-group" style={{ margin: 0 }}>
-              <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>
-                LINE Channel Secret
-              </label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                  LINE Channel Secret
+                </label>
+                {hasSecretSaved && (
+                  <span style={{ fontSize: '0.72rem', color: '#10b981', fontWeight: 700 }}>
+                    (ตั้งค่าแล้ว)
+                  </span>
+                )}
+              </div>
               <input
                 type="password"
                 className="form-control"
-                placeholder="กรอก Channel Secret"
+                placeholder={hasSecretSaved ? "•••••••••••••••• (ตั้งค่าแล้ว - กรอกใหม่เฉพาะเมื่อต้องการเปลี่ยน)" : "กรอก Channel Secret"}
                 value={configs.line_channel_secret || ''}
+                onFocus={() => {
+                  if (configs.line_channel_secret && configs.line_channel_secret.includes('•')) {
+                    setConfigs({ ...configs, line_channel_secret: '' });
+                  }
+                }}
                 onChange={e => setConfigs({ ...configs, line_channel_secret: e.target.value })}
                 style={{ height: '42px', fontSize: '0.85rem', padding: '0 12px', borderRadius: '12px' }}
               />
@@ -179,28 +279,116 @@ function DoorAccessSettings({ sysAlert }) {
               />
             </div>
 
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={saving}
-              style={{
-                height: '42px',
-                borderRadius: '12px',
-                fontWeight: 700,
-                fontSize: '0.875rem',
+            <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={saving || lineTesting}
+                style={{
+                  flex: 1,
+                  height: '42px',
+                  borderRadius: '12px',
+                  fontWeight: 700,
+                  fontSize: '0.875rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  cursor: 'pointer',
+                  backgroundColor: '#10b981',
+                  border: 'none'
+                }}
+              >
+                <Save size={16} />
+                <span>{saving ? 'กำลังบันทึก...' : 'บันทึกการตั้งค่า LINE OA'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTestLineConnection}
+                disabled={saving || lineTesting}
+                className="btn btn-secondary"
+                style={{
+                  height: '42px',
+                  padding: '0 18px',
+                  borderRadius: '12px',
+                  fontWeight: 700,
+                  fontSize: '0.85rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  cursor: 'pointer',
+                  backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                  color: 'var(--primary-color)',
+                  border: '1px solid rgba(37, 99, 235, 0.25)'
+                }}
+              >
+                <RefreshCw size={15} style={{ animation: lineTesting ? 'spin 1s linear infinite' : 'none' }} />
+                <span>{lineTesting ? 'กำลังทดสอบ...' : 'ทดสอบการเชื่อมต่อ'}</span>
+              </button>
+            </div>
+
+            {lineTestResult && (
+              <div style={{
+                marginTop: '4px',
+                padding: '14px 16px',
+                borderRadius: '14px',
+                border: `1px solid ${lineTestResult.connected ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                backgroundColor: lineTestResult.connected ? 'rgba(16, 185, 129, 0.05)' : 'rgba(239, 68, 68, 0.05)',
                 display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                flexDirection: 'column',
                 gap: '8px',
-                cursor: 'pointer',
-                backgroundColor: '#10b981',
-                border: 'none',
-                marginTop: '4px'
-              }}
-            >
-              <Save size={16} />
-              <span>{saving ? 'กำลังบันทึก...' : 'บันทึกการตั้งค่า LINE OA'}</span>
-            </button>
+                fontSize: '0.82rem'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {lineTestResult.connected ? (
+                      <CheckCircle2 size={16} style={{ color: '#10b981' }} />
+                    ) : (
+                      <AlertCircle size={16} style={{ color: '#ef4444' }} />
+                    )}
+                    <span style={{ fontWeight: 800, color: lineTestResult.connected ? '#10b981' : '#ef4444' }}>
+                      {lineTestResult.connected ? 'สถานะการเชื่อมต่อ: ผ่าน' : 'สถานะการเชื่อมต่อ: ไม่ผ่าน'}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    ตรวจสอบล่าสุด: {new Date().toLocaleTimeString('th-TH')} น.
+                  </span>
+                </div>
+
+                {lineTestResult.connected && lineTestResult.bot && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-main)', fontSize: '0.82rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>บัญชี LINE OA:</span>
+                    <strong style={{ color: '#10b981' }}>{lineTestResult.bot.name}</strong>
+                    {lineTestResult.bot.basicId && (
+                      <span style={{ color: 'var(--text-muted)' }}>({lineTestResult.bot.basicId})</span>
+                    )}
+                  </div>
+                )}
+
+                {!lineTestResult.connected && lineTestResult.error && (
+                  <div style={{ color: '#ef4444', fontWeight: 600, fontSize: '0.8rem' }}>
+                    สาเหตุ: {lineTestResult.error}
+                  </div>
+                )}
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '4px', fontSize: '0.76rem', borderTop: '1px dashed var(--border-color)', paddingTop: '8px' }}>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Channel Secret:</span>
+                    <span style={{ fontWeight: 700, color: lineTestResult.channelSecretStatus === 'configured' ? '#10b981' : '#f59e0b' }}>
+                      {lineTestResult.channelSecretStatus === 'configured' ? 'ตั้งค่าแล้ว' : (lineTestResult.channelSecretStatus === 'not_configured' ? 'ยังไม่ได้ตั้งค่า' : 'ไม่สามารถตรวจสอบได้')}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>LIFF App ID:</span>
+                    <span style={{ fontWeight: 700, color: lineTestResult.liffIdStatus === 'valid_format' ? '#10b981' : (lineTestResult.liffIdStatus === 'invalid_format' ? '#ef4444' : '#f59e0b') }}>
+                      {lineTestResult.liffIdStatus === 'valid_format' ? 'รูปแบบถูกต้อง (ยังไม่ได้ทดสอบ init จริง)' : (lineTestResult.liffIdStatus === 'invalid_format' ? 'รูปแบบไม่ถูกต้อง' : 'ยังไม่ได้ตั้งค่า')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Section 2: Google Sheets Configuration */}

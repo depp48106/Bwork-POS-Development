@@ -34,12 +34,13 @@ export default function ConfirmPage() {
   const [toastMessage, setToastMessage] = useState('');
   const [error, setError] = useState('');
   const [timeLeftSeconds, setTimeLeftSeconds] = useState(15 * 60);
+  const [paymentWindowMinutes, setPaymentWindowMinutes] = useState(15);
   const [isExpired, setIsExpired] = useState(false);
 
   // Determine standard readable booking code
   const displayBookingCode = queryCode || booking?.booking_code || booking?.receipt_number || (bookingId && bookingId !== 'undefined' ? `BK-${String(bookingId).padStart(6, '0')}` : '-');
 
-  // 15-Minute Countdown Timer
+  // Dynamic Countdown Timer based on payment_window_minutes
   useEffect(() => {
     if (!booking || uploadSuccess || booking.payment_status === 'paid') return;
 
@@ -50,13 +51,14 @@ export default function ConfirmPage() {
     }
 
     const calcTimeLeft = () => {
-      if (!booking.created_at) return 15 * 60;
+      const totalSec = (paymentWindowMinutes || 15) * 60;
+      if (!booking.created_at) return totalSec;
       const clean = booking.created_at.replace(' ', 'T');
       const createdTime = new Date(clean).getTime();
-      if (isNaN(createdTime)) return 15 * 60;
+      if (isNaN(createdTime)) return totalSec;
       
       const elapsedSeconds = Math.floor((Date.now() - createdTime) / 1000);
-      const remaining = 15 * 60 - elapsedSeconds;
+      const remaining = totalSec - elapsedSeconds;
       return remaining;
     };
 
@@ -83,23 +85,47 @@ export default function ConfirmPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [booking, uploadSuccess]);
+  }, [booking, uploadSuccess, paymentWindowMinutes]);
 
   // Load completed booking info
   useEffect(() => {
     const raw = sessionStorage.getItem('completed_booking_result');
+    let storedBooking = null;
     if (raw) {
       try {
-        setBooking(JSON.parse(raw));
+        storedBooking = JSON.parse(raw);
+        setBooking(storedBooking);
       } catch (e) {}
     }
 
+    let pendingBooking = null;
+    try {
+      const pendingRaw = localStorage.getItem('bwork_pending_booking');
+      pendingBooking = pendingRaw ? JSON.parse(pendingRaw) : null;
+    } catch (e) {}
+
+    let statusAccess = null;
+    try {
+      const statusRaw = bookingId ? sessionStorage.getItem(`bwork_booking_access_${bookingId}`) : null;
+      statusAccess = statusRaw ? JSON.parse(statusRaw) : null;
+    } catch (e) {}
+
+    const accessToken = storedBooking?.access_token || pendingBooking?.accessToken || statusAccess?.accessToken;
+    const accessContact = storedBooking?.customer_contact || storedBooking?.contact || pendingBooking?.contact || statusAccess?.contact;
+    const accessHeaders = {
+      ...(accessToken ? { 'X-Booking-Token': accessToken } : {}),
+      ...(accessContact ? { 'X-Booking-Contact': accessContact } : {})
+    };
+
     // Auto-fetch fresh booking info from backend if id is provided
     if (bookingId && bookingId !== 'undefined') {
-      fetch(`${API_BASE}/api/public/bookings/${bookingId}`)
+      fetch(`${API_BASE}/api/public/bookings/${bookingId}`, { headers: accessHeaders })
         .then(res => res.json())
         .then(data => {
           if (data && !data.error) {
+            if (data.payment_window_minutes) {
+              setPaymentWindowMinutes(parseInt(data.payment_window_minutes, 10) || 15);
+            }
             setBooking(prev => ({
               ...prev,
               ...data,
@@ -117,6 +143,9 @@ export default function ConfirmPage() {
       .then(res => res.json())
       .then(data => {
         if (data) {
+          if (data.payment_window_minutes) {
+            setPaymentWindowMinutes(parseInt(data.payment_window_minutes, 10) || 15);
+          }
           setPaymentSettings(prev => ({
             ...prev,
             bank_name: data.payment_bank_name || data.bank_name || prev.bank_name,
@@ -259,21 +288,45 @@ export default function ConfirmPage() {
         body: JSON.stringify({
           slip_image: finalPayload,
           qr_data: slipQrData,
-          contact: booking?.customer_contact || booking?.contact
+          contact: booking?.customer_contact || booking?.contact,
+          access_token: booking?.access_token
         })
       });
 
-      const data = await res.json();
+      // OCR may take a while and the server can occasionally return an empty or
+      // non-JSON response (for example while the local dev server is restarting).
+      // Do not expose the browser's JSON parsing error to the customer.
+      const responseText = await res.text();
+      let data = {};
+      if (responseText) {
+        try {
+          data = JSON.parse(responseText);
+        } catch (_) {
+          data = {};
+        }
+      }
 
-      if (res.ok && data.success) {
+      if (res.ok && data.success && data.auto_approved === true) {
         localStorage.removeItem('bwork_pending_booking');
         setUploadResultData(data);
         setUploadSuccess(true);
+      } else if (res.ok && data.success && data.auto_approved !== true) {
+        // A stored/flagged upload is not a successful payment. Keep the customer
+        // on this screen and require a new slip instead of showing a success view.
+        setError(
+          data.verifyResult?.reasons?.[0] ||
+          data.message ||
+          'ระบบยังไม่สามารถยืนยันชื่อบัญชีผู้รับและยอดเงินได้ กรุณาอัปโหลดสลิปที่ถูกต้องอีกครั้ง'
+        );
       } else {
-        setError(data.error || 'ไม่สามารถอัปโหลดสลิปได้ กรุณาลองใหม่อีกครั้ง');
+        setError(data.error || (
+          res.status >= 500
+            ? 'ระบบตรวจสอบสลิปขัดข้องชั่วคราว กรุณาลองส่งสลิปอีกครั้ง'
+            : 'ไม่สามารถตรวจสอบสลิปนี้ได้ กรุณาตรวจสอบรูปภาพแล้วลองใหม่อีกครั้ง'
+        ));
       }
     } catch (err) {
-      setError('เกิดข้อผิดพลาดในการเชื่อมต่อ: ' + err.message);
+      setError('ไม่สามารถติดต่อระบบตรวจสอบสลิปได้ กรุณารอสักครู่แล้วลองใหม่อีกครั้ง');
     } finally {
       setUploading(false);
     }
@@ -341,7 +394,7 @@ export default function ConfirmPage() {
               </div>
 
               <h2 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 8px 0' }}>
-                ส่งหลักฐานเรียบร้อยแล้ว (รอเจ้าหน้าที่ตรวจสอบ)
+                ระบบยังไม่สามารถยืนยันสลิปได้
               </h2>
               
               <div style={{
@@ -358,8 +411,8 @@ export default function ConfirmPage() {
                 flexDirection: 'column',
                 gap: '4px'
               }}>
-                <strong>สลิปนี้กำลังรอการตรวจสอบด้วยตนเองจากเจ้าหน้าที่</strong>
-                <span>{uploadResultData?.message || 'ระบบไม่พบ QR Code ธนาคารในรูปภาพ หรือไม่ใช่สลิปมาตรฐาน เจ้าหน้าที่จะทำการตรวจสอบยอดเงินให้ท่านในไม่ช้า'}</span>
+                <strong>กรุณาอัปโหลดสลิปใหม่</strong>
+                <span>{uploadResultData?.message || 'กรุณาใช้สลิปต้นฉบับที่เห็นชื่อผู้รับ ยอดเงิน และ QR Code ชัดเจน'}</span>
               </div>
             </>
           )}
@@ -481,7 +534,7 @@ export default function ConfirmPage() {
             }}>
               <AlertCircle size={28} color="#ef4444" />
               <div style={{ fontWeight: 900, fontSize: '1rem', color: '#dc2626' }}>
-                รายการจองนี้หมดอายุแล้ว (เกินกำหนดเวลาชำระเงิน 15 นาที)
+                {`รายการจองนี้หมดอายุแล้ว (เกินกำหนดเวลาชำระเงิน ${paymentWindowMinutes || 15} นาที)`}
               </div>
               <div style={{ fontSize: '0.82rem', color: '#64748b', maxWidth: '420px' }}>
                 ระบบได้ทำการยกเลิกการจองอัตโนมัติเพื่อเปิดสิทธิ์ให้ผู้อื่น หากท่านต้องการใช้งาน กรุณาทำรายการจองใหม่อีกครั้งครับ
@@ -742,7 +795,7 @@ export default function ConfirmPage() {
                 }}
               >
                 <Upload size={18} />
-                <span>{uploading ? 'กำลังส่งข้อมูลสลิป...' : 'ส่งสลิปยืนยันการชำระเงิน'}</span>
+                <span>{uploading ? 'กำลังอ่านและตรวจสอบสลิป...' : 'ส่งสลิปยืนยันการชำระเงิน'}</span>
               </button>
             </form>
           </div>

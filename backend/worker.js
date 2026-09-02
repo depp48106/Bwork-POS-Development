@@ -2750,6 +2750,9 @@ export default {
           };
         }
 
+        const pwRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'payment_window_minutes'").first();
+        const windowMins = Math.max(1, parseInt(pwRow?.value || '15', 10) || 15);
+
         return new Response(JSON.stringify({
           ...booking,
           bookingCode,
@@ -2758,7 +2761,8 @@ export default {
           start_time: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[1].substring(0, 5) : items[0].start_time) : null,
           end_time: items && items.length ? (items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time) : null,
           booking_date: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : booking.created_at?.split('T')[0]) : null,
-          paymentDeadline: new Date(new Date(booking.created_at).getTime() + 24 * 60 * 60 * 1000).toISOString()
+          paymentDeadline: new Date(new Date(booking.created_at).getTime() + windowMins * 60 * 1000).toISOString(),
+          payment_window_minutes: windowMins
         }), { headers: corsHeaders });
       }
 
@@ -2884,6 +2888,9 @@ export default {
 
         const bookingCode = `BK-${String(bookingId).padStart(6, '0')}`;
 
+        const pwRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'payment_window_minutes'").first();
+        const windowMins = Math.max(1, parseInt(pwRow?.value || '15', 10) || 15);
+
         // Return clean response WITHOUT exposing the PIN code to unverified customer
         return new Response(JSON.stringify({
           success: true,
@@ -2896,8 +2903,9 @@ export default {
           receiptNumber: receiptNumber,
           total_amount: subtotal,
           totalAmount: subtotal,
-          paymentDeadline: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          message: 'บันทึกการจองสำเร็จ! กรุณาแนบสลิปชำระเงินเพื่อยืนยันการจอง'
+          paymentDeadline: new Date(Date.now() + windowMins * 60 * 1000).toISOString(),
+          payment_window_minutes: windowMins,
+          message: `บันทึกการจองสำเร็จ! กรุณาแนบสลิปชำระเงินภายใน ${windowMins} นาทีเพื่อยืนยันการจอง`
         }), { status: 201, headers: corsHeaders });
       }
 
@@ -3027,14 +3035,18 @@ export default {
         const { results: settings } = await env.DB.prepare("SELECT key, value FROM settings").all();
         const map = {};
         (settings || []).forEach(s => map[s.key] = s.value);
+        const windowMins = Math.max(1, parseInt(map.payment_window_minutes || '15', 10) || 15);
+        const deadlineHours = Math.round((windowMins / 60) * 100) / 100;
         return new Response(JSON.stringify({
           company_name: map.company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)',
           promptpay_id: map.promptpay_id || '0125554000401',
           payment_bank_name: map.payment_bank_name || map.bank_name || 'ธนาคารกรุงศรีอยุธยา (Krungsri)',
           payment_bank_account: map.payment_bank_account || map.bank_account || '329-1-38429-0',
           payment_bank_account_name: map.payment_bank_account_name || map.bank_account_name || 'บริษัท บิลท์ ฮาร์ท จำกัด',
-          payment_deadline_hours: 24,
-          ...map
+          payment_deadline_hours: deadlineHours,
+          payment_window_minutes: windowMins,
+          cleaning_buffer_minutes: parseInt(map.cleaning_buffer_minutes || '30', 10),
+          line_liff_id: map.line_liff_id || '2011136579-c1TeSWNs'
         }), { headers: corsHeaders });
       }
 
@@ -3045,15 +3057,39 @@ export default {
         if (method === 'POST') {
           const body = await request.json();
           for (let [k, v] of Object.entries(body)) {
+            // Guard against overwriting real secrets with mask string or empty string
+            if ((k === 'line_channel_access_token' || k === 'line_channel_secret') && (
+              !v ||
+              String(v).trim() === '' ||
+              String(v).includes('•') ||
+              String(v).includes('****')
+            )) {
+              continue;
+            }
+            let valToSave = v;
+            if (k === 'payment_window_minutes') {
+              const parsed = parseInt(v, 10);
+              valToSave = (isNaN(parsed) || parsed < 1) ? '15' : String(parsed);
+            }
             await env.DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?")
-              .bind(k, String(v), String(v)).run();
+              .bind(k, String(valToSave), String(valToSave)).run();
           }
           return new Response(JSON.stringify({ success: true, message: 'บันทึกการตั้งค่าสำเร็จ' }), { headers: corsHeaders });
         }
 
         const { results: settings } = await env.DB.prepare("SELECT key, value FROM settings").all();
         const map = {};
-        (settings || []).forEach(s => map[s.key] = s.value);
+        (settings || []).forEach(s => {
+          if (s.key === 'line_channel_access_token') {
+            map[s.key] = s.value ? '••••••••••••••••••••••••' : '';
+            map.has_line_channel_access_token = !!(s.value && s.value.trim());
+          } else if (s.key === 'line_channel_secret') {
+            map[s.key] = s.value ? '••••••••••••••••' : '';
+            map.has_line_channel_secret = !!(s.value && s.value.trim());
+          } else {
+            map[s.key] = s.value;
+          }
+        });
 
         return new Response(JSON.stringify({
           company_name: map.company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)',
@@ -3066,6 +3102,104 @@ export default {
           payment_deadline_hours: 24,
           ...map
         }), { headers: corsHeaders });
+      }
+
+      if (pathname === '/api/settings/line/test' && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        try {
+          const body = await request.json().catch(() => ({}));
+          const { channel_access_token, channel_secret, liff_id } = body;
+
+          let tokenToTest = channel_access_token;
+          if (!tokenToTest || String(tokenToTest).includes('•') || String(tokenToTest).trim() === '') {
+            const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
+            tokenToTest = row?.value || '';
+          }
+
+          let secretStatus = 'not_configured';
+          if (channel_secret && !String(channel_secret).includes('•') && String(channel_secret).trim() !== '') {
+            secretStatus = 'configured';
+          } else {
+            const rowSec = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_secret'").first();
+            if (rowSec?.value && rowSec.value.trim().length > 0) {
+              secretStatus = 'configured';
+            }
+          }
+
+          let liffIdToCheck = liff_id;
+          if (!liffIdToCheck || String(liffIdToCheck).trim() === '') {
+            const rowLiff = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_liff_id'").first();
+            liffIdToCheck = rowLiff?.value || '';
+          }
+          let liffIdStatus = 'not_configured';
+          if (liffIdToCheck && liffIdToCheck.trim()) {
+            const liffRegex = /^\d{10}-[A-Za-z0-9_-]+$/;
+            if (liffRegex.test(liffIdToCheck.trim())) {
+              liffIdStatus = 'valid_format';
+            } else {
+              liffIdStatus = 'invalid_format';
+            }
+          }
+
+          if (!tokenToTest || String(tokenToTest).trim() === '') {
+            return new Response(JSON.stringify({
+              success: false,
+              connected: false,
+              error: 'ยังไม่ได้ระบุหรือบันทึก LINE Channel Access Token ในระบบ',
+              channelSecretStatus: secretStatus,
+              liffIdStatus: liffIdStatus
+            }), { headers: corsHeaders });
+          }
+
+          const lineRes = await fetch('https://api.line.me/v2/bot/info', {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${tokenToTest.trim()}`
+            }
+          });
+
+          if (lineRes.ok) {
+            const botData = await lineRes.json();
+            return new Response(JSON.stringify({
+              success: true,
+              connected: true,
+              bot: {
+                name: botData.displayName || 'LINE Official Account',
+                basicId: botData.basicId || ''
+              },
+              channelSecretStatus: secretStatus,
+              liffIdStatus: liffIdStatus,
+              message: 'เชื่อมต่อกับ LINE Messaging API สำเร็จ'
+            }), { headers: corsHeaders });
+          } else {
+            let errDetail = 'ไม่สามารถเชื่อมต่อกับ LINE API ได้';
+            if (lineRes.status === 401) {
+              errDetail = 'LINE Channel Access Token ไม่ถูกต้อง หรือหมดอายุแล้ว (401 Unauthorized)';
+            } else if (lineRes.status === 403) {
+              errDetail = 'LINE Channel Access Token ไม่มีสิทธิ์เข้าถึง (403 Forbidden)';
+            } else {
+              errDetail = `เกิดข้อผิดพลาดจาก LINE API (HTTP ${lineRes.status})`;
+            }
+
+            return new Response(JSON.stringify({
+              success: false,
+              connected: false,
+              error: errDetail,
+              channelSecretStatus: secretStatus,
+              liffIdStatus: liffIdStatus
+            }), { headers: corsHeaders });
+          }
+        } catch (err) {
+          return new Response(JSON.stringify({
+            success: false,
+            connected: false,
+            error: `เกิดข้อผิดพลาดในการเชื่อมต่อ (${err.message})`,
+            channelSecretStatus: 'unknown',
+            liffIdStatus: 'unknown'
+          }), { headers: corsHeaders });
+        }
       }
 
       if (pathname === '/api/users' || pathname === '/api/admin/users') {

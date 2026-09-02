@@ -3,7 +3,8 @@ const { verifySlip, decodeMiniQR } = require('./slipVerifier');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { initDatabase, dbQuery, hashPassword } = require('./database');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+const { initDatabase, dbQuery, hashPassword, verifyPassword } = require('./database');
 const { performBackup } = require('./backup');
 const { 
   generateDatabaseDumpSql, 
@@ -14,8 +15,12 @@ const {
 } = require('./onedrive');
 const crypto = require('crypto');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'bwork-pos-secret-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const JWT_EXPIRY = 8 * 60 * 60 * 1000; // 8 hours
+
+if (!process.env.JWT_SECRET) {
+  console.warn('[Security] JWT_SECRET is not configured. Using a temporary secret; sessions will reset when the server restarts.');
+}
 
 // Simple JWT implementation using crypto (no external dependency needed)
 function createToken(payload) {
@@ -39,18 +44,45 @@ function verifyToken(token) {
 }
 
 // Authentication middleware
-function authenticateToken(req, res, next) {
+async function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   if (!token) {
     return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบ (Token not provided)' });
   }
-  const user = verifyToken(token);
-  if (!user) {
+  const tokenUser = verifyToken(token);
+  if (!tokenUser) {
     return res.status(401).json({ error: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่' });
   }
-  req.user = user;
-  next();
+  try {
+    const user = await dbQuery.get(
+      `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') AS permissions, u.fullname
+       FROM users u
+       LEFT JOIN roles r ON u.role = r.name
+       WHERE u.id = ?`,
+      [tokenUser.id]
+    );
+    if (!user) {
+      return res.status(401).json({ error: 'ไม่พบผู้ใช้นี้ในระบบ กรุณาเข้าสู่ระบบใหม่' });
+    }
+    req.user = user;
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'ไม่สามารถตรวจสอบสิทธิ์ผู้ใช้ได้' });
+  }
+}
+
+function requireAnyPermission(...requiredPermissions) {
+  return (req, res, next) => {
+    if (req.user && (req.user.role === 'admin' || req.user.username === 'admin')) {
+      return next();
+    }
+    const permissions = new Set(String(req.user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+    if (requiredPermissions.some(permission => permissions.has(permission))) {
+      return next();
+    }
+    return res.status(403).json({ error: 'ไม่มีสิทธิ์ดำเนินการนี้' });
+  };
 }
 
 const app = express();
@@ -79,16 +111,18 @@ app.post('/api/auth/login', async (req, res) => {
   }
 
   try {
-    const hashedPassword = hashPassword(password);
     const user = await dbQuery.get(
-      `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname 
+      `SELECT u.id, u.username, u.password_hash, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname
        FROM users u 
        LEFT JOIN roles r ON u.role = r.name 
-       WHERE u.username = ? AND u.password_hash = ?`,
-      [username, hashedPassword]
+       WHERE u.username = ?`,
+      [username]
     );
 
-    if (user) {
+    if (user && verifyPassword(password, user.password_hash)) {
+      if (!user.password_hash.startsWith('scrypt$')) {
+        await dbQuery.run('UPDATE users SET password_hash = ? WHERE id = ?', [hashPassword(password), user.id]);
+      }
       const token = createToken({ id: user.id, username: user.username, role: user.role, permissions: user.permissions, fullname: user.fullname });
       res.json({ success: true, token, user: { id: user.id, username: user.username, role: user.role, permissions: user.permissions, fullname: user.fullname } });
     } else {
@@ -99,7 +133,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Quick Cashier Login with PIN Code
+// Quick Cashier Login with PIN Code (Supports Scrypt-hashed PINs with auto-upgrade)
 app.post('/api/auth/login-pin', async (req, res) => {
   const { pin_code } = req.body;
   if (!pin_code) {
@@ -107,17 +141,32 @@ app.post('/api/auth/login-pin', async (req, res) => {
   }
 
   try {
-    const user = await dbQuery.get(
-      `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname 
+    const inputPin = String(pin_code).trim();
+    const users = await dbQuery.all(
+      `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname, u.pin_code 
        FROM users u 
        LEFT JOIN roles r ON u.role = r.name 
-       WHERE u.pin_code = ?`,
-      [pin_code.trim()]
+       WHERE u.pin_code IS NOT NULL AND u.pin_code != ''`
     );
 
-    if (user) {
-      const token = createToken({ id: user.id, username: user.username, role: user.role, permissions: user.permissions, fullname: user.fullname });
-      res.json({ success: true, token, user: { id: user.id, username: user.username, role: user.role, permissions: user.permissions, fullname: user.fullname } });
+    let matchedUser = null;
+    for (const u of users) {
+      if (u.pin_code.startsWith('scrypt$') || u.pin_code.length === 64) {
+        if (verifyPassword(inputPin, u.pin_code)) {
+          matchedUser = u;
+          break;
+        }
+      } else if (u.pin_code === inputPin) {
+        matchedUser = u;
+        // Auto-upgrade plain PIN to secure Scrypt hash
+        await dbQuery.run('UPDATE users SET pin_code = ? WHERE id = ?', [hashPassword(inputPin), u.id]);
+        break;
+      }
+    }
+
+    if (matchedUser) {
+      const token = createToken({ id: matchedUser.id, username: matchedUser.username, role: matchedUser.role, permissions: matchedUser.permissions, fullname: matchedUser.fullname });
+      res.json({ success: true, token, user: { id: matchedUser.id, username: matchedUser.username, role: matchedUser.role, permissions: matchedUser.permissions, fullname: matchedUser.fullname } });
     } else {
       res.status(401).json({ error: 'รหัส PIN ไม่ถูกต้อง หรือยังไม่ได้ตั้งค่า PIN ให้ผู้ใช้นี้' });
     }
@@ -147,18 +196,47 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
   }
 });
 
+// Silent Token Refresh / Sliding Session endpoint
+app.post('/api/auth/refresh', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    const newToken = createToken({
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      permissions: user.permissions,
+      fullname: user.fullname
+    });
+    res.json({
+      success: true,
+      token: newToken,
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        permissions: user.permissions,
+        fullname: user.fullname
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'ไม่สามารถต่ออายุเซสชันได้: ' + err.message });
+  }
+});
+
 // Apply authentication to all non-public API routes
 app.use('/api/rooms', authenticateToken);
 app.use('/api/services', authenticateToken);
 app.use('/api/categories', authenticateToken);
-app.use('/api/bookings', authenticateToken);
-app.use('/api/users', authenticateToken);
-app.use('/api/roles', authenticateToken);
+app.use('/api/bookings', authenticateToken, requireAnyPermission('pos', 'pending', 'layout', 'history'));
+app.use('/api/users', authenticateToken, requireAnyPermission('admin-management', 'admin-users'));
+app.use('/api/roles', authenticateToken, requireAnyPermission('admin-management', 'admin-users'));
 app.use('/api/settings', authenticateToken);
-app.use('/api/dashboard', authenticateToken);
-app.use('/api/quotations', authenticateToken);
-app.use('/api/upload', authenticateToken);
-app.use('/api/backup', authenticateToken);
+app.use('/api/dashboard', authenticateToken, requireAnyPermission('dashboard'));
+app.use('/api/quotations', authenticateToken, requireAnyPermission('quotations'));
+app.use('/api/upload', authenticateToken, requireAnyPermission('manage', 'admin-management', 'admin-system', 'admin-quotation'));
+app.use('/api/backup', authenticateToken, requireAnyPermission('admin-management', 'admin-backup'));
+app.use('/api/admin', authenticateToken, requireAnyPermission('admin-management', 'admin-backup'));
+app.use('/api/basecamp', authenticateToken, requireAnyPermission('pos', 'manage'));
 
 // ==========================================
 // 2. ROOMS ENDPOINTS
@@ -179,12 +257,12 @@ app.get('/api/rooms', async (req, res) => {
   }
 });
 
-app.post('/api/rooms', async (req, res) => {
+app.post('/api/rooms', requireAnyPermission('manage'), async (req, res) => {
   const { 
     name, capacity, hourly_rate, daily_rate, half_day_rate,
     has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
     description, status, image_url,
-    has_hourly, has_halfday, has_daily, pin_code
+    has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code
   } = req.body;
   
   if (!name) {
@@ -196,13 +274,13 @@ app.post('/api/rooms', async (req, res) => {
         name, capacity, hourly_rate, daily_rate, half_day_rate,
         has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
         description, status, image_url,
-        has_hourly, has_halfday, has_daily, pin_code
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name, capacity, hourly_rate, daily_rate || 0, half_day_rate || 0,
         has_classroom || 0, classroom_hourly_rate || 0, classroom_daily_rate || 0, classroom_capacity || 0, classroom_image_url || null,
         description || '', status || 'active', image_url || null,
-        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null
+        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null, builtland_pin_code || null
       ]
     );
     res.status(201).json({ 
@@ -214,19 +292,20 @@ app.post('/api/rooms', async (req, res) => {
       classroom_image_url: classroom_image_url || null,
       description, status: status || 'active', image_url: image_url || null,
       has_hourly: has_hourly !== undefined ? has_hourly : 1, has_halfday: has_halfday || 0, has_daily: has_daily || 0,
-      pin_code: pin_code || null
+      pin_code: pin_code || null,
+      builtland_pin_code: builtland_pin_code || null
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.put('/api/rooms/:id', async (req, res) => {
+app.put('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
   const { 
     name, capacity, hourly_rate, daily_rate, half_day_rate,
     has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
     description, status, image_url,
-    has_hourly, has_halfday, has_daily, pin_code
+    has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code
   } = req.body;
   try {
     await dbQuery.run(
@@ -234,13 +313,13 @@ app.put('/api/rooms/:id', async (req, res) => {
        SET name = ?, capacity = ?, hourly_rate = ?, daily_rate = ?, half_day_rate = ?,
            has_classroom = ?, classroom_hourly_rate = ?, classroom_daily_rate = ?, classroom_capacity = ?, classroom_image_url = ?,
            description = ?, status = ?, image_url = ?,
-           has_hourly = ?, has_halfday = ?, has_daily = ?, pin_code = ?
+           has_hourly = ?, has_halfday = ?, has_daily = ?, pin_code = ?, builtland_pin_code = ?
        WHERE id = ?`,
       [
         name, capacity, hourly_rate, daily_rate || 0, half_day_rate || 0,
         has_classroom || 0, classroom_hourly_rate || 0, classroom_daily_rate || 0, classroom_capacity || 0, classroom_image_url || null,
         description, status, image_url,
-        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null,
+        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null, builtland_pin_code || null,
         req.params.id
       ]
     );
@@ -250,7 +329,7 @@ app.put('/api/rooms/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/rooms/:id', async (req, res) => {
+app.delete('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
   try {
     await dbQuery.run('DELETE FROM rooms WHERE id = ?', [req.params.id]);
     res.json({ message: 'ลบห้องประชุมสำเร็จ' });
@@ -297,7 +376,7 @@ app.get('/api/services', async (req, res) => {
   }
 });
 
-app.post('/api/services', async (req, res) => {
+app.post('/api/services', requireAnyPermission('manage'), async (req, res) => {
   const { name, price, category, status, image_url } = req.body;
   if (!name || !category) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลชื่อบริการและประเภทหมวดหมู่' });
@@ -313,7 +392,7 @@ app.post('/api/services', async (req, res) => {
   }
 });
 
-app.put('/api/services/:id', async (req, res) => {
+app.put('/api/services/:id', requireAnyPermission('manage'), async (req, res) => {
   const { name, price, category, status, image_url } = req.body;
   try {
     await dbQuery.run(
@@ -326,7 +405,7 @@ app.put('/api/services/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/services/:id', async (req, res) => {
+app.delete('/api/services/:id', requireAnyPermission('manage'), async (req, res) => {
   try {
     await dbQuery.run('DELETE FROM services WHERE id = ?', [req.params.id]);
     res.json({ message: 'ลบบริการสำเร็จ' });
@@ -341,7 +420,7 @@ app.delete('/api/services/:id', async (req, res) => {
 // ==========================================
 // 3.5. CATEGORIES ENDPOINTS
 // ==========================================
-app.put('/api/categories', async (req, res) => {
+app.put('/api/categories', requireAnyPermission('manage'), async (req, res) => {
   const { oldName, newName } = req.body;
   if (!oldName || !newName) return res.status(400).json({ error: 'กรุณาระบุชื่อเก่าและชื่อใหม่' });
   try {
@@ -353,7 +432,7 @@ app.put('/api/categories', async (req, res) => {
   }
 });
 
-app.delete('/api/categories/:name', async (req, res) => {
+app.delete('/api/categories/:name', requireAnyPermission('manage'), async (req, res) => {
   const { name } = req.params;
   try {
     // Check if any rooms or services still exist in this category
@@ -514,7 +593,8 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
     FROM booking_items bi
     JOIN bookings b ON bi.booking_id = b.id
     WHERE bi.room_id = ?
-      AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')
+      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+      AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
   `;
   const params = [roomId];
   if (excludeBookingId) {
@@ -592,10 +672,7 @@ app.post('/api/bookings', async (req, res) => {
   }
 
   try {
-    // Start exclusive transaction to prevent race conditions
-    await dbQuery.run('BEGIN EXCLUSIVE TRANSACTION');
-
-    try {
+    const result = await dbQuery.transaction(async () => {
       // Check overlap for all room items BEFORE inserting anything
       for (const item of items) {
         if (item.room_id && item.start_time && item.end_time) {
@@ -605,16 +682,18 @@ app.post('/api/bookings', async (req, res) => {
 
           // Validate time order
           if (normEnd <= normStart) {
-            await dbQuery.run('ROLLBACK');
-            return res.status(400).json({ error: `เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น (${normStart} - ${normEnd})` });
+            const err = new Error(`เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น (${normStart} - ${normEnd})`);
+            err.statusCode = 400;
+            throw err;
           }
 
           const overlapResult = await checkRoomOverlap(item.room_id, normStart, normEnd);
           if (overlapResult.hasOverlap) {
-            await dbQuery.run('ROLLBACK');
             const roomObj = await dbQuery.get('SELECT name FROM rooms WHERE id = ?', [item.room_id]);
             const roomName = roomObj ? roomObj.name : `ID: ${item.room_id}`;
-            return res.status(409).json({ error: formatOverlapErrorMessage(roomName, overlapResult) });
+            const err = new Error(formatOverlapErrorMessage(roomName, overlapResult));
+            err.statusCode = 409;
+            throw err;
           }
         }
       }
@@ -669,15 +748,16 @@ app.post('/api/bookings', async (req, res) => {
       if (customer_type === 'basecamp') {
         const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
         const firstItemDate = items[0]?.start_time || getBangkokLocalISO(new Date());
-        const targetMonthStr = normalizeToLocalISO(firstItemDate).substring(0, 7);
+        const dObj = new Date(firstItemDate);
+        const targetMonthStr = `${dObj.getFullYear()}-${String(dObj.getMonth() + 1).padStart(2, '0')}`;
 
         const quotaRow = await dbQuery.get(
-          `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
+          `SELECT COALESCE(SUM(b.quota_hours_used), 0) AS used_hours
            FROM bookings b
            WHERE b.customer_type = 'basecamp'
              AND b.basecamp_sub_type = ?
              AND b.basecamp_unit = ?
-             AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+             AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
              AND (
                EXISTS (
                  SELECT 1 FROM booking_items bi 
@@ -721,11 +801,22 @@ app.post('/api/bookings', async (req, res) => {
       let pinCode = null;
 
       if (roomItem) {
-        const roomDb = await dbQuery.get('SELECT pin_code FROM rooms WHERE id = ?', [roomItem.room_id]);
-        if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
-          pinCode = roomDb.pin_code.trim();
+        const roomDb = await dbQuery.get('SELECT pin_code, builtland_pin_code FROM rooms WHERE id = ?', [roomItem.room_id]);
+        if (customer_type === 'builtland') {
+          if (roomDb && roomDb.builtland_pin_code && roomDb.builtland_pin_code.trim()) {
+            pinCode = roomDb.builtland_pin_code.trim();
+          } else if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
+            pinCode = roomDb.pin_code.trim();
+          } else {
+            pinCode = await generateUniquePinCode();
+          }
         } else {
-          pinCode = await generateUniquePinCode();
+          // General / Walk-in / Basecamp: Customer Access Code only
+          if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
+            pinCode = roomDb.pin_code.trim();
+          } else {
+            pinCode = await generateUniquePinCode();
+          }
         }
       }
 
@@ -742,8 +833,8 @@ app.post('/api/bookings', async (req, res) => {
       // Insert master booking (with optional customer categorization fields and quota_hours_used)
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings 
-         (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, created_at) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, booking_source, booking_channel, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customer_name, 
           department || internal_department || '', 
@@ -756,6 +847,8 @@ app.post('/api/bookings', async (req, res) => {
           line_user_id || null, 
           effectiveGuestCount, 
           'pending',
+          'walk-in',
+          req.body.booking_channel || 'pos_web',
           customer_type || 'walkin',
           basecamp_sub_type || null,
           basecamp_unit || null,
@@ -773,6 +866,16 @@ app.post('/api/bookings', async (req, res) => {
         const normEnd = (item.room_id && item.end_time) ? normalizeToLocalISO(item.end_time) : null;
         const itemGuestCount = item.guest_count ? parseInt(item.guest_count, 10) : effectiveGuestCount;
 
+        let itemPin = pinCode;
+        if (item.room_id && item.room_id !== roomItem?.room_id) {
+          const thisRoom = await dbQuery.get('SELECT pin_code, builtland_pin_code FROM rooms WHERE id = ?', [item.room_id]);
+          if (customer_type === 'builtland') {
+            itemPin = (thisRoom?.builtland_pin_code?.trim()) || (thisRoom?.pin_code?.trim()) || (await generateUniquePinCode());
+          } else {
+            itemPin = (thisRoom?.pin_code?.trim()) || (await generateUniquePinCode());
+          }
+        }
+
         await dbQuery.run(
           `INSERT INTO booking_items 
            (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status) 
@@ -789,13 +892,11 @@ app.post('/api/bookings', async (req, res) => {
             item.layout || 'standard',
             item.booking_type || 'hourly',
             itemGuestCount,
-            item.room_id ? pinCode : null,
+            itemPin,
             'pending'
           ]
         );
       }
-
-      await dbQuery.run('COMMIT');
 
       const savedBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
       const savedItems = await dbQuery.all(`
@@ -806,27 +907,32 @@ app.post('/api/bookings', async (req, res) => {
         WHERE bi.booking_id = ?
       `, [bookingId]);
 
-      res.status(201).json({ 
-        success: true, 
+      return {
         bookingId,
-        booking_id: bookingId,
-        id: bookingId, 
         receiptNumber,
-        receipt_number: receiptNumber,
-        booking_code: receiptNumber,
-        bookingCode: receiptNumber,
         pinCode,
-        pin_code: pinCode,
-        ...(savedBooking || {}),
-        items: savedItems || [],
-        message: 'บันทึกการจองสำเร็จ' 
-      });
-    } catch (innerErr) {
-      await dbQuery.run('ROLLBACK').catch(() => {});
-      throw innerErr;
-    }
+        savedBooking,
+        savedItems
+      };
+    });
+
+    res.status(201).json({ 
+      success: true, 
+      bookingId: result.bookingId,
+      booking_id: result.bookingId,
+      id: result.bookingId, 
+      receiptNumber: result.receiptNumber,
+      receipt_number: result.receiptNumber,
+      booking_code: result.receiptNumber,
+      bookingCode: result.receiptNumber,
+      pinCode: result.pinCode,
+      pin_code: result.pinCode,
+      ...(result.savedBooking || {}),
+      items: result.savedItems || [],
+      message: 'บันทึกการจองสำเร็จ' 
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 
@@ -989,7 +1095,7 @@ app.get('/api/basecamp/quota', async (req, res) => {
 });
 
 app.get('/api/bookings', async (req, res) => {
-  const { start_date, end_date, search, payment_status, customer_type } = req.query;
+  const { start_date, end_date, search, payment_status, customer_type, booking_channel } = req.query;
   try {
     let sql = `
       SELECT DISTINCT b.* 
@@ -1019,11 +1125,10 @@ app.get('/api/bookings', async (req, res) => {
         b.pin_code LIKE ? OR 
         r.name LIKE ? OR 
         r.category LIKE ? OR
-        bi.room_name LIKE ? OR
         b.basecamp_unit LIKE ? OR
         b.internal_department LIKE ?
       )`;
-      params.push(q, q, q, q, q, q, q, q, q, q, q);
+      params.push(q, q, q, q, q, q, q, q, q, q);
     }
     if (payment_status) {
       if (payment_status === 'pending' || payment_status === 'unpaid') {
@@ -1033,9 +1138,13 @@ app.get('/api/bookings', async (req, res) => {
         params.push(payment_status);
       }
     }
+    if (booking_channel && booking_channel !== 'all') {
+      sql += ' AND b.booking_channel = ?';
+      params.push(booking_channel);
+    }
     if (customer_type && customer_type !== 'all') {
-      if (customer_type === 'online') {
-        sql += " AND (b.booking_source = 'online' OR b.customer_type = 'online')";
+      if (customer_type === 'online' || customer_type === 'line_oa') {
+        sql += " AND (b.booking_channel = 'line_oa' OR b.booking_source = 'online' OR b.customer_type = 'general' OR b.customer_type = 'online')";
       } else if (customer_type === 'walkin') {
         sql += " AND (b.customer_type = 'walkin' OR (b.customer_type IS NULL AND (b.booking_source != 'online' OR b.booking_source IS NULL)))";
       } else {
@@ -1067,7 +1176,26 @@ app.get('/api/bookings', async (req, res) => {
         itemsByBookingId[it.booking_id].push(it);
       });
 
+      // Fetch latest slip verification details if available
+      const slipRows = await dbQuery.all(
+        `SELECT booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, created_at as slip_verified_at
+         FROM slip_verifications
+         WHERE booking_id IN (${placeholders})
+         ORDER BY id DESC`,
+        bookingIds
+      );
+      const slipByBookingId = {};
+      slipRows.forEach(s => {
+        if (!slipByBookingId[s.booking_id]) slipByBookingId[s.booking_id] = s;
+      });
+
       bookings.forEach(b => {
+        const s = slipByBookingId[b.id];
+        if (s) {
+          if (!b.slip_image_url) b.slip_image_url = s.slip_image_url;
+          if (!b.slip_trans_ref) b.slip_trans_ref = s.trans_ref;
+          if (!b.slip_verify_status) b.slip_verify_status = s.verification_status;
+        }
         b.items = itemsByBookingId[b.id] || [];
         if (b.items.length > 0) {
           const first = b.items[0];
@@ -1107,6 +1235,8 @@ app.get('/api/bookings/calendar', async (req, res) => {
        JOIN bookings b ON bi.booking_id = b.id
        LEFT JOIN rooms r ON bi.room_id = r.id
        WHERE bi.room_id IS NOT NULL
+         AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+         AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
          AND bi.start_time >= ?
          AND bi.start_time < ?
        ORDER BY bi.start_time ASC`,
@@ -1126,8 +1256,8 @@ app.get('/api/bookings/upcoming-alerts', async (req, res) => {
 
     const now = new Date();
     const futureLimit = new Date(now.getTime() + alertMinutes * 60 * 1000);
-    const nowISO = now.toISOString();
-    const futureISO = futureLimit.toISOString();
+    const nowISO = normalizeToLocalISO(now);
+    const futureISO = normalizeToLocalISO(futureLimit);
 
     const todayStr = normalizeToLocalISO(now).split('T')[0];
     const todayStart = `${todayStr}T00:00:00`;
@@ -1144,7 +1274,8 @@ app.get('/api/bookings/upcoming-alerts', async (req, res) => {
        WHERE bi.room_id IS NOT NULL
          AND bi.start_time >= ?
          AND bi.start_time <= ?
-         AND b.payment_status != 'cancelled'
+         AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+         AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
        ORDER BY bi.start_time ASC`,
       [nowISO, futureISO]
     );
@@ -1171,7 +1302,8 @@ app.get('/api/bookings/upcoming-alerts', async (req, res) => {
        JOIN bookings b ON bi.booking_id = b.id
        LEFT JOIN rooms r ON bi.room_id = r.id
        WHERE bi.start_time >= ? AND bi.start_time <= ?
-         AND b.payment_status != 'cancelled'
+         AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+         AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
        ORDER BY bi.start_time ASC`,
       [todayStart, todayEnd]
     );
@@ -1241,7 +1373,17 @@ app.get('/api/bookings/:id', async (req, res) => {
       [req.params.id]
     );
 
-    res.json({ ...booking, items });
+    const slipVerification = await dbQuery.get(
+      'SELECT * FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1',
+      [booking.id]
+    );
+    if (slipVerification) {
+      if (!booking.slip_image_url) booking.slip_image_url = slipVerification.slip_image_url;
+      if (!booking.slip_trans_ref) booking.slip_trans_ref = slipVerification.trans_ref;
+      if (!booking.slip_verify_status) booking.slip_verify_status = slipVerification.verification_status;
+    }
+
+    res.json({ ...booking, slip_verification: slipVerification || null, items });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1270,6 +1412,82 @@ app.delete('/api/bookings/:id', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Cancel Booking (Soft cancel: updates payment_status to 'cancelled', checkin_status to 'cancelled', records cancellation_reason, and notifies LINE OA)
+const handleCancelBooking = async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body || {};
+  const cancelReason = (reason && String(reason).trim()) || 'ลูกค้าแจ้งขอยกเลิกการจอง';
+
+  try {
+    const booking = await dbQuery.get(
+      `SELECT b.*, bi.room_id, r.name as room_name, bi.start_time, bi.end_time
+       FROM bookings b
+       LEFT JOIN booking_items bi ON bi.booking_id = b.id
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE b.id = ? OR b.receipt_number = ? OR UPPER(b.receipt_number) = UPPER(?)`,
+      [id, id, id]
+    );
+
+    if (!booking) {
+      return res.status(404).json({ success: false, error: 'ไม่พบรายการจองที่ต้องการยกเลิก' });
+    }
+
+    const realId = booking.id;
+
+    await dbQuery.run(`
+      UPDATE bookings 
+      SET payment_status = 'cancelled', 
+          checkin_status = 'cancelled',
+          cancellation_reason = ?
+      WHERE id = ?
+    `, [cancelReason, realId]);
+
+    await dbQuery.run(`
+      UPDATE booking_items 
+      SET checkin_status = 'cancelled'
+      WHERE booking_id = ?
+    `, [realId]);
+
+    // Push LINE Cancellation Notification if customer has line_user_id
+    if (booking.line_user_id) {
+      try {
+        const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+        const channelAccessToken = tokenSetting?.value;
+        if (channelAccessToken) {
+          const flexCancel = buildLineBookingCancelledFlex(booking, booking.room_name, cancelReason);
+          await fetch('https://api.line.me/v2/bot/message/push', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${channelAccessToken}`
+            },
+            body: JSON.stringify({
+              to: booking.line_user_id,
+              messages: [flexCancel]
+            })
+          });
+        }
+      } catch (lineErr) {
+        console.warn('[Manual-Cancel] LINE notification warning:', lineErr.message);
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'ยกเลิกการจองเรียบร้อยแล้ว',
+      booking_id: realId,
+      cancellation_reason: cancelReason
+    });
+  } catch (err) {
+    console.error('Cancel booking error:', err);
+    res.status(500).json({ success: false, error: 'เกิดข้อผิดพลาดในการยกเลิกการจอง: ' + err.message });
+  }
+};
+
+app.post('/api/bookings/:id/cancel', handleCancelBooking);
+app.put('/api/bookings/:id/cancel', handleCancelBooking);
+
 
 // Helper to build LINE OA Flex Message for booking confirmation
 function buildLineConfirmationFlex(booking, item, room) {
@@ -1730,10 +1948,24 @@ const handleReschedule = async (req, res) => {
     const oldStart = currentItem.start_time;
     const oldEnd = currentItem.end_time;
 
-    // Synchronize PIN code with the target room
-    let newPinCode = (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim())
-      ? targetRoomObj.pin_code.trim()
-      : (booking.pin_code || await generateUniquePinCode());
+    // Synchronize PIN code with the target room based on customer_type
+    let newPinCode = '';
+    if (booking.customer_type === 'builtland') {
+      if (targetRoomObj && targetRoomObj.builtland_pin_code && targetRoomObj.builtland_pin_code.trim()) {
+        newPinCode = targetRoomObj.builtland_pin_code.trim();
+      } else if (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim()) {
+        newPinCode = targetRoomObj.pin_code.trim();
+      } else {
+        newPinCode = booking.pin_code || await generateUniquePinCode();
+      }
+    } else {
+      // General / Walk-in / Basecamp: Customer Access Code only
+      if (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim()) {
+        newPinCode = targetRoomObj.pin_code.trim();
+      } else {
+        newPinCode = booking.pin_code || await generateUniquePinCode();
+      }
+    }
 
     await dbQuery.run(
       `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`,
@@ -2270,20 +2502,21 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
 
     const items = await dbQuery.all('SELECT * FROM quotation_items WHERE quotation_id = ?', [req.params.id]);
 
-    // Check room overlap before conversion
-    for (const item of items) {
-      if (item.room_id && item.start_time && item.end_time) {
-        const normStart = normalizeToLocalISO(item.start_time);
-        const normEnd = normalizeToLocalISO(item.end_time);
-        const hasOverlap = await checkRoomOverlap(item.room_id, normStart, normEnd);
-        if (hasOverlap) {
-          return res.status(409).json({ error: 'ไม่สามารถแปลงเป็นการจองได้ เนื่องจากห้องถูกจองในช่วงเวลาดังกล่าวแล้ว' });
+    const result = await dbQuery.transaction(async () => {
+      // Check room overlap before conversion
+      for (const item of items) {
+        if (item.room_id && item.start_time && item.end_time) {
+          const normStart = normalizeToLocalISO(item.start_time);
+          const normEnd = normalizeToLocalISO(item.end_time);
+          const hasOverlap = await checkRoomOverlap(item.room_id, normStart, normEnd);
+          if (hasOverlap && hasOverlap.hasOverlap) {
+            const err = new Error('ไม่สามารถแปลงเป็นการจองได้ เนื่องจากห้องถูกจองในช่วงเวลาดังกล่าวแล้ว');
+            err.statusCode = 409;
+            throw err;
+          }
         }
       }
-    }
 
-    await dbQuery.run('BEGIN EXCLUSIVE TRANSACTION');
-    try {
       const receiptNumber = await generateReceiptNumber();
 
       // 1. Insert into bookings
@@ -2295,6 +2528,8 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
 
       // 2. Insert items
       for (const item of items) {
+        const normStart = item.start_time ? normalizeToLocalISO(item.start_time) : null;
+        const normEnd = item.end_time ? normalizeToLocalISO(item.end_time) : null;
         await dbQuery.run(
           `INSERT INTO booking_items 
            (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type) 
@@ -2305,8 +2540,8 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
             item.service_id,
             item.quantity,
             item.price,
-            item.start_time,
-            item.end_time,
+            normStart,
+            normEnd,
             item.subtotal,
             item.layout,
             item.booking_type
@@ -2317,14 +2552,12 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
       // 3. Update quotation status to converted
       await dbQuery.run("UPDATE quotations SET status = 'accepted', approved_at = ? WHERE id = ?", [getBangkokLocalISO(new Date()), req.params.id]);
 
-      await dbQuery.run('COMMIT');
-      res.json({ success: true, bookingId, receiptNumber, message: 'แปลงเป็นรายการจองสำเร็จ' });
-    } catch (innerErr) {
-      await dbQuery.run('ROLLBACK').catch(() => {});
-      throw innerErr;
-    }
+      return { bookingId, receiptNumber };
+    });
+
+    res.json({ success: true, bookingId: result.bookingId, receiptNumber: result.receiptNumber, message: 'แปลงเป็นรายการจองสำเร็จ' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 
@@ -2417,9 +2650,33 @@ app.get('/api/dashboard/summary', async (req, res) => {
 app.get('/api/settings', async (req, res) => {
   try {
     const settings = await dbQuery.all('SELECT * FROM settings');
+    const permissions = new Set(String(req.user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+    const isAdmin = req.user?.role === 'admin' || req.user?.username === 'admin';
+    const safeKeys = new Set([
+      'company_name', 'company_address', 'company_tax_id', 'logo_image',
+      'receipt_header', 'receipt_footer', 'room_alert_minutes', 'cleaning_buffer_minutes',
+      'promptpay_id', 'payment_bank_name', 'payment_bank_account', 'payment_bank_account_name',
+      'payment_window_minutes'
+    ]);
     const settingsObj = {};
     settings.forEach(s => {
-      settingsObj[s.key] = s.value;
+      const canRead = isAdmin
+        || permissions.has('admin-management')
+        || permissions.has('admin-system')
+        || safeKeys.has(s.key)
+        || (permissions.has('admin-quotation') && s.key.startsWith('quotation_'))
+        || (permissions.has('admin-backup') && s.key.startsWith('onedrive_'));
+      if (canRead) {
+        if (s.key === 'line_channel_access_token') {
+          settingsObj[s.key] = s.value ? '••••••••••••••••••••••••' : '';
+          settingsObj.has_line_channel_access_token = !!(s.value && s.value.trim());
+        } else if (s.key === 'line_channel_secret') {
+          settingsObj[s.key] = s.value ? '••••••••••••••••' : '';
+          settingsObj.has_line_channel_secret = !!(s.value && s.value.trim());
+        } else {
+          settingsObj[s.key] = s.value;
+        }
+      }
     });
     res.json(settingsObj);
   } catch (err) {
@@ -2427,18 +2684,151 @@ app.get('/api/settings', async (req, res) => {
   }
 });
 
-app.post('/api/settings', async (req, res) => {
+app.post('/api/settings', requireAnyPermission('admin-management', 'admin-system', 'admin-quotation', 'admin-backup'), async (req, res) => {
   const settings = req.body; // e.g. { company_name: '...', onedrive_path: '...' }
   try {
-    for (const [key, value] of Object.entries(settings)) {
+    const permissions = new Set(String(req.user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+    const isAdmin = req.user?.role === 'admin' || req.user?.username === 'admin';
+    let writableSettings = Object.entries(settings);
+    if (!isAdmin && !permissions.has('admin-management') && !permissions.has('admin-system')) {
+      writableSettings = writableSettings.filter(([key]) =>
+        (permissions.has('admin-quotation') && key.startsWith('quotation_'))
+        || (permissions.has('admin-backup') && key.startsWith('onedrive_'))
+      );
+    }
+    if (writableSettings.length === 0) {
+      return res.status(403).json({ error: 'ไม่มีการตั้งค่าที่ได้รับอนุญาตให้แก้ไข' });
+    }
+    for (const [key, value] of writableSettings) {
+      // Guard against overwriting real secrets with mask string or empty string
+      if ((key === 'line_channel_access_token' || key === 'line_channel_secret') && (
+        !value ||
+        String(value).trim() === '' ||
+        String(value).includes('•') ||
+        String(value).includes('****')
+      )) {
+        continue;
+      }
+      let valToSave = value;
+      if (key === 'payment_window_minutes') {
+        const parsed = parseInt(value, 10);
+        valToSave = (isNaN(parsed) || parsed < 1) ? '15' : String(parsed);
+      }
       await dbQuery.run(
         'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-        [key, value]
+        [key, valToSave]
       );
     }
     res.json({ success: true, message: 'บันทึกการตั้งค่าสำเร็จ' });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Test LINE Messaging API Connection (Bot Info & Credentials Check)
+app.post('/api/settings/line/test', requireAnyPermission('admin-management', 'admin-system'), async (req, res) => {
+  try {
+    const { channel_access_token, channel_secret, liff_id } = req.body || {};
+
+    // Determine Token to use: passed in body (if user typed new unmasked token) or stored in DB
+    let tokenToTest = channel_access_token;
+    if (!tokenToTest || String(tokenToTest).includes('•') || String(tokenToTest).trim() === '') {
+      const row = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+      tokenToTest = row?.value || '';
+    }
+
+    // Determine Secret status
+    let secretStatus = 'not_configured';
+    if (channel_secret && !String(channel_secret).includes('•') && String(channel_secret).trim() !== '') {
+      secretStatus = 'configured';
+    } else {
+      const rowSec = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_secret'");
+      if (rowSec?.value && rowSec.value.trim().length > 0) {
+        secretStatus = 'configured';
+      }
+    }
+
+    // Determine LIFF ID status
+    let liffIdToCheck = liff_id;
+    if (!liffIdToCheck || String(liffIdToCheck).trim() === '') {
+      const rowLiff = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_liff_id'");
+      liffIdToCheck = rowLiff?.value || '';
+    }
+    let liffIdStatus = 'not_configured';
+    if (liffIdToCheck && liffIdToCheck.trim()) {
+      const liffRegex = /^\d{10}-[A-Za-z0-9_-]+$/;
+      if (liffRegex.test(liffIdToCheck.trim())) {
+        liffIdStatus = 'valid_format';
+      } else {
+        liffIdStatus = 'invalid_format';
+      }
+    }
+
+    if (!tokenToTest || String(tokenToTest).trim() === '') {
+      return res.json({
+        success: false,
+        connected: false,
+        error: 'ยังไม่ได้ระบุหรือบันทึก LINE Channel Access Token ในระบบ',
+        channelSecretStatus: secretStatus,
+        liffIdStatus: liffIdStatus
+      });
+    }
+
+    // Call LINE Official API to verify Bot Info
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    const lineRes = await fetch('https://api.line.me/v2/bot/info', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${tokenToTest.trim()}`
+      },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
+    if (lineRes.ok) {
+      const botData = await lineRes.json();
+      return res.json({
+        success: true,
+        connected: true,
+        bot: {
+          name: botData.displayName || 'LINE Official Account',
+          basicId: botData.basicId || ''
+        },
+        channelSecretStatus: secretStatus,
+        liffIdStatus: liffIdStatus,
+        message: 'เชื่อมต่อกับ LINE Messaging API สำเร็จ'
+      });
+    } else {
+      let errDetail = 'ไม่สามารถเชื่อมต่อกับ LINE API ได้';
+      if (lineRes.status === 401) {
+        errDetail = 'LINE Channel Access Token ไม่ถูกต้อง หรือหมดอายุแล้ว (401 Unauthorized)';
+      } else if (lineRes.status === 403) {
+        errDetail = 'LINE Channel Access Token ไม่มีสิทธิ์เข้าถึง (403 Forbidden)';
+      } else {
+        errDetail = `เกิดข้อผิดพลาดจาก LINE API (HTTP ${lineRes.status})`;
+      }
+
+      return res.json({
+        success: false,
+        connected: false,
+        error: errDetail,
+        channelSecretStatus: secretStatus,
+        liffIdStatus: liffIdStatus
+      });
+    }
+  } catch (err) {
+    const isTimeout = err.name === 'AbortError';
+    return res.json({
+      success: false,
+      connected: false,
+      error: isTimeout
+        ? 'การเชื่อมต่อไปยัง LINE API หมดเวลา (Timeout 8 วินาที)'
+        : `เกิดข้อผิดพลาดในการเชื่อมต่อ (${err.message})`,
+      channelSecretStatus: 'unknown',
+      liffIdStatus: 'unknown'
+    });
   }
 });
 
@@ -2647,20 +3037,19 @@ app.get('/api/rooms/occupancy', async (req, res) => {
 // ==========================================
 
 // Change password for currently logged-in user
-app.post('/api/auth/change-password', async (req, res) => {
-  const { username, oldPassword, newPassword } = req.body;
-  if (!username || !oldPassword || !newPassword) {
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  const { oldPassword, newPassword } = req.body;
+  if (!oldPassword || !newPassword) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
   }
 
   try {
-    const oldHash = hashPassword(oldPassword);
     const user = await dbQuery.get(
-      'SELECT id FROM users WHERE username = ? AND password_hash = ?',
-      [username, oldHash]
+      'SELECT id, password_hash FROM users WHERE id = ?',
+      [req.user.id]
     );
 
-    if (!user) {
+    if (!user || !verifyPassword(oldPassword, user.password_hash)) {
       return res.status(401).json({ error: 'รหัสผ่านเดิมไม่ถูกต้อง' });
     }
 
@@ -2787,9 +3176,10 @@ app.post('/api/users', async (req, res) => {
 
   try {
     const password_hash = hashPassword(password);
+    const pinHashed = pin_code && String(pin_code).trim() ? (String(pin_code).startsWith('scrypt$') ? pin_code : hashPassword(String(pin_code).trim())) : null;
     const result = await dbQuery.run(
       'INSERT INTO users (username, password_hash, role, fullname, pin_code, permissions) VALUES (?, ?, ?, ?, ?, ?)',
-      [username, password_hash, role, fullname || 'พนักงาน Bwork', pin_code || null, permissions || null]
+      [username, password_hash, role, fullname || 'พนักงาน Bwork', pinHashed, permissions || null]
     );
     res.status(201).json({ id: result.id, username, role, fullname: fullname || 'พนักงาน Bwork', pin_code });
   } catch (err) {
@@ -2805,7 +3195,7 @@ app.post('/api/users', async (req, res) => {
 app.put('/api/users/:id', async (req, res) => {
   const { username, role, fullname, pin_code, permissions } = req.body;
   try {
-    const user = await dbQuery.get('SELECT username FROM users WHERE id = ?', [req.params.id]);
+    const user = await dbQuery.get('SELECT username, pin_code FROM users WHERE id = ?', [req.params.id]);
     if (!user) {
       return res.status(404).json({ error: 'ไม่พบผู้ใช้นี้' });
     }
@@ -2827,9 +3217,18 @@ app.put('/api/users/:id', async (req, res) => {
       }
     }
 
+    let finalPin = user.pin_code;
+    if (pin_code !== undefined) {
+      if (pin_code && String(pin_code).trim()) {
+        finalPin = String(pin_code).startsWith('scrypt$') ? pin_code : hashPassword(String(pin_code).trim());
+      } else {
+        finalPin = null;
+      }
+    }
+
     await dbQuery.run(
       'UPDATE users SET username = ?, role = ?, fullname = ?, pin_code = ?, permissions = ? WHERE id = ?',
-      [targetUsername, targetRole, fullname, pin_code !== undefined ? pin_code : user.pin_code, permissions !== undefined ? permissions : null, req.params.id]
+      [targetUsername, targetRole, fullname, finalPin, permissions !== undefined ? permissions : null, req.params.id]
     );
 
     res.json({ success: true, message: 'บันทึกข้อมูลผู้ใช้สำเร็จ' });
@@ -2979,6 +3378,55 @@ const sortRoomsByNumber = (roomList) => {
   });
 };
 
+function generateBookingAccessToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function normalizeContact(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function safeEqualString(left, right) {
+  if (!left || !right) return false;
+  const leftBuffer = Buffer.from(String(left), 'utf8');
+  const rightBuffer = Buffer.from(String(right), 'utf8');
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function hasPublicBookingAccess(req, booking) {
+  const suppliedToken = req.get('x-booking-token') || req.query.access_token || req.body?.access_token;
+  const suppliedContact = req.get('x-booking-contact') || req.query.contact || req.body?.contact;
+  const tokenMatches = booking.qr_token && safeEqualString(suppliedToken, booking.qr_token);
+  const contactMatches = normalizeContact(suppliedContact).length >= 9
+    && safeEqualString(normalizeContact(suppliedContact), normalizeContact(booking.contact));
+  return Boolean(tokenMatches || contactMatches);
+}
+
+function sanitizePublicBooking(booking) {
+  const {
+    pin_code,
+    qr_token,
+    line_user_id,
+    slip_trans_ref,
+    slip_image_url,
+    customer_email,
+    tax_name,
+    tax_address,
+    tax_id,
+    tax_phone,
+    tax_delivery_method,
+    tax_postal_address,
+    internal_department,
+    ...safeBooking
+  } = booking || {};
+  return { ...safeBooking, has_slip: Boolean(slip_image_url) };
+}
+
+function sanitizePublicBookingItem(item) {
+  const { pin_code, ...safeItem } = item || {};
+  return safeItem;
+}
+
 // Get all active rooms for public display
 app.get('/api/public/rooms', async (req, res) => {
   try {
@@ -3018,7 +3466,8 @@ app.get('/api/public/rooms/schedule', async (req, res) => {
        FROM booking_items bi
        JOIN bookings b ON bi.booking_id = b.id
        WHERE bi.start_time >= ? AND bi.start_time <= ?
-         AND b.payment_status != 'cancelled'`,
+         AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+         AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')`,
       [startOfDay, endOfDay]
     );
 
@@ -3083,7 +3532,8 @@ app.get('/api/public/rooms/available', async (req, res) => {
          FROM booking_items bi
          JOIN bookings b ON bi.booking_id = b.id
          WHERE bi.room_id = ?
-           AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')`,
+           AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+           AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')`,
         [room.id]
       );
 
@@ -3091,9 +3541,11 @@ app.get('/api/public/rooms/available', async (req, res) => {
       for (const b of roomBookings) {
         if (!b.start_time || !b.end_time) continue;
         
-        // Convert to timestamp
-        const bStartMs = new Date(b.start_time).getTime();
-        const bEndMs = new Date(b.end_time).getTime();
+        // Convert to timestamp with normalized ISO
+        const bStartNorm = normalizeToLocalISO(b.start_time);
+        const bEndNorm = normalizeToLocalISO(b.end_time);
+        const bStartMs = new Date(bStartNorm.replace(' ', 'T')).getTime();
+        const bEndMs = new Date(bEndNorm.replace(' ', 'T')).getTime();
 
         if (isNaN(bStartMs) || isNaN(bEndMs)) continue;
         const bEndBufferedMs = bEndMs + bufferMs;
@@ -3155,15 +3607,13 @@ app.post('/api/public/bookings', async (req, res) => {
   }
 
   try {
-    // Start exclusive transaction to prevent race conditions
-    await dbQuery.run('BEGIN EXCLUSIVE TRANSACTION');
-
-    try {
+    const result = await dbQuery.transaction(async () => {
       // Verify room exists and is active
       const room = await dbQuery.get('SELECT * FROM rooms WHERE id = ? AND status = ?', [room_id, 'active']);
       if (!room) {
-        await dbQuery.run('ROLLBACK');
-        return res.status(404).json({ error: 'ไม่พบห้องที่เลือก หรือห้องไม่พร้อมใช้งาน' });
+        const err = new Error('ไม่พบห้องที่เลือก หรือห้องไม่พร้อมใช้งาน');
+        err.statusCode = 404;
+        throw err;
       }
 
       // Normalize timestamps
@@ -3173,8 +3623,9 @@ app.post('/api/public/bookings', async (req, res) => {
       // Check for overlap (cross-system safe including 30-min cleaning buffer)
       const overlapResult = await checkRoomOverlap(room_id, fullStart, fullEnd);
       if (overlapResult.hasOverlap) {
-        await dbQuery.run('ROLLBACK');
-        return res.status(409).json({ error: formatOverlapErrorMessage(room.name, overlapResult) });
+        const err = new Error(formatOverlapErrorMessage(room.name, overlapResult));
+        err.statusCode = 409;
+        throw err;
       }
 
       // Calculate price
@@ -3198,9 +3649,11 @@ app.post('/api/public/bookings', async (req, res) => {
         quantity = Math.max(1, Math.ceil((endMinutes - startMinutes) / 60));
       }
 
-      const subtotal = total_amount || Math.round(price * quantity * 100) / 100;
+      // The server, not the browser, is the source of truth for public pricing.
+      const subtotal = Math.round(price * quantity * 100) / 100;
 
       const receiptNumber = await generateReceiptNumber();
+      const accessToken = generateBookingAccessToken();
 
       let pinCode = null;
       if (room.pin_code && room.pin_code.trim()) {
@@ -3209,19 +3662,19 @@ app.post('/api/public/bookings', async (req, res) => {
         pinCode = await generateUniquePinCode();
       }
 
-      // Insert master booking (with mandatory guest_count)
+      // Insert master booking (with mandatory guest_count, booking_channel = 'line_oa', customer_type = 'general')
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings (
           customer_name, department, contact, total_amount, payment_status, payment_method, 
-          receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
+          receipt_number, pin_code, qr_token, booking_source, booking_channel, customer_type, customer_email, checkin_status, line_user_id,
           tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
           guest_count,
           created_at
         ) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customer_name, department || note || '', contact, subtotal, 'pending', 'transfer', 
-          receiptNumber, pinCode, 'online', email || null, 'pending', line_user_id || null,
+          receiptNumber, pinCode, accessToken, 'online', 'line_oa', 'general', email || null, 'pending', line_user_id || null,
           tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
           tax_delivery_method || null, tax_postal_address || null,
           parsedGuests,
@@ -3238,45 +3691,51 @@ app.post('/api/public/bookings', async (req, res) => {
         [bookingId, room_id, quantity, price, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode, 'pending']
       );
 
-      await dbQuery.run('COMMIT');
-
       const bookingCode = `BK-${String(bookingId).padStart(6, '0')}`;
 
-      res.status(201).json({
-        success: true,
+      return {
         bookingId,
         bookingCode,
         receiptNumber,
-        totalAmount: subtotal,
-        paymentDeadline: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-        payment_window_minutes: 15,
-        message: 'จองห้องประชุมสำเร็จ! กรุณาชำระเงินและแนบสลิปภายใน 15 นาที'
-      });
-    } catch (innerErr) {
-      await dbQuery.run('ROLLBACK').catch(() => {});
-      throw innerErr;
-    }
+        accessToken,
+        subtotal
+      };
+    });
+
+    const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
+    const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
+
+    res.status(201).json({
+      success: true,
+      bookingId: result.bookingId,
+      bookingCode: result.bookingCode,
+      receiptNumber: result.receiptNumber,
+      accessToken: result.accessToken,
+      access_token: result.accessToken,
+      totalAmount: result.subtotal,
+      paymentDeadline: new Date(Date.now() + paymentWindowMinutes * 60 * 1000).toISOString(),
+      payment_window_minutes: paymentWindowMinutes,
+      message: `จองห้องประชุมสำเร็จ! กรุณาชำระเงินและแนบสลิปภายใน ${paymentWindowMinutes} นาที`
+    });
   } catch (err) {
-    res.status(500).json({ error: 'เกิดข้อผิดพลาด: ' + err.message });
+    res.status(err.statusCode || 500).json({ error: err.message || 'เกิดข้อผิดพลาดในการบันทึกการจอง' });
   }
 });
 
 // Lookup Bookings By Phone Number (for Status Page)
 app.get(['/api/public/bookings/by-phone', '/api/public/bookings/lookup'], async (req, res) => {
   const phone = req.query.phone || req.query.contact;
-  if (!phone || !phone.trim()) {
-    return res.status(400).json({ error: 'กรุณากรอกเบอร์โทรศัพท์' });
+  const cleanPhone = normalizeContact(phone);
+  if (cleanPhone.length < 9 || cleanPhone.length > 15) {
+    return res.status(400).json({ error: 'กรุณากรอกเบอร์โทรศัพท์ให้ถูกต้อง' });
   }
 
   try {
-    const cleanPhone = String(phone).replace(/\D/g, '');
     const bookings = await dbQuery.all(
       `SELECT * FROM bookings 
-       WHERE (REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', '') = ? 
-          OR contact = ? 
-          OR contact LIKE ?)
+       WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', ''), '(', ''), ')', '') = ?
        ORDER BY id DESC LIMIT 10`,
-      [cleanPhone, phone, `%${cleanPhone}%`]
+      [cleanPhone]
     );
 
     if (!bookings || !bookings.length) {
@@ -3291,7 +3750,7 @@ app.get(['/api/public/bookings/by-phone', '/api/public/bookings/lookup'], async 
          WHERE bi.booking_id = ?`,
         [b.id]
       );
-      b.items = items || [];
+      b.items = (items || []).map(sanitizePublicBookingItem);
       b.bookingCode = `BK-${String(b.id).padStart(6, '0')}`;
       if (items && items.length && items[0].room_name) {
         b.room_name = items[0].room_name;
@@ -3305,7 +3764,7 @@ app.get(['/api/public/bookings/by-phone', '/api/public/bookings/lookup'], async 
       }
     }
 
-    res.json({ success: true, bookings });
+    res.json({ success: true, bookings: bookings.map(sanitizePublicBooking) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3333,6 +3792,10 @@ app.post('/api/public/bookings/:id/request-pin', async (req, res) => {
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
     }
 
+    if (!hasPublicBookingAccess(req, booking)) {
+      return res.status(403).json({ error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' });
+    }
+
     if (booking.payment_status !== 'paid') {
       return res.status(400).json({ error: 'รายการจองนี้ยังไม่ได้รับการยืนยันชำระเงิน กรุณาติดต่อพนักงาน' });
     }
@@ -3346,7 +3809,6 @@ app.post('/api/public/bookings/:id/request-pin', async (req, res) => {
 // Get booking status (public - requires contact for verification)
 app.get('/api/public/bookings/:id', async (req, res) => {
   const { id } = req.params;
-  const { contact } = req.query;
 
   let numericId = null;
   if (!isNaN(id)) {
@@ -3359,24 +3821,16 @@ app.get('/api/public/bookings/:id', async (req, res) => {
   }
 
   try {
-    let booking;
-    if (contact) {
-      const cleanContact = String(contact).replace(/\D/g, '');
-      booking = await dbQuery.get(
-        `SELECT * FROM bookings 
-         WHERE (id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)) 
-           AND (REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', '') = ? OR contact = ?)`,
-        [numericId, id, id, id, cleanContact, contact]
-      );
-    } else {
-      booking = await dbQuery.get(
-        'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
-        [numericId, id, id, id]
-      );
-    }
+    const booking = await dbQuery.get(
+      'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
+      [numericId, id, id, id]
+    );
 
     if (!booking) {
-      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง หรือเบอร์โทรศัพท์ไม่ถูกต้อง' });
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+    if (!hasPublicBookingAccess(req, booking)) {
+      return res.status(403).json({ error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' });
     }
 
     // Get booking items with room info using integer booking.id
@@ -3400,15 +3854,19 @@ app.get('/api/public/bookings/:id', async (req, res) => {
       };
     }
 
+    const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
+    const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
+
     res.json({
-      ...booking,
+      ...sanitizePublicBooking(booking),
       bookingCode,
-      items: items || [],
+      items: (items || []).map(sanitizePublicBookingItem),
       room: roomInfo,
       start_time: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[1].substring(0, 5) : items[0].start_time) : null,
       end_time: items && items.length ? (items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time) : null,
       booking_date: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : booking.created_at?.split('T')[0]) : null,
-      paymentDeadline: new Date(new Date(booking.created_at).getTime() + 24 * 60 * 60 * 1000).toISOString()
+      paymentDeadline: new Date(new Date(booking.created_at).getTime() + paymentWindowMinutes * 60 * 1000).toISOString(),
+      payment_window_minutes: paymentWindowMinutes
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3443,11 +3901,16 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     if (!booking) {
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
     }
+    if (!hasPublicBookingAccess(req, booking)) {
+      return res.status(403).json({ error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' });
+    }
     const targetBookingId = booking.id;
 
     if (booking.payment_status === 'cancelled') {
+      const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
+      const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
       return res.status(400).json({ 
-        error: 'รายการจองนี้ถูกยกเลิกแล้ว เนื่องจากเกินกำหนดเวลาชำระเงิน 15 นาที กรุณาทำรายการจองใหม่' 
+        error: `รายการจองนี้ถูกยกเลิกแล้ว เนื่องจากเกินกำหนดเวลาชำระเงิน ${paymentWindowMinutes} นาที กรุณาทำรายการจองใหม่` 
       });
     }
 
@@ -3475,7 +3938,7 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     const slipUrl = `/uploads/slips/${fileName}`;
 
     // Run Local 5-Tier Automated Slip Verification
-    const verifyResult = await verifySlip(imageBuffer, booking, dbQuery);
+    const verifyResult = await verifySlip(imageBuffer, booking, dbQuery, req.body.qr_data);
     const nowIso = getBangkokLocalISO(new Date());
 
     // 1. REJECT IMMEDIATELY if NOT a valid bank slip (e.g. meme image, animal photo, payment QR, or no QR code)
@@ -3524,7 +3987,7 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
         try {
           const tokenSetting = await dbQuery.get('SELECT value FROM settings WHERE key = ?', ['line_channel_access_token']);
           if (tokenSetting && tokenSetting.value) {
-            await sendPaymentConfirmedNotification(targetBookingId);
+            await sendLineNotification(targetBookingId);
           }
         } catch (lineErr) {
           console.warn('LINE notification warning:', lineErr.message);
@@ -3541,27 +4004,16 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
         message: 'สลิปถูกต้อง! ระบบอนุมัติการจองและออกใบเสร็จให้อัตโนมัติเรียบร้อยแล้ว'
       });
     } else {
-      // Real bank slip with valid QR but amount mismatch
-      const verifyStatus = verifyResult.isValid ? 'flagged' : 'rejected';
-      await dbQuery.run(
-        `UPDATE bookings 
-         SET slip_image_url = ?, 
-             payment_status = 'reviewing',
-             slip_trans_ref = ?,
-             slip_verified_at = ?,
-             slip_verify_status = ?
-         WHERE id = ?`,
-        [slipUrl, verifyResult.transRef, nowIso, verifyStatus, targetBookingId]
-      );
-
-      return res.json({
-        success: true,
+      // Automatic-only flow: an inconclusive result is a failed verification,
+      // never a successful upload waiting for manual staff review.
+      if (fs.existsSync(filePath)) {
+        try { fs.unlinkSync(filePath); } catch (e) {}
+      }
+      return res.status(422).json({
+        success: false,
         auto_approved: false,
-        slipUrl,
         verifyResult,
-        message: verifyResult.reasons.length > 0 
-          ? `อัปโหลดสลิปสำเร็จ! (${verifyResult.reasons.join(', ')}) กำลังรอเจ้าหน้าที่ตรวจสอบ`
-          : 'อัปโหลดสลิปสำเร็จ! กำลังรอเจ้าหน้าที่ตรวจสอบการชำระเงิน'
+        error: verifyResult.reasons[0] || 'ระบบยังไม่สามารถยืนยันชื่อบัญชีผู้รับและยอดเงินได้ กรุณาใช้สลิปต้นฉบับที่ชัดเจนแล้วอัปโหลดใหม่'
       });
     }
   } catch (err) {
@@ -3570,7 +4022,7 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
 });
 
 // Live test slip verification API
-app.post('/api/slip/verify-test', async (req, res) => {
+app.post('/api/slip/verify-test', authenticateToken, requireAnyPermission('admin-management', 'admin-system'), async (req, res) => {
   const { slip_image, expected_amount } = req.body;
   if (!slip_image) {
     return res.status(400).json({ error: 'กรุณาส่งรูปสลิป (base64)' });
@@ -3585,7 +4037,7 @@ app.post('/api/slip/verify-test', async (req, res) => {
       total_amount: expected_amount ? parseFloat(expected_amount) : 0
     };
 
-    const result = await verifySlip(imageBuffer, mockBooking, dbQuery);
+    const result = await verifySlip(imageBuffer, mockBooking, dbQuery, req.body.qr_data);
     res.json({
       success: true,
       result
@@ -3616,13 +4068,18 @@ app.get('/api/public/settings/payment', async (req, res) => {
     const settingsMap = {};
     settings.forEach(s => { settingsMap[s.key] = s.value; });
 
+    const windowMins = Math.max(1, parseInt(settingsMap.payment_window_minutes || '15', 10) || 15);
+    const deadlineHours = Math.round((windowMins / 60) * 100) / 100;
+
     res.json({
       promptpay_id: settingsMap.promptpay_id || '0125554000401',
       bank_name: settingsMap.payment_bank_name || 'ธนาคารกรุงศรีอยุธยา (Krungsri)',
       bank_account: settingsMap.payment_bank_account || '329-1-38429-0',
       bank_account_name: settingsMap.payment_bank_account_name || 'บริษัท บิลท์ ฮาร์ท จำกัด',
-      payment_deadline_hours: parseInt(settingsMap.payment_deadline_hours || '24', 10),
-      cleaning_buffer_minutes: parseInt(settingsMap.cleaning_buffer_minutes || '30', 10)
+      payment_deadline_hours: deadlineHours,
+      payment_window_minutes: windowMins,
+      cleaning_buffer_minutes: parseInt(settingsMap.cleaning_buffer_minutes || '30', 10),
+      line_liff_id: settingsMap.line_liff_id || '2011136579-c1TeSWNs'
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3653,7 +4110,30 @@ app.listen(PORT, () => {
 function buildLineDoorPinFlex(booking, item, room) {
   const customerName = booking?.customer_name || 'ลูกค้าผู้มีอุปการคุณ';
   const roomName = room?.name || item?.room_name || 'ห้องประชุม';
-  const pinCode = booking?.pin_code || '------';
+  // LINE OA must ALWAYS send Customer Access Code only
+  const pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : (booking?.pin_code || '------');
+
+  let dateDisplay = '-';
+  if (item && item.start_time) {
+    const sStr = String(item.start_time).replace(' ', 'T');
+    const [y, m, d] = sStr.split('T')[0].split('-').map(Number);
+    const thaiYear = y + 543;
+    dateDisplay = `${d}/${m}/${thaiYear}`;
+  } else if (booking?.created_at) {
+    const sStr = String(booking.created_at).replace(' ', 'T');
+    const [y, m, d] = sStr.split('T')[0].split('-').map(Number);
+    const thaiYear = y + 543;
+    dateDisplay = `${d}/${m}/${thaiYear}`;
+  }
+
+  let timeDisplay = '-';
+  if (item && item.start_time && item.end_time) {
+    const sStr = String(item.start_time).replace(' ', 'T');
+    const sTime = sStr.includes('T') ? sStr.split('T')[1].substring(0, 5) : '';
+    const eStr = String(item.end_time).replace(' ', 'T');
+    const eTime = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : '';
+    timeDisplay = `${sTime} - ${eTime} น.`;
+  }
 
   return {
     type: 'flex',
@@ -3704,6 +4184,22 @@ function buildLineDoorPinFlex(booking, item, room) {
             contents: [
               { type: 'text', text: 'ห้องประชุม', size: 'sm', color: '#64748b', flex: 2 },
               { type: 'text', text: roomName, size: 'sm', color: '#0284c7', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'วันที่ใช้งาน', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: dateDisplay, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'เวลา', size: 'sm', color: '#64748b', flex: 2 },
+              { type: 'text', text: timeDisplay, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
             ]
           },
           { type: 'separator', margin: 'md' },
@@ -3758,14 +4254,19 @@ app.post('/api/bookings/:id/send-pin', async (req, res) => {
     const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [id]);
     if (!booking) return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
 
-    const item = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL LIMIT 1', [id]);
+    const item = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1', [id]);
     const room = item?.room_id ? await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [item.room_id]) : null;
 
-    // Always ensure PIN matches the assigned room if the room has a PIN configured
-    let pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : booking.pin_code;
-    if (!pinCode || !pinCode.trim()) {
-      pinCode = await generateUniquePinCode();
+    let pinCode = '';
+    if (booking.customer_type === 'builtland') {
+      pinCode = (room && room.builtland_pin_code && room.builtland_pin_code.trim())
+        ? room.builtland_pin_code.trim()
+        : ((room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : (booking.pin_code || await generateUniquePinCode()));
+    } else {
+      // General / Walk-in / Basecamp / Online: Customer PIN only
+      pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : (booking.pin_code || await generateUniquePinCode());
     }
+
     await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [pinCode, id]);
     if (item) {
       await dbQuery.run('UPDATE booking_items SET pin_code = ? WHERE id = ?', [pinCode, item.id]);
@@ -3815,6 +4316,7 @@ function buildLineBookingCancelledFlex(booking, roomName, reason) {
   const displayRoom = roomName || 'ห้องประชุม';
   const bookingCode = booking?.receipt_number || `BK-${String(booking?.id || 0).padStart(6, '0')}`;
   const cancelReason = reason || 'ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)';
+  const isAutoTimeout = cancelReason.includes('15 นาที');
 
   return {
     type: 'flex',
@@ -3837,7 +4339,7 @@ function buildLineBookingCancelledFlex(booking, roomName, reason) {
           },
           {
             type: 'text',
-            text: 'แจ้งยกเลิกการจองอัตโนมัติ',
+            text: isAutoTimeout ? 'แจ้งยกเลิกการจองอัตโนมัติ' : 'แจ้งยกเลิกการจอง',
             weight: 'bold',
             color: '#ffffff',
             size: 'lg',
@@ -3853,7 +4355,9 @@ function buildLineBookingCancelledFlex(booking, roomName, reason) {
         contents: [
           {
             type: 'text',
-            text: 'ขออภัยค่ะ รายการจองของท่านถูกยกเลิกอัตโนมัติ เนื่องจากไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)',
+            text: isAutoTimeout 
+              ? 'ขออภัยค่ะ รายการจองของท่านถูกยกเลิกอัตโนมัติ เนื่องจากไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)'
+              : `ขออภัยค่ะ รายการจองของท่านได้ถูกยกเลิกเรียบร้อยแล้ว (${cancelReason})`,
             size: 'sm',
             color: '#334155',
             wrap: true
@@ -3897,9 +4401,14 @@ function buildLineBookingCancelledFlex(booking, roomName, reason) {
   };
 }
 
-// Background Worker: Automatically Cancel Expired Pending Bookings (> 15 Minutes) and Notify LINE OA
+// Background Worker: Automatically Cancel Expired Pending Bookings (based on payment_window_minutes) and Notify LINE OA
 async function checkAndCancelExpiredBookings() {
   try {
+    const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
+    const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
+    const paymentWindowMs = paymentWindowMinutes * 60 * 1000;
+    const cancelReasonMsg = `ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (${paymentWindowMinutes} นาที)`;
+
     const pendingBookings = await dbQuery.all(`
       SELECT b.*, bi.room_id, r.name as room_name, bi.start_time, bi.end_time
       FROM bookings b
@@ -3911,7 +4420,6 @@ async function checkAndCancelExpiredBookings() {
     `);
 
     const now = Date.now();
-    const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 
     for (const b of pendingBookings) {
       if (!b.created_at) continue;
@@ -3919,16 +4427,16 @@ async function checkAndCancelExpiredBookings() {
       const createdAtTime = new Date(cleanCreated).getTime();
       if (isNaN(createdAtTime)) continue;
 
-      if (now - createdAtTime >= FIFTEEN_MINUTES_MS) {
-        console.log(`[Auto-Cancel] Booking #${b.id} (${b.receipt_number || b.id}) expired after 15 minutes. Cancelling...`);
+      if (now - createdAtTime >= paymentWindowMs) {
+        console.log(`[Auto-Cancel] Booking #${b.id} (${b.receipt_number || b.id}) expired after ${paymentWindowMinutes} minutes. Cancelling...`);
         
         await dbQuery.run(`
           UPDATE bookings 
           SET payment_status = 'cancelled', 
               checkin_status = 'cancelled',
-              cancellation_reason = 'ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)'
+              cancellation_reason = ?
           WHERE id = ?
-        `, [b.id]);
+        `, [cancelReasonMsg, b.id]);
 
         await dbQuery.run(`
           UPDATE booking_items 
@@ -3942,7 +4450,7 @@ async function checkAndCancelExpiredBookings() {
             const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
             const channelAccessToken = tokenSetting?.value;
             if (channelAccessToken) {
-              const flexCancel = buildLineBookingCancelledFlex(b, b.room_name, 'ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)');
+              const flexCancel = buildLineBookingCancelledFlex(b, b.room_name, cancelReasonMsg);
               await fetch('https://api.line.me/v2/bot/message/push', {
                 method: 'POST',
                 headers: {

@@ -140,6 +140,8 @@ export default function BookingFormPage() {
         total_amount: bookingData.total_amount || 0,
         note: notes.trim(),
         line_user_id: lineUserId,
+        booking_channel: 'line_oa',
+        customer_type: 'general',
         tax_invoice_required: needTaxInvoice ? 1 : 0,
         tax_name: needTaxInvoice ? taxName.trim() : null,
         tax_address: needTaxInvoice ? taxAddress.trim() : null,
@@ -176,6 +178,7 @@ export default function BookingFormPage() {
           code: finalBookingCode,
           roomName: bookingData?.room?.name || 'ห้องประชุม',
           totalAmount: bookingData?.totalPrice || bookingData?.total_amount || 0,
+          paymentWindowMinutes: data.payment_window_minutes || 15,
           createdAt: Date.now(),
           status: 'pending'
         }));

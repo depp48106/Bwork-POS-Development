@@ -34,7 +34,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     payment_bank_name: '',
     payment_bank_account: '',
     payment_bank_account_name: '',
-    payment_deadline_hours: '24'
+    payment_window_minutes: '15'
   });
 
   // DB Backup logs & OneDrive Cloud
@@ -754,20 +754,24 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                     />
                   </div>
 
-                  {/* Payment Deadline Hours */}
+                  {/* Payment window (minutes) */}
                   <div className="form-group" style={{ margin: 0 }}>
                     <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>
-                      กำหนดเวลาให้ลูกค้าชำระเงินและแนบสลิปหลังทำการจอง (ชั่วโมง)
+                      กำหนดเวลาให้ลูกค้าชำระเงินและแนบสลิปหลังทำการจอง (นาที)
                     </label>
                     <input 
                       type="number" 
                       className="form-control" 
-                      value={configs.payment_deadline_hours || '24'}
-                      onChange={e => setConfigs({ ...configs, payment_deadline_hours: e.target.value })}
-                      placeholder="24"
                       min="1"
+                      placeholder="15"
+                      value={configs.payment_window_minutes || '15'}
+                      onChange={e => {
+                        const val = e.target.value.replace(/\D/g, '');
+                        setConfigs({ ...configs, payment_window_minutes: val });
+                      }}
                       style={{ height: '42px', padding: '10px 14px', borderRadius: '12px', fontSize: '0.875rem' }}
                     />
+                    <small style={{ color: 'var(--text-muted)' }}>ระบบจะยกเลิกรายการจองออนไลน์ที่ยังไม่ชำระเงินโดยอัตโนมัติเมื่อครบเวลาที่กำหนด (ค่าเริ่มต้น 15 นาที)</small>
                   </div>
                 </div>
 

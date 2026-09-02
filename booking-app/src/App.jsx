@@ -22,8 +22,9 @@ function App() {
           const parsed = JSON.parse(stored);
           const elapsed = Date.now() - (parsed.createdAt || 0);
 
-          // Strictly Expire after 15 minutes (15 * 60 * 1000 ms)
-          if (elapsed >= 15 * 60 * 1000) {
+          // Expire based on dynamic paymentWindowMinutes (fallback: 15 minutes)
+          const windowMinutes = Math.max(1, parseInt(parsed.paymentWindowMinutes || 15, 10) || 15);
+          if (elapsed >= windowMinutes * 60 * 1000) {
             localStorage.removeItem('bwork_pending_booking');
             setPendingBooking(null);
             return;
@@ -32,7 +33,12 @@ function App() {
           // Check live status from backend if booking ID is present
           if (parsed.id) {
             try {
-              const res = await fetch(`${API_BASE}/api/public/bookings/${parsed.id}`);
+              const res = await fetch(`${API_BASE}/api/public/bookings/${parsed.id}`, {
+                headers: {
+                  ...(parsed.accessToken ? { 'X-Booking-Token': parsed.accessToken } : {}),
+                  ...(parsed.contact ? { 'X-Booking-Contact': parsed.contact } : {})
+                }
+              });
               const data = await res.json();
               if (data) {
                 if (data.payment_status === 'cancelled' || data.payment_status === 'paid' || data.error) {
@@ -61,7 +67,27 @@ function App() {
     const initLiff = async () => {
       try {
         if (window.liff) {
-          const liffId = '2011136579-c1TeSWNs';
+          // Dynamic LIFF ID resolution:
+          // 1. line_liff_id from Public Config
+          // 2. import.meta.env.VITE_LIFF_ID
+          // 3. Fallback: '2011136579-c1TeSWNs'
+          let liffId = '';
+          try {
+            const configRes = await fetch(`${API_BASE}/api/public/settings/payment`);
+            if (configRes.ok) {
+              const configData = await configRes.json();
+              if (configData && configData.line_liff_id && String(configData.line_liff_id).trim()) {
+                liffId = String(configData.line_liff_id).trim();
+              }
+            }
+          } catch (cfgErr) {
+            console.warn('[LIFF] Could not fetch public config for LIFF ID:', cfgErr.message);
+          }
+
+          if (!liffId) {
+            liffId = import.meta.env.VITE_LIFF_ID || '2011136579-c1TeSWNs';
+          }
+
           await window.liff.init({ liffId, withLoginOnExternalBrowser: false });
           if (window.liff.isLoggedIn()) {
             const profile = await window.liff.getProfile();
