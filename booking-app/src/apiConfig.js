@@ -1,6 +1,7 @@
 // API Base URL configuration:
-// In local dev & on-premise production: '' (uses relative path to local server)
-// If on Cloudflare Pages (*.pages.dev) or explicitly configured, use Cloudflare Worker API
+// 1. If VITE_API_BASE is explicitly set, use that
+// 2. If on Cloudflare Pages (*.pages.dev) or production domain, use Cloudflare Worker API
+// 3. Otherwise (localhost / 127.0.0.1 / 192.168.x.x), use '' (relative path to local backend)
 export const API_BASE = (() => {
   if (import.meta.env.VITE_API_BASE) {
     return import.meta.env.VITE_API_BASE;
