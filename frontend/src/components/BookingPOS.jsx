@@ -296,7 +296,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   // FILTERED ROOMS & EVENTS
   // =========================================================
   const filteredTimelineRooms = useMemo(() => {
-    return rooms.filter(r => {
+    const list = rooms.filter(r => {
       const cat = (r.category || '').toLowerCase();
       const name = (r.name || '').toLowerCase();
 
@@ -333,6 +333,20 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         if (!matchName && !matchCat) return false;
       }
       return true;
+    });
+
+    // Sort rooms by room number extracted from name (e.g. "(201)" -> 201), then alphabetically by name
+    return list.sort((a, b) => {
+      const getRoomNum = (name) => {
+        const m = (name || '').match(/\((\d+)\)/);
+        return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER;
+      };
+      const numA = getRoomNum(a.name);
+      const numB = getRoomNum(b.name);
+      if (numA !== numB) {
+        return numA - numB;
+      }
+      return (a.name || '').localeCompare(b.name || '');
     });
   }, [rooms, timelineCategory, searchQuery]);
 
