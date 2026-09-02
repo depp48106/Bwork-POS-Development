@@ -1,5 +1,5 @@
 const express = require('express');
-const { verifySlip, decodeMiniQR } = require('./slipVerifier');
+const { verifySlip, commitVerifiedSlip, decodeMiniQR } = require('./slipVerifier');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
@@ -3906,6 +3906,10 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     }
     const targetBookingId = booking.id;
 
+    if (booking.payment_status === 'paid') {
+      return res.status(409).json({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้ว ไม่สามารถแนบสลิปซ้ำได้' });
+    }
+
     if (booking.payment_status === 'cancelled') {
       const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
       const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
@@ -3956,7 +3960,7 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     }
 
     // 2. AUTO-APPROVE if valid bank slip and all criteria pass
-    if (verifyResult.autoApproved) {
+    if (verifyResult.eligibleForAutoApproval) {
       // Auto-approved! Generate receipt_number and pin_code if not present
       let receiptNumber = booking.receipt_number;
       if (!receiptNumber) {
@@ -3968,7 +3972,7 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
         pinCode = await generateUniquePinCode();
       }
 
-      await dbQuery.run(
+      await commitVerifiedSlip(verifyResult, booking, dbQuery, () => dbQuery.run(
         `UPDATE bookings 
          SET slip_image_url = ?, 
              payment_status = 'paid', 
@@ -3978,9 +3982,21 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
              slip_trans_ref = ?,
              slip_verified_at = ?,
              slip_verify_status = 'auto_approved'
-         WHERE id = ?`,
-        [slipUrl, receiptNumber, pinCode, verifyResult.transRef, nowIso, targetBookingId]
-      );
+         WHERE id = ? AND total_amount = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')`,
+        [slipUrl, receiptNumber, pinCode, verifyResult.transRef, nowIso, targetBookingId, verifyResult.expectedAmount]
+      ));
+
+      if (!verifyResult.autoApproved) {
+        if (fs.existsSync(filePath)) {
+          try { fs.unlinkSync(filePath); } catch (e) {}
+        }
+        return res.status(verifyResult.errorCode === 'DUPLICATE_SLIP' ? 409 : 503).json({
+          success: false,
+          auto_approved: false,
+          code: verifyResult.errorCode,
+          error: verifyResult.reasons[0] || 'ระบบไม่สามารถบันทึกผลตรวจสอบสลิปได้'
+        });
+      }
 
       // Send LINE confirmation if customer has line_user_id
       if (booking.line_user_id) {

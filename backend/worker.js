@@ -2527,6 +2527,8 @@ export default {
 
         let slip_image = null;
         let qr_data = null;
+        let bodyAccessToken = null;
+        let bodyContact = null;
 
         const contentType = request.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
@@ -2534,12 +2536,16 @@ export default {
             const body = await request.json();
             slip_image = body.slip_image || body.slip || body.image;
             qr_data = body.qr_data || body.qrData || body.qr;
+            bodyAccessToken = body.access_token;
+            bodyContact = body.contact;
           } catch (e) {}
         } else if (contentType.includes('multipart/form-data')) {
           try {
             const formData = await request.formData();
             const file = formData.get('slip') || formData.get('slip_image') || formData.get('image');
             qr_data = formData.get('qr_data') || formData.get('qrData');
+            bodyAccessToken = formData.get('access_token');
+            bodyContact = formData.get('contact');
             if (file && typeof file === 'object' && typeof file.arrayBuffer === 'function') {
               const arrayBuffer = await file.arrayBuffer();
               const bytes = new Uint8Array(arrayBuffer);
@@ -2572,23 +2578,42 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
         }
 
-        if (!slip_image) {
-          return new Response(JSON.stringify({ error: 'ไม่พบไฟล์รูปภาพสลิปที่ส่งมา กรุณาลองใหม่อีกครั้ง' }), { status: 400, headers: corsHeaders });
+        // Same public access inputs and token OR normalized contact rule as Local.
+        const suppliedToken = request.headers.get('x-booking-token') || url.searchParams.get('access_token') || bodyAccessToken;
+        const suppliedContact = request.headers.get('x-booking-contact') || url.searchParams.get('contact') || bodyContact;
+        const normalizedContact = String(suppliedContact || '').replace(/\D/g, '');
+        const safeEqual = async (left, right) => {
+          if (!left || !right) return false;
+          const encoder = new TextEncoder();
+          const [a, b] = await Promise.all([left, right].map(value =>
+            crypto.subtle.digest('SHA-256', encoder.encode(String(value)))));
+          const bytesA = new Uint8Array(a);
+          const bytesB = new Uint8Array(b);
+          let difference = 0;
+          for (let i = 0; i < bytesA.length; i++) difference |= bytesA[i] ^ bytesB[i];
+          return difference === 0;
+        };
+        const tokenMatches = await safeEqual(suppliedToken, booking.qr_token);
+        const contactMatches = normalizedContact.length >= 9 &&
+          await safeEqual(normalizedContact, String(booking.contact || '').replace(/\D/g, ''));
+        if (!tokenMatches && !contactMatches) {
+          return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' }), { status: 403, headers: corsHeaders });
+        }
+        if (['paid', 'cancelled'].includes(booking.payment_status)) {
+          return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้วหรือถูกยกเลิก ไม่สามารถแนบสลิปได้' }), { status: 409, headers: corsHeaders });
         }
 
-        let savedSlipUrl = await saveUploadedFile(env, slip_image, 'slips');
-
-        // Guard against Cloudflare D1 SQLITE_TOOBIG (1MB limit)
-        if (savedSlipUrl && typeof savedSlipUrl === 'string' && savedSlipUrl.length > 700000) {
-          savedSlipUrl = savedSlipUrl.substring(0, 650000);
+        if (!slip_image) {
+          return new Response(JSON.stringify({ error: 'ไม่พบไฟล์รูปภาพสลิปที่ส่งมา กรุณาลองใหม่อีกครั้ง' }), { status: 400, headers: corsHeaders });
         }
 
         const nowIso = new Date().toISOString();
 
         // ----------------------------------------------------
-        // STRICT BANK SLIP QR VERIFICATION & FRAUD PROTECTION
+        // Client QR is an UNVERIFIED hint, not proof decoded from this image.
+        // Syntax/duplicate checks do not verify payment, amount or recipient.
         // ----------------------------------------------------
-        let parsedQR = qr_data ? parseThaiBankSlipQR(qr_data) : null;
+        const parsedQR = typeof qr_data === 'string' ? parseThaiBankSlipQR(qr_data) : null;
 
         // 1. REJECT if no QR, invalid QR, unreadable, or Merchant Payment QR
         if (!qr_data || !parsedQR || !parsedQR.isValidSlipQR || !parsedQR.transRef || parsedQR.isMerchantPaymentQR) {
@@ -2613,15 +2638,23 @@ export default {
         }
 
         // 3. ENTER MANUAL REVIEW (NEVER auto-approve as paid on Worker without OCR/amount verification)
-        await env.DB.prepare(`
+        let savedSlipUrl = await saveUploadedFile(env, slip_image, 'slips');
+        // Guard against Cloudflare D1 SQLITE_TOOBIG (1MB limit)
+        if (savedSlipUrl && typeof savedSlipUrl === 'string' && savedSlipUrl.length > 700000) {
+          savedSlipUrl = savedSlipUrl.substring(0, 650000);
+        }
+        const updated = await env.DB.prepare(`
           UPDATE bookings 
           SET slip_image_url = ?, 
               payment_status = 'reviewing', 
               slip_trans_ref = ?,
-              slip_verified_at = ?,
+              slip_verified_at = NULL,
               slip_verify_status = 'pending_manual'
-          WHERE id = ?
-        `).bind(savedSlipUrl || 'uploaded', parsedQR.transRef, nowIso, booking.id).run();
+          WHERE id = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')
+        `).bind(savedSlipUrl || 'uploaded', parsedQR.transRef, booking.id).run();
+        if (updated.meta?.changes !== 1) {
+          return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'สถานะรายการจองเปลี่ยนแล้ว กรุณาตรวจสอบรายการอีกครั้ง' }), { status: 409, headers: corsHeaders });
+        }
 
         // 4. Record in slip_verifications table for audit trail
         try {
@@ -2630,7 +2663,7 @@ export default {
               booking_id, trans_ref, bank_code, bank_name, slip_image_url,
               is_auto_approved, confidence_score, raw_qr_data, verification_status,
               rejection_reason, created_at
-            ) VALUES (?, ?, ?, ?, ?, 0, 50, ?, 'pending_manual', 'รอเจ้าหน้าที่ตรวจสอบยอดเงินและบัญชีผู้รับในระบบ POS', ?)
+            ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', 'QR จาก client ยังไม่ยืนยันกับภาพ รอเจ้าหน้าที่ตรวจสอบยอดเงินและบัญชีผู้รับ', ?)
           `).bind(
             booking.id,
             parsedQR.transRef,
@@ -2641,13 +2674,19 @@ export default {
             nowIso
           ).run();
         } catch (svErr) {
-          console.warn('[Upload Slip] slip_verifications insert warning:', svErr.message);
+          return new Response(JSON.stringify({
+            success: false,
+            auto_approved: false,
+            error: 'ระบบไม่สามารถบันทึกผลตรวจสอบสลิปได้ กรุณาลองใหม่อีกครั้ง'
+          }), { status: 503, headers: corsHeaders });
         }
 
         return new Response(JSON.stringify({
           success: true,
           auto_approved: false,
           status: 'reviewing',
+          qr_verified: false,
+          verification_source: 'client_qr_unverified',
           slipUrl: savedSlipUrl,
           transRef: parsedQR.transRef,
           bankName: parsedQR.bankName,
