@@ -452,21 +452,6 @@ function parseThaiBankSlipQR(qrString) {
       }
     }
 
-    // Generic fallback if transRef detected in subTLV
-    if (root['00']) {
-      const sub00 = parseTLV(root['00']);
-      if (sub00['02'] && sub00['02'].length >= 8) {
-        return {
-          isValidSlipQR: true,
-          isMerchantPaymentQR: false,
-          bankCode: sub00['01'] || '000',
-          bankName: BANK_CODES[sub00['01']]?.name || 'ธนาคารพาณิชย์',
-          transRef: sub00['02'],
-          rawQR: qrString
-        };
-      }
-    }
-
     return { isValidSlipQR: false, isMerchantPaymentQR: false, rawQR: qrString };
   } catch (e) {
     return { isValidSlipQR: false, isMerchantPaymentQR: false, error: e.message };
@@ -590,31 +575,33 @@ function buildLineBookingConfirmationFlex(booking, item, room) {
             layout: 'vertical',
             margin: 'md',
             paddingAll: '12px',
-            backgroundColor: '#f1f5f9',
+            backgroundColor: '#ecfdf5',
             cornerRadius: '10px',
+            borderColor: '#a7f3d0',
+            borderWidth: '1px',
             contents: [
               {
                 type: 'text',
-                text: '🔑 รหัสผ่านเข้าห้อง (Door PIN)',
+                text: '✅ สถานะการจองได้รับการยืนยันแล้ว',
                 size: 'xs',
-                color: '#475569',
+                color: '#065f46',
                 weight: 'bold',
                 align: 'center'
               },
               {
                 type: 'text',
-                text: 'รับรหัสได้ที่เคาน์เตอร์ประชาสัมพันธ์',
+                text: 'กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์เมื่อมาถึงสถานที่',
                 size: 'sm',
-                color: '#0f172a',
+                color: '#047857',
                 weight: 'bold',
                 align: 'center',
                 margin: 'xs'
               },
               {
                 type: 'text',
-                text: 'เมื่อมาถึงสถานที่ กรุณาติดต่อเคาน์เตอร์ เพื่อรับรหัส PIN เข้าห้อง',
+                text: 'เจ้าหน้าที่จะอำนวยความสะดวกและแนะนำการเข้าใช้งานห้องประชุมแก่ท่านครับ',
                 size: 'xxs',
-                color: '#64748b',
+                color: '#059669',
                 align: 'center',
                 wrap: true,
                 margin: 'xs'
@@ -989,9 +976,8 @@ async function sendLineBookingCancellation(env, bookingId, reason = '') {
 
 // 4. Flex Message: แจ้งเปลี่ยนแปลงวัน/เวลาการจองสำเร็จ
 function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal) {
-  const roomName = room ? `${room.name} (${room.room_number || ''})`.replace(' ()', '') : 'ห้องประชุม B-WORK';
+  const roomName = room?.name || 'ห้องประชุม B-WORK';
   const bookingCode = booking.receipt_number || `#BK-${String(booking.id).padStart(6, '0')}`;
-  const pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : (booking.pin_code || '------');
 
   let oldTimeDisplay = '-';
   if (oldStartTime) {
@@ -1015,7 +1001,7 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
 
   return {
     type: 'flex',
-    altText: `🔄 แจ้งเปลี่ยนแปลงข้อมูลการจอง ${bookingCode} (${roomName} รหัสเข้าห้อง: ${pinCode})`,
+    altText: `🔄 แจ้งเปลี่ยนแปลงข้อมูลการจองห้องประชุม ${roomName} (${bookingCode})`,
     contents: {
       type: 'bubble',
       size: 'mega',
@@ -1092,33 +1078,33 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
             layout: 'vertical',
             margin: 'md',
             paddingAll: '12px',
-            backgroundColor: '#f0fdf4',
-            cornerRadius: '12px',
-            borderColor: '#86efac',
+            backgroundColor: '#eff6ff',
+            cornerRadius: '10px',
+            borderColor: '#bfdbfe',
             borderWidth: '1px',
             contents: [
               {
                 type: 'text',
-                text: '🔑 รหัสผ่านปลดล็อกประตูห้องใหม่ (Door PIN)',
+                text: '🔄 ข้อมูลการจองห้องประชุมมีการเปลี่ยนแปลง',
                 size: 'xs',
-                color: '#15803d',
+                color: '#1e40af',
                 weight: 'bold',
                 align: 'center'
               },
               {
                 type: 'text',
-                text: pinCode,
-                size: 'xl',
-                color: '#166534',
+                text: 'กรุณาติดต่อเจ้าหน้าที่หน้าเคาน์เตอร์เมื่อมาถึงสถานที่',
+                size: 'sm',
+                color: '#1d4ed8',
                 weight: 'bold',
                 align: 'center',
                 margin: 'xs'
               },
               {
                 type: 'text',
-                text: 'กดรหัส PIN ตามด้วยเครื่องหมาย # ที่หน้าจอแท็บเล็ตหน้าห้องเพื่อปลดล็อก',
+                text: 'เจ้าหน้าที่จะอำนวยความสะดวกและแนะนำการเข้าใช้งานห้องประชุมแก่ท่านครับ',
                 size: 'xxs',
-                color: '#16a34a',
+                color: '#3b82f6',
                 align: 'center',
                 wrap: true,
                 margin: 'xs'
@@ -2232,7 +2218,7 @@ export default {
         }), { status: 201, headers: corsHeaders });
       }
 
-      // Send Door Access PIN (Staff in POS or Reception triggers this)
+      // Send Door Access PIN (Staff in POS or Reception triggers this manually)
       if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/send-pin') && method === 'POST') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -2244,20 +2230,33 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
         }
 
+        if (booking.payment_status === 'cancelled' || booking.payment_status === 'rejected') {
+          return new Response(JSON.stringify({ 
+            error: 'ไม่สามารถส่ง PIN ได้ เนื่องจากรายการจองนี้ถูกยกเลิกหรือปฏิเสธแล้ว' 
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        let pinCode = booking.pin_code;
+        if (!pinCode) {
+          pinCode = await generateUniquePinCode(env);
+          await env.DB.prepare('UPDATE bookings SET pin_code = ? WHERE id = ?').bind(pinCode, bookingId).run();
+          booking.pin_code = pinCode;
+        }
+
         if (booking.line_user_id) {
           const res = await sendLineDoorPin(env, bookingId);
           if (res && res.success) {
             return new Response(JSON.stringify({ 
               success: true, 
               line_sent: true, 
-              pin_code: booking.pin_code, 
+              pin_code: pinCode, 
               message: 'ส่งรหัสผ่านเข้าห้องไปยัง LINE OA ของลูกค้าเรียบร้อยแล้ว' 
             }), { headers: corsHeaders });
           } else {
             return new Response(JSON.stringify({ 
               success: false, 
               line_sent: false, 
-              pin_code: booking.pin_code, 
+              pin_code: pinCode, 
               error: 'เกิดข้อผิดพลาดในการเชื่อมต่อ LINE API' 
             }), { status: 500, headers: corsHeaders });
           }
@@ -2265,13 +2264,13 @@ export default {
           return new Response(JSON.stringify({ 
             success: true, 
             line_sent: false, 
-            pin_code: booking.pin_code, 
-            message: 'ลูกค้ารายนี้ไม่ได้จองผ่าน LINE (จองผ่านหน้าเว็บทั่วไป)' 
+            pin_code: pinCode, 
+            message: 'ลูกค้ารายนี้ไม่ได้เชื่อมต่อ LINE OA (จองผ่านหน้าเว็บทั่วไป)' 
           }), { headers: corsHeaders });
         }
       }
 
-      // Payment status update -> Triggers Confirmation message (No PIN)
+      // Payment status update -> Staff manual approval / rejection endpoint
       if (pathname.startsWith('/api/bookings/') && (pathname.endsWith('/payment-status') || pathname.endsWith('/payment')) && (method === 'PUT' || method === 'PATCH' || method === 'POST')) {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -2282,19 +2281,89 @@ export default {
         const paymentStatus = body.payment_status || 'paid';
         const paymentMethod = body.payment_method || 'transfer';
 
-        await env.DB.prepare('UPDATE bookings SET payment_status = ?, payment_method = ? WHERE id = ?')
-          .bind(paymentStatus, paymentMethod, bookingId).run();
-
-        let lineData = null;
-        if (paymentStatus === 'paid') {
-          lineData = await sendLineBookingConfirmation(env, bookingId);
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
         }
 
-        return new Response(JSON.stringify({ 
-          success: true, 
-          message: 'อัปเดตสถานะการชำระเงินสำเร็จ' + (lineData?.success ? ' และส่งการแจ้งเตือนยืนยันการจองผ่าน LINE OA แล้ว' : ''),
-          line_notification_sent: lineData?.success || false
-        }), { headers: corsHeaders });
+        const nowIso = new Date().toISOString();
+
+        if (paymentStatus === 'paid') {
+          let receiptNumber = booking.receipt_number;
+          if (!receiptNumber) {
+            receiptNumber = await generateReceiptNumber(env);
+          }
+          let pinCode = booking.pin_code;
+          if (!pinCode) {
+            pinCode = await generateUniquePinCode(env);
+          }
+
+          await env.DB.prepare(`
+            UPDATE bookings 
+            SET payment_status = 'paid', 
+                payment_method = ?,
+                receipt_number = ?,
+                pin_code = ?,
+                slip_verify_status = 'manual_approved',
+                slip_verified_at = ?
+            WHERE id = ?
+          `).bind(paymentMethod, receiptNumber, pinCode, nowIso, bookingId).run();
+
+          // Update slip_verifications record
+          try {
+            await env.DB.prepare(`
+              UPDATE slip_verifications 
+              SET verification_status = 'approved',
+                  is_auto_approved = 0,
+                  confidence_score = 100
+              WHERE booking_id = ?
+            `).bind(bookingId).run();
+          } catch (svErr) {}
+
+          let lineData = null;
+          if (booking.line_user_id) {
+            try {
+              lineData = await sendLineBookingConfirmation(env, bookingId);
+            } catch (lineErr) {}
+          }
+
+          return new Response(JSON.stringify({ 
+            success: true, 
+            message: 'อนุมัติการชำระเงินสำเร็จ' + (lineData?.success ? ' และส่งการแจ้งเตือนยืนยันการจองผ่าน LINE OA แล้ว' : ''),
+            receiptNumber,
+            pinCode,
+            line_notification_sent: lineData?.success || false
+          }), { headers: corsHeaders });
+        } else if (paymentStatus === 'rejected') {
+          await env.DB.prepare(`
+            UPDATE bookings 
+            SET payment_status = 'rejected', 
+                slip_verify_status = 'rejected_by_staff' 
+            WHERE id = ?
+          `).bind(bookingId).run();
+
+          try {
+            await env.DB.prepare(`
+              UPDATE slip_verifications 
+              SET verification_status = 'rejected',
+                  rejection_reason = 'เจ้าหน้าที่ตรวจสอบแล้วพบว่าสลิปไม่ถูกต้อง'
+              WHERE booking_id = ?
+            `).bind(bookingId).run();
+          } catch (svErr) {}
+
+          return new Response(JSON.stringify({ 
+            success: true, 
+            message: 'ปฏิเสธการชำระเงินเรียบร้อยแล้ว'
+          }), { headers: corsHeaders });
+        } else {
+          await env.DB.prepare('UPDATE bookings SET payment_status = ?, payment_method = ? WHERE id = ?')
+            .bind(paymentStatus, paymentMethod, bookingId).run();
+
+          return new Response(JSON.stringify({ 
+            success: true, 
+            message: 'อัปเดตสถานะการชำระเงินสำเร็จ'
+          }), { headers: corsHeaders });
+        }
       }
 
       // Cancel booking endpoint (Soft cancel + LINE Notification)
@@ -2312,6 +2381,15 @@ export default {
 
         await env.DB.prepare("UPDATE bookings SET payment_status = 'cancelled' WHERE id = ?").bind(bookingId).run();
         
+        try {
+          await env.DB.prepare(`
+            UPDATE slip_verifications 
+            SET verification_status = 'rejected',
+                rejection_reason = ?
+            WHERE booking_id = ?
+          `).bind(reason, bookingId).run();
+        } catch (svErr) {}
+
         let lineData = null;
         if (booking.line_user_id) {
           lineData = await sendLineBookingCancellation(env, bookingId, reason);
@@ -2398,8 +2476,7 @@ export default {
         return new Response(JSON.stringify({ 
           success: true, 
           message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
-          line_sent: lineData?.success || false,
-          pin_code: newPinCode
+          line_sent: lineData?.success || false
         }), { headers: corsHeaders });
       }
 
@@ -2509,115 +2586,72 @@ export default {
         const nowIso = new Date().toISOString();
 
         // ----------------------------------------------------
-        // AUTOMATED BANK SLIP QR VERIFICATION & ANTI-FRAUD
+        // STRICT BANK SLIP QR VERIFICATION & FRAUD PROTECTION
         // ----------------------------------------------------
         let parsedQR = qr_data ? parseThaiBankSlipQR(qr_data) : null;
 
-        // 1. REJECT if Merchant Payment QR (QR จ่ายเงิน)
-        if (parsedQR && parsedQR.isMerchantPaymentQR) {
+        // 1. REJECT if no QR, invalid QR, unreadable, or Merchant Payment QR
+        if (!qr_data || !parsedQR || !parsedQR.isValidSlipQR || !parsedQR.transRef || parsedQR.isMerchantPaymentQR) {
           return new Response(JSON.stringify({
             success: false,
             auto_approved: false,
-            error: parsedQR.rejectionReason || 'รูปภาพที่อัปโหลดคือ QR Code สำหรับสแกนจ่ายเงิน ไม่ใช่สลิปการโอนเงินสำเร็จของธนาคาร'
+            error: parsedQR?.rejectionReason || 'ไม่สามารถตรวจสอบ QR Code จากสลิปได้ กรุณาอัปโหลดสลิปโอนเงินที่ถูกต้อง'
           }), { status: 400, headers: corsHeaders });
         }
 
-        // 2. CHECK DUPLICATE SLIP (Anti-Fraud: ป้องกันการใช้สลิปซ้ำ)
-        if (parsedQR && parsedQR.isValidSlipQR && parsedQR.transRef) {
-          const duplicate = await env.DB.prepare(
-            'SELECT id, receipt_number FROM bookings WHERE slip_trans_ref = ? AND id != ?'
-          ).bind(parsedQR.transRef, booking.id).first();
+        // 2. ANTI-FRAUD: Check duplicate slip by transRef
+        const duplicate = await env.DB.prepare(
+          'SELECT id, receipt_number FROM bookings WHERE slip_trans_ref = ? AND id != ?'
+        ).bind(parsedQR.transRef, booking.id).first();
 
-          if (duplicate) {
-            return new Response(JSON.stringify({
-              success: false,
-              auto_approved: false,
-              error: `สลิปนี้เคยถูกนำมาใช้งานในระบบแล้ว (รหัสการจอง: ${duplicate.receipt_number || duplicate.id}) ไม่สามารถใช้ซ้ำได้`
-            }), { status: 400, headers: corsHeaders });
-          }
-
-          // 3. AUTO-APPROVE VALID BANK SLIP!
-          let receiptNumber = booking.receipt_number;
-          if (!receiptNumber) {
-            receiptNumber = await generateReceiptNumber(env);
-          }
-
-          let pinCode = booking.pin_code;
-          if (!pinCode) {
-            pinCode = await generateUniquePinCode(env);
-          }
-
-          try {
-            await env.DB.prepare(`
-              UPDATE bookings 
-              SET slip_image_url = ?, 
-                  payment_status = 'paid', 
-                  payment_method = 'transfer',
-                  receipt_number = ?,
-                  pin_code = ?,
-                  slip_trans_ref = ?,
-                  slip_verified_at = ?,
-                  slip_verify_status = 'auto_approved'
-              WHERE id = ?
-            `).bind(savedSlipUrl || 'uploaded', receiptNumber, pinCode, parsedQR.transRef, nowIso, booking.id).run();
-          } catch (dbErr) {
-            console.error('[Upload Slip] Auto-approve DB error:', dbErr.message);
-            await env.DB.prepare(`
-              UPDATE bookings 
-              SET payment_status = 'paid', 
-                  payment_method = 'transfer',
-                  receipt_number = ?,
-                  pin_code = ?
-              WHERE id = ?
-            `).bind(receiptNumber, pinCode, booking.id).run();
-          }
-
-          // Push LINE confirmation notification if customer provided LINE
-          if (booking.line_user_id) {
-            try {
-              await sendLineBookingConfirmation(env, booking.id);
-            } catch (lineErr) {
-              console.warn('[Upload Slip] LINE notify error:', lineErr.message);
-            }
-          }
-
+        if (duplicate) {
           return new Response(JSON.stringify({
-            success: true,
-            auto_approved: true,
-            slipUrl: savedSlipUrl,
-            receiptNumber,
-            pinCode,
-            verifyResult: {
-              isValid: true,
-              autoApproved: true,
-              transRef: parsedQR.transRef,
-              bankName: parsedQR.bankName,
-              bankCode: parsedQR.bankCode
-            },
-            message: 'สลิปถูกต้อง! ระบบตรวจสอบ QR Code สำเร็จ อนุมัติการจองและออกใบเสร็จให้อัตโนมัติเรียบร้อยแล้ว'
-          }), { headers: corsHeaders });
+            success: false,
+            auto_approved: false,
+            error: `สลิปนี้เคยถูกนำมาใช้งานในระบบแล้ว (รหัสการจอง: ${duplicate.receipt_number || duplicate.id}) ไม่สามารถใช้ซ้ำได้`
+          }), { status: 400, headers: corsHeaders });
         }
 
-        // 4. MANUAL REVIEW FALLBACK (If QR not readable from image)
+        // 3. ENTER MANUAL REVIEW (NEVER auto-approve as paid on Worker without OCR/amount verification)
+        await env.DB.prepare(`
+          UPDATE bookings 
+          SET slip_image_url = ?, 
+              payment_status = 'reviewing', 
+              slip_trans_ref = ?,
+              slip_verified_at = ?,
+              slip_verify_status = 'pending_manual'
+          WHERE id = ?
+        `).bind(savedSlipUrl || 'uploaded', parsedQR.transRef, nowIso, booking.id).run();
+
+        // 4. Record in slip_verifications table for audit trail
         try {
           await env.DB.prepare(`
-            UPDATE bookings 
-            SET slip_image_url = ?, 
-                payment_status = 'reviewing',
-                slip_verify_status = 'pending_manual',
-                slip_verified_at = ?
-            WHERE id = ?
-          `).bind(savedSlipUrl || 'uploaded', nowIso, booking.id).run();
-        } catch (dbErr) {
-          console.error('[Upload Slip] Review update error:', dbErr.message);
-          await env.DB.prepare(`UPDATE bookings SET payment_status = 'reviewing' WHERE id = ?`).bind(booking.id).run();
+            INSERT INTO slip_verifications (
+              booking_id, trans_ref, bank_code, bank_name, slip_image_url,
+              is_auto_approved, confidence_score, raw_qr_data, verification_status,
+              rejection_reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, 0, 50, ?, 'pending_manual', 'รอเจ้าหน้าที่ตรวจสอบยอดเงินและบัญชีผู้รับในระบบ POS', ?)
+          `).bind(
+            booking.id,
+            parsedQR.transRef,
+            parsedQR.bankCode || '000',
+            parsedQR.bankName || 'ธนาคารพาณิชย์',
+            savedSlipUrl || 'uploaded',
+            qr_data || '',
+            nowIso
+          ).run();
+        } catch (svErr) {
+          console.warn('[Upload Slip] slip_verifications insert warning:', svErr.message);
         }
 
         return new Response(JSON.stringify({
           success: true,
           auto_approved: false,
+          status: 'reviewing',
           slipUrl: savedSlipUrl,
-          message: 'อัปโหลดสลิปสำเร็จ! กำลังรอเจ้าหน้าที่ตรวจสอบการชำระเงิน'
+          transRef: parsedQR.transRef,
+          bankName: parsedQR.bankName,
+          message: 'ระบบได้รับหลักฐานการโอนเงินแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบยอดเงินก่อนยืนยันการจอง'
         }), { headers: corsHeaders });
       }
 

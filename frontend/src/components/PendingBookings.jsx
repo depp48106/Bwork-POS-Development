@@ -28,10 +28,18 @@ import {
   Ban,
   AlertTriangle,
   MoreHorizontal,
-  FileText
+  FileText,
+  Plus
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
+import CustomSelect from './CustomSelect';
+import { API_BASE } from '../apiConfig';
+
+const DATE_TYPE_OPTIONS = [
+  { value: 'usage_date', label: 'วันที่ใช้งาน' },
+  { value: 'created_at', label: 'วันที่ทำรายการ' }
+];
 
 const TIME_SLOT_OPTIONS = [
   '08:00', '08:30', '09:00', '09:30',
@@ -40,7 +48,7 @@ const TIME_SLOT_OPTIONS = [
   '16:00', '16:30', '17:00', '17:30', '18:00'
 ];
 
-function PendingBookings({ settings, sysAlert, sysConfirm }) {
+function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
   const [bookings, setBookings] = useState([]);
   const [roomsList, setRoomsList] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -142,22 +150,23 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   const [sortKey, setSortKey] = useState('id');
   const [sortOrder, setSortOrder] = useState('desc'); // default: newest first
 
-  // Active Tab Filter: 'pending' | 'paid' | 'cancelled'
-  const [activeTabFilter, setActiveTabFilter] = useState('pending');
+  // Active Tab Filter: 'all' | 'pending' | 'paid' | 'cancelled'
+  const [activeTabFilter, setActiveTabFilter] = useState('all');
+  // Customer Type / Channel Tab Filter: 'all' | 'walkin' | 'builtland' | 'basecamp' | 'line_oa'
+  const [activeChannelTab, setActiveChannelTab] = useState('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Static Column Definitions
+  // Static Column Definitions (9 columns, with recommended mock proportions)
   const columns = [
-    { key: 'id', label: 'เลขที่ใบจอง' },
-    { key: 'created_at', label: 'วันที่ทำรายการ' },
-    { key: 'usage_date', label: 'วันที่ใช้งาน' },
-    { key: 'booking_source', label: 'ช่องทางการจอง' },
-    { key: 'room_info', label: 'ห้องประชุม / รายการ' },
-    { key: 'customer_name', label: 'ชื่อผู้จอง / เบอร์โทร' },
-    { key: 'total_amount', label: 'ยอดชำระสุทธิ' },
-    { key: 'payment_status', label: 'สถานะการจอง' },
-    { key: 'pin_code', label: 'รหัสเข้าห้อง (PIN)' },
-    { key: 'actions', label: 'การดำเนินการ' }
+    { key: 'id', label: 'เลขที่ใบจอง', width: '10%', minWidth: '110px' },
+    { key: 'customer_name', label: 'ผู้จอง / เบอร์โทร', width: '18%', minWidth: '170px' },
+    { key: 'customer_type', label: 'ประเภทลูกค้า', width: '10%', minWidth: '105px' },
+    { key: 'booking_source', label: 'ช่องทาง', width: '8%', minWidth: '85px' },
+    { key: 'room_info', label: 'ห้องประชุม', width: '14%', minWidth: '145px' },
+    { key: 'usage_date', label: 'วันที่ / เวลาใช้งาน', width: '16%', minWidth: '155px' },
+    { key: 'total_amount', label: 'ยอดชำระ', width: '8%', minWidth: '95px' },
+    { key: 'pin_code', label: 'รหัสเข้าห้อง', width: '10%', minWidth: '110px' },
+    { key: 'actions', label: 'การดำเนินการ', width: '16%', minWidth: '200px' }
   ];
 
   useEffect(() => {
@@ -185,11 +194,33 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   // Reset page to 1 when tab filter or applied search changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [appliedSearchQuery, activeTabFilter, appliedStartDate, appliedEndDate, appliedDateFilterType]);
+  }, [appliedSearchQuery, activeTabFilter, activeChannelTab, appliedStartDate, appliedEndDate, appliedDateFilterType]);
 
-    // Explicit Search Trigger
+  // Filter input change handlers with debug logging
+  const handleDateTypeChange = (val) => {
+    console.log('[PendingBookings] DateType selected:', val);
+    setDateFilterTypeInput(val);
+  };
+
+  const handleStartDateChange = (val) => {
+    console.log('[PendingBookings] StartDate selected:', val);
+    setStartDateInput(val);
+  };
+
+  const handleEndDateChange = (val) => {
+    console.log('[PendingBookings] EndDate selected:', val);
+    setEndDateInput(val);
+  };
+
+  // Explicit Search Trigger
   const handleSearchSubmit = (e) => {
     if (e) e.preventDefault();
+    console.log('[PendingBookings] handleSearchSubmit executing with:', {
+      searchQueryInput,
+      dateFilterTypeInput,
+      startDateInput,
+      endDateInput
+    });
     setAppliedSearchQuery(searchQueryInput);
     setAppliedDateFilterType(dateFilterTypeInput);
     setAppliedStartDate(startDateInput);
@@ -198,8 +229,9 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     fetchBookings();
   };
 
-  // Explicit Clear All Filters
-  const handleClearFilters = () => {
+  // Explicit Reset All Filters
+  const handleResetFilters = () => {
+    console.log('[PendingBookings] handleResetFilters clicked - resetting all filters to defaults');
     setSearchQueryInput('');
     setDateFilterTypeInput('usage_date');
     setStartDateInput('');
@@ -209,8 +241,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     setAppliedDateFilterType('usage_date');
     setAppliedStartDate('');
     setAppliedEndDate('');
+    setActiveChannelTab('all');
+    setActiveTabFilter('all');
     setCurrentPage(1);
   };
+
+  const handleClearFilters = handleResetFilters;
 
   // Quick Today Button
   const handleQuickToday = () => {
@@ -250,6 +286,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     setShowPayModal(true);
   };
 
+  const handleOpenPayModal = (booking) => {
+    if (booking?.slip_image_url) {
+      setViewingSlipBooking(booking);
+    } else {
+      handleOpenPayment(booking);
+    }
+  };
+
   const handleOpenReceipt = async (booking) => {
     if (!booking) return;
     try {
@@ -266,23 +310,35 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     setShowReceiptModal(true);
   };
 
-  // Dispatch PIN to customer's LINE OA or show PIN
+  // Dispatch PIN to customer's LINE OA or show PIN (Manual Staff Action)
   const sendDoorPin = async (bookingId) => {
     try {
-      const res = await fetch(`/api/bookings/${bookingId}/send-pin`, { method: 'POST' });
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const url = `${API_BASE}/api/bookings/${bookingId}/send-pin`;
+      const res = await fetch(url, { 
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
       const data = await res.json();
       if (res.ok && data.success) {
         if (data.line_sent) {
           await sysAlert(`ส่งรหัสผ่านเข้าห้อง (PIN: ${data.pin_code}) เข้า LINE OA ของลูกค้าเรียบร้อยแล้ว!`);
         } else {
-          await sysAlert(`ลูกค้ารายนี้จองผ่านหน้าเว็บ (ไม่ได้เชื่อมต่อ LINE OA)\n\nรหัสผ่านเข้าห้องของลูกค้าคือ: ${data.pin_code}\n\nสามารถแจ้งรหัส PIN นี้ให้ลูกค้าที่หน้าเคาน์เตอร์ หรือลูกค้าสามารถดูเองได้ที่หน้าตรวจสอบสถานะการจอง`);
+          await sysAlert(`ลูกค้ารายนี้ไม่ได้เชื่อมต่อ LINE OA (จองผ่านหน้าเว็บทั่วไป)\n\nรหัสผ่านเข้าห้อง: ${data.pin_code}\n\nเจ้าหน้าที่สามารถแจ้งรหัส PIN นี้ให้ลูกค้าที่หน้าเคาน์เตอร์ได้โดยตรงครับ`);
         }
       } else {
         await sysAlert('' + (data.error || 'ไม่สามารถส่งรหัสผ่านได้ กรุณาตรวจสอบสถานะการเชื่อมต่อ'));
       }
     } catch (e) {
-      sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+      sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง');
     }
+  };
+
+  const handleSendPin = (bookingId) => {
+    sendDoorPin(bookingId);
   };
 
   // Staff confirms payment
@@ -642,16 +698,32 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
 
   const formatUsageTime = (b) => {
     const firstItem = b.items?.[0] || {};
-    if (firstItem.start_time) {
-      const sTime = firstItem.start_time.includes('T') ? firstItem.start_time.split('T')[1].substring(0, 5) : firstItem.start_time;
-      const eTime = firstItem.end_time?.includes('T') ? firstItem.end_time.split('T')[1].substring(0, 5) : firstItem.end_time || '';
-      if (sTime && eTime) return `${sTime} - ${eTime} น.`;
-      if (sTime) return `${sTime} น.`;
-    }
-    if (b.startTime && b.endTime) {
-      return `${b.startTime} - ${b.endTime} น.`;
-    }
-    return '';
+    const sRaw = firstItem.start_time || b.start_time || b.startTime || '';
+    const eRaw = firstItem.end_time || b.end_time || b.endTime || '';
+
+    const extractHHMM = (val) => {
+      if (!val) return '';
+      const str = String(val).trim();
+      if (str.includes('T')) {
+        const timePart = str.split('T')[1];
+        return timePart.substring(0, 5);
+      }
+      if (str.includes(' ')) {
+        const parts = str.split(' ');
+        const timePart = parts[1] || parts[0];
+        if (timePart.includes(':')) return timePart.substring(0, 5);
+      }
+      if (str.includes(':')) {
+        return str.substring(0, 5);
+      }
+      return str;
+    };
+
+    const sTime = extractHHMM(sRaw);
+    const eTime = extractHHMM(eRaw);
+    if (sTime && eTime) return `${sTime} - ${eTime} น.`;
+    if (sTime) return `${sTime} น.`;
+    return '-';
   };
 
   const getLocalDateString = (dateStr) => {
@@ -783,18 +855,62 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
     });
   }, [bookings, appliedStartDate, appliedEndDate, appliedDateFilterType, appliedSearchQuery]);
 
-  // 2. Status counts derived from filtered bookings
-  const pendingBookingsList = useMemo(() => baseFilteredList.filter(b => b.payment_status !== 'paid' && b.payment_status !== 'cancelled'), [baseFilteredList]);
-  const paidBookingsList = useMemo(() => baseFilteredList.filter(b => b.payment_status === 'paid'), [baseFilteredList]);
-  const cancelledBookingsList = useMemo(() => baseFilteredList.filter(b => b.payment_status === 'cancelled'), [baseFilteredList]);
+  const matchesChannel = (b, channel) => {
+    if (channel === 'all') return true;
+    const isPos = b.booking_channel === 'pos_web' || !b.booking_channel || b.booking_source === 'pos';
+    const isLineOA = b.booking_channel === 'line_oa' || b.booking_source === 'online' || b.customer_type === 'general' || b.customer_type === 'online';
+
+    if (channel === 'walkin') {
+      return (b.customer_type === 'walkin' || (!b.customer_type && !isLineOA)) && isPos;
+    }
+    if (channel === 'builtland') {
+      return b.customer_type === 'builtland' && isPos;
+    }
+    if (channel === 'basecamp') {
+      return b.customer_type === 'basecamp' && isPos;
+    }
+    if (channel === 'line_oa') {
+      return isLineOA;
+    }
+    return true;
+  };
+
+  // 2. Channel counts derived from baseFilteredList (so counts reflect current date / search filters)
+  const channelCounts = useMemo(() => {
+    let all = 0, walkin = 0, builtland = 0, basecamp = 0, line_oa = 0;
+    for (const b of baseFilteredList) {
+      all++;
+      if (matchesChannel(b, 'walkin')) {
+        walkin++;
+      } else if (matchesChannel(b, 'builtland')) {
+        builtland++;
+      } else if (matchesChannel(b, 'basecamp')) {
+        basecamp++;
+      } else if (matchesChannel(b, 'line_oa')) {
+        line_oa++;
+      }
+    }
+    return { all, walkin, builtland, basecamp, line_oa };
+  }, [baseFilteredList]);
+
+  // 3. Channel-filtered bookings list
+  const channelFilteredList = useMemo(() => {
+    if (activeChannelTab === 'all') return baseFilteredList;
+    return baseFilteredList.filter(b => matchesChannel(b, activeChannelTab));
+  }, [baseFilteredList, activeChannelTab]);
+
+  // 4. Status counts derived from channelFilteredList
+  const pendingBookingsList = useMemo(() => channelFilteredList.filter(b => b.payment_status !== 'paid' && b.payment_status !== 'cancelled' && b.payment_status !== 'internal_free'), [channelFilteredList]);
+  const paidBookingsList = useMemo(() => channelFilteredList.filter(b => b.payment_status === 'paid' || b.payment_status === 'internal_free'), [channelFilteredList]);
+  const cancelledBookingsList = useMemo(() => channelFilteredList.filter(b => b.payment_status === 'cancelled'), [channelFilteredList]);
   
   const reviewingCount = pendingBookingsList.filter(b => b.payment_status === 'reviewing' || !!b.slip_image_url).length;
   const pendingCount = pendingBookingsList.length;
   const paidCount = paidBookingsList.length;
   const cancelledCount = cancelledBookingsList.length;
-  const totalCount = baseFilteredList.length;
+  const totalCount = channelFilteredList.length;
 
-  const taxInvoiceList = useMemo(() => baseFilteredList.filter(b => b.tax_invoice_required === 1), [baseFilteredList]);
+  const taxInvoiceList = useMemo(() => channelFilteredList.filter(b => b.tax_invoice_required === 1), [channelFilteredList]);
   const taxInvoiceCount = taxInvoiceList.length;
   const taxInvoicePaidCount = taxInvoiceList.filter(b => b.payment_status === 'paid').length;
   const taxInvoicePendingCount = taxInvoiceList.filter(b => b.payment_status !== 'paid' && b.payment_status !== 'cancelled').length;
@@ -802,14 +918,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   const totalAmountPending = pendingBookingsList.reduce((sum, b) => sum + (Number(b.total_amount) || 0), 0);
   const totalAmountPaid = paidBookingsList.reduce((sum, b) => sum + (Number(b.total_amount) || 0), 0);
 
-  // 3. Final tab-filtered list for table display
+  // 5. Final tab-filtered list for table display
   const filteredBookings = useMemo(() => {
     if (activeTabFilter === 'pending') return pendingBookingsList;
     if (activeTabFilter === 'paid') return paidBookingsList;
     if (activeTabFilter === 'cancelled') return cancelledBookingsList;
     if (activeTabFilter === 'tax_invoice') return taxInvoiceList;
-    return baseFilteredList;
-  }, [activeTabFilter, pendingBookingsList, paidBookingsList, cancelledBookingsList, taxInvoiceList, baseFilteredList]);
+    return channelFilteredList;
+  }, [activeTabFilter, pendingBookingsList, paidBookingsList, cancelledBookingsList, taxInvoiceList, channelFilteredList]);
 
   // Sorting
   const getSortedBookings = () => {
@@ -854,192 +970,329 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
   const paginatedBookings = sortedBookings.slice(indexOfFirstRow, indexOfLastRow);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {/* Header Panel */}
-      <div className="tab-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {/* 1. Header Panel */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
         <div>
-          <h1 className="tab-title" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text-main)', margin: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
             <span>รายการจองห้อง</span>
             {reviewingCount > 0 && (
               <span style={{ 
-                fontSize: '0.8rem', 
-                backgroundColor: '#ef4444', 
-                color: '#ffffff', 
+                fontSize: '0.75rem', 
+                backgroundColor: 'rgba(239, 68, 68, 0.12)', 
+                color: '#ef4444', 
+                border: '1px solid rgba(239, 68, 68, 0.25)',
                 padding: '3px 10px', 
                 borderRadius: '999px', 
-                fontWeight: 800,
-                boxShadow: '0 2px 8px rgba(239, 68, 68, 0.4)' 
+                fontWeight: 800 
               }}>
                 รอตรวจสลิป {reviewingCount} รายการ
               </span>
             )}
           </h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
-            ศูนย์ตรวจสลิปโอนเงิน ยืนยันการชำระเงิน และกดส่งรหัสผ่านเปิดห้องประชุม (Door PIN) ให้ลูกค้าหน้าเคาน์เตอร์
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.84rem', margin: '4px 0 0 0' }}>
+            จัดการรายการจองห้องประชุม ตรวจสอบการชำระเงิน และส่งรหัสผ่านเปิดห้อง (Door PIN)
           </p>
         </div>
 
-        <button 
-          className="btn btn-secondary" 
-          onClick={() => fetchBookings(false)} 
-          disabled={loading || isRefreshing}
-          style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '8px', 
-            fontSize: '0.85rem',
-            fontWeight: 700,
-            padding: '8px 16px',
-            borderRadius: '12px'
-          }}
-        >
-          <RefreshCw size={15} style={{ animation: isRefreshing ? 'spin 1s linear infinite' : 'none' }} />
-          <span>{isRefreshing ? 'กำลังดึงข้อมูลล่าสุด...' : 'รีเฟรชข้อมูล'}</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <button 
+            type="button"
+            className="btn btn-secondary" 
+            onClick={() => fetchBookings(false)} 
+            disabled={loading || isRefreshing}
+            style={{ 
+              display: 'inline-flex', 
+              alignItems: 'center', 
+              gap: '6px', 
+              fontSize: '0.84rem',
+              fontWeight: 600,
+              padding: '8px 14px',
+              borderRadius: '12px',
+              border: '1px solid var(--border-color)',
+              background: 'var(--bg-card)'
+            }}
+          >
+            <RefreshCw size={14} style={{ animation: isRefreshing ? 'spin 1s linear infinite' : 'none' }} />
+            <span>{isRefreshing ? 'กำลังโหลด...' : 'รีเฟรช'}</span>
+          </button>
+
+          {onNavigateToBook && (
+            <button 
+              type="button"
+              className="btn btn-primary" 
+              onClick={onNavigateToBook}
+              style={{ 
+                display: 'inline-flex', 
+                alignItems: 'center', 
+                gap: '6px', 
+                fontSize: '0.84rem',
+                fontWeight: 700,
+                padding: '8px 16px',
+                borderRadius: '12px',
+                backgroundColor: '#2563eb',
+                borderColor: '#2563eb',
+                color: '#ffffff',
+                boxShadow: '0 4px 12px rgba(37, 99, 235, 0.25)'
+              }}
+            >
+              <Plus size={16} />
+              <span>สร้างการจอง</span>
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Interactive Stat-Tabs (3 สถานะการจัดการการจอง) */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px' }}>
+      {/* 2. Customer Type / Channel Navigation Tabs (Segmented Control) */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '6px',
+        backgroundColor: 'var(--bg-card)',
+        borderRadius: '14px',
+        border: '1px solid var(--border-color)',
+        overflowX: 'auto',
+        WebkitOverflowScrolling: 'touch'
+      }}>
+        {[
+          { key: 'walkin', label: 'Walk-in', count: channelCounts.walkin, color: '#10b981' },
+          { key: 'builtland', label: 'Builtland', count: channelCounts.builtland, color: '#ea580c' },
+          { key: 'basecamp', label: 'Basecamp', count: channelCounts.basecamp, color: '#8b5cf6' },
+          { key: 'line_oa', label: 'LINE OA / Online', count: channelCounts.line_oa, color: '#0ea5e9' }
+        ].map(tab => {
+          const isActive = activeChannelTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => {
+                setActiveChannelTab(activeChannelTab === tab.key ? 'all' : tab.key);
+                setCurrentPage(1);
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '8px 18px',
+                borderRadius: '10px',
+                border: isActive ? `1.5px solid ${tab.color}` : '1px solid transparent',
+                backgroundColor: isActive ? `${tab.color}15` : 'transparent',
+                color: isActive ? tab.color : 'var(--text-muted)',
+                fontWeight: isActive ? 800 : 600,
+                fontSize: '0.84rem',
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <span>{tab.label}</span>
+              <span style={{
+                fontSize: '0.72rem',
+                fontWeight: 800,
+                padding: '1px 8px',
+                borderRadius: '999px',
+                backgroundColor: isActive ? tab.color : 'var(--bg-hover)',
+                color: isActive ? '#ffffff' : 'var(--text-muted)',
+                border: isActive ? 'none' : '1px solid var(--border-color)'
+              }}>
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 3. Summary Stat Cards (3 Compact Modern Cards) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px' }}>
         
-        {/* Tab 1: ตรวจสอบการชำระเงิน */}
+        {/* Card 1: ตรวจชำระเงิน */}
         <div 
-          className="card" 
-          onClick={() => { setActiveTabFilter('pending'); setCurrentPage(1); }}
+          onClick={() => { 
+            setActiveTabFilter(activeTabFilter === 'pending' ? 'all' : 'pending'); 
+            setCurrentPage(1); 
+          }}
           style={{ 
-            padding: '16px 18px', 
+            padding: '12px 16px', 
             display: 'flex', 
             alignItems: 'center', 
-            gap: '14px', 
-            border: activeTabFilter === 'pending' ? '2px solid #f59e0b' : '1px solid var(--border-color)', 
-            background: activeTabFilter === 'pending' 
-              ? 'linear-gradient(135deg, var(--bg-card) 0%, rgba(245, 158, 11, 0.12) 100%)' 
-              : 'linear-gradient(135deg, var(--bg-card) 0%, rgba(245, 158, 11, 0.03) 100%)',
+            gap: '12px', 
+            borderRadius: '14px',
+            border: activeTabFilter === 'pending' ? '1.5px solid #f59e0b' : '1px solid var(--border-color)', 
+            backgroundColor: activeTabFilter === 'pending' ? 'rgba(245, 158, 11, 0.08)' : 'var(--bg-card)',
             cursor: 'pointer',
-            borderRadius: '16px',
-            boxShadow: activeTabFilter === 'pending' ? '0 6px 20px rgba(245, 158, 11, 0.2)' : 'none',
-            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-            transform: activeTabFilter === 'pending' ? 'translateY(-2px)' : 'none'
+            boxShadow: activeTabFilter === 'pending' ? '0 4px 12px rgba(245, 158, 11, 0.12)' : 'none',
+            transition: 'all 0.15s ease'
           }}
         >
-          <div style={{ backgroundColor: activeTabFilter === 'pending' ? '#f59e0b' : 'rgba(245, 158, 11, 0.15)', color: activeTabFilter === 'pending' ? '#ffffff' : '#f59e0b', width: '48px', height: '48px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
-            <AlertCircle size={24} />
+          <div style={{ 
+            backgroundColor: 'rgba(245, 158, 11, 0.12)', 
+            color: '#f59e0b', 
+            width: '38px', 
+            height: '38px', 
+            borderRadius: '10px', 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center', 
+            flexShrink: 0 
+          }}>
+            <AlertCircle size={18} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: '0.82rem', color: activeTabFilter === 'pending' ? '#d97706' : 'var(--text-muted)', fontWeight: 800 }}>ตรวจสอบชำระเงิน</div>
-            <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#f59e0b', margin: '2px 0' }}>
-              {pendingCount} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>รายการ</span>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>ตรวจชำระเงิน</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', margin: '1px 0' }}>
+              <span style={{ fontSize: '1.25rem', fontWeight: 900, color: '#f59e0b' }}>{pendingCount}</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>รายการ</span>
             </div>
-            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               ยอดค้าง <strong style={{ color: '#f59e0b' }}>฿{totalAmountPending.toLocaleString()}</strong>
             </div>
           </div>
         </div>
 
-        {/* Tab 2: ชำระเงินสำเร็จ */}
+        {/* Card 2: ชำระเงินสำเร็จ */}
         <div 
-          className="card" 
-          onClick={() => { setActiveTabFilter('paid'); setCurrentPage(1); }}
+          onClick={() => { 
+            setActiveTabFilter(activeTabFilter === 'paid' ? 'all' : 'paid'); 
+            setCurrentPage(1); 
+          }}
           style={{ 
-            padding: '16px 18px', 
+            padding: '12px 16px', 
             display: 'flex', 
             alignItems: 'center', 
-            gap: '14px', 
-            border: activeTabFilter === 'paid' ? '2px solid #10b981' : '1px solid var(--border-color)', 
-            background: activeTabFilter === 'paid' 
-              ? 'linear-gradient(135deg, var(--bg-card) 0%, rgba(16, 185, 129, 0.12) 100%)' 
-              : 'linear-gradient(135deg, var(--bg-card) 0%, rgba(16, 185, 129, 0.03) 100%)',
+            gap: '12px', 
+            borderRadius: '14px',
+            border: activeTabFilter === 'paid' ? '1.5px solid #10b981' : '1px solid var(--border-color)', 
+            backgroundColor: activeTabFilter === 'paid' ? 'rgba(16, 185, 129, 0.08)' : 'var(--bg-card)',
             cursor: 'pointer',
-            borderRadius: '16px',
-            boxShadow: activeTabFilter === 'paid' ? '0 6px 20px rgba(16, 185, 129, 0.2)' : 'none',
-            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-            transform: activeTabFilter === 'paid' ? 'translateY(-2px)' : 'none'
+            boxShadow: activeTabFilter === 'paid' ? '0 4px 12px rgba(16, 185, 129, 0.12)' : 'none',
+            transition: 'all 0.15s ease'
           }}
         >
-          <div style={{ backgroundColor: activeTabFilter === 'paid' ? '#10b981' : 'rgba(16, 185, 129, 0.15)', color: activeTabFilter === 'paid' ? '#ffffff' : '#10b981', width: '48px', height: '48px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
-            <ShieldCheck size={24} />
+          <div style={{ 
+            backgroundColor: 'rgba(16, 185, 129, 0.12)', 
+            color: '#10b981', 
+            width: '38px', 
+            height: '38px', 
+            borderRadius: '10px', 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center', 
+            flexShrink: 0 
+          }}>
+            <CheckCircle2 size={18} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: '0.82rem', color: activeTabFilter === 'paid' ? '#059669' : 'var(--text-muted)', fontWeight: 800 }}>ชำระเงินสำเร็จ</div>
-            <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#10b981', margin: '2px 0' }}>
-              {paidCount} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>รายการ</span>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>ชำระเงินสำเร็จ</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', margin: '1px 0' }}>
+              <span style={{ fontSize: '1.25rem', fontWeight: 900, color: '#10b981' }}>{paidCount}</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>รายการ</span>
             </div>
-            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               ยอดรับ <strong style={{ color: '#10b981' }}>฿{totalAmountPaid.toLocaleString()}</strong>
             </div>
           </div>
         </div>
 
-        {/* Tab 3: รายการยกเลิก */}
+        {/* Card 3: รายการยกเลิก */}
         <div 
-          className="card" 
-          onClick={() => { setActiveTabFilter('cancelled'); setCurrentPage(1); }}
+          onClick={() => { 
+            setActiveTabFilter(activeTabFilter === 'cancelled' ? 'all' : 'cancelled'); 
+            setCurrentPage(1); 
+          }}
           style={{ 
-            padding: '16px 18px', 
+            padding: '12px 16px', 
             display: 'flex', 
             alignItems: 'center', 
-            gap: '14px', 
-            border: activeTabFilter === 'cancelled' ? '2px solid #ef4444' : '1px solid var(--border-color)', 
-            background: activeTabFilter === 'cancelled' 
-              ? 'linear-gradient(135deg, var(--bg-card) 0%, rgba(239, 68, 68, 0.12) 100%)' 
-              : 'linear-gradient(135deg, var(--bg-card) 0%, rgba(239, 68, 68, 0.03) 100%)',
+            gap: '12px', 
+            borderRadius: '14px',
+            border: activeTabFilter === 'cancelled' ? '1.5px solid #ef4444' : '1px solid var(--border-color)', 
+            backgroundColor: activeTabFilter === 'cancelled' ? 'rgba(239, 68, 68, 0.08)' : 'var(--bg-card)',
             cursor: 'pointer',
-            borderRadius: '16px',
-            boxShadow: activeTabFilter === 'cancelled' ? '0 6px 20px rgba(239, 68, 68, 0.2)' : 'none',
-            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-            transform: activeTabFilter === 'cancelled' ? 'translateY(-2px)' : 'none'
+            boxShadow: activeTabFilter === 'cancelled' ? '0 4px 12px rgba(239, 68, 68, 0.12)' : 'none',
+            transition: 'all 0.15s ease'
           }}
         >
-          <div style={{ backgroundColor: activeTabFilter === 'cancelled' ? '#ef4444' : 'rgba(239, 68, 68, 0.15)', color: activeTabFilter === 'cancelled' ? '#ffffff' : '#ef4444', width: '48px', height: '48px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s', flexShrink: 0 }}>
-            <Ban size={24} />
+          <div style={{ 
+            backgroundColor: 'rgba(239, 68, 68, 0.12)', 
+            color: '#ef4444', 
+            width: '38px', 
+            height: '38px', 
+            borderRadius: '10px', 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center', 
+            flexShrink: 0 
+          }}>
+            <Ban size={18} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: '0.82rem', color: activeTabFilter === 'cancelled' ? '#dc2626' : 'var(--text-muted)', fontWeight: 800 }}>รายการยกเลิก</div>
-            <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#ef4444', margin: '2px 0' }}>
-              {cancelledCount} <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>รายการ</span>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>รายการยกเลิก</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', margin: '1px 0' }}>
+              <span style={{ fontSize: '1.25rem', fontWeight: 900, color: '#ef4444' }}>{cancelledCount}</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>รายการ</span>
             </div>
-            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>ยกเลิกการจอง</div>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>ยกเลิกการจอง</div>
           </div>
         </div>
 
       </div>
 
-      {/* Main Filter & Search Toolbar (Styled after History.jsx) */}
+      {/* 4. Main Filter Bar */}
       <div className="card" style={{ 
-        padding: '14px 20px', 
+        padding: '12px 16px', 
         borderRadius: '16px', 
-        background: 'var(--glass-bg)', 
+        backgroundColor: 'var(--bg-card)', 
         border: '1px solid var(--border-color)', 
-        backdropFilter: 'blur(16px)', 
-        WebkitBackdropFilter: 'blur(16px)', 
-        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.05)',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.03)',
         position: 'relative',
-        zIndex: 100
+        zIndex: 30
       }}>
-        <form onSubmit={handleSearchSubmit} style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <form 
+          onSubmit={handleSearchSubmit} 
+          className="flex items-center gap-3 flex-nowrap w-full overflow-x-auto"
+          style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '10px', 
+            flexWrap: 'nowrap', 
+            width: '100%', 
+            overflowX: 'auto',
+            paddingBottom: '2px',
+            scrollbarWidth: 'thin'
+          }}
+        >
           
-          {/* 1. Search Input */}
-          <div style={{
-            position: 'relative',
-            flex: '1 1 200px',
-            minWidth: '180px',
-            display: 'flex',
-            alignItems: 'center'
-          }}>
-            <Search size={14} style={{ position: 'absolute', left: '12px', color: 'var(--text-muted)' }} />
+          {/* 1. Search Input (flex: 1, min-width: 360px) */}
+          <div 
+            className="relative flex-1" 
+            style={{ 
+              position: 'relative', 
+              flex: '1 1 360px', 
+              minWidth: '360px', 
+              display: 'inline-flex', 
+              alignItems: 'center' 
+            }}
+          >
+            <Search size={16} style={{ position: 'absolute', left: '14px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
             <input 
               type="text" 
               className="form-control"
               style={{
                 width: '100%',
-                paddingLeft: '34px',
-                paddingRight: searchQueryInput ? '30px' : '10px',
-                height: '38px',
+                paddingLeft: '40px',
+                paddingRight: searchQueryInput ? '36px' : '14px',
+                height: '40px',
                 borderRadius: '10px',
-                fontSize: '0.82rem',
+                fontSize: '0.84rem',
+                lineHeight: 1,
                 border: '1px solid var(--border-color)',
-                background: 'var(--bg-card)'
+                background: 'var(--bg-hover)',
+                color: 'var(--text-main)',
+                boxSizing: 'border-box',
+                whiteSpace: 'nowrap'
               }}
-              placeholder="ค้นหาเบอร์โทร, ชื่อผู้จอง, เลขใบจอง, PIN..."
+              placeholder="ค้นหาชื่อผู้จอง, เบอร์โทร, เลขใบจอง, PIN..."
               value={searchQueryInput}
               onChange={e => setSearchQueryInput(e.target.value)}
             />
@@ -1049,242 +1302,218 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                 onClick={() => setSearchQueryInput('')}
                 style={{ 
                   position: 'absolute', 
-                  right: '8px', 
+                  right: '10px', 
                   background: 'transparent', 
                   border: 'none', 
                   color: 'var(--text-muted)', 
-                  cursor: 'pointer',
-                  padding: '2px',
-                  display: 'flex',
-                  alignItems: 'center'
+                  cursor: 'pointer', 
+                  padding: '4px', 
+                  display: 'inline-flex', 
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '6px'
                 }}
+                title="ล้างคำค้นหา"
               >
-                <X size={13} />
+                <X size={14} />
               </button>
             )}
           </div>
 
-          {/* 2. Date Type Dropdown */}
-          <div style={{ position: 'relative', width: '145px', flexShrink: 0 }}>
-            <div 
-              className="form-control"
-              onClick={() => setIsDateTypeDropdownOpen(!isDateTypeDropdownOpen)}
-              style={{
-                height: '38px',
-                borderRadius: '10px',
-                fontSize: '0.82rem',
-                border: '1px solid var(--border-color)',
-                background: 'var(--bg-card)',
-                padding: '0 10px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                cursor: 'pointer',
+          {/* 2. วันที่ใช้งาน (CustomSelect, min-width: 150px) */}
+          <div className="shrink-0" style={{ flexShrink: 0, minWidth: '150px' }}>
+            <CustomSelect
+              value={dateFilterTypeInput}
+              onChange={handleDateTypeChange}
+              options={DATE_TYPE_OPTIONS}
+              usePortal={true}
+              noTruncate={true}
+              triggerStyle={{ 
+                height: '40px', 
+                borderRadius: '10px', 
+                fontSize: '0.84rem', 
                 fontWeight: 600,
-                color: 'var(--text-main)'
+                backgroundColor: 'var(--bg-hover)',
+                border: '1px solid var(--border-color)',
+                padding: '0 12px',
+                minWidth: '150px',
+                whiteSpace: 'nowrap'
+              }}
+              menuStyle={{
+                minWidth: '150px'
+              }}
+            />
+          </div>
+
+          {/* 3. วันเริ่มต้น (CustomDatePicker, min-width: 140px) */}
+          <div className="shrink-0" style={{ flexShrink: 0, minWidth: '140px' }}>
+            <CustomDatePicker 
+              value={startDateInput}
+              onChange={handleStartDateChange}
+              placeholder="วันเริ่มต้น"
+              className="form-control"
+              style={{ 
+                height: '40px', 
+                borderRadius: '10px', 
+                fontSize: '0.84rem', 
+                lineHeight: 1,
+                border: '1px solid var(--border-color)', 
+                background: 'var(--bg-hover)', 
+                padding: '0 12px', 
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxSizing: 'border-box',
+                minWidth: '140px',
+                whiteSpace: 'nowrap'
+              }}
+            />
+          </div>
+
+          {/* 4. วันสิ้นสุด (CustomDatePicker, min-width: 140px) */}
+          <div className="shrink-0" style={{ flexShrink: 0, minWidth: '140px' }}>
+            <CustomDatePicker 
+              value={endDateInput}
+              onChange={handleEndDateChange}
+              placeholder="วันสิ้นสุด"
+              className="form-control"
+              style={{ 
+                height: '40px', 
+                borderRadius: '10px', 
+                fontSize: '0.84rem', 
+                lineHeight: 1,
+                border: '1px solid var(--border-color)', 
+                background: 'var(--bg-hover)', 
+                padding: '0 12px', 
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxSizing: 'border-box',
+                minWidth: '140px',
+                whiteSpace: 'nowrap'
+              }}
+            />
+          </div>
+
+          {/* 5. วันนี้ (Quick Today Button, width ตาม content) */}
+          <div className="shrink-0" style={{ flexShrink: 0 }}>
+            <button 
+              type="button" 
+              onClick={handleQuickToday}
+              className="btn btn-secondary"
+              style={{ 
+                padding: '0 14px', 
+                borderRadius: '10px', 
+                fontSize: '0.84rem', 
+                lineHeight: 1,
+                fontWeight: 700, 
+                height: '40px', 
+                border: '1px solid var(--border-color)', 
+                background: 'var(--bg-hover)',
+                color: 'var(--text-main)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                whiteSpace: 'nowrap',
+                boxSizing: 'border-box'
+              }}
+              title="เลือกดูรายการของวันนี้"
+            >
+              วันนี้
+            </button>
+          </div>
+
+          {/* 6 & 7. Action Buttons: [ค้นหา] and [ล้างตัวกรอง] */}
+          <div className="shrink-0 flex items-center gap-2" style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            <button 
+              type="submit" 
+              className="btn btn-primary" 
+              style={{ 
+                padding: '0 18px', 
+                borderRadius: '10px', 
+                fontSize: '0.84rem', 
+                lineHeight: 1,
+                fontWeight: 700, 
+                height: '40px', 
+                gap: '6px', 
+                display: 'inline-flex', 
+                alignItems: 'center', 
+                justifyContent: 'center', 
+                cursor: 'pointer', 
+                backgroundColor: '#2563eb', 
+                borderColor: '#2563eb',
+                color: '#ffffff',
+                boxShadow: '0 2px 8px rgba(37, 99, 235, 0.25)',
+                whiteSpace: 'nowrap',
+                boxSizing: 'border-box'
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                <Calendar size={15} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
-                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-main)' }}>
-                  {dateFilterTypeInput === 'usage_date' ? 'วันที่ใช้งาน' : 'วันที่ทำรายการ'}
-                </span>
-              </div>
-              <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-            </div>
+              <Search size={15} />
+              <span>ค้นหา</span>
+            </button>
 
-            {isDateTypeDropdownOpen && (
-              <>
-                <div onClick={() => setIsDateTypeDropdownOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9998 }} />
-                <div className="action-dropdown-menu" style={{
-                  position: 'absolute',
-                  top: 'calc(100% + 4px)',
-                  left: 0,
-                  width: '100%',
-                  minWidth: '160px',
-                  zIndex: 9999,
-                  borderRadius: '12px',
-                  padding: '4px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '2px',
-                  boxShadow: '0 12px 30px rgba(0, 0, 0, 0.25)'
-                }}>
-                  {[
-                    { id: 'usage_date', label: 'วันที่ใช้งาน (จอง)' },
-                    { id: 'created_at', label: 'วันที่ทำรายการ' }
-                  ].map(item => (
-                    <div
-                      key={item.id}
-                      onClick={() => {
-                        setDateFilterTypeInput(item.id);
-                        setIsDateTypeDropdownOpen(false);
-                      }}
-                      style={{
-                        padding: '7px 10px',
-                        borderRadius: '8px',
-                        fontSize: '0.8rem',
-                        fontWeight: dateFilterTypeInput === item.id ? 800 : 500,
-                        color: dateFilterTypeInput === item.id ? 'var(--primary-color)' : 'var(--text-main)',
-                        cursor: 'pointer',
-                        background: dateFilterTypeInput === item.id ? 'var(--bg-hover)' : 'transparent',
-                        transition: 'background 0.15s'
-                      }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = dateFilterTypeInput === item.id ? 'var(--bg-hover)' : 'transparent'}
-                    >
-                      {item.label}
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+            <button 
+              type="button" 
+              onClick={handleResetFilters}
+              className="btn btn-secondary" 
+              style={{ 
+                padding: '0 14px', 
+                borderRadius: '10px', 
+                fontSize: '0.84rem', 
+                lineHeight: 1,
+                fontWeight: 600, 
+                height: '40px', 
+                display: 'inline-flex', 
+                alignItems: 'center', 
+                justifyContent: 'center', 
+                gap: '6px', 
+                border: '1px solid var(--border-color)', 
+                background: 'transparent', 
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                boxSizing: 'border-box'
+              }}
+              title="ล้างตัวกรองทั้งหมด"
+            >
+              <RotateCcw size={14} />
+              <span>ล้างตัวกรอง</span>
+            </button>
           </div>
-
-          {/* 3. Date Range: 2 CustomDatePicker Input Boxes */}
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-            <div style={{ width: '135px' }}>
-              <CustomDatePicker 
-                value={startDateInput}
-                onChange={val => setStartDateInput(val)}
-                placeholder="วันเริ่มต้น"
-                className="form-control"
-                style={{
-                  height: '38px',
-                  borderRadius: '10px',
-                  fontSize: '0.82rem',
-                  border: '1px solid var(--border-color)',
-                  background: 'var(--bg-card)',
-                  padding: '0 10px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  cursor: 'pointer'
-                }}
-              />
-            </div>
-            
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontWeight: 600 }}>-</span>
-
-            <div style={{ width: '135px' }}>
-              <CustomDatePicker 
-                value={endDateInput}
-                onChange={val => setEndDateInput(val)}
-                placeholder="วันสิ้นสุด"
-                className="form-control"
-                style={{
-                  height: '38px',
-                  borderRadius: '10px',
-                  fontSize: '0.82rem',
-                  border: '1px solid var(--border-color)',
-                  background: 'var(--bg-card)',
-                  padding: '0 10px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  cursor: 'pointer'
-                }}
-              />
-            </div>
-          </div>
-
-          {/* 4. [วันนี้] Quick Button */}
-          <button 
-            type="button" 
-            onClick={handleQuickToday}
-            className="btn btn-secondary"
-            style={{ 
-              padding: '0 12px', 
-              borderRadius: '10px', 
-              fontSize: '0.8rem', 
-              fontWeight: 600,
-              height: '38px', 
-              display: 'inline-flex', 
-              alignItems: 'center',
-              border: '1px solid var(--border-color)',
-              background: 'var(--bg-card)'
-            }}
-            title="เลือกวันที่ปัจจุบัน (วันนี้)"
-          >
-            วันนี้
-          </button>
-
-          {/* 5. [ค้นหา] Action Button */}
-          <button 
-            type="submit" 
-            className="btn btn-primary" 
-            style={{ 
-              padding: '0 14px', 
-              borderRadius: '10px', 
-              fontSize: '0.82rem', 
-              fontWeight: 700,
-              height: '38px', 
-              gap: '5px', 
-              display: 'inline-flex', 
-              alignItems: 'center', 
-              justifyContent: 'center',
-              cursor: 'pointer',
-              boxShadow: '0 2px 8px rgba(37, 99, 235, 0.25)',
-              flexShrink: 0
-            }}
-          >
-            <Search size={13} />
-            <span>ค้นหา</span>
-          </button>
-
-          {/* 6. [ล้างค่า] Button */}
-          <button 
-            type="button" 
-            onClick={handleClearFilters}
-            className="btn btn-secondary"
-            style={{ 
-              padding: '0 12px', 
-              borderRadius: '10px', 
-              fontSize: '0.82rem', 
-              fontWeight: 600,
-              height: '38px', 
-              gap: '4px',
-              backgroundColor: 'var(--bg-hover)',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-muted)',
-              display: 'inline-flex', 
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              flexShrink: 0
-            }}
-            title="ล้างค่าตัวกรองทั้งหมด"
-          >
-            <RotateCcw size={12} />
-            <span>ล้างค่า</span>
-          </button>
 
         </form>
       </div>
 
-      {/* Bookings Table View */}
-      <div className="card" style={{ padding: 0, overflow: 'hidden', borderRadius: '16px' }}>
-        <div style={{ overflowX: 'auto' }}>
-          <table className="table" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.875rem' }}>
+      {/* 5. Bookings Table View */}
+      <div className="card" style={{ padding: 0, overflow: 'hidden', borderRadius: '16px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-card)', position: 'relative', zIndex: 1 }}>
+        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <table className="table" style={{ width: '100%', minWidth: '1150px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.875rem' }}>
             <thead>
               <tr style={{ backgroundColor: 'rgba(255, 255, 255, 0.02)', borderBottom: '1px solid var(--border-color)' }}>
                 {columns.map(col => {
-                  const isSortable = col.key !== 'actions' && col.key !== 'room_info';
+                  const isSortable = col.key !== 'actions' && col.key !== 'room_info' && col.key !== 'customer_type';
                   let align = 'left';
                   if (col.key === 'total_amount') align = 'right';
-                  if (col.key === 'actions' || col.key === 'pin_code' || col.key === 'payment_status' || col.key === 'booking_source') align = 'center';
+                  if (col.key === 'actions' || col.key === 'pin_code' || col.key === 'booking_source' || col.key === 'customer_type') align = 'center';
 
                   return (
                     <th 
                       key={col.key} 
                       onClick={() => isSortable && handleSort(col.key)}
                       style={{ 
-                        padding: '14px 16px', 
+                        padding: '12px 14px', 
                         cursor: isSortable ? 'pointer' : 'default', 
                         userSelect: 'none',
                         color: 'var(--text-muted)',
                         fontSize: '0.78rem',
                         fontWeight: 700,
                         textAlign: align,
-                        whiteSpace: 'nowrap'
+                        whiteSpace: 'nowrap',
+                        width: col.width || 'auto',
+                        minWidth: col.minWidth || 'auto'
                       }}
                     >
                       <div style={{ 
@@ -1330,14 +1559,41 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                 </tr>
               ) : (
                 paginatedBookings.map((b) => {
-                  const isPaid = b.payment_status === 'paid';
-                  const isReviewing = b.payment_status === 'reviewing' || !!b.slip_image_url;
+                  const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
+                  const isReviewing = (b.payment_status === 'reviewing' || !!b.slip_image_url) && b.payment_status !== 'internal_free';
                   const firstItem = b.items?.[0] || {};
-                  const roomName = firstItem.room_name || b.room_name || 'ห้องประชุม';
+                  const roomObj = roomsList.find(r => r.id === (firstItem.room_id || b.room_id));
+                  const roomName = firstItem.room_name || b.room_name || roomObj?.name || 'ห้องประชุม';
                   const usageDateStr = formatUsageDate(b);
                   const timeDisplay = formatUsageTime(b);
                   const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom' : 'Standard';
                   const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาวัน' : firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง';
+
+                  // 1. Booking code / receipt_number
+                  const bookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
+
+                  // 3. Customer type badge styling
+                  let custBadge = { label: 'Walk-in', color: '#10b981', bg: 'rgba(16, 185, 129, 0.12)' };
+                  if (b.customer_type === 'builtland') {
+                    custBadge = { label: 'Builtland', color: '#ea580c', bg: 'rgba(234, 88, 12, 0.12)' };
+                  } else if (b.customer_type === 'basecamp') {
+                    custBadge = { label: 'Basecamp', color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.12)' };
+                  } else if (b.customer_type === 'general' || b.customer_type === 'line_oa' || b.customer_type === 'online' || b.booking_channel === 'line_oa' || b.booking_source === 'online') {
+                    custBadge = { label: 'LINE OA', color: '#0ea5e9', bg: 'rgba(14, 165, 233, 0.12)' };
+                  }
+
+                  // 4. Booking channel badge styling (pos_web = POS, line_oa = Online / LINE OA)
+                  const isOnlineChannel = b.booking_channel === 'line_oa' || b.booking_source === 'online' || b.customer_type === 'general' || b.customer_type === 'online';
+                  const channelBadge = isOnlineChannel
+                    ? { label: b.booking_channel === 'line_oa' ? 'LINE OA' : 'Online', color: '#0ea5e9', bg: 'rgba(14, 165, 233, 0.12)' }
+                    : { label: 'POS', color: '#10b981', bg: 'rgba(16, 185, 129, 0.12)' };
+
+                  // 8. Room PIN code resolution & styling
+                  let pinDisplay = b.pin_code || firstItem.pin_code || '';
+                  if (!pinDisplay && roomObj) {
+                    pinDisplay = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
+                  }
+                  const isBuiltland = b.customer_type === 'builtland';
 
                   return (
                     <tr 
@@ -1345,68 +1601,46 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                       style={{ 
                         borderBottom: '1px solid var(--border-color)',
                         backgroundColor: isReviewing && !isPaid && b.payment_status !== 'cancelled' ? 'rgba(14, 165, 233, 0.04)' : 'transparent',
-                        transition: 'background-color 0.2s'
+                        transition: 'background-color 0.15s ease'
                       }}
                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)'}
                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = isReviewing && !isPaid && b.payment_status !== 'cancelled' ? 'rgba(14, 165, 233, 0.04)' : 'transparent'}
                     >
-                      {/* Column 1: ID / Receipt */}
-                      <td style={{ padding: '14px 16px', fontWeight: 800, color: 'var(--primary-color)', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
-                        {b.receipt_number || `#${String(b.id).padStart(6, '0')}`}
-                      </td>
-
-                      {/* Column 2: Created At (วันที่ทำรายการ) */}
-                      <td style={{ padding: '14px 16px', color: 'var(--text-muted)', fontSize: '0.8rem', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
-                        {formatDate(b.created_at)}
-                      </td>
-
-                      {/* Column 3: Usage Date (วันที่ใช้งาน) */}
-                      <td style={{ padding: '14px 16px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
-                        <div style={{ fontWeight: 700, color: 'var(--text-main)', fontSize: '0.85rem' }}>
-                          {usageDateStr}
+                      {/* Column 1: เลขที่ใบจอง */}
+                      <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', verticalAlign: 'middle', textAlign: 'left' }}>
+                        <div style={{ fontWeight: 800, color: 'var(--primary-color)', fontSize: '0.85rem' }}>
+                          {bookingCode}
                         </div>
-                        {timeDisplay && (
-                          <div style={{ fontSize: '0.75rem', color: '#0ea5e9', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
-                            <Clock size={11} />
-                            <span>{timeDisplay}</span>
-                          </div>
-                        )}
-                      </td>
-
-                      {/* Column 4: Booking Source (ช่องทางการจอง) */}
-                      <td style={{ textAlign: 'center', padding: '14px 16px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
-                        <span style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          padding: '4px 10px',
-                          borderRadius: '99px',
-                          fontSize: '0.75rem',
-                          fontWeight: 700,
-                          backgroundColor: b.booking_source === 'online' ? 'rgba(14, 165, 233, 0.12)' : 'rgba(16, 185, 129, 0.12)',
-                          color: b.booking_source === 'online' ? '#0ea5e9' : '#10b981',
-                          border: `1px solid ${b.booking_source === 'online' ? 'rgba(14, 165, 233, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`
-                        }}>
-                          {b.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
-                        </span>
-                      </td>
-
-                      {/* Column 5: Room Info & Details */}
-                      <td style={{ padding: '14px 16px', verticalAlign: 'middle' }}>
-                        <div style={{ fontWeight: 700, color: 'var(--text-main)', fontSize: '0.875rem' }}>
-                          {roomName}
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          {formatDate(b.created_at)}
                         </div>
-                        {firstItem.room_id && (
-                          <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', fontWeight: 500, marginTop: '2px' }}>
-                            {`${layoutLabel} • ${typeLabel}`}
-                          </div>
-                        )}
                       </td>
 
-                      {/* Column 6: Customer Name & Phone */}
-                      <td style={{ padding: '14px 16px', verticalAlign: 'middle' }}>
-                        <div style={{ fontWeight: 700, color: 'var(--text-main)' }}>
+                      {/* Column 2: ผู้จอง / เบอร์โทร */}
+                      <td style={{ padding: '10px 14px', verticalAlign: 'middle', textAlign: 'left' }}>
+                        <div 
+                          style={{ 
+                            fontWeight: 700, 
+                            color: 'var(--text-main)', 
+                            fontSize: '0.85rem',
+                            maxWidth: '220px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}
+                          title={b.customer_name || '-'}
+                        >
                           {b.customer_name || '-'}
+                        </div>
+                        <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
+                          {b.contact ? (
+                            <>
+                              <Phone size={11} />
+                              <span>{b.contact}</span>
+                            </>
+                          ) : (
+                            <span>-</span>
+                          )}
                         </div>
                         {b.tax_invoice_required === 1 && (
                           <div style={{ marginTop: '3px' }}>
@@ -1432,289 +1666,243 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                             </span>
                           </div>
                         )}
-                        {b.contact && (
-                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
-                            <Phone size={11} />
-                            <span>{b.contact}</span>
+                      </td>
+
+                      {/* Column 3: ประเภทลูกค้า */}
+                      <td style={{ textAlign: 'center', padding: '10px 14px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: '0 10px',
+                          height: '24px',
+                          borderRadius: '999px',
+                          fontSize: '0.74rem',
+                          fontWeight: 700,
+                          minWidth: '80px',
+                          backgroundColor: custBadge.bg,
+                          color: custBadge.color,
+                          border: `1px solid ${custBadge.color}40`,
+                          boxSizing: 'border-box'
+                        }}>
+                          {custBadge.label}
+                        </span>
+                      </td>
+
+                      {/* Column 4: ช่องทาง */}
+                      <td style={{ textAlign: 'center', padding: '10px 14px', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: '0 8px',
+                          height: '24px',
+                          borderRadius: '999px',
+                          fontSize: '0.72rem',
+                          fontWeight: 700,
+                          minWidth: '65px',
+                          backgroundColor: channelBadge.bg,
+                          color: channelBadge.color,
+                          border: `1px solid ${channelBadge.color}35`,
+                          boxSizing: 'border-box'
+                        }}>
+                          {channelBadge.label}
+                        </span>
+                      </td>
+
+                      {/* Column 5: ห้องประชุม */}
+                      <td style={{ padding: '10px 14px', verticalAlign: 'middle', textAlign: 'left' }}>
+                        <div 
+                          style={{ 
+                            fontWeight: 700, 
+                            color: 'var(--text-main)', 
+                            fontSize: '0.85rem',
+                            maxWidth: '180px',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}
+                          title={roomName}
+                        >
+                          {roomName}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 500, marginTop: '2px' }}>
+                          {`${layoutLabel} • ${typeLabel}`}
+                        </div>
+                      </td>
+
+                      {/* Column 6: วันที่ / เวลาใช้งาน */}
+                      <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', verticalAlign: 'middle', textAlign: 'left' }}>
+                        <div style={{ fontWeight: 700, color: 'var(--text-main)', fontSize: '0.85rem' }}>
+                          {usageDateStr}
+                        </div>
+                        {timeDisplay && (
+                          <div style={{ fontSize: '0.74rem', color: '#0ea5e9', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
+                            <Clock size={11} />
+                            <span>{timeDisplay}</span>
                           </div>
                         )}
                       </td>
 
-                      {/* Column 7: Total Amount */}
-                      <td style={{ padding: '14px 16px', textAlign: 'right', fontWeight: 800, fontSize: '0.95rem', color: isPaid ? '#10b981' : (b.payment_status === 'cancelled' ? 'var(--text-muted)' : '#f59e0b'), whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                      {/* Column 7: ยอดชำระ */}
+                      <td style={{ padding: '10px 14px', textAlign: 'right', fontWeight: 800, fontSize: '0.92rem', color: isPaid ? '#10b981' : (b.payment_status === 'cancelled' ? 'var(--text-muted)' : '#f59e0b'), whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
                         ฿{Number(b.total_amount || 0).toLocaleString()}
                       </td>
 
-                      {/* Column 8: Payment Status Badge */}
-                      <td style={{ padding: '14px 16px', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
-                        {b.payment_status === 'cancelled' ? (
+                      {/* Column 8: รหัสเข้าห้อง */}
+                      <td style={{ padding: '10px 14px', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                        {pinDisplay ? (
                           <span style={{ 
-                            padding: '4px 10px', 
+                            padding: '0 10px', 
+                            height: '24px',
                             borderRadius: '999px', 
-                            fontSize: '0.75rem', 
+                            fontSize: '0.8rem', 
                             fontWeight: 800, 
-                            backgroundColor: 'rgba(239, 68, 68, 0.15)', 
-                            color: '#ef4444',
-                            border: '1px solid rgba(239, 68, 68, 0.3)',
+                            fontFamily: 'monospace',
+                            letterSpacing: '0.5px',
+                            backgroundColor: isBuiltland ? 'rgba(234, 88, 12, 0.12)' : 'rgba(99, 102, 241, 0.12)', 
+                            color: isBuiltland ? '#ea580c' : '#6366f1',
+                            border: isBuiltland ? '1px solid rgba(234, 88, 12, 0.3)' : '1px solid rgba(99, 102, 241, 0.3)',
                             display: 'inline-flex',
                             alignItems: 'center',
-                            gap: '4px'
+                            justifyContent: 'center',
+                            gap: '4px',
+                            boxSizing: 'border-box'
                           }}>
-                            <Ban size={12} />
-                            <span>ยกเลิก</span>
-                          </span>
-                        ) : isPaid ? (
-                          <span style={{ 
-                            padding: '4px 10px', 
-                            borderRadius: '999px', 
-                            fontSize: '0.75rem', 
-                            fontWeight: 800, 
-                            backgroundColor: 'rgba(16, 185, 129, 0.15)', 
-                            color: '#10b981',
-                            border: '1px solid rgba(16, 185, 129, 0.3)',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '4px'
-                          }}>
-                            <CheckCircle2 size={12} />
-                            <span>ชำระเงินสำเร็จ</span>
-                          </span>
-                        ) : isReviewing ? (
-                          <span style={{ 
-                            padding: '4px 10px', 
-                            borderRadius: '999px', 
-                            fontSize: '0.75rem', 
-                            fontWeight: 800, 
-                            backgroundColor: 'rgba(14, 165, 233, 0.15)', 
-                            color: '#0ea5e9',
-                            border: '1px solid rgba(14, 165, 233, 0.3)',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '4px'
-                          }}>
-                            <Eye size={12} />
-                            <span>รอตรวจสลิป</span>
+                            <Key size={12} />
+                            <span>{pinDisplay}</span>
                           </span>
                         ) : (
-                          <span style={{ 
-                            padding: '4px 10px', 
-                            borderRadius: '999px', 
-                            fontSize: '0.75rem', 
-                            fontWeight: 800, 
-                            backgroundColor: 'rgba(245, 158, 11, 0.15)', 
-                            color: '#f59e0b',
-                            border: '1px solid rgba(245, 158, 11, 0.3)',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '4px'
-                          }}>
-                            <Clock size={12} />
-                            <span>รอชำระเงิน</span>
-                          </span>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>-</span>
                         )}
                       </td>
 
-                      {/* Column 9: Door Access PIN Display */}
-                      <td style={{ padding: '14px 16px', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
-                        {isPaid && b.pin_code ? (
-                          <div style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '5px',
-                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                            border: '1px dashed #10b981',
-                            padding: '3px 8px',
-                            borderRadius: '8px',
-                            fontSize: '0.9rem',
-                            fontWeight: 800,
-                            color: '#15803d',
-                            letterSpacing: '1px'
-                          }}>
-                            <Key size={13} style={{ color: '#10b981' }} />
-                            <span>{b.pin_code}</span>
-                          </div>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>-</span>
-                        )}
-                      </td>
-
-                      {/* Column 8: Actions Column */}
-                      <td style={{ padding: '12px 16px', textAlign: 'center', whiteSpace: 'nowrap' }}>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
+                      {/* Column 9: การดำเนินการ */}
+                      <td style={{ padding: '10px 14px', textAlign: 'center', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                           
-                          {/* Case 0: Cancelled Booking */}
-                          {b.payment_status === 'cancelled' ? (
-                            <>
-                              <button 
-                                className="btn-modern-receipt"
-                                onClick={() => handleOpenReceipt(b)}
-                                title="ดูรายละเอียดการจอง"
-                                style={{ padding: '6px 12px', borderRadius: '10px', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '5px', fontWeight: 600 }}
-                              >
-                                <FileText size={14} />
-                                <span>รายละเอียด</span>
-                              </button>
-
-                              <button 
-                                className="btn-modern-trash"
-                                title="ลบรายการนี้ออกจากระบบอย่างถาวร"
-                                onClick={() => handlePermanentDelete(b)}
-                                style={{ padding: '6px 12px', borderRadius: '10px', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '5px', backgroundColor: 'rgba(239, 68, 68, 0.12)', borderColor: 'rgba(239, 68, 68, 0.3)', color: '#ef4444', fontWeight: 700 }}
-                              >
-                                <Trash2 size={14} />
-                                <span>ลบ</span>
-                              </button>
-                            </>
-                          ) : !isPaid ? (
-                            /* Case 1: Unpaid / Reviewing -> Primary Button + More Dropdown */
-                            <>
-                              <button 
-                                className="btn btn-primary"
-                                style={{
-                                  padding: '6px 14px',
-                                  fontSize: '0.8rem',
-                                  borderRadius: '10px',
-                                  fontWeight: 700,
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '6px',
-                                  backgroundColor: isReviewing ? '#0ea5e9' : '#10b981',
-                                  borderColor: isReviewing ? '#0ea5e9' : '#10b981',
-                                  color: '#fff',
-                                  cursor: 'pointer',
-                                  boxShadow: isReviewing ? '0 4px 12px rgba(14, 165, 233, 0.25)' : '0 4px 12px rgba(16, 185, 129, 0.25)'
-                                }}
-                                onClick={() => handleOpenPayment(b)}
-                              >
-                                <CheckCircle2 size={15} />
-                                <span>ตรวจสอบ</span>
-                              </button>
-
-                              <button 
-                                className="btn btn-secondary"
-                                onClick={(e) => handleToggleActionMenu(e, b)}
-                                title="เมนูการทำงานเพิ่มเติม"
-                                style={{
-                                  width: '34px',
-                                  height: '34px',
-                                  padding: 0,
-                                  borderRadius: '10px',
-                                  fontSize: '0.8rem',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  border: activeActionMenuBooking?.id === b.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
-                                  backgroundColor: activeActionMenuBooking?.id === b.id ? 'rgba(37, 99, 235, 0.15)' : 'rgba(255, 255, 255, 0.05)',
-                                  color: 'var(--text-main)',
-                                  cursor: 'pointer',
-                                  flexShrink: 0
-                                }}
-                              >
-                                <MoreHorizontal size={16} />
-                              </button>
-                            </>
-                          ) : (
-                            /* Case 2: Paid -> Send PIN + Receipt + Tax Invoice (if requested) + More Dropdown */
-                            <>
-                              <button 
-                                className="btn btn-primary"
-                                style={{
-                                  padding: '6px 12px',
-                                  fontSize: '0.8rem',
-                                  borderRadius: '10px',
-                                  backgroundColor: '#1e3a8a',
-                                  borderColor: '#1e3a8a',
-                                  color: '#fff',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  gap: '5px',
-                                  fontWeight: 700,
-                                  cursor: 'pointer',
-                                  boxShadow: '0 3px 10px rgba(30, 58, 138, 0.25)',
-                                  flexShrink: 0
-                                }}
-                                onClick={() => sendDoorPin(b.id)}
-                                title="ส่งรหัสผ่านเปิดห้อง (Door PIN) ให้ลูกค้าทาง LINE OA"
-                              >
-                                <Send size={13} />
-                                <span>ส่ง PIN</span>
-                              </button>
-
-                              <button 
-                                className="btn-modern-receipt"
-                                onClick={() => handleOpenReceipt(b)}
-                                title="ดูและพิมพ์ใบเสร็จ"
-                                style={{
-                                  padding: '6px 12px',
-                                  borderRadius: '10px',
-                                  fontSize: '0.8rem',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  gap: '5px',
-                                  fontWeight: 600,
-                                  flexShrink: 0
-                                }}
-                              >
-                                <Printer size={13} />
-                                <span>ใบเสร็จ</span>
-                              </button>
-
-                              {b.tax_invoice_required === 1 && (
-                                <button 
-                                  className="btn btn-secondary"
-                                  onClick={() => setSelectedTaxBooking(b)}
-                                  title="คลิกดูข้อมูลและพิมพ์ใบกำกับภาษีเต็มรูป"
-                                  style={{ 
-                                    padding: '6px 10px', 
-                                    borderRadius: '10px', 
-                                    fontSize: '0.8rem', 
-                                    display: 'inline-flex', 
-                                    alignItems: 'center', 
-                                    justifyContent: 'center', 
-                                    gap: '5px', 
-                                    fontWeight: 700, 
-                                    backgroundColor: 'rgba(37, 99, 235, 0.12)', 
-                                    border: '1.5px solid #2563eb', 
-                                    color: '#2563eb',
-                                    boxShadow: '0 2px 8px rgba(37, 99, 235, 0.18)',
-                                    cursor: 'pointer',
-                                    flexShrink: 0
-                                  }}
-                                >
-                                  <FileText size={13} />
-                                  <span>ใบกำกับภาษี</span>
-                                </button>
-                              )}
-
-                              <button 
-                                className="btn btn-secondary"
-                                onClick={(e) => handleToggleActionMenu(e, b)}
-                                title="เมนูการทำงานเพิ่มเติม"
-                                style={{
-                                  width: '34px',
-                                  height: '34px',
-                                  padding: 0,
-                                  borderRadius: '10px',
-                                  fontSize: '0.8rem',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  border: activeActionMenuBooking?.id === b.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
-                                  backgroundColor: activeActionMenuBooking?.id === b.id ? 'rgba(37, 99, 235, 0.15)' : 'rgba(255, 255, 255, 0.05)',
-                                  color: 'var(--text-main)',
-                                  cursor: 'pointer',
-                                  flexShrink: 0
-                                }}
-                              >
-                                <MoreHorizontal size={16} />
-                              </button>
-                            </>
+                          {/* 1. ดูสลิป (เมื่อมีสลิปแนบ) */}
+                          {b.slip_image_url && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setViewingSlipBooking(b); }}
+                              className="btn btn-secondary"
+                              style={{ 
+                                padding: '4px 8px', 
+                                fontSize: '0.74rem', 
+                                borderRadius: '8px', 
+                                display: 'inline-flex', 
+                                alignItems: 'center', 
+                                gap: '4px', 
+                                fontWeight: 700,
+                                backgroundColor: 'rgba(14, 165, 233, 0.1)',
+                                color: '#0284c7',
+                                border: '1px solid rgba(14, 165, 233, 0.3)'
+                              }}
+                              title="ดูสลิปโอนเงิน"
+                            >
+                              <Eye size={12} />
+                              <span>ดูสลิป</span>
+                            </button>
                           )}
+
+                          {/* 2. ส่ง PIN (เมื่อชำระแล้ว หรือ Builtland) */}
+                          {isPaid && b.payment_status !== 'cancelled' && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleSendPin(b.id); }}
+                              className="btn btn-secondary"
+                              style={{ 
+                                padding: '4px 8px', 
+                                fontSize: '0.74rem', 
+                                borderRadius: '8px', 
+                                display: 'inline-flex', 
+                                alignItems: 'center', 
+                                gap: '4px', 
+                                fontWeight: 700,
+                                backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                color: '#2563eb',
+                                border: '1px solid rgba(37, 99, 235, 0.3)'
+                              }}
+                              title="ส่งรหัสผ่านเปิดห้องทาง LINE OA"
+                            >
+                              <Send size={12} />
+                              <span>ส่ง PIN</span>
+                            </button>
+                          )}
+
+                          {/* 3. ตรวจสอบชำระเงิน (เมื่อยังไม่ชำระ) */}
+                          {!isPaid && b.payment_status !== 'cancelled' && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleOpenPayModal(b); }}
+                              className="btn btn-primary"
+                              style={{ 
+                                padding: '4px 8px', 
+                                fontSize: '0.74rem', 
+                                borderRadius: '8px', 
+                                display: 'inline-flex', 
+                                alignItems: 'center', 
+                                gap: '4px', 
+                                fontWeight: 700,
+                                backgroundColor: '#f59e0b',
+                                borderColor: '#f59e0b',
+                                color: '#ffffff'
+                              }}
+                              title="ตรวจสอบและยืนยันการชำระเงิน"
+                            >
+                              <ShieldCheck size={12} />
+                              <span>ตรวจสอบ</span>
+                            </button>
+                          )}
+
+                          {/* 4. ใบเสร็จรับเงิน */}
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleOpenReceipt(b); }}
+                            className="btn btn-secondary"
+                            style={{ 
+                              padding: '4px 8px', 
+                              fontSize: '0.74rem', 
+                              borderRadius: '8px', 
+                              display: 'inline-flex', 
+                              alignItems: 'center', 
+                              gap: '4px', 
+                              fontWeight: 600,
+                              backgroundColor: 'var(--bg-hover)',
+                              border: '1px solid var(--border-color)',
+                              color: 'var(--text-main)'
+                            }}
+                            title="พิมพ์ใบเสร็จรับเงิน"
+                          >
+                            <Printer size={12} />
+                            <span>ใบเสร็จ</span>
+                          </button>
+
+                          {/* 5. เมนูเพิ่มเติม (⋯) */}
+                          <button
+                            type="button"
+                            onClick={(e) => handleToggleActionMenu(e, b)}
+                            className="btn btn-secondary"
+                            style={{ 
+                              padding: '4px 6px', 
+                              fontSize: '0.74rem', 
+                              borderRadius: '8px', 
+                              display: 'inline-flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'center',
+                              backgroundColor: activeActionMenuBooking?.id === b.id ? 'var(--primary-color)' : 'var(--bg-hover)',
+                              color: activeActionMenuBooking?.id === b.id ? '#ffffff' : 'var(--text-muted)',
+                              border: '1px solid var(--border-color)'
+                            }}
+                            title="เมนูเพิ่มเติม"
+                          >
+                            <MoreHorizontal size={14} />
+                          </button>
 
                         </div>
                       </td>
+
                     </tr>
                   );
                 })
@@ -1723,32 +1911,73 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
           </table>
         </div>
 
-        {/* Pagination Controls */}
+        {/* Pagination Bar */}
         {totalPages > 1 && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 20px', borderTop: '1px solid var(--border-color)', flexWrap: 'wrap', gap: '10px' }}>
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center', 
+            padding: '12px 18px', 
+            borderTop: '1px solid var(--border-color)', 
+            backgroundColor: 'rgba(255, 255, 255, 0.01)',
+            flexWrap: 'wrap',
+            gap: '10px'
+          }}>
             <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              แสดงหน้า <strong>{currentPage}</strong> จาก <strong>{totalPages}</strong> (ทั้งหมด {totalRows} รายการ)
+              แสดงหน้า <strong>{currentPage}</strong> จาก <strong>{totalPages}</strong> (ทั้งหมด <strong>{totalRows}</strong> รายการ)
             </div>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              <button 
-                className="btn btn-secondary" 
+            
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
                 disabled={currentPage === 1}
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                style={{ padding: '4px 12px', fontSize: '0.8rem', borderRadius: '8px' }}
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                style={{ padding: '4px 10px', fontSize: '0.8rem', borderRadius: '8px' }}
               >
-                &larr; ก่อนหน้า
+                ก่อนหน้า
               </button>
-              <button 
-                className="btn btn-secondary" 
+
+              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                let p = i + 1;
+                if (totalPages > 5) {
+                  if (currentPage > 3) p = currentPage - 3 + i;
+                  if (p > totalPages) p = totalPages - 4 + i;
+                }
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setCurrentPage(p)}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: '0.8rem',
+                      borderRadius: '8px',
+                      border: currentPage === p ? '1px solid var(--primary-color)' : '1px solid var(--border-color)',
+                      backgroundColor: currentPage === p ? 'var(--primary-color)' : 'var(--bg-card)',
+                      color: currentPage === p ? '#ffffff' : 'var(--text-main)',
+                      fontWeight: currentPage === p ? 800 : 600,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {p}
+                  </button>
+                );
+              })}
+
+              <button
+                type="button"
+                className="btn btn-secondary"
                 disabled={currentPage === totalPages}
-                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                style={{ padding: '4px 12px', fontSize: '0.8rem', borderRadius: '8px' }}
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                style={{ padding: '4px 10px', fontSize: '0.8rem', borderRadius: '8px' }}
               >
-                ถัดไป &rarr;
+                ถัดไป
               </button>
             </div>
           </div>
         )}
+
       </div>
 
       {/* ========================================================= */}
@@ -2201,10 +2430,23 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                   <button 
                     type="button" 
                     className="btn btn-secondary" 
-                    style={{ flex: 1, borderRadius: '12px' }} 
+                    style={{ flex: 0.8, borderRadius: '12px' }} 
                     onClick={() => setViewingSlipBooking(null)}
                   >
                     ปิด
+                  </button>
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary" 
+                    style={{ flex: 1.1, borderRadius: '12px', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.4)', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }} 
+                    onClick={() => {
+                      const b = viewingSlipBooking;
+                      setViewingSlipBooking(null);
+                      handleOpenCancelModal(b);
+                    }}
+                  >
+                    <Ban size={15} />
+                    <span>ปฏิเสธสลิป</span>
                   </button>
                   <button 
                     type="button" 
@@ -2217,7 +2459,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm }) {
                     }}
                   >
                     <CheckCircle2 size={16} />
-                    <span>ไปรับชำระเงิน</span>
+                    <span>อนุมัติรับชำระเงิน</span>
                   </button>
                 </>
               )}

@@ -306,23 +306,15 @@ export default function ConfirmPage() {
         }
       }
 
-      if (res.ok && data.success && data.auto_approved === true) {
+      if (res.ok && data.success) {
         localStorage.removeItem('bwork_pending_booking');
         setUploadResultData(data);
         setUploadSuccess(true);
-      } else if (res.ok && data.success && data.auto_approved !== true) {
-        // A stored/flagged upload is not a successful payment. Keep the customer
-        // on this screen and require a new slip instead of showing a success view.
-        setError(
-          data.verifyResult?.reasons?.[0] ||
-          data.message ||
-          'ระบบยังไม่สามารถยืนยันชื่อบัญชีผู้รับและยอดเงินได้ กรุณาอัปโหลดสลิปที่ถูกต้องอีกครั้ง'
-        );
       } else {
         setError(data.error || (
           res.status >= 500
             ? 'ระบบตรวจสอบสลิปขัดข้องชั่วคราว กรุณาลองส่งสลิปอีกครั้ง'
-            : 'ไม่สามารถตรวจสอบสลิปนี้ได้ กรุณาตรวจสอบรูปภาพแล้วลองใหม่อีกครั้ง'
+            : 'ไม่สามารถตรวจสอบ QR Code จากสลิปได้ กรุณาอัปโหลดสลิปโอนเงินที่ถูกต้อง'
         ));
       }
     } catch (err) {
@@ -389,30 +381,33 @@ export default function ConfirmPage() {
             </>
           ) : (
             <>
-              <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: 'rgba(245, 158, 11, 0.12)', color: '#f59e0b', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px auto' }}>
+              <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: 'rgba(14, 165, 233, 0.12)', color: '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px auto' }}>
                 <Clock size={36} />
               </div>
 
               <h2 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 8px 0' }}>
-                ระบบยังไม่สามารถยืนยันสลิปได้
+                ระบบได้รับหลักฐานการโอนเงินแล้ว
               </h2>
+              <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', maxWidth: '500px', margin: '0 auto 16px auto' }}>
+                ระบบได้รับหลักฐานการโอนเงินแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบยอดเงินก่อนยืนยันการจอง
+              </p>
               
               <div style={{
                 maxWidth: '440px',
                 margin: '0 auto 16px auto',
-                backgroundColor: 'rgba(245, 158, 11, 0.08)',
-                border: '1px solid rgba(245, 158, 11, 0.3)',
+                backgroundColor: 'rgba(14, 165, 233, 0.08)',
+                border: '1px solid rgba(14, 165, 233, 0.3)',
                 borderRadius: '12px',
                 padding: '12px 16px',
                 textAlign: 'left',
                 fontSize: '0.82rem',
-                color: '#b45309',
+                color: '#0369a1',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '4px'
               }}>
-                <strong>กรุณาอัปโหลดสลิปใหม่</strong>
-                <span>{uploadResultData?.message || 'กรุณาใช้สลิปต้นฉบับที่เห็นชื่อผู้รับ ยอดเงิน และ QR Code ชัดเจน'}</span>
+                <strong>สถานะ: กำลังรอเจ้าหน้าที่ตรวจสอบยอดเงิน</strong>
+                <span>{uploadResultData?.message || 'เจ้าหน้าที่จะตรวจสอบยอดโอนและยืนยันการจองให้ท่านโดยเร็วที่สุดครับ'}</span>
               </div>
             </>
           )}
