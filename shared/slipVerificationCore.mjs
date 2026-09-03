@@ -182,77 +182,70 @@ export function normalizeReceiverLine(line, configuredName) {
  */
 export function extractReceiverSection(ocrText) {
   if (!ocrText) return { text: '', template: 'unknown' };
-  const lines = ocrText.split('\n').map(l => l.trim()).filter(Boolean);
+  const lines = String(ocrText || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
 
-  const startKeywords = ['ไปยัง', 'to', 'ผู้รับเงิน', 'โอนให้', 'บัญชีผู้รับ', 'รับเงิน'];
-  const endKeywords = [
-    'จำนวนเงิน', 'ยอดเงิน', 'ยอดโอน', 'amount', 'total',
-    'ค่าธรรมเนียม', 'fee', 'เลขที่รายการ', 'รหัสอ้างอิง',
-    'หมายเลขอ้างอิง', 'ref', 'reference', 'บันทึกช่วยจำ', 'memo', 'วันที่'
-  ];
+  // 1. Scoped receiver start pattern supporting OCR spacing variations, colon variants (: / ： / -), and bilingual keywords
+  const receiverRegex = /^\s*(?:[:•·\-*]\s*)?(?:บัญชีผู้รับ|ผู้\s*รับ(?:เงิน)?|รับเงินโดย|โอนให้|ไปยัง|ถึง|รับเงิน|TO\b|Beneficiary\b)\s*[:：-]?\s*/i;
+
+  // 2. Strict boundary pattern to stop receiver section from bleeding into sender, amount, or reference lines
+  const boundaryRegex = /^(?:จาก|ผู้โอน|ผู้ส่ง|FROM\b|Sender\b|จำนวน|จํานวน|ยอดเงิน|ยอดโอน|ยอดชำระ|Amount\b|Total\b|ค่าธรรมเนียม|Fee\b|วันที่|เวลา|เลขที่รายการ|รหัสอ้างอิง|หมายเลขอ้างอิง|หมายเหตุ|บันทึก|บันทึกช่วยจำ|Reference\b|Ref\b|Date\b|Time\b|Note\b|Memo\b)/i;
 
   const starts = [];
   for (let i = 0; i < lines.length; i++) {
-    const l = lines[i].toLowerCase();
-    for (const k of startKeywords) {
-      if (l === k || l.startsWith(k + ':') || l.startsWith(k + ' ') || l.endsWith(' ' + k)) {
-        starts.push({ index: i, keyword: k });
-        break;
-      }
+    if (receiverRegex.test(lines[i])) {
+      starts.push(i);
     }
   }
 
   if (starts.length === 1) {
-    const startIdx = starts[0].index;
-    const receiverLines = [];
-    for (let i = startIdx + 1; i < lines.length; i++) {
-      const l = lines[i].toLowerCase();
-      const isEnd = endKeywords.some(k => l.includes(k));
-      if (isEnd) break;
-      receiverLines.push(lines[i]);
-      if (receiverLines.length >= 6) break;
+    const startIdx = starts[0];
+    const firstLineRest = lines[startIdx].replace(receiverRegex, '').trim();
+    const section = firstLineRest ? [firstLineRest] : [];
+
+    for (let i = startIdx + 1; i < lines.length && i <= startIdx + 8; i++) {
+      if (boundaryRegex.test(lines[i]) || receiverRegex.test(lines[i])) break;
+      section.push(lines[i]);
+      if (section.length >= 6) break;
     }
-    return { text: receiverLines.join('\n'), template: 'standard_labeled' };
+    const text = section.join('\n').trim();
+    return { text, template: 'standard_labeled' };
   } else if (starts.length > 1) {
     return { text: '', template: 'ambiguous' };
   }
 
-  let fromIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i].toLowerCase();
-    if (l.includes('จาก') || l.includes('ผู้โอน') || l.includes('from')) {
-      fromIdx = i;
-      break;
-    }
+  // 3. KBank Structural Template Fallback (when standard receiver keyword is absent)
+  const kbankSenderRegex = /(?:ธ\.กสิกรไทย|กสิกรไทย|kbank|kasikorn|k\+)/i;
+  const genericSenderRegex = /(?:จาก|ผู้โอน|ผู้ส่ง|FROM\b|Sender\b)/i;
+  const refMarkerRegex = /(?:เลขที่รายการ|หมายเลขอ้างอิง|รหัสอ้างอิง|transaction\s*no|ref\s*id|ref:)/i;
+
+  let senderIdx = lines.findIndex(l => kbankSenderRegex.test(l));
+  if (senderIdx < 0) {
+    senderIdx = lines.findIndex(l => genericSenderRegex.test(l));
   }
 
-  let refIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i].toLowerCase();
-    if (l.includes('เลขที่รายการ') || l.includes('หมายเลขอ้างอิง') || l.includes('ref:')) {
-      refIdx = i;
-      break;
-    }
-  }
+  const refIdx = lines.findIndex(l => refMarkerRegex.test(l));
 
-  if (fromIdx !== -1 && refIdx !== -1 && refIdx > fromIdx + 2) {
-    const intermediateLines = lines.slice(fromIdx + 1, refIdx);
-    const candidateLines = [];
-    let passedSenderAccount = false;
-    for (const line of intermediateLines) {
-      if (!passedSenderAccount) {
-        if (/xxx|\d{3,}/.test(line) || /ธนาคาร|bank/i.test(line)) {
-          passedSenderAccount = true;
-        }
-        continue;
+  if (senderIdx >= 0 && refIdx > senderIdx + 1) {
+    let senderEndIdx = -1;
+    for (let i = senderIdx; i < refIdx; i++) {
+      if (/[\d๐-๙xX*•%-]{5,}/.test(lines[i]) || /(?:xxx|\d{3,})/i.test(lines[i])) {
+        senderEndIdx = i;
+        break;
       }
-      const l = line.toLowerCase();
-      if (endKeywords.some(k => l.includes(k))) break;
-      candidateLines.push(line);
-      if (candidateLines.length >= 4) break;
     }
-    if (candidateLines.length > 0) {
-      return { text: candidateLines.join('\n'), template: 'kbank_structural' };
+
+    const receiverStart = senderEndIdx >= 0 ? senderEndIdx + 1 : senderIdx + 1;
+    if (receiverStart < refIdx) {
+      const candidateLines = [];
+      for (let i = receiverStart; i < refIdx && i <= receiverStart + 6; i++) {
+        if (boundaryRegex.test(lines[i])) break;
+        candidateLines.push(lines[i]);
+        if (candidateLines.length >= 4) break;
+      }
+      const text = candidateLines.join('\n').trim();
+      if (text.length > 0) {
+        return { text, template: 'kbank_structural' };
+      }
     }
   }
 

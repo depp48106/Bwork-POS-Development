@@ -335,3 +335,313 @@ test('TC8: Staff Approve -> Uses manual payment flow, generates receipt without 
   assert.doesNotMatch(flexJson, /รหัสเข้าห้อง/i);
   assert.doesNotMatch(flexJson, /รหัสผ่านเข้าห้อง/i);
 });
+
+// =========================================================================
+// BUG 2 — Receiver Section Extraction Tests
+// =========================================================================
+
+const scbCompanySettings = {
+  company_name: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+  payment_bank_account_name: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+  payment_bank_account: '329-1-38429-0',
+  payment_bank_name: 'ธนาคารไทยพาณิชย์',
+  company_tax_id: '0125554000401',
+  promptpay_id: '0125554000401'
+};
+
+const kbankCompanySettings = {
+  company_name: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+  payment_bank_account_name: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+  payment_bank_account: '329-1-38429-0',
+  payment_bank_name: 'ธนาคารกสิกรไทย',
+  company_tax_id: '0125554000401',
+  promptpay_id: '0125554000401'
+};
+
+const scbQr = { isValidSlipQR: true, bankCode: '014', bankName: 'ธนาคารไทยพาณิชย์', transRef: 'SCB_REF_OK' };
+const kbankQr = { isValidSlipQR: true, bankCode: '004', bankName: 'ธนาคารกสิกรไทย', transRef: 'KBANK_REF_OK' };
+
+// --- SCB Tolerance Tests ---
+
+test('BUG 2 - SCB Receiver: "ผู้รับเงิน:" (standard colon without spacing)', () => {
+  const ocrText = [
+    'SCB EASY',
+    'โอนเงินสำเร็จ',
+    'จาก นาย ทดสอบ',
+    'ผู้รับเงิน: บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'รหัสอ้างอิง: REF_SCB_01'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'standard_labeled');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, scbCompanySettings, scbQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+test('BUG 2 - SCB Receiver: "ผู้รับเงิน :" (colon with preceding space)', () => {
+  const ocrText = [
+    'SCB EASY',
+    'โอนเงินสำเร็จ',
+    'จาก นาย ทดสอบ',
+    'ผู้รับเงิน : บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'รหัสอ้างอิง: REF_SCB_02'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'standard_labeled');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, scbCompanySettings, scbQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+test('BUG 2 - SCB Receiver: "ผู้รับเงิน -" (dash separator)', () => {
+  const ocrText = [
+    'SCB EASY',
+    'โอนเงินสำเร็จ',
+    'จาก นาย ทดสอบ',
+    'ผู้รับเงิน - บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'รหัสอ้างอิง: REF_SCB_03'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'standard_labeled');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, scbCompanySettings, scbQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+test('BUG 2 - SCB Receiver: "ผู้ รับเงิน" (OCR internal spacing typo)', () => {
+  const ocrText = [
+    'SCB EASY',
+    'โอนเงินสำเร็จ',
+    'จาก นาย ทดสอบ',
+    'ผู้ รับเงิน : บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'รหัสอ้างอิง: REF_SCB_04'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'standard_labeled');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, scbCompanySettings, scbQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+test('BUG 2 - SCB Receiver: "ไปยัง" on separate header line', () => {
+  const ocrText = [
+    'SCB EASY',
+    'โอนเงินสำเร็จ',
+    'จาก นาย ทดสอบ',
+    'ไปยัง',
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'รหัสอ้างอิง: REF_SCB_05'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'standard_labeled');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, scbCompanySettings, scbQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+// --- KBank Fallback Tests ---
+
+test('BUG 2 - KBank Fallback: "Transaction No" reference marker', () => {
+  const ocrText = [
+    'โอนเงินสำเร็จ',
+    'จาก นาย สมชาย',
+    'กสิกรไทย xxx-xxx-1234',
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'Transaction No: 016238081234'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'kbank_structural');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, kbankCompanySettings, kbankQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+test('BUG 2 - KBank Fallback: "Ref ID" reference marker', () => {
+  const ocrText = [
+    'โอนเงินสำเร็จ',
+    'จาก นาย สมชาย',
+    'กสิกรไทย xxx-xxx-1234',
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'Ref ID: 016238085678'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'kbank_structural');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, kbankCompanySettings, kbankQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+test('BUG 2 - KBank Fallback: "ธ.กสิกรไทย" sender marker', () => {
+  const ocrText = [
+    'โอนเงินสำเร็จ',
+    'ธ.กสิกรไทย xxx-xxx-1234',
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'เลขที่รายการ: 016238089999'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'kbank_structural');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, kbankCompanySettings, kbankQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+test('BUG 2 - KBank Fallback: "KBANK" uppercase marker', () => {
+  const ocrText = [
+    'KBANK Mobile Banking',
+    'จาก นาย ทดสอบ',
+    'KBANK 123-4-56789-0',
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'หมายเลขอ้างอิง: 2026KBANK01'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'kbank_structural');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, kbankCompanySettings, kbankQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+test('BUG 2 - KBank Fallback: "K+" logo text marker', () => {
+  const ocrText = [
+    'K+ Transfer',
+    'จาก นาย ทดสอบ',
+    'xxx-xxx-1234',
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท',
+    'รหัสอ้างอิง: KPLUS_REF_99'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.template, 'kbank_structural');
+  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, kbankCompanySettings, kbankQr);
+  assert.equal(res.receiver.matched, true);
+  assert.equal(res.receiver.statusText, 'ตรง');
+});
+
+// --- Negative Safety Tests (Must Fail Closed) ---
+
+test('BUG 2 - Negative Safety: sender section only -> FAIL CLOSED (statusText: ตรวจไม่ได้)', () => {
+  const ocrText = [
+    'โอนเงินสำเร็จ',
+    'จาก นาย สมชาย ใจดี',
+    'กสิกรไทย xxx-xxx-1234'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.text, '');
+  assert.equal(ext.template, 'unknown');
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, defaultCompanySettings);
+  assert.equal(res.receiver.matched, false);
+  assert.equal(res.receiver.statusText, 'ตรวจไม่ได้');
+  assert.equal(res.autoApproved, false);
+});
+
+test('BUG 2 - Negative Safety: name only without section keywords -> FAIL CLOSED', () => {
+  const ocrText = [
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    'จำนวนเงิน 300.00 บาท'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.text, '');
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, defaultCompanySettings);
+  assert.equal(res.receiver.matched, false);
+  assert.equal(res.receiver.statusText, 'ตรวจไม่ได้');
+  assert.equal(res.autoApproved, false);
+});
+
+test('BUG 2 - Negative Safety: account only without section keywords -> FAIL CLOSED', () => {
+  const ocrText = [
+    '329-1-38429-0',
+    'จำนวนเงิน 300.00 บาท'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.text, '');
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, defaultCompanySettings);
+  assert.equal(res.receiver.matched, false);
+  assert.equal(res.receiver.statusText, 'ตรวจไม่ได้');
+  assert.equal(res.autoApproved, false);
+});
+
+test('BUG 2 - Negative Safety: sender bank only -> FAIL CLOSED', () => {
+  const ocrText = [
+    'โอนจาก ธนาคารไทยพาณิชย์',
+    'จำนวนเงิน 300.00 บาท'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.text, '');
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, defaultCompanySettings);
+  assert.equal(res.receiver.matched, false);
+  assert.equal(res.receiver.statusText, 'ตรวจไม่ได้');
+  assert.equal(res.autoApproved, false);
+});
+
+test('BUG 2 - Negative Safety: unrelated OCR text -> FAIL CLOSED', () => {
+  const ocrText = [
+    'ร้านอาหารตามสั่ง บีเวิร์ค',
+    'กะเพราไก่ไข่ดาว 60 บาท',
+    'ขอบคุณที่ใช้บริการ'
+  ].join('\n');
+
+  const ext = extractReceiverSection(ocrText);
+  assert.equal(ext.text, '');
+  assert.equal(ext.template, 'unknown');
+
+  const res = evaluateBrowserAssistant(ocrText, { total_amount: 60 }, defaultCompanySettings);
+  assert.equal(res.receiver.matched, false);
+  assert.equal(res.receiver.statusText, 'ตรวจไม่ได้');
+  assert.equal(res.autoApproved, false);
+});

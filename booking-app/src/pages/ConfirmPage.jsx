@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
+import { calcPaymentTimeLeft } from '../utils/paymentCountdown';
 
 export default function ConfirmPage() {
   const navigate = useNavigate();
@@ -15,7 +16,15 @@ export default function ConfirmPage() {
   const bookingId = query.get('id');
   const queryCode = query.get('code');
 
-  const [booking, setBooking] = useState(null);
+  const [booking, setBooking] = useState(() => {
+    try {
+      const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
+      if (raw) return JSON.parse(raw);
+      const pendingRaw = typeof window !== 'undefined' ? localStorage.getItem('bwork_pending_booking') : null;
+      if (pendingRaw) return JSON.parse(pendingRaw);
+    } catch (e) {}
+    return null;
+  });
   const [paymentSettings, setPaymentSettings] = useState({
     promptpay_number: '0125554000401',
     bank_name: 'ธนาคารกรุงศรีอยุธยา (Krungsri)',
@@ -33,54 +42,78 @@ export default function ConfirmPage() {
   const [uploadResultData, setUploadResultData] = useState(null);
   const [toastMessage, setToastMessage] = useState('');
   const [error, setError] = useState('');
-  const [timeLeftSeconds, setTimeLeftSeconds] = useState(15 * 60);
-  const [paymentWindowMinutes, setPaymentWindowMinutes] = useState(15);
-  const [isExpired, setIsExpired] = useState(false);
+  const [paymentWindowMinutes, setPaymentWindowMinutes] = useState(() => {
+    try {
+      const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed?.payment_window_minutes) return parseInt(parsed.payment_window_minutes, 10) || 15;
+    } catch (e) {}
+    return 15;
+  });
+  const [timeLeftSeconds, setTimeLeftSeconds] = useState(() => {
+    try {
+      const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed) {
+        const win = parsed.payment_window_minutes || 15;
+        const { remainingSeconds } = calcPaymentTimeLeft(parsed, win, Date.now());
+        return remainingSeconds;
+      }
+    } catch (e) {}
+    return 15 * 60;
+  });
+  const [isExpired, setIsExpired] = useState(() => {
+    try {
+      const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed) {
+        if (parsed.payment_status === 'cancelled') return true;
+        const win = parsed.payment_window_minutes || 15;
+        const { isExpired: exp } = calcPaymentTimeLeft(parsed, win, Date.now());
+        return exp;
+      }
+    } catch (e) {}
+    return false;
+  });
 
   // Determine standard readable booking code
   const displayBookingCode = queryCode || booking?.booking_code || booking?.receipt_number || (bookingId && bookingId !== 'undefined' ? `BK-${String(bookingId).padStart(6, '0')}` : '-');
 
-  // Dynamic Countdown Timer based on payment_window_minutes
+  // Dynamic Countdown Timer based on paymentDeadline as Source of Truth
   useEffect(() => {
     if (!booking || uploadSuccess || booking.payment_status === 'paid') return;
 
     if (booking.payment_status === 'cancelled') {
-      setIsExpired(true);
-      localStorage.removeItem('bwork_pending_booking');
-      return;
-    }
-
-    const calcTimeLeft = () => {
-      const totalSec = (paymentWindowMinutes || 15) * 60;
-      if (!booking.created_at) return totalSec;
-      const clean = booking.created_at.replace(' ', 'T');
-      const createdTime = new Date(clean).getTime();
-      if (isNaN(createdTime)) return totalSec;
-      
-      const elapsedSeconds = Math.floor((Date.now() - createdTime) / 1000);
-      const remaining = totalSec - elapsedSeconds;
-      return remaining;
-    };
-
-    const initialRemaining = calcTimeLeft();
-    if (initialRemaining <= 0) {
       setIsExpired(true);
       setTimeLeftSeconds(0);
       localStorage.removeItem('bwork_pending_booking');
       return;
     }
 
-    setTimeLeftSeconds(initialRemaining);
+    const updateTimer = () => {
+      const { remainingSeconds, isExpired: expired } = calcPaymentTimeLeft(
+        booking,
+        paymentWindowMinutes,
+        Date.now()
+      );
 
-    const interval = setInterval(() => {
-      const rem = calcTimeLeft();
-      if (rem <= 0) {
-        setTimeLeftSeconds(0);
+      setTimeLeftSeconds(remainingSeconds);
+
+      if (expired) {
         setIsExpired(true);
         localStorage.removeItem('bwork_pending_booking');
+        return false;
+      }
+      return true;
+    };
+
+    const hasTime = updateTimer();
+    if (!hasTime) return;
+
+    const interval = setInterval(() => {
+      const active = updateTimer();
+      if (!active) {
         clearInterval(interval);
-      } else {
-        setTimeLeftSeconds(rem);
       }
     }, 1000);
 
@@ -126,9 +159,16 @@ export default function ConfirmPage() {
             if (data.payment_window_minutes) {
               setPaymentWindowMinutes(parseInt(data.payment_window_minutes, 10) || 15);
             }
+            if (data.payment_status === 'cancelled') {
+              setIsExpired(true);
+              setTimeLeftSeconds(0);
+              localStorage.removeItem('bwork_pending_booking');
+            }
             setBooking(prev => ({
               ...prev,
               ...data,
+              paymentDeadline: data.paymentDeadline || prev?.paymentDeadline,
+              payment_window_minutes: data.payment_window_minutes || prev?.payment_window_minutes,
               room_name: data.room?.name || prev?.room_name,
               booking_code: data.receipt_number || data.bookingCode || prev?.booking_code,
               total_amount: data.total_amount || prev?.total_amount

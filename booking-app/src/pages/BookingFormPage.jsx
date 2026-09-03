@@ -164,11 +164,16 @@ export default function BookingFormPage() {
         const finalBookingCode = data.receipt_number || data.receiptNumber || data.booking_code || data.bookingCode || (finalBookingId ? `BK-${String(finalBookingId).padStart(6, '0')}` : '');
 
         // Save current booking confirmation
+        const deadline = data.paymentDeadline || (data.payment_window_minutes ? new Date(Date.now() + (parseInt(data.payment_window_minutes, 10) || 15) * 60 * 1000).toISOString() : null);
+        const windowMins = parseInt(data.payment_window_minutes, 10) || 15;
+
         sessionStorage.setItem('completed_booking_result', JSON.stringify({
           ...bookingData,
           booking_id: finalBookingId,
           booking_code: finalBookingCode,
           receipt_number: data.receipt_number || data.receiptNumber,
+          paymentDeadline: deadline,
+          payment_window_minutes: windowMins,
           customer_name: name.trim(),
           customer_contact: contact.trim(),
           line_user_id: lineUserId
@@ -178,7 +183,8 @@ export default function BookingFormPage() {
           code: finalBookingCode,
           roomName: bookingData?.room?.name || 'ห้องประชุม',
           totalAmount: bookingData?.totalPrice || bookingData?.total_amount || 0,
-          paymentWindowMinutes: data.payment_window_minutes || 15,
+          paymentDeadline: deadline,
+          paymentWindowMinutes: windowMins,
           createdAt: Date.now(),
           status: 'pending'
         }));
