@@ -39,7 +39,10 @@ const COMPANY_KEYWORDS = ['บิลท์', 'บิ้วท์', 'ปิลท
 function normalizeForMatch(value) {
   return String(value || '')
     .toLowerCase()
+    .replace(/\u0E4D\u0E32/g, '\u0E33')
+    .replace(/บริษัท|จำกัด|มหาชน|บจก|หจก|บัญชี|เลขที่|ผู้รับ|นาย|นางสาว|นาง/g, '')
     .normalize('NFKC')
+    .replace(/\u0E4D\u0E32/g, '\u0E33')
     .replace(/บริษัท|จำกัด|มหาชน|บจก|หจก|บัญชี|เลขที่|ผู้รับ|นาย|นางสาว|นาง/g, '')
     .replace(/[^a-z0-9ก-๙]/g, '');
 }
@@ -317,20 +320,87 @@ function extractReceiverSection(ocrText) {
   const receiver = /^(?:บัญชีผู้รับ|ผู้รับ(?:เงิน)?|ไปยัง|ถึง|รับเงินโดย|TO\b|Beneficiary\b)\s*[:：-]?\s*/i;
   const boundary = /^(?:จาก|ผู้โอน|ผู้ส่ง|FROM\b|Sender\b|จำนวน|จํานวน|ยอดเงิน|ยอดโอน|ยอดชำระ|Amount\b|Total\b|ค่าธรรมเนียม|Fee\b|วันที่|เวลา|เลขที่รายการ|รหัสอ้างอิง|หมายเหตุ|บันทึก|Reference\b|Ref\b|Date\b|Time\b|Note\b|Memo\b)/i;
   const starts = lines.map((line, index) => receiver.test(line) ? index : -1).filter(index => index >= 0);
-  if (starts.length !== 1) return ''; // Ambiguous layout: no whole-slip fallback.
-  const section = [lines[starts[0]].replace(receiver, '')];
-  for (let i = starts[0] + 1; i < lines.length && i <= starts[0] + 8; i++) {
-    if (boundary.test(lines[i]) || receiver.test(lines[i])) break;
-    section.push(lines[i]);
+
+  if (starts.length === 1) {
+    const section = [lines[starts[0]].replace(receiver, '')];
+    for (let i = starts[0] + 1; i < lines.length && i <= starts[0] + 8; i++) {
+      if (boundary.test(lines[i]) || receiver.test(lines[i])) break;
+      section.push(lines[i]);
+    }
+    const text = section.join('\n').trim();
+    return { text, template: 'standard_labeled' };
   }
-  return section.join('\n').trim();
+
+  // Ambiguous layout: multiple receiver markers found -> fail-safe, cannot pick safely
+  if (starts.length > 1) {
+    return { text: '', template: 'ambiguous' };
+  }
+
+  // Verified KBank Structural Template (when "TO / ไปยัง" keyword is absent in app design)
+  // Proven from real KBank K+ slip layout:
+  // - Sender bank marker: /(?:ธ\.กสิกรไทย|kbank|k\+)/i
+  // - Followed by sender account pattern
+  // - Trailing boundary: /(?:เลขที่รายการ|รหัสอ้างอิง|transaction\s*no|ref\s*id)/i
+  const kbankSenderIdx = lines.findIndex(l => /(?:ธ\.กสิกรไทย|kbank|kasikorn|k\+)/i.test(l));
+  const kbankRefIdx = lines.findIndex(l => /(?:เลขที่รายการ|รหัสอ้างอิง|transaction\s*no|ref\s*id)/i.test(l));
+
+  if (kbankSenderIdx >= 0 && kbankRefIdx > kbankSenderIdx + 1) {
+    let senderEndIdx = -1;
+    for (let i = kbankSenderIdx; i < kbankRefIdx; i++) {
+      if (/[\d๐-๙xX*•%-]{5,}/.test(lines[i])) {
+        senderEndIdx = i;
+        break;
+      }
+    }
+    const receiverStart = senderEndIdx >= 0 ? senderEndIdx + 1 : kbankSenderIdx + 1;
+    if (receiverStart < kbankRefIdx) {
+      const section = [];
+      for (let i = receiverStart; i < kbankRefIdx && i <= receiverStart + 6; i++) {
+        if (boundary.test(lines[i])) break;
+        section.push(lines[i]);
+      }
+      const text = section.join('\n').trim();
+      if (text.length > 0) {
+        return { text, template: 'kbank_structural' };
+      }
+    }
+  }
+
+  return { text: '', template: 'unrecognized' };
 }
 
-function analyzeSlipText(ocrText, accountConfig = {}) {
-  const receiverText = extractReceiverSection(ocrText);
+function normalizeReceiverLine(line, configuredName) {
+  // 1. Strip leading artifact noise from icons/bullets (e.g. "5 ", "1 ", "• ", "ด ")
+  let cleaned = String(line || '')
+    .replace(/^[\d•\-\*><)\s]+/, '')
+    .replace(/^[A-Za-z]\)\s*/, '')
+    .replace(/^(?:ด|จ|ฉ)\s+/, '') // strip OCR artifact where บจก. is misread as single letter
+    .trim();
+
+  let norm = normalizeForMatch(cleaned);
+
+  // 2. Scoped whitelist confusion pair for Thai loopless fonts (e.g. KBank / SCB)
+  // ONLY applied when comparing with configuredName starting with "บิลท์" / "บิ้วท์"
+  if (configuredName && configuredName.startsWith('บิลท์') && norm.startsWith('ปิลท์')) {
+    norm = 'บิลท์' + norm.slice(5);
+  } else if (configuredName && configuredName.startsWith('บิ้วท์') && norm.startsWith('ปิ้วท์')) {
+    norm = 'บิ้วท์' + norm.slice(6);
+  }
+
+  return norm;
+}
+
+function analyzeSlipText(ocrText, accountConfig = {}, qrResult = null) {
+  const extracted = extractReceiverSection(ocrText);
+  const receiverText = typeof extracted === 'object' ? extracted.text : String(extracted || '');
+  const rawTemplate = typeof extracted === 'object' ? extracted.template : 'standard_labeled';
+
   const configuredName = normalizeForMatch(accountConfig.accountName || accountConfig.companyName);
+  const receiverLines = receiverText.split('\n').map(l => l.trim()).filter(Boolean);
+
   const hasNameMatch = configuredName.length >= 6 &&
-    receiverText.split('\n').map(normalizeForMatch).some(line => line === configuredName);
+    receiverLines.some(line => normalizeReceiverLine(line, configuredName) === configuredName);
+
   const accountTokens = receiverText.match(/(?<![a-z0-9])(?:[0-9xX*•][ -]?){4,}(?![a-z0-9])/gi) || [];
   const matchesAccount = (configured, allowMasked) => {
     const digits = accountDigits(configured);
@@ -344,6 +414,8 @@ function analyzeSlipText(ocrText, accountConfig = {}) {
   const hasAccountMatch = matchesAccount(accountConfig.accountNumber, true);
   const hasPromptPayMatch = matchesAccount(accountConfig.promptpayId, false);
   const hasTaxIdMatch = matchesAccount(accountConfig.taxId, false);
+  const hasAccountOrPromptPay = Boolean(hasAccountMatch || hasPromptPayMatch || hasTaxIdMatch);
+
   const aliases = {
     '002': ['กรุงเทพ', 'bangkokbank', 'bbl'],
     '004': ['กสิกรไทย', 'kasikornbank', 'kbank'],
@@ -358,16 +430,73 @@ function analyzeSlipText(ocrText, accountConfig = {}) {
     '073': ['แลนด์แอนด์เฮ้าส์', 'lhbank', 'lhb'],
     '098': ['พัฒนาวิสาหกิจ', 'smedbank']
   };
+
   const bankCodesIn = text => Object.keys(aliases).filter(code =>
     aliases[code].some(alias => normalizeForMatch(text).includes(normalizeForMatch(alias))));
+
   const expectedBanks = bankCodesIn(accountConfig.bankName);
-  const bankLines = receiverText.split('\n').filter(line => normalizeForMatch(line) !== configuredName);
-  const detectedBanks = [...new Set(bankLines.flatMap(bankCodesIn))];
-  const hasBankMatch = expectedBanks.length === 1 && detectedBanks.length === 1 && expectedBanks[0] === detectedBanks[0];
+  const nonNameBankLines = receiverLines.filter(line => normalizeReceiverLine(line, configuredName) !== configuredName);
+  const detectedBanks = [...new Set(nonNameBankLines.flatMap(bankCodesIn))];
+
+  const hasExplicitBankMatch = expectedBanks.length === 1 && detectedBanks.length === 1 && expectedBanks[0] === detectedBanks[0];
+  const hasBankConflict = detectedBanks.length > 0 && !hasExplicitBankMatch;
+
+  // Specific verified bank template classification
+  let detectedTemplate = rawTemplate;
+  // Isolate pre-sender header so sender bank keywords NEVER leak into template detection:
+  const preSenderText = String(ocrText || '').split(/(?:จาก|ผู้โอน|FROM\b|Sender\b)/i)[0] || '';
+  const isScbSlip = qrResult?.bankCode === '014' || /(?:scb|ไทยพาณิชย์|siam\s*commercial)/i.test(preSenderText);
+  const isKbankSlip = qrResult?.bankCode === '004' || (rawTemplate === 'kbank_structural') || /(?:kbank|กสิกรไทย|k\+)/i.test(preSenderText);
+
+  if (rawTemplate === 'standard_labeled' && isScbSlip) {
+    detectedTemplate = 'scb_template';
+  } else if (rawTemplate === 'kbank_structural' || (isKbankSlip && rawTemplate === 'standard_labeled')) {
+    detectedTemplate = 'kbank_template';
+  }
+
+  // Destination bank compatibility check for Tier B:
+  // SCB template is ONLY compatible if expected bank is SCB ('014') or if payment is via PromptPay ('hasPromptPayMatch'/'hasTaxIdMatch')
+  // KBank template is ONLY compatible if expected bank is KBANK ('004') or if payment is via PromptPay
+  const destinationBankMatchesTemplate = (
+    (detectedTemplate === 'scb_template' && (expectedBanks.includes('014') || hasPromptPayMatch || hasTaxIdMatch)) ||
+    (detectedTemplate === 'kbank_template' && (expectedBanks.includes('004') || hasPromptPayMatch || hasTaxIdMatch))
+  );
+
+  // Tiered verification:
+  // Tier A: Strict Verified (Name + Account/PromptPay + Explicit Bank Text in Receiver block)
+  // Tier B: Template Verified (Name + Account/PromptPay 100% match on verified bank template without bank text)
+  // Tier C: Manual Review (Ambiguous, incomplete, mismatch, or unknown template)
+  let verificationTier = 'manual_review';
+  let hasCompanyMatch = false;
+
+  if (hasNameMatch && hasAccountOrPromptPay && !hasBankConflict) {
+    if (hasExplicitBankMatch) {
+      verificationTier = 'strict_verified';
+      hasCompanyMatch = true;
+    } else if (detectedBanks.length === 0 && destinationBankMatchesTemplate) {
+      // Allowed ONLY for verified bank templates proven from real slips not to render bank text in receiver block
+      const ALLOWED_TIER_B_TEMPLATES = ['scb_template', 'kbank_template'];
+      if (ALLOWED_TIER_B_TEMPLATES.includes(detectedTemplate)) {
+        verificationTier = 'template_verified';
+        hasCompanyMatch = true;
+      }
+    }
+  }
+
   return {
-    success: true, ocrText, detectedAmount: extractPreciseAmount(ocrText), receiverText,
-    hasCompanyMatch: Boolean(receiverText && hasNameMatch && (hasAccountMatch || hasPromptPayMatch) && hasBankMatch),
-    hasNameMatch, hasAccountMatch, hasTaxIdMatch, hasPromptPayMatch, hasBankMatch,
+    success: true,
+    ocrText,
+    detectedAmount: extractPreciseAmount(ocrText),
+    receiverText,
+    receiverTemplate: detectedTemplate,
+    verificationTier,
+    hasCompanyMatch,
+    hasNameMatch,
+    hasAccountMatch,
+    hasTaxIdMatch,
+    hasPromptPayMatch,
+    hasBankMatch: hasExplicitBankMatch,
+    hasBankConflict,
     hasAliasMatch: false
   };
 }
@@ -416,7 +545,7 @@ async function getOCRInstance() {
 
 let ocrQueue = Promise.resolve();
 
-async function performSlipOCR(imageBuffer, accountConfig = {}) {
+async function performSlipOCR(imageBuffer, accountConfig = {}, qrResult = null) {
   try {
     const { Tess, api } = await getOCRInstance();
 
@@ -432,7 +561,7 @@ async function performSlipOCR(imageBuffer, accountConfig = {}) {
     api.Clear();
     try { Tess.FS.unlink('/input'); } catch (_) {}
 
-    return analyzeSlipText(ocrText, accountConfig);
+    return analyzeSlipText(ocrText, accountConfig, qrResult);
   } catch (err) {
     console.warn('Slip OCR warning:', err.message);
     return {
@@ -440,19 +569,22 @@ async function performSlipOCR(imageBuffer, accountConfig = {}) {
       ocrText: '',
       detectedAmount: null,
       receiverText: '',
+      receiverTemplate: 'none',
+      verificationTier: 'manual_review',
       hasCompanyMatch: false,
       hasNameMatch: false,
       hasAccountMatch: false,
       hasTaxIdMatch: false,
       hasPromptPayMatch: false,
       hasBankMatch: false,
+      hasBankConflict: false,
       hasAliasMatch: false
     };
   }
 }
 
-function runSlipOCR(imageBuffer, accountConfig = {}) {
-  const job = ocrQueue.then(() => performSlipOCR(imageBuffer, accountConfig));
+function runSlipOCR(imageBuffer, accountConfig = {}, qrResult = null) {
+  const job = ocrQueue.then(() => performSlipOCR(imageBuffer, accountConfig, qrResult));
   ocrQueue = job.catch(() => undefined);
   return job;
 }
@@ -462,9 +594,18 @@ function runSlipOCR(imageBuffer, accountConfig = {}) {
  */
 async function verifySlip(imageBuffer, booking, dbQuery, _clientQrData = null, dependencies = {}) {
   const result = {
-    isValid: false, eligibleForAutoApproval: false, autoApproved: false, confidence: 0,
-    transRef: null, bankCode: null, bankName: null, detectedAmount: null,
-    expectedAmount: Number(booking ? (booking.total_amount || 0) : 0), reasons: [], details: {}
+    isValid: false,
+    eligibleForAutoApproval: false,
+    autoApproved: false,
+    verificationTier: 'manual_review',
+    confidence: 0,
+    transRef: null,
+    bankCode: null,
+    bankName: null,
+    detectedAmount: null,
+    expectedAmount: Number(booking ? (booking.total_amount || 0) : 0),
+    reasons: [],
+    details: {}
   };
   try {
     const decode = dependencies.decodeMiniQR || decodeMiniQR;
@@ -509,8 +650,10 @@ async function verifySlip(imageBuffer, booking, dbQuery, _clientQrData = null, d
       }
     }
 
-    const ocrResult = await runOCR(imageBuffer, accountConfig);
+    const ocrResult = await runOCR(imageBuffer, accountConfig, qrResult);
     result.details.ocr = ocrResult;
+    result.verificationTier = ocrResult.verificationTier || 'manual_review';
+
     if (!ocrResult.success) {
       result.reasons.push('ระบบอ่านข้อมูลในสลิปไม่สำเร็จ กรุณาใช้สลิปต้นฉบับที่เห็นชื่อผู้รับ ยอดเงิน และ QR ชัดเจน แล้วอัปโหลดใหม่');
       return result;
@@ -520,7 +663,7 @@ async function verifySlip(imageBuffer, booking, dbQuery, _clientQrData = null, d
       result.reasons.push('บัญชีผู้รับเงินหรือธนาคารปลายทางในสลิปไม่ตรงกับ ' + accountConfig.accountName + ' กรุณาตรวจสอบแล้วอัปโหลดสลิปที่ถูกต้อง');
       return result;
     }
-    result.confidence += 30;
+    result.confidence += (result.verificationTier === 'strict_verified' ? 30 : 20);
 
     const detectedSatang = toSatang(result.detectedAmount);
     const expectedSatang = toSatang(result.expectedAmount);
@@ -542,7 +685,7 @@ async function verifySlip(imageBuffer, booking, dbQuery, _clientQrData = null, d
 
     result.confidence += 30;
     result.isValid = true;
-    result.eligibleForAutoApproval = result.confidence >= 100;
+    result.eligibleForAutoApproval = (result.verificationTier === 'strict_verified' || result.verificationTier === 'template_verified');
     return result;
   } catch (err) {
     console.error('Slip verification error:', err);

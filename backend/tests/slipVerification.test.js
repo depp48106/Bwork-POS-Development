@@ -410,3 +410,198 @@ test('Thousands separators and legacy expected argument never produce amount suf
   }
   assert.equal(extractPreciseAmount('Amount 1300 300 THB'), null);
 });
+
+test('Tier B Regression: SCB valid name + account without bank text -> PASS Tier B', () => {
+  const scbConfig = {
+    companyName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountNumber: '999-9-99622-7',
+    bankName: 'ธนาคารไทยพาณิชย์',
+    taxId: '0125554000401',
+    promptpayId: '0125554000401'
+  };
+  const scbText = [
+    'Successful transfer SCB Easy',
+    'FROM',
+    '@ นาย ผู้โอน',
+    'XXX-XXX-1111',
+    'TO',
+    '5 บริษัท บิลท์ ฮาร์ท จำกัด',
+    'XXX-XXX-6227',
+    'AMOUNT 300.00'
+  ].join('\n');
+  const analysis = analyzeSlipText(scbText, scbConfig, { bankCode: '014', bankName: 'SCB' });
+  assert.equal(analysis.hasNameMatch, true);
+  assert.equal(analysis.hasAccountMatch, true);
+  assert.equal(analysis.hasBankMatch, false); // no bank text in receiver box
+  assert.equal(analysis.verificationTier, 'template_verified');
+  assert.equal(analysis.hasCompanyMatch, true);
+});
+
+test('Tier B Regression: SCB name correct but account wrong -> REJECT', () => {
+  const scbConfig = {
+    companyName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountNumber: '999-9-99622-7',
+    bankName: 'ธนาคารไทยพาณิชย์'
+  };
+  const scbWrongAccountText = [
+    'Successful transfer SCB Easy',
+    'FROM',
+    '@ นาย ผู้โอน',
+    'XXX-XXX-1111',
+    'TO',
+    '5 บริษัท บิลท์ ฮาร์ท จำกัด',
+    'XXX-XXX-9999', // wrong account
+    'AMOUNT 300.00'
+  ].join('\n');
+  const analysis = analyzeSlipText(scbWrongAccountText, scbConfig, { bankCode: '014' });
+  assert.equal(analysis.hasNameMatch, true);
+  assert.equal(analysis.hasAccountMatch, false);
+  assert.equal(analysis.verificationTier, 'manual_review');
+  assert.equal(analysis.hasCompanyMatch, false);
+});
+
+test('Tier B Regression: SCB account correct but name wrong -> REJECT', () => {
+  const scbConfig = {
+    companyName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountNumber: '999-9-99622-7',
+    bankName: 'ธนาคารไทยพาณิชย์'
+  };
+  const scbWrongNameText = [
+    'Successful transfer SCB Easy',
+    'FROM',
+    '@ นาย ผู้โอน',
+    'XXX-XXX-1111',
+    'TO',
+    '5 นาย สมชาย เข็มกลัด', // wrong name
+    'XXX-XXX-6227',
+    'AMOUNT 300.00'
+  ].join('\n');
+  const analysis = analyzeSlipText(scbWrongNameText, scbConfig, { bankCode: '014' });
+  assert.equal(analysis.hasNameMatch, false);
+  assert.equal(analysis.hasAccountMatch, true);
+  assert.equal(analysis.verificationTier, 'manual_review');
+  assert.equal(analysis.hasCompanyMatch, false);
+});
+
+test('Tier B Regression: SCB sender has company name but receiver wrong -> REJECT', () => {
+  const scbConfig = {
+    companyName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountNumber: '999-9-99622-7',
+    bankName: 'ธนาคารไทยพาณิชย์'
+  };
+  const scbSenderLeakText = [
+    'Successful transfer SCB Easy',
+    'FROM',
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    'XXX-XXX-6227',
+    'TO',
+    '5 นาย สมชาย เข็มกลัด',
+    'XXX-XXX-9999',
+    'AMOUNT 300.00'
+  ].join('\n');
+  const analysis = analyzeSlipText(scbSenderLeakText, scbConfig, { bankCode: '014' });
+  assert.equal(analysis.hasNameMatch, false);
+  assert.equal(analysis.verificationTier, 'manual_review');
+  assert.equal(analysis.hasCompanyMatch, false);
+});
+
+test('Tier B Regression: KBank OCR "ปิลท์ ฮาร์ท" + account correct -> PASS Tier B', () => {
+  const kbankConfig = {
+    companyName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountNumber: '004-1-23456-7',
+    promptpayId: '0125554000401',
+    bankName: 'ธนาคารกสิกรไทย'
+  };
+  const kbankText = [
+    'โอนเงินสำเร็จ K+',
+    'นาย ผู้โอน',
+    'ธ.กสิกรไทย',
+    'xxx-x-x111-1',
+    'ด ปิลท์ ฮาร์ท',
+    '0125554000401',
+    'เลขที่รายการ:',
+    '016238082106BPM12096',
+    'จำนวน:',
+    '300.00 บาท'
+  ].join('\n');
+  const analysis = analyzeSlipText(kbankText, kbankConfig, { bankCode: '004', bankName: 'KBANK' });
+  assert.equal(analysis.hasNameMatch, true);
+  assert.equal(analysis.hasPromptPayMatch, true);
+  assert.equal(analysis.verificationTier, 'template_verified');
+  assert.equal(analysis.hasCompanyMatch, true);
+});
+
+test('Tier B Regression: KBank "ปิลท์ ฮาร์ท" but account wrong -> REJECT', () => {
+  const kbankConfig = {
+    companyName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountNumber: '004-1-23456-7',
+    promptpayId: '0125554000401',
+    bankName: 'ธนาคารกสิกรไทย'
+  };
+  const kbankWrongAccountText = [
+    'โอนเงินสำเร็จ K+',
+    'นาย ผู้โอน',
+    'ธ.กสิกรไทย',
+    'xxx-x-x111-1',
+    'ด ปิลท์ ฮาร์ท',
+    '0999999999999', // wrong account/promptpay
+    'เลขที่รายการ:',
+    '016238082106BPM12096',
+    'จำนวน:',
+    '300.00 บาท'
+  ].join('\n');
+  const analysis = analyzeSlipText(kbankWrongAccountText, kbankConfig, { bankCode: '004' });
+  assert.equal(analysis.hasNameMatch, true);
+  assert.equal(analysis.hasAccountMatch, false);
+  assert.equal(analysis.hasPromptPayMatch, false);
+  assert.equal(analysis.verificationTier, 'manual_review');
+  assert.equal(analysis.hasCompanyMatch, false);
+});
+
+test('Tier B Regression: Unknown bank/template without bank text -> CANNOT use Tier B (REJECT)', () => {
+  const gsbConfig = {
+    companyName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    accountNumber: '1234567890',
+    bankName: 'ธนาคารออมสิน'
+  };
+  const unknownTemplateText = [
+    'MyUnknownBank Transfer',
+    'FROM',
+    'Mr. Sender',
+    'xxx-xxx-1111',
+    'TO',
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    '1234567890',
+    'AMOUNT 300.00'
+  ].join('\n');
+  // Unknown bank code 030 has no verified template without bank text
+  const analysis = analyzeSlipText(unknownTemplateText, gsbConfig, { bankCode: '030' });
+  assert.equal(analysis.hasNameMatch, true);
+  assert.equal(analysis.hasAccountMatch, true);
+  assert.equal(analysis.hasBankMatch, false);
+  assert.equal(analysis.verificationTier, 'manual_review');
+  assert.equal(analysis.hasCompanyMatch, false);
+});
+
+test('Tier B Regression: Multiple ambiguous receiver sections -> REJECT/manual', () => {
+  const ambiguousText = [
+    'TO',
+    'บริษัท บิลท์ ฮาร์ท จำกัด',
+    '1234567890',
+    'TO',
+    'Another Person',
+    '9999999999',
+    'AMOUNT 300.00'
+  ].join('\n');
+  const analysis = analyzeSlipText(ambiguousText, config);
+  assert.equal(analysis.receiverText, '');
+  assert.equal(analysis.verificationTier, 'manual_review');
+  assert.equal(analysis.hasCompanyMatch, false);
+});
