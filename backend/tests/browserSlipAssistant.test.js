@@ -1,6 +1,6 @@
 /**
  * backend/tests/browserSlipAssistant.test.js
- * 
+ *
  * Test suite for Phase 1: POS Browser OCR Assistant for Slip Review
  * Validates TC1 - TC8: Decision Support, Invariants, and Staff Approval Preservation.
  */
@@ -24,7 +24,7 @@ const {
 function evaluateBrowserAssistant(ocrText, bookingInfo, settings, qrResult = null, duplicateInDb = false) {
   const analysis = analyzeSlipText(ocrText, settings, qrResult);
   const detectedAmt = analysis.detectedAmount;
-  
+
   let amountMatched = null;
   let amountStatusText = 'อ่านไม่ได้';
   if (detectedAmt !== null) {
@@ -297,7 +297,7 @@ test('TC7: Duplicate slip -> Shows duplicate warning, no auto-paid', () => {
 test('TC8: Staff Approve -> Uses manual payment flow, generates receipt without PIN leak', async () => {
   // Simulate Staff clicking manual approval
   const booking = { id: 108, total_amount: 300.00, payment_status: 'reviewing' };
-  
+
   // 1. Action is explicitly triggered by staff (never by OCR automatically)
   const staffTriggeredPayment = true;
   assert.equal(staffTriggeredPayment, true);

@@ -1,6 +1,6 @@
 /**
  * shared/slipVerificationCore.mjs
- * 
+ *
  * Pure, environment-agnostic slip verification logic.
  * Contains NO Node.js filesystem, native bindings, or database dependencies.
  * Shared between Local Node.js verifier and Frontend Browser OCR assistant.

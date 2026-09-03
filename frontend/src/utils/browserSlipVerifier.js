@@ -1,6 +1,6 @@
 /**
  * frontend/src/utils/browserSlipVerifier.js
- * 
+ *
  * Browser-side OCR & QR assistant for POS Staff Review Modal.
  * Acts STRICTLY as decision support. Never triggers automatic approval.
  */
@@ -178,7 +178,7 @@ export async function analyzeSlipInBrowser(imageUrl, bookingInfo, settings, onPr
       result.qr.bankName = qrResult.bankName || '-';
       result.qr.transRef = qrResult.transRef || null;
       if (qrResult.transRef) {
-        result.qr.transRefMasked = qrResult.transRef.length > 8 
+        result.qr.transRefMasked = qrResult.transRef.length > 8
           ? qrResult.transRef.slice(0, 6) + '...' + qrResult.transRef.slice(-4)
           : qrResult.transRef;
       }

@@ -34,7 +34,7 @@ if (typeof window !== 'undefined') {
 
 /**
  * Play a notification chime
- * @param {'incoming' | 'upcoming'} type 
+ * @param {'incoming' | 'upcoming'} type
  * @param {boolean} isSlip - true if payment slip was uploaded
  */
 export function playNotificationSound(type = 'incoming', isSlip = false) {
@@ -56,10 +56,10 @@ export function playNotificationSound(type = 'incoming', isSlip = false) {
           const gain = ctx.createGain();
           osc.type = 'sine';
           osc.frequency.setValueAtTime(freq, now + idx * 0.12);
-          
+
           gain.gain.setValueAtTime(0.28, now + idx * 0.12);
           gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.12 + 0.35);
-          
+
           osc.connect(gain);
           gain.connect(ctx.destination);
           osc.start(now + idx * 0.12);
@@ -73,10 +73,10 @@ export function playNotificationSound(type = 'incoming', isSlip = false) {
           const gain = ctx.createGain();
           osc.type = 'sine';
           osc.frequency.setValueAtTime(freq, now + idx * 0.14);
-          
+
           gain.gain.setValueAtTime(0.28, now + idx * 0.14);
           gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.14 + 0.4);
-          
+
           osc.connect(gain);
           gain.connect(ctx.destination);
           osc.start(now + idx * 0.14);
@@ -91,10 +91,10 @@ export function playNotificationSound(type = 'incoming', isSlip = false) {
         const gain = ctx.createGain();
         osc.type = 'triangle';
         osc.frequency.setValueAtTime(freq, now + idx * 0.16);
-        
+
         gain.gain.setValueAtTime(0.22, now + idx * 0.16);
         gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.16 + 0.3);
-        
+
         osc.connect(gain);
         gain.connect(ctx.destination);
         osc.start(now + idx * 0.16);

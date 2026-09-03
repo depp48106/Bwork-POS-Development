@@ -21,7 +21,7 @@ function AppVersionDisplay({ isOpen: externalIsOpen, setIsOpen: externalSetIsOpe
   if (!isOpen) return null;
 
   return (
-    <div 
+    <div
       style={{
             position: 'fixed',
             top: 0,
@@ -39,7 +39,7 @@ function AppVersionDisplay({ isOpen: externalIsOpen, setIsOpen: externalSetIsOpe
           }}
           onClick={() => setIsOpen(false)}
         >
-          <div 
+          <div
             className="card"
             style={{
               width: '100%',
@@ -121,7 +121,7 @@ function AppVersionDisplay({ isOpen: externalIsOpen, setIsOpen: externalSetIsOpe
               gap: '18px'
             }}>
               {RELEASE_NOTES.map((note) => (
-                <div 
+                <div
                   key={note.version}
                   style={{
                     borderRadius: '12px',
