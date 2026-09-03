@@ -35,6 +35,7 @@ import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { API_BASE } from '../apiConfig';
+import { analyzeSlipInBrowser } from '../utils/browserSlipVerifier';
 
 const DATE_TYPE_OPTIONS = [
   { value: 'usage_date', label: 'วันที่ใช้งาน' },
@@ -70,6 +71,9 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
   const [selectedTaxBooking, setSelectedTaxBooking] = useState(null);
   const [taxCopied, setTaxCopied] = useState(false);
   const [viewingSlipBooking, setViewingSlipBooking] = useState(null);
+  const [ocrResult, setOcrResult] = useState(null);
+  const [isOcrRunning, setIsOcrRunning] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
   const [showPayModal, setShowPayModal] = useState(false);
   const [payMethod, setPayMethod] = useState('transfer');
@@ -292,6 +296,70 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
     } else {
       handleOpenPayment(booking);
     }
+  };
+
+  // Run Browser OCR Assistant when Staff opens Slip Modal (Decision Support Only)
+  useEffect(() => {
+    let isMounted = true;
+    if (viewingSlipBooking?.slip_image_url && viewingSlipBooking.slip_image_url !== 'uploaded') {
+      setIsOcrRunning(true);
+      setOcrResult(null);
+      setOcrProgress(0);
+
+      analyzeSlipInBrowser(
+        viewingSlipBooking.slip_image_url,
+        viewingSlipBooking,
+        settings,
+        (prog) => {
+          if (isMounted) setOcrProgress(prog);
+        }
+      ).then((res) => {
+        if (isMounted) {
+          setOcrResult(res);
+          setIsOcrRunning(false);
+        }
+      }).catch((err) => {
+        if (isMounted) {
+          setOcrResult({
+            status: 'error',
+            error: err.message,
+            decisionSupportMessage: 'ไม่สามารถตรวจอัตโนมัติ กรุณาตรวจสอบด้วยตนเอง',
+            messageType: 'error'
+          });
+          setIsOcrRunning(false);
+        }
+      });
+    } else {
+      setOcrResult(null);
+      setIsOcrRunning(false);
+      setOcrProgress(0);
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [viewingSlipBooking?.id, viewingSlipBooking?.slip_image_url]);
+
+  const handleRerunOcr = () => {
+    if (!viewingSlipBooking?.slip_image_url || viewingSlipBooking.slip_image_url === 'uploaded') return;
+    setIsOcrRunning(true);
+    setOcrProgress(0);
+    analyzeSlipInBrowser(
+      viewingSlipBooking.slip_image_url,
+      viewingSlipBooking,
+      settings,
+      (prog) => setOcrProgress(prog)
+    ).then((res) => {
+      setOcrResult(res);
+      setIsOcrRunning(false);
+    }).catch((err) => {
+      setOcrResult({
+        status: 'error',
+        error: err.message,
+        decisionSupportMessage: 'ไม่สามารถตรวจอัตโนมัติ กรุณาตรวจสอบด้วยตนเอง',
+        messageType: 'error'
+      });
+      setIsOcrRunning(false);
+    });
   };
 
   const handleOpenReceipt = async (booking) => {
@@ -2402,6 +2470,295 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                 <span>{viewingSlipBooking.booking_source === 'online' ? 'จองออนไลน์' : 'Walk-in'}</span>
               </div>
             </div>
+
+            {/* ========================================================= */}
+            {/*  DECISION SUPPORT: ผลตรวจสอบอัตโนมัติ (ช่วยพนักงานตรวจสลิป) */}
+            {/* ========================================================= */}
+            {viewingSlipBooking.slip_image_url && viewingSlipBooking.slip_image_url !== 'uploaded' && (
+              <div style={{
+                padding: '14px 16px',
+                borderRadius: '14px',
+                backgroundColor: 'rgba(30, 41, 59, 0.4)',
+                border: '1px solid var(--border-color)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                {/* Section Header */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Sparkles size={16} style={{ color: '#0ea5e9' }} />
+                    <strong style={{ fontSize: '0.88rem', color: 'var(--text-main)' }}>
+                      ผลตรวจสอบอัตโนมัติ (Decision Support)
+                    </strong>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {isOcrRunning ? (
+                      <span style={{
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        padding: '2px 8px',
+                        borderRadius: '999px',
+                        backgroundColor: 'rgba(14, 165, 233, 0.15)',
+                        color: '#38bdf8',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}>
+                        <RefreshCw size={11} className="spin" />
+                        <span>กำลังตรวจสอบ {ocrProgress > 0 ? `(${ocrProgress}%)` : '...'}</span>
+                      </span>
+                    ) : (
+                      <span style={{
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        padding: '2px 8px',
+                        borderRadius: '999px',
+                        backgroundColor: ocrResult?.status === 'completed'
+                          ? 'rgba(16, 185, 129, 0.15)'
+                          : (ocrResult?.status === 'error' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(245, 158, 11, 0.15)'),
+                        color: ocrResult?.status === 'completed'
+                          ? '#10b981'
+                          : (ocrResult?.status === 'error' ? '#ef4444' : '#f59e0b')
+                      }}>
+                        {ocrResult?.status === 'completed'
+                          ? 'ตรวจสอบเสร็จ'
+                          : (ocrResult?.status === 'error' ? 'เกิดข้อผิดพลาด' : (ocrResult?.status === 'incomplete' ? 'อ่านข้อมูลไม่ครบ' : 'พร้อมตรวจสอบ'))}
+                      </span>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={handleRerunOcr}
+                      disabled={isOcrRunning}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'var(--text-muted)',
+                        cursor: isOcrRunning ? 'not-allowed' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '3px',
+                        fontSize: '0.72rem',
+                        padding: '2px 6px',
+                        borderRadius: '6px'
+                      }}
+                      title="ตรวจซ้ำอีกครั้ง"
+                    >
+                      <RefreshCw size={11} className={isOcrRunning ? 'spin' : ''} />
+                      <span>ตรวจซ้ำ</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4-Box Grid Comparison */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '10px',
+                  fontSize: '0.78rem'
+                }}>
+                  {/* Item 1: ยอดเงิน */}
+                  <div style={{
+                    padding: '10px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>ยอดเงิน:</span>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 800,
+                        padding: '1px 6px',
+                        borderRadius: '6px',
+                        backgroundColor: ocrResult?.amount?.matched === true
+                          ? 'rgba(16, 185, 129, 0.18)'
+                          : (ocrResult?.amount?.matched === false ? 'rgba(239, 68, 68, 0.18)' : 'rgba(148, 163, 184, 0.15)'),
+                        color: ocrResult?.amount?.matched === true
+                          ? '#10b981'
+                          : (ocrResult?.amount?.matched === false ? '#ef4444' : 'var(--text-muted)')
+                      }}>
+                        {ocrResult ? (ocrResult.amount.statusText || 'ตรวจไม่ได้') : '-'}
+                      </span>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>ที่ต้องชำระ: </span>
+                      <strong>฿{Number(viewingSlipBooking.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>อ่านได้จากสลิป: </span>
+                      <strong style={{
+                        color: ocrResult?.amount?.matched === true
+                          ? '#10b981'
+                          : (ocrResult?.amount?.matched === false ? '#ef4444' : 'var(--text-main)')
+                      }}>
+                        {ocrResult?.amount?.detected !== null && ocrResult?.amount?.detected !== undefined
+                          ? `฿${Number(ocrResult.amount.detected).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : (isOcrRunning ? 'กำลังอ่าน...' : 'อ่านไม่ได้')}
+                      </strong>
+                    </div>
+                  </div>
+
+                  {/* Item 2: ผู้รับเงิน */}
+                  <div style={{
+                    padding: '10px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>ผู้รับเงิน:</span>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 800,
+                        padding: '1px 6px',
+                        borderRadius: '6px',
+                        backgroundColor: ocrResult?.receiver?.matched === true
+                          ? 'rgba(16, 185, 129, 0.18)'
+                          : (ocrResult?.receiver?.matched === false ? 'rgba(245, 158, 11, 0.18)' : 'rgba(148, 163, 184, 0.15)'),
+                        color: ocrResult?.receiver?.matched === true
+                          ? '#10b981'
+                          : (ocrResult?.receiver?.matched === false ? '#f59e0b' : 'var(--text-muted)')
+                      }}>
+                        {ocrResult ? (ocrResult.receiver.statusText || 'ตรวจไม่ได้') : '-'}
+                      </span>
+                    </div>
+                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ocrResult?.receiver?.detectedName || '-'}>
+                      <span style={{ color: 'var(--text-muted)' }}>ชื่อ: </span>
+                      <strong>{ocrResult?.receiver?.detectedNameMasked || (isOcrRunning ? 'กำลังอ่าน...' : '-')}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>บัญชีปลายทาง: </span>
+                      <strong>{ocrResult?.receiver?.detectedAccountMasked || '-'}</strong>
+                    </div>
+                  </div>
+
+                  {/* Item 3: Mini QR ธนาคาร */}
+                  <div style={{
+                    padding: '10px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Mini QR:</span>
+                      <span style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 800,
+                        padding: '1px 6px',
+                        borderRadius: '6px',
+                        backgroundColor: ocrResult?.qr?.isValidSlipQR
+                          ? 'rgba(16, 185, 129, 0.18)'
+                          : (ocrResult?.qr?.isPaymentQR ? 'rgba(239, 68, 68, 0.18)' : 'rgba(148, 163, 184, 0.15)'),
+                        color: ocrResult?.qr?.isValidSlipQR
+                          ? '#10b981'
+                          : (ocrResult?.qr?.isPaymentQR ? '#ef4444' : 'var(--text-muted)')
+                      }}>
+                        {ocrResult?.qr?.isValidSlipQR ? 'ผ่าน' : (ocrResult?.qr?.isPaymentQR ? 'ไม่ใช่สลิป' : 'ไม่ผ่าน')}
+                      </span>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>ธนาคาร: </span>
+                      <span>{ocrResult?.qr?.bankName || (isOcrRunning ? 'กำลังตรวจ...' : '-')}</span>
+                    </div>
+                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Ref: </span>
+                      <span style={{ fontFamily: 'monospace', fontSize: '0.74rem' }}>
+                        {ocrResult?.qr?.transRefMasked || (viewingSlipBooking.slip_trans_ref ? `${viewingSlipBooking.slip_trans_ref.slice(0, 6)}...` : '-')}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Item 4: ตรวจสอบสลิปซ้ำ (Duplicate) */}
+                  {(() => {
+                    const isDuplicate = Boolean(
+                      viewingSlipBooking.slip_verify_status === 'duplicate' ||
+                      bookings.some(b =>
+                        b.id !== viewingSlipBooking.id &&
+                        b.slip_trans_ref &&
+                        (b.slip_trans_ref === viewingSlipBooking.slip_trans_ref || (ocrResult?.qr?.transRef && b.slip_trans_ref === ocrResult.qr.transRef))
+                      )
+                    );
+                    return (
+                      <div style={{
+                        padding: '10px',
+                        borderRadius: '10px',
+                        backgroundColor: isDuplicate ? 'rgba(239, 68, 68, 0.12)' : 'var(--bg-hover)',
+                        border: isDuplicate ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid var(--border-color)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '4px'
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-muted)' }}>สลิปซ้ำ:</span>
+                          <span style={{
+                            fontSize: '0.7rem',
+                            fontWeight: 800,
+                            padding: '1px 6px',
+                            borderRadius: '6px',
+                            backgroundColor: isDuplicate ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.18)',
+                            color: isDuplicate ? '#ef4444' : '#10b981'
+                          }}>
+                            {isDuplicate ? 'พบสลิปซ้ำ' : 'ไม่พบ'}
+                          </span>
+                        </div>
+                        <div style={{ color: isDuplicate ? '#ef4444' : 'var(--text-muted)', fontSize: '0.74rem' }}>
+                          {isDuplicate ? '⚠️ สลิปนี้มีประวัติใช้งานแล้วในระบบ' : 'ไม่มีประวัติสลิปซ้ำในระบบ'}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Contextual Suggestion Message Banner */}
+                {ocrResult?.decisionSupportMessage && (
+                  <div style={{
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.78rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    backgroundColor: ocrResult.messageType === 'success'
+                      ? 'rgba(16, 185, 129, 0.12)'
+                      : (ocrResult.messageType === 'warning'
+                          ? 'rgba(245, 158, 11, 0.12)'
+                          : (ocrResult.messageType === 'error' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(14, 165, 233, 0.1)')),
+                    border: `1px solid ${ocrResult.messageType === 'success'
+                      ? 'rgba(16, 185, 129, 0.3)'
+                      : (ocrResult.messageType === 'warning'
+                          ? 'rgba(245, 158, 11, 0.3)'
+                          : (ocrResult.messageType === 'error' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(14, 165, 233, 0.3)'))}`,
+                    color: ocrResult.messageType === 'success'
+                      ? '#10b981'
+                      : (ocrResult.messageType === 'warning'
+                          ? '#f59e0b'
+                          : (ocrResult.messageType === 'error' ? '#ef4444' : '#0ea5e9'))
+                  }}>
+                    {ocrResult.messageType === 'success' && <CheckCircle2 size={15} style={{ flexShrink: 0 }} />}
+                    {ocrResult.messageType === 'warning' && <AlertTriangle size={15} style={{ flexShrink: 0 }} />}
+                    {ocrResult.messageType === 'error' && <AlertCircle size={15} style={{ flexShrink: 0 }} />}
+                    {ocrResult.messageType === 'info' && <AlertCircle size={15} style={{ flexShrink: 0 }} />}
+                    <span style={{ fontWeight: 600 }}>{ocrResult.decisionSupportMessage}</span>
+                  </div>
+                )}
+
+                {/* Disclaimer / Fail-safe Notice */}
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+                  * ผลการวิเคราะห์เป็นข้อมูลช่วยตัดสินใจสำหรับเจ้าหน้าที่เท่านั้น การอนุมัติหรือปฏิเสธขึ้นอยู่กับดุลยพินิจของเจ้าหน้าที่
+                </div>
+              </div>
+            )}
 
             {/* Modal Actions */}
             <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
