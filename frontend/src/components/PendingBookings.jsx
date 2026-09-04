@@ -82,6 +82,13 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
   const [payMethod, setPayMethod] = useState('transfer');
   const [isPayMethodOpen, setIsPayMethodOpen] = useState(false);
 
+  // Reject Slip Modal states
+  const [showRejectSlipModal, setShowRejectSlipModal] = useState(false);
+  const [rejectTargetBooking, setRejectTargetBooking] = useState(null);
+  const [rejectReasonCode, setRejectReasonCode] = useState('AMOUNT_MISMATCH');
+  const [rejectCustomNote, setRejectCustomNote] = useState('');
+  const [rejectLoading, setRejectLoading] = useState(false);
+
   // Active Dropdown Action Menu in table row
   const [activeActionMenuBooking, setActiveActionMenuBooking] = useState(null);
   const [actionMenuPos, setActionMenuPos] = useState(null);
@@ -542,6 +549,47 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
     }
   };
 
+  // 2.1 Reject Slip (ปฏิเสธสลิปการโอนเงิน -> สถานะเป็น rejected, ห้องยังคงถูกล็อค, รอลูกค้าแนบใหม่)
+  const handleOpenRejectSlipModal = (booking) => {
+    setRejectTargetBooking(booking);
+    setRejectReasonCode('AMOUNT_MISMATCH');
+    setRejectCustomNote('');
+    setShowRejectSlipModal(true);
+  };
+
+  const submitRejectSlip = async () => {
+    if (!rejectTargetBooking) return;
+    if (rejectReasonCode === 'OTHER' && !rejectCustomNote.trim()) {
+      await sysAlert('กรณีเลือกอื่นๆ กรุณาระบุรายละเอียดเหตุผลเพิ่มเติม');
+      return;
+    }
+    setRejectLoading(true);
+    try {
+      const res = await fetch(`/api/bookings/${rejectTargetBooking.id}/reject-slip`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reason_code: rejectReasonCode,
+          custom_note: rejectCustomNote.trim()
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setShowRejectSlipModal(false);
+        setRejectTargetBooking(null);
+        await sysAlert(data.message || 'ปฏิเสธสลิปการโอนเงินเรียบร้อยแล้ว (การจองยังคงอยู่)');
+        fetchBookings();
+      } else {
+        await sysAlert('' + (data.error || 'ไม่สามารถปฏิเสธสลิปได้'));
+      }
+    } catch (err) {
+      console.error(err);
+      await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setRejectLoading(false);
+    }
+  };
+
   // 3. Reschedule Booking (แก้ไขวัน/เวลาการจอง)
   const handleOpenReschedule = async (booking) => {
     if (!booking) return;
@@ -986,7 +1034,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
   const paidBookingsList = useMemo(() => channelFilteredList.filter(b => b.payment_status === 'paid' || b.payment_status === 'internal_free'), [channelFilteredList]);
   const cancelledBookingsList = useMemo(() => channelFilteredList.filter(b => b.payment_status === 'cancelled'), [channelFilteredList]);
 
-  const reviewingCount = pendingBookingsList.filter(b => b.payment_status === 'reviewing' || !!b.slip_image_url).length;
+  const reviewingCount = pendingBookingsList.filter(b => b.payment_status !== 'rejected' && (b.payment_status === 'reviewing' || (b.payment_status === 'pending' && !!b.slip_image_url))).length;
   const pendingCount = pendingBookingsList.length;
   const paidCount = paidBookingsList.length;
   const cancelledCount = cancelledBookingsList.length;
@@ -1696,6 +1744,24 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                         <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                           {formatDate(b.created_at)}
                         </div>
+                        {(b.payment_status === 'rejected' || b.slip_verify_status === 'rejected') && (
+                          <div style={{ marginTop: '4px' }}>
+                            <span style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              padding: '2px 8px',
+                              borderRadius: '6px',
+                              fontSize: '0.7rem',
+                              fontWeight: 700,
+                              backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                              color: '#d97706',
+                              border: '1px solid rgba(245, 158, 11, 0.3)'
+                            }}>
+                              สลิปไม่ผ่าน — รอลูกค้าแนบใหม่
+                            </span>
+                          </div>
+                        )}
                       </td>
 
                       {/* Column 2: ผู้จอง / เบอร์โทร */}
@@ -3117,7 +3183,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                       onClick={() => {
                         const b = viewingSlipBooking;
                         setViewingSlipBooking(null);
-                        handleOpenCancelModal(b);
+                        handleOpenRejectSlipModal(b);
                       }}
                     >
                       <Ban size={14} />
@@ -3157,6 +3223,219 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
           </div>
         </div>
       )}
+      {/* ========================================================= */}
+      {/*  REJECT SLIP MODAL (ปฏิเสธสลิป & รอลูกค้าแนบใหม่)          */}
+      {/* ========================================================= */}
+      {showRejectSlipModal && rejectTargetBooking && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.85)',
+          backdropFilter: 'blur(10px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '20px'
+        }}>
+          <div className="card" style={{
+            width: '100%',
+            maxWidth: '520px',
+            padding: '24px',
+            borderRadius: '20px',
+            backgroundColor: 'var(--bg-card)',
+            border: '1.5px solid rgba(245, 158, 11, 0.35)',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.4)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px',
+            position: 'relative',
+            maxHeight: '90vh',
+            overflowY: 'auto'
+          }}>
+            <button
+              style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+              onClick={() => {
+                if (!rejectLoading) {
+                  setShowRejectSlipModal(false);
+                  setViewingSlipBooking(rejectTargetBooking);
+                }
+              }}
+            >
+              <X size={20} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#d97706', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Ban size={22} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                  ปฏิเสธสลิปการโอนเงิน
+                </h3>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  ใบจอง #{rejectTargetBooking.id} · {rejectTargetBooking.receipt_number || `BK-${String(rejectTargetBooking.id).padStart(6, '0')}`}
+                </span>
+              </div>
+            </div>
+
+            {/* Reassurance Notice */}
+            <div style={{
+              padding: '12px 14px',
+              borderRadius: '10px',
+              backgroundColor: 'rgba(245, 158, 11, 0.08)',
+              border: '1px solid rgba(245, 158, 11, 0.25)',
+              fontSize: '0.82rem',
+              color: '#d97706',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px'
+            }}>
+              <AlertCircle size={18} style={{ flexShrink: 0 }} />
+              <div>
+                <strong>การปฏิเสธสลิปจะไม่ยกเลิกการจอง:</strong> ห้องประชุมยังคงถูกจองไว้เพื่อรอลูกค้าแนบสลิปใหม่
+              </div>
+            </div>
+
+            {/* Booking Summary Box */}
+            <div style={{
+              padding: '12px 14px',
+              borderRadius: '12px',
+              backgroundColor: 'rgba(0,0,0,0.2)',
+              border: '1px solid var(--border-color)',
+              fontSize: '0.84rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px'
+            }}>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>ผู้จอง:</span>{' '}
+                <strong style={{ color: 'var(--text-main)' }}>{rejectTargetBooking.customer_name || '-'}</strong>
+                {rejectTargetBooking.contact && ` (${rejectTargetBooking.contact})`}
+              </div>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>ห้องประชุม:</span>{' '}
+                <strong>{rejectTargetBooking.items?.[0]?.room_name || rejectTargetBooking.room_name || '-'}</strong>
+              </div>
+              <div>
+                <span style={{ color: 'var(--text-muted)' }}>ยอดเงิน:</span>{' '}
+                <strong style={{ color: '#f59e0b' }}>฿{Number(rejectTargetBooking.total_amount || 0).toLocaleString()}</strong>
+              </div>
+            </div>
+
+            {/* Reason Selection */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                เลือกเหตุผลที่ปฏิเสธสลิป:
+              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {[
+                  { code: 'AMOUNT_MISMATCH', label: 'ยอดเงินไม่ตรงกับยอดที่ต้องชำระ' },
+                  { code: 'WRONG_RECEIVER', label: 'บัญชีผู้รับเงินไม่ถูกต้อง' },
+                  { code: 'UNREADABLE_SLIP', label: 'รูปภาพสลิปไม่ชัดเจนหรือข้อมูลไม่ครบถ้วน' },
+                  { code: 'DUPLICATE_SLIP', label: 'สลิปซ้ำหรือเคยใช้งานแล้วในระบบ' },
+                  { code: 'INVALID_DATETIME', label: 'วันที่หรือเวลาในการโอนไม่ถูกต้อง' },
+                  { code: 'NOT_BANK_SLIP', label: 'ไม่ใช่สลิปการโอนเงินของธนาคาร' },
+                  { code: 'OTHER', label: 'อื่นๆ (ระบุเหตุผลเอง)' }
+                ].map(r => (
+                  <label
+                    key={r.code}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontSize: '0.82rem',
+                      backgroundColor: rejectReasonCode === r.code ? 'rgba(245, 158, 11, 0.12)' : 'rgba(255, 255, 255, 0.02)',
+                      border: `1px solid ${rejectReasonCode === r.code ? 'rgba(245, 158, 11, 0.4)' : 'var(--border-color)'}`,
+                      color: rejectReasonCode === r.code ? '#d97706' : 'var(--text-main)',
+                      fontWeight: rejectReasonCode === r.code ? 700 : 500
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="rejectReasonCode"
+                      value={r.code}
+                      checked={rejectReasonCode === r.code}
+                      onChange={() => setRejectReasonCode(r.code)}
+                      style={{ accentColor: '#d97706' }}
+                    />
+                    <span>{r.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Custom Note for OTHER */}
+            {rejectReasonCode === 'OTHER' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  ระบุเหตุผลเพิ่มเติม (สูงสุด 150 ตัวอักษร):
+                </label>
+                <textarea
+                  value={rejectCustomNote}
+                  onChange={(e) => setRejectCustomNote(e.target.value.substring(0, 150))}
+                  placeholder="เช่น กรุณาโอนเงินเข้าบัญชีตามที่ระบุในหน้าระบบ..."
+                  rows={3}
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    backgroundColor: 'var(--bg-input)',
+                    color: 'var(--text-main)',
+                    fontSize: '0.84rem',
+                    resize: 'none'
+                  }}
+                />
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textAlign: 'right' }}>
+                  {rejectCustomNote.length}/150
+                </div>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ flex: 1, padding: '10px', borderRadius: '8px', fontSize: '0.86rem', fontWeight: 600 }}
+                onClick={() => {
+                  setShowRejectSlipModal(false);
+                  setViewingSlipBooking(rejectTargetBooking);
+                }}
+                disabled={rejectLoading}
+              >
+                กลับไปตรวจสลิป
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{
+                  flex: 1,
+                  padding: '10px',
+                  borderRadius: '8px',
+                  fontSize: '0.86rem',
+                  fontWeight: 700,
+                  backgroundColor: '#d97706',
+                  borderColor: '#d97706',
+                  color: '#ffffff'
+                }}
+                onClick={submitRejectSlip}
+                disabled={rejectLoading}
+              >
+                {rejectLoading ? 'กำลังบันทึก...' : 'ยืนยันปฏิเสธสลิป'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ========================================================= */}
       {/*  CANCEL BOOKING MODAL (ยกเลิกการจอง & แจ้งเตือน LINE OA)  */}
       {/* ========================================================= */}

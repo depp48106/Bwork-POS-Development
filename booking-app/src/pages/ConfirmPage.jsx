@@ -1,8 +1,8 @@
 import jsQR from 'jsqr';
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { 
-  CheckCircle2, Copy, Upload, Check, 
+import {
+  CheckCircle2, Copy, Upload, Check,
   ShieldCheck, AlertCircle, Download, CreditCard, QrCode, Clock
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
@@ -67,6 +67,7 @@ export default function ConfirmPage() {
       const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
       const parsed = raw ? JSON.parse(raw) : null;
       if (parsed) {
+        if (parsed.payment_status === 'rejected' || parsed.slip_verify_status === 'rejected') return false;
         if (parsed.payment_status === 'cancelled') return true;
         const win = parsed.payment_window_minutes || 15;
         const { isExpired: exp } = calcPaymentTimeLeft(parsed, win, Date.now());
@@ -79,9 +80,12 @@ export default function ConfirmPage() {
   // Determine standard readable booking code
   const displayBookingCode = queryCode || booking?.booking_code || booking?.receipt_number || (bookingId && bookingId !== 'undefined' ? `BK-${String(bookingId).padStart(6, '0')}` : '-');
 
+  // Check if booking slip is in rejected status
+  const isRejected = Boolean(booking?.payment_status === 'rejected' || booking?.slip_verify_status === 'rejected');
+
   // Dynamic Countdown Timer based on paymentDeadline as Source of Truth
   useEffect(() => {
-    if (!booking || uploadSuccess || booking.payment_status === 'paid') return;
+    if (!booking || uploadSuccess || booking.payment_status === 'paid' || isRejected) return;
 
     if (booking.payment_status === 'cancelled') {
       setIsExpired(true);
@@ -118,7 +122,7 @@ export default function ConfirmPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [booking, uploadSuccess, paymentWindowMinutes]);
+  }, [booking, uploadSuccess, paymentWindowMinutes, isRejected]);
 
   // Fetch fresh booking info from backend
   const fetchFreshBooking = useCallback(async () => {
@@ -156,7 +160,9 @@ export default function ConfirmPage() {
         if (data.payment_window_minutes) {
           setPaymentWindowMinutes(parseInt(data.payment_window_minutes, 10) || 15);
         }
-        if (data.payment_status === 'cancelled') {
+        if (data.payment_status === 'rejected' || data.slip_verify_status === 'rejected') {
+          setIsExpired(false);
+        } else if (data.payment_status === 'cancelled') {
           setIsExpired(true);
           setTimeLeftSeconds(0);
           localStorage.removeItem('bwork_pending_booking');
@@ -379,7 +385,13 @@ export default function ConfirmPage() {
 
       if (res.ok && data.success) {
         localStorage.removeItem('bwork_pending_booking');
-        setUploadResultData(data);
+        setUploadResultData({ ...data, is_resubmission: isRejected });
+        setBooking(prev => ({
+          ...prev,
+          payment_status: 'reviewing',
+          slip_verify_status: 'pending_manual',
+          rejection_reason: null
+        }));
         setUploadSuccess(true);
       } else {
         setError(data.error || (
@@ -440,7 +452,7 @@ export default function ConfirmPage() {
                 gap: '12px'
               }}>
                 <div style={{ width: '40px', height: '40px', borderRadius: '10px', backgroundColor: 'rgba(14, 165, 233, 0.15)', color: '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  
+
                 </div>
                 <div style={{ fontSize: '0.82rem', color: '#0369a1' }}>
                   <strong>การรับรหัสผ่านเข้าห้องประชุม:</strong>
@@ -457,12 +469,14 @@ export default function ConfirmPage() {
               </div>
 
               <h2 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 8px 0' }}>
-                ระบบได้รับหลักฐานการโอนเงินแล้ว
+                {uploadResultData?.is_resubmission ? 'ส่งสลิปใหม่เรียบร้อยแล้ว' : 'ระบบได้รับหลักฐานการโอนเงินแล้ว'}
               </h2>
               <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', maxWidth: '500px', margin: '0 auto 16px auto' }}>
-                ระบบได้รับหลักฐานการโอนเงินแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบยอดเงินก่อนยืนยันการจอง
+                {uploadResultData?.is_resubmission
+                  ? 'ระบบกำลังรอเจ้าหน้าที่ตรวจสอบอีกครั้ง'
+                  : 'ระบบได้รับหลักฐานการโอนเงินแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบยอดเงินก่อนยืนยันการจอง'}
               </p>
-              
+
               <div style={{
                 maxWidth: '440px',
                 margin: '0 auto 16px auto',
@@ -585,8 +599,35 @@ export default function ConfirmPage() {
             </div>
           </div>
 
-          {/* 15-MINUTE COUNTDOWN TIMER BOX */}
-          {isExpired ? (
+          {/* REJECTED ALERT OR 15-MINUTE COUNTDOWN TIMER BOX */}
+          {isRejected ? (
+            <div style={{
+              backgroundColor: 'rgba(245, 158, 11, 0.08)',
+              border: '1.5px solid #f59e0b',
+              borderRadius: '14px',
+              padding: '16px 20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <AlertCircle size={24} style={{ color: '#d97706', flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontWeight: 900, fontSize: '1.05rem', color: '#b45309' }}>
+                    สลิปการโอนเงินไม่ผ่านการตรวจสอบ กรุณาแนบสลิปใหม่
+                  </div>
+                  {booking?.rejection_reason && (
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#92400e', marginTop: '3px' }}>
+                      เหตุผล: {booking.rejection_reason}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div style={{ fontSize: '0.82rem', color: '#78350f', marginTop: '2px' }}>
+                การจองของท่านยังคงอยู่ กรุณาตรวจสอบและอัปโหลดสลิปที่ถูกต้องอีกครั้ง
+              </div>
+            </div>
+          ) : isExpired ? (
             <div style={{
               backgroundColor: 'rgba(239, 68, 68, 0.08)',
               border: '1.5px solid #ef4444',
@@ -685,10 +726,10 @@ export default function ConfirmPage() {
                 justifyContent: 'center',
                 overflow: 'hidden'
               }}>
-                <img 
-                  src={qrImageSrc} 
-                  alt="B WORK Payment QR Code" 
-                  style={{ width: '100%', height: 'auto', display: 'block', borderRadius: '10px' }} 
+                <img
+                  src={qrImageSrc}
+                  alt="B WORK Payment QR Code"
+                  style={{ width: '100%', height: 'auto', display: 'block', borderRadius: '10px' }}
                 />
               </div>
 
@@ -810,10 +851,10 @@ export default function ConfirmPage() {
 
                 {slipPreview ? (
                   <div>
-                    <img 
-                      src={slipPreview} 
-                      alt="Slip Preview" 
-                      style={{ maxHeight: '200px', borderRadius: '10px', boxShadow: 'var(--shadow-md)', marginBottom: '8px' }} 
+                    <img
+                      src={slipPreview}
+                      alt="Slip Preview"
+                      style={{ maxHeight: '200px', borderRadius: '10px', boxShadow: 'var(--shadow-md)', marginBottom: '8px' }}
                     />
                     <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--primary)' }}>
                       แตะเพื่อเปลี่ยนรูปภาพสลิป

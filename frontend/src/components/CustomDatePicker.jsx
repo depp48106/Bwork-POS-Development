@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Calendar, Clock, MapPin } from 'lucide-react';
 
 function CustomDatePicker({ value, onChange, placeholder = 'เลือกวันที่', className, style, showHistory = false, align = 'left', selectedDate, onChangeDate, minDate }) {
@@ -10,12 +11,12 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
   const [dailyBookings, setDailyBookings] = useState([]);
   const [loadingBookings, setLoadingBookings] = useState(false);
   const containerRef = useRef(null);
-  
+
   // Date parsing
   const dateObj = actualValue ? new Date(actualValue) : new Date();
   const [currentYear, setCurrentYear] = useState(isNaN(dateObj.getTime()) ? new Date().getFullYear() : dateObj.getFullYear());
   const [currentMonth, setCurrentMonth] = useState(isNaN(dateObj.getTime()) ? new Date().getMonth() : dateObj.getMonth()); // 0-11
-  
+
   useEffect(() => {
     if (actualValue) {
       const d = new Date(actualValue);
@@ -26,16 +27,54 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
     }
   }, [value]);
 
+  const popoverRef = useRef(null);
+
   // Close calendar popover on click outside
   useEffect(() => {
     function handleClickOutside(event) {
-      if (containerRef.current && !containerRef.current.contains(event.target)) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(event.target) &&
+        (!popoverRef.current || !popoverRef.current.contains(event.target))
+      ) {
         setIsOpen(false);
       }
     }
-    document.addEventListener("mousedown", handleClickOutside);
+    if (isOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  }, [isOpen]);
+
+  const [popoverPos, setPopoverPos] = useState({ top: 0, left: 0 });
+
+  const updatePopoverPos = useCallback(() => {
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const popoverWidth = 280;
+      let left = align === 'right' ? rect.right - popoverWidth : rect.left;
+      if (left + popoverWidth > window.innerWidth - 12) {
+        left = window.innerWidth - popoverWidth - 12;
+      }
+      if (left < 12) left = 12;
+      setPopoverPos({
+        top: rect.bottom + 6,
+        left
+      });
+    }
+  }, [align]);
+
+  useEffect(() => {
+    if (isOpen) {
+      updatePopoverPos();
+      window.addEventListener('resize', updatePopoverPos);
+      window.addEventListener('scroll', updatePopoverPos, true);
+      return () => {
+        window.removeEventListener('resize', updatePopoverPos);
+        window.removeEventListener('scroll', updatePopoverPos, true);
+      };
+    }
+  }, [isOpen, updatePopoverPos]);
 
   // Fetch daily bookings when value changes
   const fetchDailyBookings = useCallback(async (dateStr) => {
@@ -51,6 +90,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
         const data = await res.json();
         // Filter bookings for the specific date
         const filtered = data.filter(ev => {
+          if (['cancelled', 'failed'].includes(ev.payment_status) || ['cancelled', 'failed'].includes(ev.status) || ev.checkin_status === 'cancelled') return false;
           let evDate = '';
           if (typeof ev.start_time === 'string') {
             // Extract YYYY-MM-DD directly from the string to avoid timezone shifts
@@ -103,7 +143,9 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
     const yyyy = currentYear;
     const mm = String(currentMonth + 1).padStart(2, '0');
     const dd = String(day).padStart(2, '0');
-    actualOnChange(`${yyyy}-${mm}-${dd}`);
+    const chosenDate = `${yyyy}-${mm}-${dd}`;
+    console.log('[CustomDatePicker] Date selected:', chosenDate);
+    actualOnChange(chosenDate);
     setIsOpen(false);
   };
 
@@ -140,7 +182,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
     "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
     "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"
   ];
-  
+
   const dayNames = ["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"];
 
   const daysInMonth = getDaysInMonth(currentMonth, currentYear);
@@ -165,7 +207,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
       <div key={`empty-${i}`} style={{ width: '100%', height: '34px' }}></div>
     );
   }
-  
+
   for (let day = 1; day <= daysInMonth; day++) {
     const formattedTarget = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     const isSelected = value === formattedTarget;
@@ -196,10 +238,10 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
             : isHovered
               ? 'var(--bg-hover)'
               : 'transparent',
-          color: isSelected 
-            ? '#ffffff' 
-            : isToday 
-              ? 'var(--primary-color)' 
+          color: isSelected
+            ? '#ffffff'
+            : isToday
+              ? 'var(--primary-color)'
               : 'var(--text-main)',
           fontSize: '0.82rem',
           fontWeight: isSelected || isToday || isHovered ? 800 : 600,
@@ -217,69 +259,82 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
   }
 
   return (
-    <div 
-      ref={containerRef} 
-      className={className} 
-      style={{ position: 'relative', zIndex: isOpen ? 99 : 1, ...style }}
+    <div
+      ref={containerRef}
+      className={className}
+      style={{
+        position: 'relative',
+        zIndex: isOpen ? 9999 : 1,
+        ...style,
+        display: 'inline-flex',
+        alignItems: 'center'
+      }}
       onClick={() => setIsOpen(!isOpen)}
     >
-      <div 
+      <div
         style={{
-          display: 'flex',
+          display: 'inline-flex',
           alignItems: 'center',
           gap: '8px',
           userSelect: 'none',
-          width: '100%'
+          width: '100%',
+          lineHeight: 1
         }}
       >
-        <Calendar size={14} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
-        <span style={{ fontSize: '0.8rem', fontWeight: 600, color: actualValue ? 'var(--text-main)' : 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+        <Calendar size={15} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
+        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: actualValue ? 'var(--text-main)' : 'var(--text-muted)', whiteSpace: 'nowrap', lineHeight: 1 }}>
           {actualValue ? formatDateDisplay(actualValue) : placeholder}
         </span>
       </div>
 
-      {isOpen && (
-        <div 
-          onClick={(e) => e.stopPropagation()}
-          className="custom-datepicker-popover"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            ...(align === 'right' ? { right: 0 } : { left: 0 }),
-            backgroundColor: 'var(--bg-card)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '16px',
-            boxShadow: '0 20px 40px rgba(0,0,0,0.3), 0 0 0 1px var(--border-color)',
-            padding: '12px',
-            zIndex: 10000,
-            width: '280px',
-            maxWidth: '90vw',
-            boxSizing: 'border-box',
-            animation: 'fadeIn 0.15s ease-out'
-          }}
-        >
+      {isOpen && typeof document !== 'undefined' && createPortal(
+        <>
+          <div
+            onClick={(e) => { e.stopPropagation(); setIsOpen(false); }}
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99998 }}
+          />
+          <div
+            ref={popoverRef}
+            onClick={(e) => e.stopPropagation()}
+            className="custom-datepicker-popover"
+            style={{
+              position: 'fixed',
+              top: `${popoverPos.top}px`,
+              left: `${popoverPos.left}px`,
+              backgroundColor: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '16px',
+              boxShadow: '0 20px 50px rgba(0,0,0,0.4), 0 0 0 1px var(--border-color)',
+              padding: '12px',
+              zIndex: 99999,
+              width: '280px',
+              maxWidth: '90vw',
+              boxSizing: 'border-box',
+              animation: 'fadeIn 0.15s ease-out'
+            }}
+          >
           {/* Header */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-            <button 
-              type="button" 
-              onClick={prevMonth} 
-              style={{ 
-                background: 'transparent', 
-                border: '1px solid var(--border-color)', 
-                color: 'var(--text-muted)', 
-                cursor: 'pointer', 
-                display: 'flex', 
+            <button
+              type="button"
+              onClick={prevMonth}
+              style={{
+                background: 'transparent',
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                display: 'flex',
                 padding: '6px',
                 borderRadius: '8px',
                 transition: 'all 0.2s'
               }}
-              onMouseEnter={(e) => { 
-                e.currentTarget.style.borderColor = 'var(--primary-color)'; 
-                e.currentTarget.style.color = 'var(--primary-color)'; 
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'var(--primary-color)';
+                e.currentTarget.style.color = 'var(--primary-color)';
               }}
-              onMouseLeave={(e) => { 
-                e.currentTarget.style.borderColor = 'var(--border-color)'; 
-                e.currentTarget.style.color = 'var(--text-muted)'; 
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'var(--border-color)';
+                e.currentTarget.style.color = 'var(--text-muted)';
               }}
             >
               <ChevronLeft size={14} />
@@ -287,26 +342,26 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
             <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-main)' }}>
               {monthNames[currentMonth]} {currentYear + 543}
             </div>
-            <button 
-              type="button" 
-              onClick={nextMonth} 
-              style={{ 
-                background: 'transparent', 
-                border: '1px solid var(--border-color)', 
-                color: 'var(--text-muted)', 
-                cursor: 'pointer', 
-                display: 'flex', 
+            <button
+              type="button"
+              onClick={nextMonth}
+              style={{
+                background: 'transparent',
+                border: '1px solid var(--border-color)',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                display: 'flex',
                 padding: '6px',
                 borderRadius: '8px',
                 transition: 'all 0.2s'
               }}
-              onMouseEnter={(e) => { 
-                e.currentTarget.style.borderColor = 'var(--primary-color)'; 
-                e.currentTarget.style.color = 'var(--primary-color)'; 
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'var(--primary-color)';
+                e.currentTarget.style.color = 'var(--primary-color)';
               }}
-              onMouseLeave={(e) => { 
-                e.currentTarget.style.borderColor = 'var(--border-color)'; 
-                e.currentTarget.style.color = 'var(--text-muted)'; 
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'var(--border-color)';
+                e.currentTarget.style.color = 'var(--text-muted)';
               }}
             >
               <ChevronRight size={14} />
@@ -314,22 +369,22 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
           </div>
 
           {/* Week Days Header */}
-          <div style={{ 
-            display: 'grid', 
-            gridTemplateColumns: 'repeat(7, 1fr)', 
-            gap: '4px', 
-            textAlign: 'center', 
-            marginBottom: '8px', 
-            fontWeight: 800, 
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(7, 1fr)',
+            gap: '4px',
+            textAlign: 'center',
+            marginBottom: '8px',
+            fontWeight: 800,
             fontSize: '0.725rem',
             borderBottom: '1px solid var(--border-color)',
             paddingBottom: '6px'
           }}>
             {dayNames.map((name, idx) => (
-              <div 
-                key={name} 
-                style={{ 
-                  color: idx === 0 ? '#ef4444' : idx === 6 ? '#3b82f6' : 'var(--text-muted)' 
+              <div
+                key={name}
+                style={{
+                  color: idx === 0 ? '#ef4444' : idx === 6 ? '#3b82f6' : 'var(--text-muted)'
                 }}
               >
                 {name}
@@ -359,13 +414,13 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
               transition: 'all 0.2s',
               marginBottom: (showHistory && dailyBookings.length > 0) ? '12px' : 0
             }}
-            onMouseEnter={(e) => { 
-              e.currentTarget.style.background = 'var(--primary-color)'; 
-              e.currentTarget.style.color = '#ffffff'; 
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'var(--primary-color)';
+              e.currentTarget.style.color = '#ffffff';
             }}
-            onMouseLeave={(e) => { 
-              e.currentTarget.style.background = 'transparent'; 
-              e.currentTarget.style.color = 'var(--primary-color)'; 
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.color = 'var(--primary-color)';
             }}
           >
             📅 วันนี้
@@ -377,7 +432,7 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
               <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--text-muted)', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 📋 ประวัติจองวันที่ {formatDateDisplay(value)}
               </div>
-              
+
               {loadingBookings ? (
                 <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', textAlign: 'center', padding: '12px 0' }}>
                   กำลังโหลด...
@@ -385,12 +440,12 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
               ) : dailyBookings.length > 0 ? (
                 <div style={{ maxHeight: '120px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {dailyBookings.map((b, i) => (
-                    <div 
-                      key={i} 
-                      style={{ 
-                        padding: '8px 10px', 
-                        borderRadius: '10px', 
-                        background: 'var(--bg-body)', 
+                    <div
+                      key={i}
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: '10px',
+                        background: 'var(--bg-body)',
                         border: '1px solid var(--border-color)',
                         fontSize: '0.75rem',
                         display: 'flex',
@@ -405,11 +460,11 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
                       <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: 'var(--text-muted)' }}>
                         <Clock size={11} />
                         {formatTime(b.start_time)} - {formatTime(b.end_time)}
-                        <span style={{ 
+                        <span style={{
                           marginLeft: 'auto',
-                          padding: '1px 6px', 
-                          borderRadius: '6px', 
-                          fontSize: '0.65rem', 
+                          padding: '1px 6px',
+                          borderRadius: '6px',
+                          fontSize: '0.65rem',
                           fontWeight: 700,
                           background: b.status === 'paid' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)',
                           color: b.status === 'paid' ? 'var(--success-color)' : 'var(--warning-color)'
@@ -428,9 +483,11 @@ function CustomDatePicker({ value, onChange, placeholder = 'เลือกว�
             </div>
           )}
         </div>
-      )}
-    </div>
-  );
+      </>,
+      document.body
+    )}
+  </div>
+);
 }
 
 export default CustomDatePicker;

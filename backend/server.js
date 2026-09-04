@@ -6,12 +6,12 @@ const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 const { initDatabase, dbQuery, hashPassword, verifyPassword } = require('./database');
 const { performBackup } = require('./backup');
-const { 
-  generateDatabaseDumpSql, 
-  getOneDriveAuthUrl, 
-  exchangeOneDriveCode, 
-  refreshOneDriveAccessToken, 
-  uploadSqlToOneDrive 
+const {
+  generateDatabaseDumpSql,
+  getOneDriveAuthUrl,
+  exchangeOneDriveCode,
+  refreshOneDriveAccessToken,
+  uploadSqlToOneDrive
 } = require('./onedrive');
 const crypto = require('crypto');
 
@@ -113,8 +113,8 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const user = await dbQuery.get(
       `SELECT u.id, u.username, u.password_hash, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname
-       FROM users u 
-       LEFT JOIN roles r ON u.role = r.name 
+       FROM users u
+       LEFT JOIN roles r ON u.role = r.name
        WHERE u.username = ?`,
       [username]
     );
@@ -143,9 +143,9 @@ app.post('/api/auth/login-pin', async (req, res) => {
   try {
     const inputPin = String(pin_code).trim();
     const users = await dbQuery.all(
-      `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname, u.pin_code 
-       FROM users u 
-       LEFT JOIN roles r ON u.role = r.name 
+      `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname, u.pin_code
+       FROM users u
+       LEFT JOIN roles r ON u.role = r.name
        WHERE u.pin_code IS NOT NULL AND u.pin_code != ''`
     );
 
@@ -179,9 +179,9 @@ app.post('/api/auth/login-pin', async (req, res) => {
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
   try {
     const user = await dbQuery.get(
-      `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname 
-       FROM users u 
-       LEFT JOIN roles r ON u.role = r.name 
+      `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname
+       FROM users u
+       LEFT JOIN roles r ON u.role = r.name
        WHERE u.id = ?`,
       [req.user.id]
     );
@@ -258,13 +258,13 @@ app.get('/api/rooms', async (req, res) => {
 });
 
 app.post('/api/rooms', requireAnyPermission('manage'), async (req, res) => {
-  const { 
+  const {
     name, capacity, hourly_rate, daily_rate, half_day_rate,
     has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
     description, status, image_url,
     has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code
   } = req.body;
-  
+
   if (!name) {
     return res.status(400).json({ error: 'กรุณากรอกชื่อห้องประชุม' });
   }
@@ -283,7 +283,7 @@ app.post('/api/rooms', requireAnyPermission('manage'), async (req, res) => {
         has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null, builtland_pin_code || null
       ]
     );
-    res.status(201).json({ 
+    res.status(201).json({
       id: result.id, name, capacity, hourly_rate, daily_rate: daily_rate || 0, half_day_rate: half_day_rate || 0,
       has_classroom: has_classroom || 0,
       classroom_hourly_rate: classroom_hourly_rate || 0,
@@ -301,7 +301,7 @@ app.post('/api/rooms', requireAnyPermission('manage'), async (req, res) => {
 });
 
 app.put('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
-  const { 
+  const {
     name, capacity, hourly_rate, daily_rate, half_day_rate,
     has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
     description, status, image_url,
@@ -309,7 +309,7 @@ app.put('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
   } = req.body;
   try {
     await dbQuery.run(
-      `UPDATE rooms 
+      `UPDATE rooms
        SET name = ?, capacity = ?, hourly_rate = ?, daily_rate = ?, half_day_rate = ?,
            has_classroom = ?, classroom_hourly_rate = ?, classroom_daily_rate = ?, classroom_capacity = ?, classroom_image_url = ?,
            description = ?, status = ?, image_url = ?,
@@ -438,14 +438,14 @@ app.delete('/api/categories/:name', requireAnyPermission('manage'), async (req, 
     // Check if any rooms or services still exist in this category
     const roomCount = await dbQuery.get('SELECT COUNT(*) as count FROM rooms WHERE category = ?', [name]);
     const serviceCount = await dbQuery.get('SELECT COUNT(*) as count FROM services WHERE category = ?', [name]);
-    
+
     if ((roomCount && roomCount.count > 0) || (serviceCount && serviceCount.count > 0)) {
       const totalItems = (roomCount?.count || 0) + (serviceCount?.count || 0);
-      return res.status(400).json({ 
-        error: `ไม่สามารถลบหมวดหมู่นี้ได้ เนื่องจากยังมีห้อง/บริการอยู่ ${totalItems} รายการ กรุณาย้ายหรือลบรายการเหล่านี้ก่อน` 
+      return res.status(400).json({
+        error: `ไม่สามารถลบหมวดหมู่นี้ได้ เนื่องจากยังมีห้อง/บริการอยู่ ${totalItems} รายการ กรุณาย้ายหรือลบรายการเหล่านี้ก่อน`
       });
     }
-    
+
     res.json({ message: 'ลบหมวดหมู่สำเร็จ' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -463,7 +463,7 @@ async function generateReceiptNumber() {
   const prefix = `BK-${yy}${mm}`;
 
   const lastBooking = await dbQuery.get(
-    `SELECT receipt_number FROM bookings 
+    `SELECT receipt_number FROM bookings
      WHERE receipt_number LIKE ?
      ORDER BY id DESC LIMIT 1`,
     [`${prefix}%`]
@@ -593,7 +593,7 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
     FROM booking_items bi
     JOIN bookings b ON bi.booking_id = b.id
     WHERE bi.room_id = ?
-      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed'))
       AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
   `;
   const params = [roomId];
@@ -657,8 +657,8 @@ function formatOverlapErrorMessage(roomName, overlapResult) {
 }
 
 app.post('/api/bookings', async (req, res) => {
-  const { 
-    customer_name, department, contact, total_amount, payment_status, payment_method, 
+  const {
+    customer_name, department, contact, total_amount, payment_status, payment_method,
     items, line_user_id, guest_count,
     customer_type = 'walkin',
     basecamp_sub_type = null,
@@ -760,8 +760,8 @@ app.post('/api/bookings', async (req, res) => {
              AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
              AND (
                EXISTS (
-                 SELECT 1 FROM booking_items bi 
-                 WHERE bi.booking_id = b.id 
+                 SELECT 1 FROM booking_items bi
+                 WHERE bi.booking_id = b.id
                    AND strftime('%Y-%m', bi.start_time) = ?
                )
                OR (
@@ -826,26 +826,26 @@ app.post('/api/bookings', async (req, res) => {
         : (items.find(it => it.guest_count)?.guest_count ? parseInt(items.find(it => it.guest_count).guest_count, 10) : null);
 
       // Determine effective payment status
-      const effectivePaymentStatus = customer_type === 'builtland' 
-        ? 'internal_free' 
+      const effectivePaymentStatus = customer_type === 'builtland'
+        ? 'internal_free'
         : (verifiedTotal === 0 ? 'paid' : (payment_status || 'pending'));
 
       // Insert master booking (with optional customer categorization fields and quota_hours_used)
       const bookingResult = await dbQuery.run(
-        `INSERT INTO bookings 
-         (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, booking_source, booking_channel, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, created_at) 
+        `INSERT INTO bookings
+         (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, booking_source, booking_channel, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          customer_name, 
-          department || internal_department || '', 
-          contact || '', 
-          verifiedTotal, 
-          effectivePaymentStatus, 
-          payment_method || 'cash', 
-          receiptNumber, 
-          pinCode, 
-          line_user_id || null, 
-          effectiveGuestCount, 
+          customer_name,
+          department || internal_department || '',
+          contact || '',
+          verifiedTotal,
+          effectivePaymentStatus,
+          payment_method || 'cash',
+          receiptNumber,
+          pinCode,
+          line_user_id || null,
+          effectiveGuestCount,
           'pending',
           'walk-in',
           req.body.booking_channel || 'pos_web',
@@ -877,8 +877,8 @@ app.post('/api/bookings', async (req, res) => {
         }
 
         await dbQuery.run(
-          `INSERT INTO booking_items 
-           (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status) 
+          `INSERT INTO booking_items
+           (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             bookingId,
@@ -916,11 +916,11 @@ app.post('/api/bookings', async (req, res) => {
       };
     });
 
-    res.status(201).json({ 
-      success: true, 
+    res.status(201).json({
+      success: true,
       bookingId: result.bookingId,
       booking_id: result.bookingId,
-      id: result.bookingId, 
+      id: result.bookingId,
       receiptNumber: result.receiptNumber,
       receipt_number: result.receiptNumber,
       booking_code: result.receiptNumber,
@@ -929,7 +929,7 @@ app.post('/api/bookings', async (req, res) => {
       pin_code: result.pinCode,
       ...(result.savedBooking || {}),
       items: result.savedItems || [],
-      message: 'บันทึกการจองสำเร็จ' 
+      message: 'บันทึกการจองสำเร็จ'
     });
   } catch (err) {
     res.status(err.statusCode || 500).json({ error: err.message });
@@ -1066,8 +1066,8 @@ app.get('/api/basecamp/quota', async (req, res) => {
          AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
          AND (
            EXISTS (
-             SELECT 1 FROM booking_items bi 
-             WHERE bi.booking_id = b.id 
+             SELECT 1 FROM booking_items bi
+             WHERE bi.booking_id = b.id
                AND strftime('%Y-%m', bi.start_time) = ?
            )
            OR (
@@ -1098,7 +1098,7 @@ app.get('/api/bookings', async (req, res) => {
   const { start_date, end_date, search, payment_status, customer_type, booking_channel } = req.query;
   try {
     let sql = `
-      SELECT DISTINCT b.* 
+      SELECT DISTINCT b.*
       FROM bookings b
       LEFT JOIN booking_items bi ON b.id = bi.booking_id
       LEFT JOIN rooms r ON bi.room_id = r.id
@@ -1117,13 +1117,13 @@ app.get('/api/bookings', async (req, res) => {
     if (search) {
       const q = `%${search}%`;
       sql += ` AND (
-        b.customer_name LIKE ? OR 
-        b.contact LIKE ? OR 
-        b.department LIKE ? OR 
-        b.receipt_number LIKE ? OR 
-        CAST(b.id AS TEXT) LIKE ? OR 
-        b.pin_code LIKE ? OR 
-        r.name LIKE ? OR 
+        b.customer_name LIKE ? OR
+        b.contact LIKE ? OR
+        b.department LIKE ? OR
+        b.receipt_number LIKE ? OR
+        CAST(b.id AS TEXT) LIKE ? OR
+        b.pin_code LIKE ? OR
+        r.name LIKE ? OR
         r.category LIKE ? OR
         b.basecamp_unit LIKE ? OR
         b.internal_department LIKE ?
@@ -1282,7 +1282,7 @@ app.get('/api/bookings/upcoming-alerts', async (req, res) => {
 
     // 2. Incoming online bookings (Pending or Reviewing slip)
     const incomingBookings = await dbQuery.all(
-      `SELECT b.id as booking_id, b.customer_name, b.payment_status, b.total_amount, b.booking_source, b.created_at, 
+      `SELECT b.id as booking_id, b.customer_name, b.payment_status, b.total_amount, b.booking_source, b.created_at,
               b.slip_image_url,
               bi.start_time, bi.end_time, r.name as room_name
        FROM bookings b
@@ -1365,7 +1365,7 @@ app.get('/api/bookings/:id', async (req, res) => {
     }
 
     const items = await dbQuery.all(
-      `SELECT bi.*, r.name as room_name, r.description as room_description, s.name as service_name, s.category as service_category 
+      `SELECT bi.*, r.name as room_name, r.description as room_description, s.name as service_name, s.category as service_category
        FROM booking_items bi
        LEFT JOIN rooms r ON bi.room_id = r.id
        LEFT JOIN services s ON bi.service_id = s.id
@@ -1436,15 +1436,15 @@ const handleCancelBooking = async (req, res) => {
     const realId = booking.id;
 
     await dbQuery.run(`
-      UPDATE bookings 
-      SET payment_status = 'cancelled', 
+      UPDATE bookings
+      SET payment_status = 'cancelled',
           checkin_status = 'cancelled',
           cancellation_reason = ?
       WHERE id = ?
     `, [cancelReason, realId]);
 
     await dbQuery.run(`
-      UPDATE booking_items 
+      UPDATE booking_items
       SET checkin_status = 'cancelled'
       WHERE booking_id = ?
     `, [realId]);
@@ -1473,8 +1473,8 @@ const handleCancelBooking = async (req, res) => {
       }
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'ยกเลิกการจองเรียบร้อยแล้ว',
       booking_id: realId,
       cancellation_reason: cancelReason
@@ -1488,6 +1488,104 @@ const handleCancelBooking = async (req, res) => {
 app.post('/api/bookings/:id/cancel', handleCancelBooking);
 app.put('/api/bookings/:id/cancel', handleCancelBooking);
 
+// Reason code mapping for slip rejection
+const REJECT_REASON_MAP = {
+  AMOUNT_MISMATCH: 'ยอดเงินไม่ตรงกับยอดที่ต้องชำระ',
+  WRONG_RECEIVER: 'บัญชีผู้รับเงินไม่ถูกต้อง',
+  UNREADABLE_SLIP: 'รูปภาพสลิปไม่ชัดเจนหรือข้อมูลไม่ครบถ้วน',
+  DUPLICATE_SLIP: 'สลิปซ้ำหรือเคยใช้งานแล้วในระบบ',
+  INVALID_DATETIME: 'วันที่หรือเวลาในการโอนไม่ถูกต้อง',
+  NOT_BANK_SLIP: 'ไม่ใช่สลิปการโอนเงินของธนาคาร',
+  OTHER: 'อื่นๆ'
+};
+
+// Dedicated Reject Slip endpoint (Staff rejects slip, preserves booking & room block)
+app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { reason_code, custom_note } = req.body || {};
+
+  // Reason code validation
+  if (!reason_code || !REJECT_REASON_MAP[reason_code]) {
+    return res.status(400).json({ error: 'กรุณาระบุรหัสเหตุผลการปฏิเสธสลิปที่ถูกต้อง' });
+  }
+
+  let displayReason = REJECT_REASON_MAP[reason_code];
+  const sanitizedNote = custom_note
+    ? String(custom_note).trim().replace(/[<>'"&]/g, '').replace(/[\x00-\x1F\x7F]/g, '').substring(0, 150)
+    : '';
+
+  if (reason_code === 'OTHER') {
+    if (!sanitizedNote) {
+      return res.status(400).json({ error: 'กรณีเลือกอื่นๆ กรุณาระบุรายละเอียดเหตุผลเพิ่มเติม (ไม่เกิน 150 ตัวอักษร)' });
+    }
+    displayReason = sanitizedNote;
+  } else if (sanitizedNote) {
+    displayReason = `${displayReason} (${sanitizedNote})`;
+  }
+
+  try {
+    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [id]);
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    // Precondition: current payment_status must be 'reviewing' only
+    if (booking.payment_status !== 'reviewing') {
+      return res.status(409).json({
+        error: `ไม่สามารถปฏิเสธสลิปได้เนื่องจากรายการจองอยู่ในสถานะ '${booking.payment_status}' (อนุญาตเฉพาะสถานะรอตรวจสอบ 'reviewing' เท่านั้น)`
+      });
+    }
+
+    // Atomic conditional update
+    const updateResult = await dbQuery.run(
+      `UPDATE bookings
+       SET payment_status = 'rejected',
+           slip_verify_status = 'rejected'
+       WHERE id = ? AND payment_status = 'reviewing'`,
+      [id]
+    );
+
+    if (!updateResult || updateResult.changes !== 1) {
+      return res.status(409).json({ error: 'สถานะรายการจองถูกเปลี่ยนแปลงไปแล้ว ไม่สามารถดำเนินการได้' });
+    }
+
+    // Audit: Update latest slip_verifications row for this booking
+    try {
+      const latestSv = await dbQuery.get(
+        'SELECT id FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1',
+        [id]
+      );
+      if (latestSv) {
+        await dbQuery.run(
+          "UPDATE slip_verifications SET verification_status = 'rejected', rejection_reason = ? WHERE id = ?",
+          [displayReason, latestSv.id]
+        );
+      } else {
+        await dbQuery.run(
+          `INSERT INTO slip_verifications (
+            booking_id, trans_ref, bank_code, bank_name, slip_image_url,
+            is_auto_approved, confidence_score, raw_qr_data, verification_status,
+            rejection_reason, created_at
+          ) VALUES (?, ?, '000', 'ธนาคาร', ?, 0, 0, '', 'rejected', ?, datetime('now', 'localtime'))`,
+          [id, booking.slip_trans_ref || `REJ_${id}_${Date.now()}`, booking.slip_image_url || 'uploaded', displayReason]
+        );
+      }
+    } catch (svErr) {
+      console.error('Audit update error on slip rejection:', svErr);
+    }
+
+    res.json({
+      success: true,
+      message: 'ปฏิเสธสลิปการโอนเงินเรียบร้อยแล้ว (การจองยังคงอยู่เพื่อให้ลูกค้าแนบสลิปใหม่)',
+      payment_status: 'rejected',
+      slip_verify_status: 'rejected',
+      rejection_reason: displayReason
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // Helper to build LINE OA Flex Message for booking confirmation
 function buildLineConfirmationFlex(booking, item, room) {
@@ -1495,7 +1593,7 @@ function buildLineConfirmationFlex(booking, item, room) {
   const roomName = room?.name || 'ห้องประชุม B-WORK';
   const pinCode = booking.pin_code || '------';
   const receiptNo = booking.receipt_number || `BK-${String(booking.id).padStart(6, '0')}`;
-  
+
   let dateDisplay = '-';
   let timeDisplay = '-';
   if (item?.start_time) {
@@ -1705,8 +1803,8 @@ app.patch('/api/bookings/:id/payment', async (req, res) => {
       lineData = await sendLineNotification(req.params.id);
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'อัปเดตสถานะชำระเงินสำเร็จ และส่งการแจ้งเตือนยืนยันการจองผ่าน LINE OA เรียบร้อยแล้ว',
       pin_code: lineData?.pin_code,
       line_notification_sent: lineData?.line_pushed || false,
@@ -1994,8 +2092,8 @@ const handleReschedule = async (req, res) => {
       lineData = await sendLineBookingRescheduleServer(bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount);
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
       line_sent: lineData?.success || false,
       pin_code: newPinCode
@@ -2089,9 +2187,9 @@ app.post('/api/access/verify-pin', async (req, res) => {
 
     if (now < earlyCheckinTime) {
       const timeStr = startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-      return res.status(400).json({ 
-        success: false, 
-        error: `ยังไม่ถึงเวลาเข้าใช้งาน (สามารถเช็คอินได้ล่วงหน้า ${earlyMins} นาที ก่อนเวลา ${timeStr} น.)` 
+      return res.status(400).json({
+        success: false,
+        error: `ยังไม่ถึงเวลาเข้าใช้งาน (สามารถเช็คอินได้ล่วงหน้า ${earlyMins} นาที ก่อนเวลา ${timeStr} น.)`
       });
     }
 
@@ -2125,20 +2223,20 @@ app.post('/api/line/checkin', async (req, res) => {
     let bookingRow;
     if (booking_id) {
       bookingRow = await dbQuery.get(
-        `SELECT b.*, bi.start_time, bi.end_time, r.name as room_name 
-         FROM bookings b 
-         JOIN booking_items bi ON b.id = bi.booking_id 
-         LEFT JOIN rooms r ON bi.room_id = r.id 
+        `SELECT b.*, bi.start_time, bi.end_time, r.name as room_name
+         FROM bookings b
+         JOIN booking_items bi ON b.id = bi.booking_id
+         LEFT JOIN rooms r ON bi.room_id = r.id
          WHERE b.id = ?`,
         [booking_id]
       );
     } else if (line_user_id) {
       bookingRow = await dbQuery.get(
-        `SELECT b.*, bi.start_time, bi.end_time, r.name as room_name 
-         FROM bookings b 
-         JOIN booking_items bi ON b.id = bi.booking_id 
-         LEFT JOIN rooms r ON bi.room_id = r.id 
-         WHERE b.line_user_id = ? AND b.checkin_status != 'expired' 
+        `SELECT b.*, bi.start_time, bi.end_time, r.name as room_name
+         FROM bookings b
+         JOIN booking_items bi ON b.id = bi.booking_id
+         LEFT JOIN rooms r ON bi.room_id = r.id
+         WHERE b.line_user_id = ? AND b.checkin_status != 'expired'
          ORDER BY bi.start_time ASC LIMIT 1`,
         [line_user_id]
       );
@@ -2162,9 +2260,9 @@ app.post('/api/line/checkin', async (req, res) => {
 
     if (now < earlyCheckinTime) {
       const timeStr = startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-      return res.status(400).json({ 
-        success: false, 
-        error: `ยังไม่ถึงเวลาเช็คอิน (สามารถกดรับรหัสผ่านได้ล่วงหน้า ${earlyMins} นาที ก่อนเวลา ${timeStr} น.)` 
+      return res.status(400).json({
+        success: false,
+        error: `ยังไม่ถึงเวลาเช็คอิน (สามารถกดรับรหัสผ่านได้ล่วงหน้า ${earlyMins} นาที ก่อนเวลา ${timeStr} น.)`
       });
     }
 
@@ -2275,8 +2373,8 @@ app.post('/api/quotations', async (req, res) => {
     }
 
     const result = await dbQuery.run(
-      `INSERT INTO quotations 
-       (customer_name, department, contact, customer_phone, customer_tax_id, customer_address, seller_name, job_name, quotation_no, total_amount, overall_discount, overall_discount_percent, has_vat, wht_rate, status, valid_until, issue_date) 
+      `INSERT INTO quotations
+       (customer_name, department, contact, customer_phone, customer_tax_id, customer_address, seller_name, job_name, quotation_no, total_amount, overall_discount, overall_discount_percent, has_vat, wht_rate, status, valid_until, issue_date)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         customer_name,
@@ -2302,8 +2400,8 @@ app.post('/api/quotations', async (req, res) => {
 
     for (const item of items) {
       await dbQuery.run(
-        `INSERT INTO quotation_items 
-         (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type) 
+        `INSERT INTO quotation_items
+         (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           quotationId,
@@ -2360,7 +2458,7 @@ app.get('/api/quotations/:id', async (req, res) => {
     }
 
     const items = await dbQuery.all(
-      `SELECT qi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name 
+      `SELECT qi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name
        FROM quotation_items qi
        LEFT JOIN rooms r ON qi.room_id = r.id
        LEFT JOIN services s ON qi.service_id = s.id
@@ -2413,7 +2511,7 @@ app.put('/api/quotations/:id', async (req, res) => {
 
   try {
     await dbQuery.run(
-      `UPDATE quotations SET 
+      `UPDATE quotations SET
         customer_name = ?,
         department = ?,
         contact = ?,
@@ -2456,8 +2554,8 @@ app.put('/api/quotations/:id', async (req, res) => {
 
     for (const item of items) {
       await dbQuery.run(
-        `INSERT INTO quotation_items 
-         (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type) 
+        `INSERT INTO quotation_items
+         (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           quotationId,
@@ -2531,8 +2629,8 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
         const normStart = item.start_time ? normalizeToLocalISO(item.start_time) : null;
         const normEnd = item.end_time ? normalizeToLocalISO(item.end_time) : null;
         await dbQuery.run(
-          `INSERT INTO booking_items 
-           (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type) 
+          `INSERT INTO booking_items
+           (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             bookingId,
@@ -2566,7 +2664,7 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
 // ==========================================
 app.get('/api/dashboard/summary', async (req, res) => {
   const { start_date, end_date } = req.query;
-  
+
   if (!start_date || !end_date) {
     return res.status(400).json({ error: 'กรุณาระบุช่วงเวลาวิเคราะห์' });
   }
@@ -2577,23 +2675,23 @@ app.get('/api/dashboard/summary', async (req, res) => {
   try {
     // 1. KPI Summaries
     const summary = await dbQuery.get(
-      `SELECT 
-        SUM(total_amount) as total_revenue, 
+      `SELECT
+        SUM(total_amount) as total_revenue,
         COUNT(id) as total_bookings,
         COUNT(CASE WHEN payment_status = 'paid' THEN 1 END) as paid_bookings,
         COUNT(CASE WHEN payment_status = 'pending' THEN 1 END) as pending_bookings
-       FROM bookings 
+       FROM bookings
        WHERE datetime(created_at) BETWEEN datetime(?) AND datetime(?)`,
       [start, end]
     );
 
     // 2. Sales Trend (Daily or Monthly depending on date range length)
     const trend = await dbQuery.all(
-      `SELECT 
-        strftime('%Y-%m-%d', created_at) as date, 
+      `SELECT
+        strftime('%Y-%m-%d', created_at) as date,
         SUM(total_amount) as revenue,
         COUNT(id) as bookings
-       FROM bookings 
+       FROM bookings
        WHERE datetime(created_at) BETWEEN datetime(?) AND datetime(?)
        GROUP BY date
        ORDER BY date ASC`,
@@ -2602,9 +2700,9 @@ app.get('/api/dashboard/summary', async (req, res) => {
 
     // 3. Room utilization/revenue
     const roomsRev = await dbQuery.all(
-      `SELECT 
-        r.name, 
-        COUNT(bi.id) as booking_count, 
+      `SELECT
+        r.name,
+        COUNT(bi.id) as booking_count,
         SUM(bi.subtotal) as total_revenue
        FROM booking_items bi
        JOIN rooms r ON bi.room_id = r.id
@@ -2617,9 +2715,9 @@ app.get('/api/dashboard/summary', async (req, res) => {
 
     // 4. Service popularity/revenue
     const servicesRev = await dbQuery.all(
-      `SELECT 
-        s.name, 
-        SUM(bi.quantity) as total_quantity, 
+      `SELECT
+        s.name,
+        SUM(bi.quantity) as total_quantity,
         SUM(bi.subtotal) as total_revenue
        FROM booking_items bi
        JOIN services s ON bi.service_id = s.id
@@ -3013,8 +3111,8 @@ app.get('/api/rooms/occupancy', async (req, res) => {
         `SELECT b.id as booking_id, b.customer_name, b.department, b.booking_source, bi.start_time, bi.end_time, b.payment_status
          FROM booking_items bi
          JOIN bookings b ON bi.booking_id = b.id
-         WHERE bi.room_id = ? 
-           AND ? >= bi.start_time 
+         WHERE bi.room_id = ?
+           AND ? >= bi.start_time
            AND ? <= bi.end_time`,
         [room.id, current_time, current_time]
       );
@@ -3157,8 +3255,8 @@ app.delete('/api/roles/:id', async (req, res) => {
 app.get('/api/users', async (req, res) => {
   try {
     const users = await dbQuery.all(`
-      SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname, u.pin_code, u.created_at, r.label as role_label 
-      FROM users u 
+      SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') as permissions, u.fullname, u.pin_code, u.created_at, r.label as role_label
+      FROM users u
       LEFT JOIN roles r ON u.role = r.name
     `);
     res.json(users);
@@ -3202,7 +3300,7 @@ app.put('/api/users/:id', async (req, res) => {
 
     let targetUsername = username;
     let targetRole = role;
-    
+
     // Safety check: protect the main 'admin' account credentials & role integrity
     if (user.username === 'admin') {
       targetUsername = 'admin';
@@ -3344,7 +3442,7 @@ app.post('/api/upload', async (req, res) => {
     if (!matches || matches.length !== 3) {
       return res.status(400).json({ error: 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง' });
     }
-    
+
     const imageBuffer = Buffer.from(matches[2], 'base64');
     // Ensure size is within limits (max 3MB)
     if (imageBuffer.length > 3 * 1024 * 1024) {
@@ -3354,7 +3452,7 @@ app.post('/api/upload', async (req, res) => {
     const fileExtension = matches[1].split('/')[1] || 'png';
     const fileName = `img_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${fileExtension}`;
     const filePath = path.join(uploadsDir, fileName);
-    
+
     fs.writeFileSync(filePath, imageBuffer);
     res.json({ success: true, url: `/uploads/${fileName}` });
   } catch (err) {
@@ -3431,7 +3529,7 @@ function sanitizePublicBookingItem(item) {
 app.get('/api/public/rooms', async (req, res) => {
   try {
     const rooms = await dbQuery.all(
-      `SELECT id, name, capacity, hourly_rate, daily_rate, half_day_rate, 
+      `SELECT id, name, capacity, hourly_rate, daily_rate, half_day_rate,
               has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
               description, image_url, category, has_hourly, has_halfday, has_daily
        FROM rooms WHERE status = 'active'`
@@ -3449,7 +3547,7 @@ app.get('/api/public/rooms/schedule', async (req, res) => {
 
   try {
     const rawRooms = await dbQuery.all(
-      `SELECT id, name, capacity, hourly_rate, daily_rate, half_day_rate, 
+      `SELECT id, name, capacity, hourly_rate, daily_rate, half_day_rate,
               has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
               description, image_url, category, has_hourly, has_halfday, has_daily
        FROM rooms WHERE status = 'active'`
@@ -3516,10 +3614,10 @@ app.get('/api/public/rooms/available', async (req, res) => {
 
     // Get all active rooms with sufficient capacity
     const allRooms = await dbQuery.all(
-      `SELECT id, name, capacity, hourly_rate, daily_rate, half_day_rate, 
+      `SELECT id, name, capacity, hourly_rate, daily_rate, half_day_rate,
               has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity,
               description, image_url, category, has_hourly, has_halfday, has_daily
-       FROM rooms 
+       FROM rooms
        WHERE status = 'active' AND (capacity >= ? OR classroom_capacity >= ?)`,
       [guestCount, guestCount]
     );
@@ -3528,7 +3626,7 @@ app.get('/api/public/rooms/available', async (req, res) => {
     const availableRooms = [];
     for (const room of allRooms) {
       const roomBookings = await dbQuery.all(
-        `SELECT bi.start_time, bi.end_time, b.payment_status 
+        `SELECT bi.start_time, bi.end_time, b.payment_status
          FROM booking_items bi
          JOIN bookings b ON bi.booking_id = b.id
          WHERE bi.room_id = ?
@@ -3540,7 +3638,7 @@ app.get('/api/public/rooms/available', async (req, res) => {
       let isOverlapped = false;
       for (const b of roomBookings) {
         if (!b.start_time || !b.end_time) continue;
-        
+
         // Convert to timestamp with normalized ISO
         const bStartNorm = normalizeToLocalISO(b.start_time);
         const bEndNorm = normalizeToLocalISO(b.end_time);
@@ -3570,8 +3668,8 @@ app.get('/api/public/rooms/available', async (req, res) => {
 
 // Create a public online booking
 app.post('/api/public/bookings', async (req, res) => {
-  const { 
-    customer_name, contact, email, department, note, room_id, booking_date, 
+  const {
+    customer_name, contact, email, department, note, room_id, booking_date,
     start_time, end_time, booking_type, layout, total_amount, line_user_id,
     tax_invoice_required, tax_name, tax_address, tax_id, tax_phone,
     tax_delivery_method, tax_postal_address, guest_count, guests
@@ -3665,15 +3763,15 @@ app.post('/api/public/bookings', async (req, res) => {
       // Insert master booking (with mandatory guest_count, booking_channel = 'line_oa', customer_type = 'general')
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings (
-          customer_name, department, contact, total_amount, payment_status, payment_method, 
+          customer_name, department, contact, total_amount, payment_status, payment_method,
           receipt_number, pin_code, qr_token, booking_source, booking_channel, customer_type, customer_email, checkin_status, line_user_id,
           tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
           guest_count,
           created_at
-        ) 
+        )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          customer_name, department || note || '', contact, subtotal, 'pending', 'transfer', 
+          customer_name, department || note || '', contact, subtotal, 'pending', 'transfer',
           receiptNumber, pinCode, accessToken, 'online', 'line_oa', 'general', email || null, 'pending', line_user_id || null,
           tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
           tax_delivery_method || null, tax_postal_address || null,
@@ -3685,7 +3783,7 @@ app.post('/api/public/bookings', async (req, res) => {
 
       // Insert booking item (with guest_count)
       await dbQuery.run(
-        `INSERT INTO booking_items 
+        `INSERT INTO booking_items
          (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [bookingId, room_id, quantity, price, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode, 'pending']
@@ -3732,7 +3830,7 @@ app.get(['/api/public/bookings/by-phone', '/api/public/bookings/lookup'], async 
 
   try {
     const bookings = await dbQuery.all(
-      `SELECT * FROM bookings 
+      `SELECT * FROM bookings
        WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', ''), '(', ''), ')', '') = ?
        ORDER BY id DESC LIMIT 10`,
       [cleanPhone]
@@ -3761,6 +3859,15 @@ app.get(['/api/public/bookings/by-phone', '/api/public/bookings/lookup'], async 
         b.end_time = items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time;
         b.usage_date = items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : (b.booking_date || b.created_at?.split('T')[0] || b.created_at?.split(' ')[0]);
         b.created_date = b.created_at ? (b.created_at.includes('T') ? b.created_at.replace('T', ' ').substring(0, 19) : b.created_at) : '';
+      }
+      if (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected') {
+        const rejRow = await dbQuery.get(
+          "SELECT rejection_reason FROM slip_verifications WHERE booking_id = ? AND verification_status = 'rejected' ORDER BY id DESC LIMIT 1",
+          [b.id]
+        );
+        b.rejection_reason = rejRow?.rejection_reason || null;
+      } else {
+        b.rejection_reason = null;
       }
     }
 
@@ -3854,11 +3961,21 @@ app.get('/api/public/bookings/:id', async (req, res) => {
       };
     }
 
+    let rejectionReason = null;
+    if (booking.payment_status === 'rejected' || booking.slip_verify_status === 'rejected') {
+      const rejRow = await dbQuery.get(
+        "SELECT rejection_reason FROM slip_verifications WHERE booking_id = ? AND verification_status = 'rejected' ORDER BY id DESC LIMIT 1",
+        [booking.id]
+      );
+      rejectionReason = rejRow?.rejection_reason || null;
+    }
+
     const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
     const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
 
     res.json({
       ...sanitizePublicBooking(booking),
+      rejection_reason: rejectionReason,
       bookingCode,
       items: (items || []).map(sanitizePublicBookingItem),
       room: roomInfo,
@@ -3913,8 +4030,8 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     if (booking.payment_status === 'cancelled') {
       const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
       const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
-      return res.status(400).json({ 
-        error: `รายการจองนี้ถูกยกเลิกแล้ว เนื่องจากเกินกำหนดเวลาชำระเงิน ${paymentWindowMinutes} นาที กรุณาทำรายการจองใหม่` 
+      return res.status(400).json({
+        error: `รายการจองนี้ถูกยกเลิกแล้ว เนื่องจากเกินกำหนดเวลาชำระเงิน ${paymentWindowMinutes} นาที กรุณาทำรายการจองใหม่`
       });
     }
 
@@ -3959,6 +4076,24 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
       });
     }
 
+    // 1B. Prevent customer from re-uploading the same rejected slip for this booking
+    if (verifyResult.transRef) {
+      const prevRejected = await dbQuery.get(
+        "SELECT id FROM slip_verifications WHERE booking_id = ? AND trans_ref = ? AND verification_status = 'rejected' LIMIT 1",
+        [targetBookingId, verifyResult.transRef]
+      );
+      if (prevRejected || (booking.payment_status === 'rejected' && booking.slip_trans_ref === verifyResult.transRef)) {
+        if (fs.existsSync(filePath)) {
+          try { fs.unlinkSync(filePath); } catch (e) {}
+        }
+        return res.status(400).json({
+          success: false,
+          auto_approved: false,
+          error: 'สลิปนี้เคยถูกปฏิเสธแล้ว กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'
+        });
+      }
+    }
+
     // 2. AUTO-APPROVE if valid bank slip and all criteria pass
     if (verifyResult.eligibleForAutoApproval) {
       // Auto-approved! Generate receipt_number and pin_code if not present
@@ -3973,9 +4108,9 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
       }
 
       await commitVerifiedSlip(verifyResult, booking, dbQuery, () => dbQuery.run(
-        `UPDATE bookings 
-         SET slip_image_url = ?, 
-             payment_status = 'paid', 
+        `UPDATE bookings
+         SET slip_image_url = ?,
+             payment_status = 'paid',
              payment_method = 'transfer',
              receipt_number = ?,
              pin_code = ?,
@@ -4047,7 +4182,7 @@ app.post('/api/slip/verify-test', authenticateToken, requireAnyPermission('admin
   try {
     const matches = slip_image.match(/^data:(image\/(png|jpeg|jpg|webp));base64,(.+)$/);
     const imageBuffer = matches ? Buffer.from(matches[3], 'base64') : Buffer.from(slip_image, 'base64');
-    
+
     const mockBooking = {
       id: 999999,
       total_amount: expected_amount ? parseFloat(expected_amount) : 0
@@ -4371,7 +4506,7 @@ function buildLineBookingCancelledFlex(booking, roomName, reason) {
         contents: [
           {
             type: 'text',
-            text: isAutoTimeout 
+            text: isAutoTimeout
               ? 'ขออภัยค่ะ รายการจองของท่านถูกยกเลิกอัตโนมัติ เนื่องจากไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)'
               : `ขออภัยค่ะ รายการจองของท่านได้ถูกยกเลิกเรียบร้อยแล้ว (${cancelReason})`,
             size: 'sm',
@@ -4445,17 +4580,17 @@ async function checkAndCancelExpiredBookings() {
 
       if (now - createdAtTime >= paymentWindowMs) {
         console.log(`[Auto-Cancel] Booking #${b.id} (${b.receipt_number || b.id}) expired after ${paymentWindowMinutes} minutes. Cancelling...`);
-        
+
         await dbQuery.run(`
-          UPDATE bookings 
-          SET payment_status = 'cancelled', 
+          UPDATE bookings
+          SET payment_status = 'cancelled',
               checkin_status = 'cancelled',
               cancellation_reason = ?
           WHERE id = ?
         `, [cancelReasonMsg, b.id]);
 
         await dbQuery.run(`
-          UPDATE booking_items 
+          UPDATE booking_items
           SET checkin_status = 'cancelled'
           WHERE booking_id = ?
         `, [b.id]);

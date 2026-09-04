@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, AlertCircle, ArrowLeft, Upload, CheckCircle2, Clock, Calendar, XCircle } from 'lucide-react';
+import { Search, AlertCircle, ArrowLeft, Upload, CheckCircle2, Clock, XCircle } from 'lucide-react';
 import { API_BASE } from '../apiConfig';
 
 const THAI_MONTHS = [
@@ -70,17 +70,36 @@ export default function StatusPage() {
     fetchBookingsByPhone(phone);
   };
 
-  const getStatusBadge = (status, hasSlip, slipVerifyStatus) => {
+  const getStatusBadge = (status, hasSlip) => {
     const s = String(status || '').toLowerCase();
+    if (s === 'rejected') {
+      return (
+        <span style={{
+          backgroundColor: 'rgba(245, 158, 11, 0.12)',
+          color: '#d97706',
+          padding: '5px 12px',
+          borderRadius: '20px',
+          fontSize: '0.76rem',
+          fontWeight: 800,
+          border: '1px solid rgba(245, 158, 11, 0.3)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '4px'
+        }}>
+          <AlertCircle size={13} />
+          <span>สลิปไม่ผ่าน (กรุณาแนบใหม่)</span>
+        </span>
+      );
+    }
     if (s === 'paid') {
       return (
-        <span style={{ 
-          backgroundColor: 'rgba(16, 185, 129, 0.12)', 
-          color: '#059669', 
-          padding: '5px 12px', 
-          borderRadius: '20px', 
-          fontSize: '0.76rem', 
-          fontWeight: 800, 
+        <span style={{
+          backgroundColor: 'rgba(16, 185, 129, 0.12)',
+          color: '#059669',
+          padding: '5px 12px',
+          borderRadius: '20px',
+          fontSize: '0.76rem',
+          fontWeight: 800,
           border: '1px solid rgba(16, 185, 129, 0.3)',
           display: 'inline-flex',
           alignItems: 'center',
@@ -93,13 +112,13 @@ export default function StatusPage() {
     }
     if (s === 'reviewing' || (hasSlip && s !== 'paid' && s !== 'cancelled')) {
       return (
-        <span style={{ 
-          backgroundColor: 'rgba(14, 165, 233, 0.12)', 
-          color: '#0284c7', 
-          padding: '5px 12px', 
-          borderRadius: '20px', 
-          fontSize: '0.76rem', 
-          fontWeight: 800, 
+        <span style={{
+          backgroundColor: 'rgba(14, 165, 233, 0.12)',
+          color: '#0284c7',
+          padding: '5px 12px',
+          borderRadius: '20px',
+          fontSize: '0.76rem',
+          fontWeight: 800,
           border: '1px solid rgba(14, 165, 233, 0.3)',
           display: 'inline-flex',
           alignItems: 'center',
@@ -112,13 +131,13 @@ export default function StatusPage() {
     }
     if (s === 'cancelled') {
       return (
-        <span style={{ 
-          backgroundColor: 'rgba(239, 68, 68, 0.12)', 
-          color: '#ef4444', 
-          padding: '5px 12px', 
-          borderRadius: '20px', 
-          fontSize: '0.76rem', 
-          fontWeight: 800, 
+        <span style={{
+          backgroundColor: 'rgba(239, 68, 68, 0.12)',
+          color: '#ef4444',
+          padding: '5px 12px',
+          borderRadius: '20px',
+          fontSize: '0.76rem',
+          fontWeight: 800,
           border: '1px solid rgba(239, 68, 68, 0.3)',
           display: 'inline-flex',
           alignItems: 'center',
@@ -130,13 +149,13 @@ export default function StatusPage() {
       );
     }
     return (
-      <span style={{ 
-        backgroundColor: 'rgba(245, 158, 11, 0.12)', 
-        color: '#d97706', 
-        padding: '5px 12px', 
-        borderRadius: '20px', 
-        fontSize: '0.76rem', 
-        fontWeight: 800, 
+      <span style={{
+        backgroundColor: 'rgba(245, 158, 11, 0.12)',
+        color: '#d97706',
+        padding: '5px 12px',
+        borderRadius: '20px',
+        fontSize: '0.76rem',
+        fontWeight: 800,
         border: '1px solid rgba(245, 158, 11, 0.3)',
         display: 'inline-flex',
         alignItems: 'center',
@@ -229,7 +248,8 @@ export default function StatusPage() {
             const bookingCode = item.receipt_number || item.bookingCode || `BK-${String(item.id).padStart(6, '0')}`;
             const isPaid = item.payment_status === 'paid';
             const isCancelled = item.payment_status === 'cancelled';
-            const isPending = !isPaid && !isCancelled && (item.payment_status === 'pending' || item.payment_status === 'unpaid' || !item.payment_status);
+            const isRejected = item.payment_status === 'rejected';
+            const isPending = !isPaid && !isCancelled && !isRejected && (item.payment_status === 'pending' || item.payment_status === 'unpaid' || !item.payment_status);
 
             const usageDateStr = item.usage_date || (item.items && item.items[0]?.start_time?.split('T')[0]) || item.created_at?.split(' ')[0];
             const startTimeStr = item.start_time || (item.items && item.items[0]?.start_time?.includes('T') ? item.items[0].start_time.split('T')[1].substring(0, 5) : '08:00');
@@ -237,12 +257,12 @@ export default function StatusPage() {
             const createdDateStr = item.created_date || item.created_at;
 
             return (
-              <div 
-                key={item.id} 
+              <div
+                key={item.id}
                 className="booking-card"
                 style={{
                   padding: '20px',
-                  borderLeft: `5px solid ${isPaid ? '#10b981' : isCancelled ? '#ef4444' : isPending ? '#f59e0b' : '#0284c7'}`
+                  borderLeft: `5px solid ${isPaid ? '#10b981' : isCancelled ? '#ef4444' : isRejected ? '#d97706' : isPending ? '#f59e0b' : '#0284c7'}`
                 }}
               >
                 {/* Header */}
@@ -255,12 +275,12 @@ export default function StatusPage() {
                       ({item.room_name || (item.items && item.items[0]?.room_name) || 'ห้องประชุม'})
                     </span>
                   </div>
-                  {getStatusBadge(item.payment_status, !!item.slip_image_url, item.slip_verify_status)}
+                  {getStatusBadge(item.payment_status, Boolean(item.has_slip))}
                 </div>
 
                 {/* Details Grid */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
-                  
+
                   {/* วันที่เข้าใช้งาน */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span style={{ minWidth: '100px', color: '#64748b' }}>วันที่เข้าใช้งาน:</span>
@@ -322,11 +342,14 @@ export default function StatusPage() {
                 )}
 
                 {/* Action to go to payment if pending */}
-                {isPending && !item.slip_image_url && (
+                {isPending && !item.has_slip && (
                   <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'flex-end' }}>
                     <button
                       type="button"
-                      onClick={() => navigate(`/confirm?id=${item.id}&code=${encodeURIComponent(bookingCode)}`)}
+                      onClick={() => {
+                        sessionStorage.setItem(`bwork_booking_access_${item.id}`, JSON.stringify({ contact: phone }));
+                        navigate(`/confirm?id=${item.id}&code=${encodeURIComponent(bookingCode)}`);
+                      }}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -345,6 +368,52 @@ export default function StatusPage() {
                       <Upload size={14} />
                       <span>แนบสลิปชำระเงิน</span>
                     </button>
+                  </div>
+                )}
+
+                {/* Action to re-upload if rejected */}
+                {isRejected && (
+                  <div style={{ marginTop: '14px' }}>
+                    <div style={{
+                      backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                      border: '1px solid rgba(245, 158, 11, 0.3)',
+                      borderRadius: '10px',
+                      padding: '10px 14px',
+                      fontSize: '0.82rem',
+                      color: '#b45309',
+                      marginBottom: '10px'
+                    }}>
+                      <strong>สลิปการโอนเงินไม่ผ่านการตรวจสอบ:</strong>
+                      <div style={{ marginTop: '2px', color: '#92400e' }}>
+                        {item.rejection_reason || 'กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          sessionStorage.setItem(`bwork_booking_access_${item.id}`, JSON.stringify({ contact: phone }));
+                          navigate(`/confirm?id=${item.id}&code=${encodeURIComponent(bookingCode)}`);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '8px 16px',
+                          borderRadius: '8px',
+                          backgroundColor: '#d97706',
+                          color: '#ffffff',
+                          border: 'none',
+                          fontSize: '0.82rem',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          boxShadow: '0 2px 6px rgba(217, 119, 6, 0.3)'
+                        }}
+                      >
+                        <Upload size={14} />
+                        <span>แนบสลิปใหม่</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

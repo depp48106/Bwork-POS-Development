@@ -67,7 +67,7 @@ async function verifyToken(token) {
       false,
       ['verify']
     );
-    
+
     let sigStr = signature.replace(/-/g, '+').replace(/_/g, '/');
     while (sigStr.length % 4) sigStr += '=';
     const sigBinary = atob(sigStr);
@@ -425,7 +425,7 @@ function parseThaiBankSlipQR(qrString) {
     if (root['00'] === '01') {
       const isStaticPaymentQR = root['01'] === '11';
       const hasMerchantInfo = !!(root['59'] || root['60'] || root['52']);
-      
+
       if (isStaticPaymentQR || hasMerchantInfo) {
         return {
           isValidSlipQR: false,
@@ -483,7 +483,7 @@ function buildLineBookingConfirmationFlex(booking, item, room) {
   const customerName = booking.customer_name || 'ลูกค้าคนพิเศษ';
   const roomName = room?.name || 'ห้องประชุม B-WORK';
   const receiptNo = booking.receipt_number || `BK-${String(booking.id).padStart(6, '0')}`;
-  
+
   let dateDisplay = '-';
   let timeDisplay = '-';
   if (item?.start_time) {
@@ -636,7 +636,7 @@ function buildLineDoorPinFlex(booking, item, room) {
   const customerName = booking.customer_name || 'ลูกค้าคนพิเศษ';
   const roomName = room?.name || 'ห้องประชุม B-WORK';
   const pinCode = booking.pin_code || '------';
-  
+
   let timeDisplay = '-';
   if (item?.start_time) {
     const sStr = String(item.start_time).replace(' ', 'T');
@@ -1284,8 +1284,8 @@ export default {
             }
           }
           if (safeUser.permissions === null || safeUser.permissions === undefined) {
-            safeUser.permissions = safeUser.role === 'admin' 
-              ? 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation' 
+            safeUser.permissions = safeUser.role === 'admin'
+              ? 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation'
               : 'pos,pending,layout,manage,history,quotations';
           }
           const token = await createToken({ id: safeUser.id, username: safeUser.username, role: safeUser.role, permissions: safeUser.permissions, fullname: safeUser.fullname });
@@ -1310,8 +1310,8 @@ export default {
             }
           }
           if (safeUser.permissions === null || safeUser.permissions === undefined) {
-            safeUser.permissions = safeUser.role === 'admin' 
-              ? 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation' 
+            safeUser.permissions = safeUser.role === 'admin'
+              ? 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation'
               : 'pos,pending,layout,manage,history,quotations';
           }
           const token = await createToken({ id: safeUser.id, username: safeUser.username, role: safeUser.role, permissions: safeUser.permissions, fullname: safeUser.fullname });
@@ -1444,9 +1444,9 @@ export default {
               SELECT bi.*, b.customer_name, b.payment_status, b.pin_code
               FROM booking_items bi
               JOIN bookings b ON bi.booking_id = b.id
-              WHERE bi.room_id = ? 
-                AND bi.start_time <= ? 
-                AND bi.end_time > ? 
+              WHERE bi.room_id = ?
+                AND bi.start_time <= ?
+                AND bi.end_time > ?
                 AND b.payment_status != 'cancelled'
               LIMIT 1
             `).bind(room.id, current_time, current_time).first();
@@ -1592,7 +1592,7 @@ export default {
       if (pathname === '/api/public/rooms/schedule') {
         const date = url.searchParams.get('date');
         const { results: rooms } = await env.DB.prepare("SELECT * FROM rooms WHERE status = 'active' ORDER BY name ASC").all();
-        
+
         let query = `
           SELECT bi.*, b.customer_name, b.payment_status
           FROM booking_items bi
@@ -1656,7 +1656,7 @@ export default {
 
         // Current time in Bangkok timezone (UTC+7)
         const bangkokNow = new Date(Date.now() + 7 * 3600 * 1000);
-        
+
         // Window: strictly starting soon (from 2 mins ago up to alertMinutes into the future)
         const startWindow = new Date(bangkokNow.getTime() - 2 * 60 * 1000);
         const endWindow = new Date(bangkokNow.getTime() + alertMinutes * 60 * 1000);
@@ -1682,7 +1682,7 @@ export default {
           FROM booking_items bi
           JOIN bookings b ON bi.booking_id = b.id
           LEFT JOIN rooms r ON bi.room_id = r.id
-          WHERE bi.room_id IS NOT NULL 
+          WHERE bi.room_id IS NOT NULL
             AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')
             AND bi.start_time >= ?
             AND bi.start_time <= ?
@@ -1698,7 +1698,7 @@ export default {
           FROM booking_items bi
           JOIN bookings b ON bi.booking_id = b.id
           LEFT JOIN rooms r ON bi.room_id = r.id
-          WHERE bi.room_id IS NOT NULL 
+          WHERE bi.room_id IS NOT NULL
             AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')
             AND bi.start_time LIKE ?
           ORDER BY bi.start_time ASC LIMIT 30
@@ -1706,7 +1706,7 @@ export default {
 
         // 3. Incoming LINE OA / Online bookings (pending or reviewing)
         const { results: incomingList } = await env.DB.prepare(`
-          SELECT b.id as booking_id, b.customer_name, b.total_amount, b.payment_status, b.created_at, b.booking_source, 
+          SELECT b.id as booking_id, b.customer_name, b.total_amount, b.payment_status, b.created_at, b.booking_source,
                  (CASE WHEN b.slip_image_url IS NOT NULL AND b.slip_image_url != '' THEN 'uploaded' ELSE NULL END) as slip_image_url,
                  r.name as room_name, bi.start_time, bi.end_time
           FROM bookings b
@@ -1731,7 +1731,7 @@ export default {
       // ----------------------------------------------------
       // 4. POS BOOKINGS (STAFF SIDE - REQUIRES AUTH)
       // ----------------------------------------------------
-      
+
       // ----------------------------------------------------
       // BASECAMP QUOTA HUB ENDPOINTS
       // ----------------------------------------------------
@@ -1754,8 +1754,8 @@ export default {
                AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
                AND (
                  EXISTS (
-                   SELECT 1 FROM booking_items bi 
-                   WHERE bi.booking_id = b.id 
+                   SELECT 1 FROM booking_items bi
+                   WHERE bi.booking_id = b.id
                      AND strftime('%Y-%m', bi.start_time) = ?
                  )
                  OR (
@@ -1805,8 +1805,8 @@ export default {
                AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
                AND (
                  EXISTS (
-                   SELECT 1 FROM booking_items bi 
-                   WHERE bi.booking_id = b.id 
+                   SELECT 1 FROM booking_items bi
+                   WHERE bi.booking_id = b.id
                      AND strftime('%Y-%m', bi.start_time) = ?
                  )
                  OR (
@@ -1974,7 +1974,7 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         const body = await request.json();
-        const { 
+        const {
           customer_name, department, contact, payment_status, payment_method, items, line_user_id, booking_source,
           customer_type = 'walkin',
           basecamp_sub_type = null,
@@ -2059,8 +2059,8 @@ export default {
                  AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
                  AND (
                    EXISTS (
-                     SELECT 1 FROM booking_items bi 
-                     WHERE bi.booking_id = b.id 
+                     SELECT 1 FROM booking_items bi
+                     WHERE bi.booking_id = b.id
                        AND strftime('%Y-%m', bi.start_time) = ?
                    )
                    OR (
@@ -2111,8 +2111,8 @@ export default {
           : (items.find(it => it.guest_count)?.guest_count ? parseInt(items.find(it => it.guest_count).guest_count, 10) : null);
 
         const nowIso = new Date().toISOString();
-        const effectivePaymentStatus = customer_type === 'builtland' 
-          ? 'internal_free' 
+        const effectivePaymentStatus = customer_type === 'builtland'
+          ? 'internal_free'
           : (verifiedTotal === 0 ? 'paid' : (payment_status || 'pending'));
 
         let insBooking;
@@ -2121,16 +2121,16 @@ export default {
             `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
-            customer_name, 
-            department || internal_department || '', 
-            contact || '', 
-            verifiedTotal, 
-            effectivePaymentStatus, 
-            payment_method || 'cash', 
-            receiptNumber, 
-            pinCode, 
-            booking_source || 'walkin', 
-            line_user_id || null, 
+            customer_name,
+            department || internal_department || '',
+            contact || '',
+            verifiedTotal,
+            effectivePaymentStatus,
+            payment_method || 'cash',
+            receiptNumber,
+            pinCode,
+            booking_source || 'walkin',
+            line_user_id || null,
             effectiveGuestCount,
             customer_type || 'walkin',
             basecamp_sub_type || null,
@@ -2231,8 +2231,8 @@ export default {
         }
 
         if (booking.payment_status === 'cancelled' || booking.payment_status === 'rejected') {
-          return new Response(JSON.stringify({ 
-            error: 'ไม่สามารถส่ง PIN ได้ เนื่องจากรายการจองนี้ถูกยกเลิกหรือปฏิเสธแล้ว' 
+          return new Response(JSON.stringify({
+            error: 'ไม่สามารถส่ง PIN ได้ เนื่องจากรายการจองนี้ถูกยกเลิกหรือปฏิเสธแล้ว'
           }), { status: 400, headers: corsHeaders });
         }
 
@@ -2246,28 +2246,131 @@ export default {
         if (booking.line_user_id) {
           const res = await sendLineDoorPin(env, bookingId);
           if (res && res.success) {
-            return new Response(JSON.stringify({ 
-              success: true, 
-              line_sent: true, 
-              pin_code: pinCode, 
-              message: 'ส่งรหัสผ่านเข้าห้องไปยัง LINE OA ของลูกค้าเรียบร้อยแล้ว' 
+            return new Response(JSON.stringify({
+              success: true,
+              line_sent: true,
+              pin_code: pinCode,
+              message: 'ส่งรหัสผ่านเข้าห้องไปยัง LINE OA ของลูกค้าเรียบร้อยแล้ว'
             }), { headers: corsHeaders });
           } else {
-            return new Response(JSON.stringify({ 
-              success: false, 
-              line_sent: false, 
-              pin_code: pinCode, 
-              error: 'เกิดข้อผิดพลาดในการเชื่อมต่อ LINE API' 
+            return new Response(JSON.stringify({
+              success: false,
+              line_sent: false,
+              pin_code: pinCode,
+              error: 'เกิดข้อผิดพลาดในการเชื่อมต่อ LINE API'
             }), { status: 500, headers: corsHeaders });
           }
         } else {
-          return new Response(JSON.stringify({ 
-            success: true, 
-            line_sent: false, 
-            pin_code: pinCode, 
-            message: 'ลูกค้ารายนี้ไม่ได้เชื่อมต่อ LINE OA (จองผ่านหน้าเว็บทั่วไป)' 
+          return new Response(JSON.stringify({
+            success: true,
+            line_sent: false,
+            pin_code: pinCode,
+            message: 'ลูกค้ารายนี้ไม่ได้เชื่อมต่อ LINE OA (จองผ่านหน้าเว็บทั่วไป)'
           }), { headers: corsHeaders });
         }
+      }
+
+      // Reason code mapping for slip rejection
+      const REJECT_REASON_MAP = {
+        AMOUNT_MISMATCH: 'ยอดเงินไม่ตรงกับยอดที่ต้องชำระ',
+        WRONG_RECEIVER: 'บัญชีผู้รับเงินไม่ถูกต้อง',
+        UNREADABLE_SLIP: 'รูปภาพสลิปไม่ชัดเจนหรือข้อมูลไม่ครบถ้วน',
+        DUPLICATE_SLIP: 'สลิปซ้ำหรือเคยใช้งานแล้วในระบบ',
+        INVALID_DATETIME: 'วันที่หรือเวลาในการโอนไม่ถูกต้อง',
+        NOT_BANK_SLIP: 'ไม่ใช่สลิปการโอนเงินของธนาคาร',
+        OTHER: 'อื่นๆ'
+      };
+
+      // Dedicated Reject Slip endpoint (Staff rejects slip, preserves booking & room block)
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/reject-slip') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = parts[3];
+        const body = await request.json().catch(() => ({}));
+        const { reason_code, custom_note } = body;
+
+        // Reason code validation
+        if (!reason_code || !REJECT_REASON_MAP[reason_code]) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุรหัสเหตุผลการปฏิเสธสลิปที่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        let displayReason = REJECT_REASON_MAP[reason_code];
+        const sanitizedNote = custom_note
+          ? String(custom_note).trim().replace(/[<>'"&]/g, '').replace(/[\x00-\x1F\x7F]/g, '').substring(0, 150)
+          : '';
+
+        if (reason_code === 'OTHER') {
+          if (!sanitizedNote) {
+            return new Response(JSON.stringify({ error: 'กรณีเลือกอื่นๆ กรุณาระบุรายละเอียดเหตุผลเพิ่มเติม (ไม่เกิน 150 ตัวอักษร)' }), { status: 400, headers: corsHeaders });
+          }
+          displayReason = sanitizedNote;
+        } else if (sanitizedNote) {
+          displayReason = `${displayReason} (${sanitizedNote})`;
+        }
+
+        // Fetch booking to verify current state
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        // Precondition: current payment_status must be 'reviewing' only
+        if (booking.payment_status !== 'reviewing') {
+          return new Response(JSON.stringify({
+            error: `ไม่สามารถปฏิเสธสลิปได้เนื่องจากรายการจองอยู่ในสถานะ '${booking.payment_status}' (อนุญาตเฉพาะสถานะรอตรวจสอบ 'reviewing' เท่านั้น)`
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        // Atomic conditional update
+        const updateResult = await env.DB.prepare(`
+          UPDATE bookings
+          SET payment_status = 'rejected',
+              slip_verify_status = 'rejected'
+          WHERE id = ? AND payment_status = 'reviewing'
+        `).bind(bookingId).run();
+
+        if (updateResult.meta?.changes !== 1) {
+          return new Response(JSON.stringify({
+            error: 'สถานะรายการจองถูกเปลี่ยนแปลงไปแล้ว ไม่สามารถดำเนินการได้'
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        // Audit: Update latest slip_verifications row for this booking
+        try {
+          const latestSv = await env.DB.prepare(
+            'SELECT id FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1'
+          ).bind(bookingId).first();
+
+          if (latestSv) {
+            await env.DB.prepare(`
+              UPDATE slip_verifications
+              SET verification_status = 'rejected',
+                  rejection_reason = ?
+              WHERE id = ?
+            `).bind(displayReason, latestSv.id).run();
+          } else {
+            const nowIso = new Date().toISOString();
+            await env.DB.prepare(`
+              INSERT INTO slip_verifications (
+                booking_id, trans_ref, bank_code, bank_name, slip_image_url,
+                is_auto_approved, confidence_score, raw_qr_data, verification_status,
+                rejection_reason, created_at
+              ) VALUES (?, ?, '000', 'ธนาคาร', ?, 0, 0, '', 'rejected', ?, ?)
+            `).bind(bookingId, booking.slip_trans_ref || `REJ_${bookingId}_${Date.now()}`, booking.slip_image_url || 'uploaded', displayReason, nowIso).run();
+          }
+        } catch (svErr) {
+          console.error('Audit update error on slip rejection:', svErr);
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'ปฏิเสธสลิปการโอนเงินเรียบร้อยแล้ว (การจองยังคงอยู่เพื่อให้ลูกค้าแนบสลิปใหม่)',
+          payment_status: 'rejected',
+          slip_verify_status: 'rejected',
+          rejection_reason: displayReason
+        }), { headers: corsHeaders });
       }
 
       // Payment status update -> Staff manual approval / rejection endpoint
@@ -2299,8 +2402,8 @@ export default {
           }
 
           await env.DB.prepare(`
-            UPDATE bookings 
-            SET payment_status = 'paid', 
+            UPDATE bookings
+            SET payment_status = 'paid',
                 payment_method = ?,
                 receipt_number = ?,
                 pin_code = ?,
@@ -2312,7 +2415,7 @@ export default {
           // Update slip_verifications record
           try {
             await env.DB.prepare(`
-              UPDATE slip_verifications 
+              UPDATE slip_verifications
               SET verification_status = 'approved',
                   is_auto_approved = 0,
                   confidence_score = 100
@@ -2327,40 +2430,59 @@ export default {
             } catch (lineErr) {}
           }
 
-          return new Response(JSON.stringify({ 
-            success: true, 
+          return new Response(JSON.stringify({
+            success: true,
             message: 'อนุมัติการชำระเงินสำเร็จ' + (lineData?.success ? ' และส่งการแจ้งเตือนยืนยันการจองผ่าน LINE OA แล้ว' : ''),
             receiptNumber,
             pinCode,
             line_notification_sent: lineData?.success || false
           }), { headers: corsHeaders });
         } else if (paymentStatus === 'rejected') {
-          await env.DB.prepare(`
-            UPDATE bookings 
-            SET payment_status = 'rejected', 
-                slip_verify_status = 'rejected_by_staff' 
-            WHERE id = ?
+          // Precondition: current payment_status must be 'reviewing' only
+          if (booking.payment_status !== 'reviewing') {
+            return new Response(JSON.stringify({
+              error: `ไม่สามารถปฏิเสธสลิปได้เนื่องจากรายการจองอยู่ในสถานะ '${booking.payment_status}' (อนุญาตเฉพาะสถานะรอตรวจสอบ 'reviewing' เท่านั้น)`
+            }), { status: 409, headers: corsHeaders });
+          }
+
+          const updateResult = await env.DB.prepare(`
+            UPDATE bookings
+            SET payment_status = 'rejected',
+                slip_verify_status = 'rejected'
+            WHERE id = ? AND payment_status = 'reviewing'
           `).bind(bookingId).run();
 
+          if (updateResult.meta?.changes !== 1) {
+            return new Response(JSON.stringify({
+              error: 'สถานะรายการจองถูกเปลี่ยนแปลงไปแล้ว ไม่สามารถดำเนินการได้'
+            }), { status: 409, headers: corsHeaders });
+          }
+
+          const fallbackReason = body.reason || 'เจ้าหน้าที่ตรวจสอบแล้วพบว่าสลิปไม่ถูกต้อง';
           try {
-            await env.DB.prepare(`
-              UPDATE slip_verifications 
-              SET verification_status = 'rejected',
-                  rejection_reason = 'เจ้าหน้าที่ตรวจสอบแล้วพบว่าสลิปไม่ถูกต้อง'
-              WHERE booking_id = ?
-            `).bind(bookingId).run();
+            const latestSv = await env.DB.prepare(
+              'SELECT id FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1'
+            ).bind(bookingId).first();
+            if (latestSv) {
+              await env.DB.prepare(`
+                UPDATE slip_verifications
+                SET verification_status = 'rejected',
+                    rejection_reason = ?
+                WHERE id = ?
+              `).bind(fallbackReason, latestSv.id).run();
+            }
           } catch (svErr) {}
 
-          return new Response(JSON.stringify({ 
-            success: true, 
-            message: 'ปฏิเสธการชำระเงินเรียบร้อยแล้ว'
+          return new Response(JSON.stringify({
+            success: true,
+            message: 'ปฏิเสธสลิปการโอนเงินเรียบร้อยแล้ว (การจองยังคงอยู่เพื่อให้ลูกค้าแนบสลิปใหม่)'
           }), { headers: corsHeaders });
         } else {
           await env.DB.prepare('UPDATE bookings SET payment_status = ?, payment_method = ? WHERE id = ?')
             .bind(paymentStatus, paymentMethod, bookingId).run();
 
-          return new Response(JSON.stringify({ 
-            success: true, 
+          return new Response(JSON.stringify({
+            success: true,
             message: 'อัปเดตสถานะการชำระเงินสำเร็จ'
           }), { headers: corsHeaders });
         }
@@ -2380,10 +2502,10 @@ export default {
         if (!booking) return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
 
         await env.DB.prepare("UPDATE bookings SET payment_status = 'cancelled' WHERE id = ?").bind(bookingId).run();
-        
+
         try {
           await env.DB.prepare(`
-            UPDATE slip_verifications 
+            UPDATE slip_verifications
             SET verification_status = 'rejected',
                 rejection_reason = ?
             WHERE booking_id = ?
@@ -2395,8 +2517,8 @@ export default {
           lineData = await sendLineBookingCancellation(env, bookingId, reason);
         }
 
-        return new Response(JSON.stringify({ 
-          success: true, 
+        return new Response(JSON.stringify({
+          success: true,
           message: 'ยกเลิกการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
           line_sent: lineData?.success || false
         }), { headers: corsHeaders });
@@ -2473,8 +2595,8 @@ export default {
           lineData = await sendLineBookingReschedule(env, bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount);
         }
 
-        return new Response(JSON.stringify({ 
-          success: true, 
+        return new Response(JSON.stringify({
+          success: true,
           message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
           line_sent: lineData?.success || false
         }), { headers: corsHeaders });
@@ -2625,6 +2747,20 @@ export default {
         }
 
         // 2. ANTI-FRAUD: Check duplicate slip by transRef
+        // 2A. Prevent customer from re-uploading the same rejected slip for this booking
+        const rejectedOnSameBooking = await env.DB.prepare(
+          "SELECT id FROM slip_verifications WHERE booking_id = ? AND trans_ref = ? AND verification_status = 'rejected' LIMIT 1"
+        ).bind(booking.id, parsedQR.transRef).first();
+
+        if (rejectedOnSameBooking || (booking.payment_status === 'rejected' && booking.slip_trans_ref === parsedQR.transRef)) {
+          return new Response(JSON.stringify({
+            success: false,
+            auto_approved: false,
+            error: 'สลิปนี้เคยถูกปฏิเสธแล้ว กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        // 2B. Check duplicate across other bookings
         const duplicate = await env.DB.prepare(
           'SELECT id, receipt_number FROM bookings WHERE slip_trans_ref = ? AND id != ?'
         ).bind(parsedQR.transRef, booking.id).first();
@@ -2644,9 +2780,9 @@ export default {
           savedSlipUrl = savedSlipUrl.substring(0, 650000);
         }
         const updated = await env.DB.prepare(`
-          UPDATE bookings 
-          SET slip_image_url = ?, 
-              payment_status = 'reviewing', 
+          UPDATE bookings
+          SET slip_image_url = ?,
+              payment_status = 'reviewing',
               slip_trans_ref = ?,
               slip_verified_at = NULL,
               slip_verify_status = 'pending_manual'
@@ -2702,9 +2838,9 @@ export default {
 
         const cleanPhone = String(phone).replace(/\D/g, '');
         const { results: bookings } = await env.DB.prepare(
-          `SELECT * FROM bookings 
-           WHERE (REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', '') = ? 
-              OR contact = ? 
+          `SELECT * FROM bookings
+           WHERE (REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', '') = ?
+              OR contact = ?
               OR contact LIKE ?)
            ORDER BY id DESC LIMIT 10`
         ).bind(cleanPhone, phone, `%${cleanPhone}%`).all();
@@ -2729,7 +2865,7 @@ export default {
           itemsMap[it.booking_id].push(it);
         });
 
-        bookings.forEach(b => {
+        for (const b of bookings) {
           const bItems = itemsMap[b.id] || [];
           b.items = bItems;
           b.bookingCode = `BK-${String(b.id).padStart(6, '0')}`;
@@ -2739,7 +2875,15 @@ export default {
             b.end_time = bItems[0].end_time?.includes('T') ? bItems[0].end_time.split('T')[1].substring(0, 5) : bItems[0].end_time;
             b.booking_date = bItems[0].start_time?.includes('T') ? bItems[0].start_time.split('T')[0] : b.created_at?.split('T')[0];
           }
-        });
+          if (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected') {
+            const rejRow = await env.DB.prepare(
+              "SELECT rejection_reason FROM slip_verifications WHERE booking_id = ? AND verification_status = 'rejected' ORDER BY id DESC LIMIT 1"
+            ).bind(b.id).first();
+            b.rejection_reason = rejRow?.rejection_reason || null;
+          } else {
+            b.rejection_reason = null;
+          }
+        }
 
         return new Response(JSON.stringify({ success: true, bookings }), { headers: corsHeaders });
       }
@@ -2790,8 +2934,8 @@ export default {
         if (contact) {
           const cleanContact = String(contact).replace(/\D/g, '');
           booking = await env.DB.prepare(
-            `SELECT * FROM bookings 
-             WHERE (id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)) 
+            `SELECT * FROM bookings
+             WHERE (id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?))
                AND (REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', '') = ? OR contact = ?)`
           ).bind(bookingId, idParam, idParam, cleanContact, contact).first();
         } else {
@@ -2823,11 +2967,20 @@ export default {
           };
         }
 
+        let rejectionReason = null;
+        if (booking.payment_status === 'rejected' || booking.slip_verify_status === 'rejected') {
+          const rejRow = await env.DB.prepare(
+            "SELECT rejection_reason FROM slip_verifications WHERE booking_id = ? AND verification_status = 'rejected' ORDER BY id DESC LIMIT 1"
+          ).bind(booking.id).first();
+          rejectionReason = rejRow?.rejection_reason || null;
+        }
+
         const pwRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'payment_window_minutes'").first();
         const windowMins = Math.max(1, parseInt(pwRow?.value || '15', 10) || 15);
 
         return new Response(JSON.stringify({
           ...booking,
+          rejection_reason: rejectionReason,
           bookingCode,
           items: items || [],
           room: roomInfo,
@@ -2841,8 +2994,8 @@ export default {
 
       if (pathname === '/api/public/bookings' && method === 'POST') {
         const body = await request.json();
-        const { 
-          customer_name, contact, email, department, note, room_id, booking_date, 
+        const {
+          customer_name, contact, email, department, note, room_id, booking_date,
           start_time, end_time, booking_type, layout, total_amount, line_user_id,
           tax_invoice_required, tax_name, tax_address, tax_id, tax_phone,
           tax_delivery_method, tax_postal_address, guest_count, guests
@@ -2913,7 +3066,7 @@ export default {
         try {
           insBooking = await env.DB.prepare(
             `INSERT INTO bookings (
-               customer_name, department, contact, total_amount, payment_status, payment_method, 
+               customer_name, department, contact, total_amount, payment_status, payment_method,
                receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
                tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
                guest_count,
@@ -2921,10 +3074,10 @@ export default {
              )
              VALUES (?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
-            customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode, 
-            email || null, line_user_id || null, 
-            tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null, 
-            tax_delivery_method || null, tax_postal_address || null, 
+            customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode,
+            email || null, line_user_id || null,
+            tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
+            tax_delivery_method || null, tax_postal_address || null,
             parsedGuests,
             nowIso
           ).run();
@@ -2932,14 +3085,14 @@ export default {
           console.warn('Extended booking insert failed, falling back to core schema:', dbErr);
           insBooking = await env.DB.prepare(
             `INSERT INTO bookings (
-               customer_name, department, contact, total_amount, payment_status, payment_method, 
+               customer_name, department, contact, total_amount, payment_status, payment_method,
                receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
                created_at
              )
              VALUES (?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?)`
           ).bind(
-            customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode, 
-            email || null, line_user_id || null, 
+            customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode,
+            email || null, line_user_id || null,
             nowIso
           ).run();
         }
@@ -3007,13 +3160,13 @@ export default {
           const ins = await env.DB.prepare(
             "INSERT INTO quotations (customer_name, department, contact, total_amount, status, quotation_no, valid_until, seller_name, job_name, customer_address) VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)"
           ).bind(body.customer_name, body.department || '', body.contact || '', body.total_amount || 0, qNo, body.valid_until || '', body.seller_name || '', body.job_name || '', body.customer_address || '').run();
-          
+
           const qId = ins.meta.last_row_id;
           if (body.items && body.items.length) {
             for (const item of body.items) {
               await env.DB.prepare(
-                `INSERT INTO quotation_items 
-                 (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type) 
+                `INSERT INTO quotation_items
+                 (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
               ).bind(
                 qId,
@@ -3049,7 +3202,7 @@ export default {
           }
 
           const { results: items } = await env.DB.prepare(
-            `SELECT qi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name 
+            `SELECT qi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name
              FROM quotation_items qi
              LEFT JOIN rooms r ON qi.room_id = r.id
              LEFT JOIN services s ON qi.service_id = s.id
@@ -3071,8 +3224,8 @@ export default {
               await env.DB.prepare("DELETE FROM quotation_items WHERE quotation_id = ?").bind(qId).run();
               for (const item of body.items) {
                 await env.DB.prepare(
-                  `INSERT INTO quotation_items 
-                   (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type) 
+                  `INSERT INTO quotation_items
+                   (quotation_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, discount, item_date, discount_type)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                 ).bind(
                   qId,
