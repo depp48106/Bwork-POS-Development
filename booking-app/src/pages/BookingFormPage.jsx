@@ -373,8 +373,8 @@ export default function BookingFormPage() {
               />
             </div>
 
-            {/* Email & Company (2 columns) */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            {/* Email & Company (2 columns on desktop, 1 on mobile) */}
+            <div className="form-grid-2col">
               <div>
                 <label className="form-label">อีเมล (Email) - ไม่บังคับ</label>
                 <input
@@ -455,7 +455,7 @@ export default function BookingFormPage() {
                       value={taxName}
                       onChange={e => setTaxName(e.target.value)}
                       className="form-input"
-                      style={{ height: '44px', fontSize: '0.88rem' }}
+                      style={{ height: '44px' }}
                     />
                   </div>
 
@@ -472,7 +472,7 @@ export default function BookingFormPage() {
                       value={taxId}
                       onChange={e => setTaxId(e.target.value)}
                       className="form-input"
-                      style={{ height: '44px', fontSize: '0.88rem', letterSpacing: '0.5px' }}
+                      style={{ height: '44px', letterSpacing: '0.5px' }}
                     />
                   </div>
 
@@ -488,7 +488,7 @@ export default function BookingFormPage() {
                       value={taxAddress}
                       onChange={e => setTaxAddress(e.target.value)}
                       className="form-input"
-                      style={{ height: 'auto', padding: '8px 12px', fontSize: '0.86rem', resize: 'vertical' }}
+                      style={{ height: 'auto', padding: '8px 12px', resize: 'vertical' }}
                     />
                   </div>
 
@@ -527,7 +527,7 @@ export default function BookingFormPage() {
                       value={taxPhone}
                       onChange={e => setTaxPhone(e.target.value)}
                       className="form-input"
-                      style={{ height: '46px', fontSize: '0.92rem' }}
+                      style={{ height: '46px' }}
                     />
                   </div>
 
@@ -541,7 +541,7 @@ export default function BookingFormPage() {
                         value={taxDeliveryMethod}
                         onChange={e => setTaxDeliveryMethod(e.target.value)}
                         className="form-input"
-                        style={{ height: '46px', fontSize: '0.88rem', fontWeight: 700, cursor: 'pointer', paddingRight: '28px' }}
+                        style={{ height: '46px', fontWeight: 700, cursor: 'pointer', paddingRight: '28px' }}
                       >
                         <option value="online">จัดส่งออนไลน์ (E-Tax / อีเมล / LINE)</option>
                         <option value="postal">จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)</option>
@@ -599,7 +599,7 @@ export default function BookingFormPage() {
                         value={taxPostalAddress}
                         onChange={e => setTaxPostalAddress(e.target.value)}
                         className="form-input"
-                        style={{ height: 'auto', padding: '10px 12px', fontSize: '0.88rem', backgroundColor: '#ffffff', resize: 'vertical' }}
+                        style={{ height: 'auto', padding: '10px 12px', backgroundColor: '#ffffff', resize: 'vertical' }}
                       />
                     </div>
                   )}

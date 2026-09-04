@@ -129,9 +129,8 @@ export default function HomePage() {
           fontSize: '1.8rem',
           fontWeight: 900,
           color: 'var(--text-main)',
-          letterSpacing: '-0.02em',
           margin: '0 0 8px 0',
-          lineHeight: 1.3
+          lineHeight: 1.4
         }}>
           จองห้องประชุมออนไลน์
         </h1>
@@ -140,7 +139,7 @@ export default function HomePage() {
           color: 'var(--text-muted)',
           maxWidth: '480px',
           margin: '0 auto',
-          lineHeight: 1.5
+          lineHeight: 1.6
         }}>
           ระบุวันที่และจำนวนผู้เข้าใช้งาน เพื่อค้นหาห้องที่ว่างและเลือกช่วงเวลา
         </p>
@@ -171,7 +170,9 @@ export default function HomePage() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                padding: '14px 18px',
+                flexWrap: 'wrap',
+                gap: '10px',
+                padding: '14px 16px',
                 borderRadius: '16px',
                 border: '2px solid var(--primary)',
                 backgroundColor: '#ffffff',
@@ -193,15 +194,16 @@ export default function HomePage() {
               </div>
 
               <div style={{
-                padding: '10px 16px',
+                padding: '8px 14px',
                 borderRadius: '12px',
                 backgroundColor: 'rgba(37, 99, 235, 0.08)',
                 color: 'var(--primary)',
-                fontSize: '0.84rem',
+                fontSize: '0.82rem',
                 fontWeight: 800,
                 display: 'flex',
                 alignItems: 'center',
-                gap: '6px'
+                gap: '6px',
+                flexShrink: 0
               }}>
                 <Calendar size={18} />
                 <span>เปิดปฏิทิน</span>
@@ -314,14 +316,15 @@ export default function HomePage() {
             className="btn-primary"
             style={{
               height: '52px',
-              fontSize: '1.05rem',
+              fontSize: '1rem',
               fontWeight: 800,
               borderRadius: '14px',
-              marginTop: '4px'
+              marginTop: '4px',
+              padding: '0 16px'
             }}
           >
-            <span>ค้นหาห้องประชุมว่าง (Next: Choose Room & Time)</span>
-            <ChevronRight size={22} />
+            <span>ค้นหาห้องประชุมว่าง</span>
+            <ChevronRight size={20} />
           </button>
         </form>
       </div>

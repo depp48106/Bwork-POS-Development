@@ -579,9 +579,9 @@ export default function ConfirmPage() {
             gap: '12px',
             boxShadow: '0 4px 14px rgba(16, 185, 129, 0.15)'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: '1 1 200px' }}>
               <CheckCircle2 size={24} style={{ color: '#10b981', flexShrink: 0 }} />
-              <div>
+              <div style={{ wordBreak: 'break-word' }}>
                 <div style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--text-main)' }}>
                   บันทึกการจองสำเร็จ! รหัสการจอง: <span style={{ color: 'var(--primary)', letterSpacing: '0.5px' }}>{displayBookingCode}</span>
                 </div>
@@ -591,7 +591,7 @@ export default function ConfirmPage() {
               </div>
             </div>
 
-            <div style={{ textAlign: 'right' }}>
+            <div style={{ textAlign: 'right', flexShrink: 0 }}>
               <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>ยอดชำระทั้งสิ้น</div>
               <div style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--primary)' }}>
                 ฿{Number(totalAmt).toLocaleString()}
@@ -703,10 +703,11 @@ export default function ConfirmPage() {
               backgroundColor: '#ffffff',
               border: '2px solid #e2e8f0',
               borderRadius: '20px',
-              padding: '24px 20px',
+              padding: '20px 14px',
               boxShadow: 'var(--shadow-sm)',
               maxWidth: '360px',
-              width: '100%'
+              width: '100%',
+              boxSizing: 'border-box'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.86rem', fontWeight: 900, color: '#1e3a8a', marginBottom: '14px', letterSpacing: '0.5px' }}>
                 <QrCode size={18} />

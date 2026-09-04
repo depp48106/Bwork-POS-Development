@@ -140,24 +140,24 @@ function App() {
               <div style={{ fontSize: '1.15rem', fontWeight: 900, letterSpacing: '0.5px', color: '#ffffff', lineHeight: 1.1 }}>
                 B-WORK
               </div>
-              <div style={{ fontSize: '0.68rem', fontWeight: 600, color: '#93c5fd', letterSpacing: '0.3px' }}>
+              <div className="header-subtitle" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#93c5fd', letterSpacing: '0.3px' }}>
                 ระบบจองห้องประชุมออนไลน์
               </div>
             </div>
           </Link>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             {pendingBooking && !isConfirmPage && (
               <Link 
                 to={`/confirm?id=${pendingBooking.id}&code=${encodeURIComponent(pendingBooking.code || '')}`}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '6px',
+                  gap: '5px',
                   background: 'linear-gradient(135deg, #10b981, #059669)',
                   border: '1px solid rgba(255, 255, 255, 0.4)',
                   color: '#ffffff',
-                  padding: '6px 14px',
+                  padding: '6px 10px',
                   borderRadius: '999px',
                   fontSize: '0.78rem',
                   fontWeight: 800,
@@ -169,7 +169,8 @@ function App() {
                 }}
               >
                 <CreditCard size={14} />
-                <span>แนบสลิปชำระเงิน</span>
+                <span className="header-btn-text-full">แนบสลิปชำระเงิน</span>
+                <span className="header-btn-text-short">แนบสลิป</span>
               </Link>
             )}
 
@@ -178,11 +179,11 @@ function App() {
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '6px',
+                gap: '5px',
                 background: 'rgba(255, 255, 255, 0.14)',
                 border: '1px solid rgba(255, 255, 255, 0.3)',
                 color: '#ffffff',
-                padding: '6px 12px',
+                padding: '6px 10px',
                 borderRadius: '999px',
                 fontSize: '0.76rem',
                 fontWeight: 800,
@@ -195,7 +196,8 @@ function App() {
               }}
             >
               <Search size={13} strokeWidth={2.5} />
-              <span>เช็คสถานะการจอง</span>
+              <span className="header-btn-text-full">เช็คสถานะการจอง</span>
+              <span className="header-btn-text-short">เช็คสถานะ</span>
             </Link>
           </div>
         </div>
@@ -212,9 +214,11 @@ function App() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '10px',
           zIndex: 90
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.84rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.84rem', flex: '1 1 200px' }}>
             <div style={{ 
               width: '28px', 
               height: '28px', 
@@ -227,13 +231,13 @@ function App() {
             }}>
               <Clock size={16} color="#ffffff" />
             </div>
-            <div>
+            <div style={{ wordBreak: 'break-word' }}>
               <span style={{ fontWeight: 800 }}>คุณมีรายการจองที่รอการแนบสลิป:</span>{' '}
               <span style={{ color: '#bae6fd' }}>#{pendingBooking.code} ({pendingBooking.roomName})</span>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexShrink: 0 }}>
             <Link 
               to={`/confirm?id=${pendingBooking.id}&code=${encodeURIComponent(pendingBooking.code || '')}`}
               style={{
@@ -247,7 +251,8 @@ function App() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: '4px',
-                boxShadow: '0 2px 6px rgba(0,0,0,0.15)'
+                boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
+                whiteSpace: 'nowrap'
               }}
             >
               <span>ไปที่หน้าแนบสลิป</span>

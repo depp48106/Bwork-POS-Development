@@ -266,8 +266,8 @@ export default function StatusPage() {
                 }}
               >
                 {/* Header */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '12px', marginBottom: '12px' }}>
-                  <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', borderBottom: '1px solid var(--border)', paddingBottom: '12px', marginBottom: '12px' }}>
+                  <div style={{ wordBreak: 'break-word', flex: '1 1 180px' }}>
                     <span style={{ fontSize: '1.05rem', fontWeight: 900, color: 'var(--primary)', letterSpacing: '0.5px' }}>
                       {bookingCode.startsWith('BK-') ? bookingCode : `#${bookingCode}`}
                     </span>
@@ -275,47 +275,49 @@ export default function StatusPage() {
                       ({item.room_name || (item.items && item.items[0]?.room_name) || 'ห้องประชุม'})
                     </span>
                   </div>
-                  {getStatusBadge(item.payment_status, Boolean(item.has_slip))}
+                  <div style={{ flexShrink: 0 }}>
+                    {getStatusBadge(item.payment_status, Boolean(item.has_slip))}
+                  </div>
                 </div>
 
                 {/* Details Grid */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
 
                   {/* วันที่เข้าใช้งาน */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ minWidth: '100px', color: '#64748b' }}>วันที่เข้าใช้งาน:</span>
-                    <strong style={{ color: '#0f172a', fontSize: '0.88rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: '6px' }}>
+                    <span style={{ minWidth: '90px', color: '#64748b' }}>วันที่เข้าใช้งาน:</span>
+                    <strong style={{ color: '#0f172a', fontSize: '0.88rem', wordBreak: 'break-word' }}>
                       {formatThaiDate(usageDateStr)}
                     </strong>
                   </div>
 
                   {/* เวลาที่ใช้บริการ */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ minWidth: '100px', color: '#64748b' }}>เวลาที่ใช้บริการ:</span>
-                    <strong style={{ color: '#0284c7', fontSize: '0.88rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: '6px' }}>
+                    <span style={{ minWidth: '90px', color: '#64748b' }}>เวลาที่ใช้บริการ:</span>
+                    <strong style={{ color: '#0284c7', fontSize: '0.88rem', wordBreak: 'break-word' }}>
                       {startTimeStr} - {endTimeStr} น.
                     </strong>
                   </div>
 
                   {/* วันที่ทำรายการจอง */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ minWidth: '100px', color: '#64748b' }}>วันที่จอง:</span>
-                    <span style={{ color: '#334155' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: '6px' }}>
+                    <span style={{ minWidth: '90px', color: '#64748b' }}>วันที่จอง:</span>
+                    <span style={{ color: '#334155', wordBreak: 'break-word' }}>
                       {formatThaiDateTime(createdDateStr)}
                     </span>
                   </div>
 
                   {/* ผู้จอง */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ minWidth: '100px', color: '#64748b' }}>ชื่อผู้จอง:</span>
-                    <span style={{ color: '#334155' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: '6px' }}>
+                    <span style={{ minWidth: '90px', color: '#64748b' }}>ชื่อผู้จอง:</span>
+                    <span style={{ color: '#334155', wordBreak: 'break-word' }}>
                       {item.customer_name} ({item.contact || item.customer_contact})
                     </span>
                   </div>
 
                   {/* ยอดเงิน */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed var(--border)' }}>
-                    <span style={{ minWidth: '100px', color: '#64748b' }}>ยอดชำระ:</span>
+                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed var(--border)' }}>
+                    <span style={{ minWidth: '90px', color: '#64748b' }}>ยอดชำระ:</span>
                     <strong style={{ color: 'var(--primary)', fontSize: '1rem' }}>
                       ฿{Number(item.total_amount || 0).toLocaleString()}
                     </strong>

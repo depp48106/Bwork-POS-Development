@@ -35,15 +35,15 @@ export default function StepProgress({ currentStep }) {
         position: 'relative'
       }}>
         {/* Background Connecting Line */}
-        <div style={{
-          position: 'absolute',
-          top: '18px',
-          left: '24px',
-          right: '24px',
-          height: '3px',
-          backgroundColor: '#e2e8f0',
-          zIndex: 1
-        }}>
+        <div
+          className="step-progress-line"
+          style={{
+            position: 'absolute',
+            height: '3px',
+            backgroundColor: '#e2e8f0',
+            zIndex: 1
+          }}
+        >
           {/* Active Filled Progress Line */}
           <div style={{
             height: '100%',

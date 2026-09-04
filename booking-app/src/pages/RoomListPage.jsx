@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   Users, Wifi, Tv, Zap, Coffee, Wind, CheckCircle2, 
@@ -22,6 +22,18 @@ const THAI_MONTHS = [
   'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'
 ];
 const THAI_DAYS = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
+const ROOM_SEQUENCE = ['201', '300', '301', '302', '303', '304', '305', '306'];
+
+const getRoomSortRank = (room) => {
+  const name = String(room?.name || '');
+  for (let i = 0; i < ROOM_SEQUENCE.length; i++) {
+    if (name.includes(`(${ROOM_SEQUENCE[i]})`)) return i;
+  }
+  return 999;
+};
+
+const sortRoomsByStandardOrder = (roomList) =>
+  [...roomList].sort((a, b) => getRoomSortRank(a) - getRoomSortRank(b));
 
 const formatToDdMmYyyy = (isoStr) => {
   if (!isoStr) return '';
@@ -83,7 +95,7 @@ export default function RoomListPage() {
   // Per-Room Layout State: { [roomId]: 'standard' | 'classroom' }
   const [roomLayouts, setRoomLayouts] = useState({});
 
-  const handleGlobalStartChange = (newStart) => {
+  const handleGlobalStartChange = useCallback((newStart) => {
     setGlobalStartTime(newStart);
     const [sH, sM] = newStart.split(':').map(Number);
     const startMins = sH * 60 + sM;
@@ -107,27 +119,14 @@ export default function RoomListPage() {
       });
       return updated;
     });
-  };
-
-  const handleGlobalEndChange = (newEnd) => {
-    setGlobalEndTime(newEnd);
-    setRoomSelections(prev => {
-      const updated = { ...prev };
-      Object.keys(updated).forEach(id => {
-        if (updated[id]?.mode === 'hourly') {
-          updated[id] = { ...updated[id], endTime: newEnd };
-        }
-      });
-      return updated;
-    });
-  };
+  }, [globalEndTime]);
 
   // Adjust start time if today has changed or current start is past
   useEffect(() => {
     if (availableStartOptions.length > 0 && !availableStartOptions.includes(globalStartTime)) {
       handleGlobalStartChange(availableStartOptions[0]);
     }
-  }, [dateStr, availableStartOptions]);
+  }, [availableStartOptions, globalStartTime, handleGlobalStartChange]);
 
   // Fetch rooms and schedule on date change
   useEffect(() => {
@@ -319,24 +318,6 @@ export default function RoomListPage() {
       }
     }
     return { isOccupied: false, label: 'ว่างพร้อมจอง' };
-  };
-
-  // Strict Room Sorting Sequence: 201, 300, 301, 302, 303, 304, 305, 306
-  const ROOM_SEQUENCE = ['201', '300', '301', '302', '303', '304', '305', '306'];
-
-  const getRoomSortRank = (room) => {
-    const name = String(room?.name || '');
-    for (let i = 0; i < ROOM_SEQUENCE.length; i++) {
-      const code = ROOM_SEQUENCE[i];
-      if (name.includes(`(${code})`)) {
-        return i;
-      }
-    }
-    return 999;
-  };
-
-  const sortRoomsByStandardOrder = (roomList) => {
-    return [...roomList].sort((a, b) => getRoomSortRank(a) - getRoomSortRank(b));
   };
 
   // Smart Room Categorization & Tier Matching (with Special Offers)
@@ -681,8 +662,8 @@ export default function RoomListPage() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  gap: '6px',
-                  flexWrap: 'nowrap'
+                  gap: '8px',
+                  flexWrap: 'wrap'
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
                     <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)' }}>เริ่ม:</span>
@@ -710,7 +691,7 @@ export default function RoomListPage() {
                         }));
                       }}
                       className="form-input"
-                      style={{ height: '36px', width: 'auto', padding: '0 6px', fontSize: '0.86rem', fontWeight: 800, borderRadius: '8px', cursor: 'pointer' }}
+                      style={{ height: '36px', width: 'auto', padding: '0 6px', fontWeight: 800, borderRadius: '8px', cursor: 'pointer' }}
                     >
                       {availableStartOptions.map(t => (
                         <option key={t} value={t}>{t} น.</option>
@@ -733,7 +714,7 @@ export default function RoomListPage() {
                         }));
                       }}
                       className="form-input"
-                      style={{ height: '36px', width: 'auto', padding: '0 6px', fontSize: '0.86rem', fontWeight: 800, borderRadius: '8px', cursor: 'pointer' }}
+                      style={{ height: '36px', width: 'auto', padding: '0 6px', fontWeight: 800, borderRadius: '8px', cursor: 'pointer' }}
                     >
                       {TIME_OPTIONS.filter(t => t > sel.rawStartTime).map(t => (
                         <option key={t} value={t}>{t} น.</option>
@@ -943,6 +924,7 @@ export default function RoomListPage() {
         <div style={{
           display: 'flex',
           alignItems: 'center',
+          flexWrap: 'wrap',
           gap: '8px',
           backgroundColor: 'rgba(37, 99, 235, 0.08)',
           color: 'var(--primary)',
