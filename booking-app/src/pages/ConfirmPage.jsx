@@ -1,5 +1,5 @@
 import jsQR from 'jsqr';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   CheckCircle2, Copy, Upload, Check, 
@@ -120,27 +120,26 @@ export default function ConfirmPage() {
     return () => clearInterval(interval);
   }, [booking, uploadSuccess, paymentWindowMinutes]);
 
-  // Load completed booking info
-  useEffect(() => {
-    const raw = sessionStorage.getItem('completed_booking_result');
+  // Fetch fresh booking info from backend
+  const fetchFreshBooking = useCallback(async () => {
+    if (!bookingId || bookingId === 'undefined') return null;
+
     let storedBooking = null;
-    if (raw) {
-      try {
-        storedBooking = JSON.parse(raw);
-        setBooking(storedBooking);
-      } catch (e) {}
-    }
+    try {
+      const raw = sessionStorage.getItem('completed_booking_result');
+      if (raw) storedBooking = JSON.parse(raw);
+    } catch (e) {}
 
     let pendingBooking = null;
     try {
       const pendingRaw = localStorage.getItem('bwork_pending_booking');
-      pendingBooking = pendingRaw ? JSON.parse(pendingRaw) : null;
+      if (pendingRaw) pendingBooking = JSON.parse(pendingRaw);
     } catch (e) {}
 
     let statusAccess = null;
     try {
-      const statusRaw = bookingId ? sessionStorage.getItem(`bwork_booking_access_${bookingId}`) : null;
-      statusAccess = statusRaw ? JSON.parse(statusRaw) : null;
+      const statusRaw = sessionStorage.getItem(`bwork_booking_access_${bookingId}`);
+      if (statusRaw) statusAccess = JSON.parse(statusRaw);
     } catch (e) {}
 
     const accessToken = storedBooking?.access_token || pendingBooking?.accessToken || statusAccess?.accessToken;
@@ -150,33 +149,65 @@ export default function ConfirmPage() {
       ...(accessContact ? { 'X-Booking-Contact': accessContact } : {})
     };
 
-    // Auto-fetch fresh booking info from backend if id is provided
-    if (bookingId && bookingId !== 'undefined') {
-      fetch(`${API_BASE}/api/public/bookings/${bookingId}`, { headers: accessHeaders })
-        .then(res => res.json())
-        .then(data => {
-          if (data && !data.error) {
-            if (data.payment_window_minutes) {
-              setPaymentWindowMinutes(parseInt(data.payment_window_minutes, 10) || 15);
-            }
-            if (data.payment_status === 'cancelled') {
-              setIsExpired(true);
-              setTimeLeftSeconds(0);
-              localStorage.removeItem('bwork_pending_booking');
-            }
-            setBooking(prev => ({
-              ...prev,
-              ...data,
-              paymentDeadline: data.paymentDeadline || prev?.paymentDeadline,
-              payment_window_minutes: data.payment_window_minutes || prev?.payment_window_minutes,
-              room_name: data.room?.name || prev?.room_name,
-              booking_code: data.receipt_number || data.bookingCode || prev?.booking_code,
-              total_amount: data.total_amount || prev?.total_amount
-            }));
-          }
-        })
-        .catch(() => {});
+    try {
+      const res = await fetch(`${API_BASE}/api/public/bookings/${bookingId}`, { headers: accessHeaders });
+      const data = await res.json();
+      if (data && !data.error) {
+        if (data.payment_window_minutes) {
+          setPaymentWindowMinutes(parseInt(data.payment_window_minutes, 10) || 15);
+        }
+        if (data.payment_status === 'cancelled') {
+          setIsExpired(true);
+          setTimeLeftSeconds(0);
+          localStorage.removeItem('bwork_pending_booking');
+        }
+        setBooking(prev => ({
+          ...prev,
+          ...data,
+          paymentDeadline: data.paymentDeadline || prev?.paymentDeadline,
+          payment_window_minutes: data.payment_window_minutes || prev?.payment_window_minutes,
+          room_name: data.room?.name || prev?.room_name,
+          booking_code: data.receipt_number || data.bookingCode || prev?.booking_code,
+          total_amount: data.total_amount || prev?.total_amount
+        }));
+        return data;
+      }
+    } catch (e) {}
+    return null;
+  }, [bookingId]);
+
+  // When timer expires, fetch status immediately, and bounded short retry (every 5s, max 4 times) to confirm cancellation
+  useEffect(() => {
+    if (!isExpired || !bookingId || booking?.payment_status === 'cancelled' || booking?.payment_status === 'paid' || uploadSuccess) {
+      return;
     }
+
+    fetchFreshBooking();
+
+    let retryCount = 0;
+    const pollInterval = setInterval(async () => {
+      retryCount++;
+      const data = await fetchFreshBooking();
+      if (data?.payment_status === 'cancelled' || data?.payment_status === 'paid' || retryCount >= 4) {
+        clearInterval(pollInterval);
+      }
+    }, 5000);
+
+    return () => clearInterval(pollInterval);
+  }, [isExpired, bookingId, booking?.payment_status, uploadSuccess, fetchFreshBooking]);
+
+  // Load completed booking info on mount
+  useEffect(() => {
+    const raw = sessionStorage.getItem('completed_booking_result');
+    if (raw) {
+      try {
+        const storedBooking = JSON.parse(raw);
+        setBooking(storedBooking);
+      } catch (e) {}
+    }
+
+    // Auto-fetch fresh booking info from backend if id is provided
+    fetchFreshBooking();
 
     // Fetch live payment settings from backend
     fetch(`${API_BASE}/api/public/settings/payment`)
@@ -569,10 +600,14 @@ export default function ConfirmPage() {
             }}>
               <AlertCircle size={28} color="#ef4444" />
               <div style={{ fontWeight: 900, fontSize: '1rem', color: '#dc2626' }}>
-                {`รายการจองนี้หมดอายุแล้ว (เกินกำหนดเวลาชำระเงิน ${paymentWindowMinutes || 15} นาที)`}
+                {booking?.payment_status === 'cancelled'
+                  ? 'รายการจองนี้ถูกยกเลิกแล้ว (เนื่องจากเกินกำหนดเวลาชำระเงิน)'
+                  : `หมดเวลาชำระเงิน (${paymentWindowMinutes || 15} นาที)`}
               </div>
               <div style={{ fontSize: '0.82rem', color: '#64748b', maxWidth: '420px' }}>
-                ระบบได้ทำการยกเลิกการจองอัตโนมัติเพื่อเปิดสิทธิ์ให้ผู้อื่น หากท่านต้องการใช้งาน กรุณาทำรายการจองใหม่อีกครั้งครับ
+                {booking?.payment_status === 'cancelled'
+                  ? 'ระบบได้เปิดสิทธิ์การจองให้ผู้อื่นแล้ว หากต้องการใช้งาน กรุณาทำรายการจองใหม่อีกครั้งครับ'
+                  : 'เกินกำหนดเวลาชำระเงินแล้ว ระบบกำลังดำเนินการตรวจสอบสถานะรายการจอง กรุณาทำรายการจองใหม่หากต้องการจองอีกครั้งครับ'}
               </div>
               <button
                 type="button"

@@ -9,4 +9,4 @@ database_name = "bworkpos_db"
 database_id = "0f171606-080b-4380-bf91-167dc678e2e4"
 
 [triggers]
-crons = ["0 17 * * *"] # 17:00 UTC = 00:00 Bangkok Midnight (Automated Daily Cloud Backup)
+crons = ["* * * * *", "0 17 * * *"] # * * * * * = Auto-Cancel Expired Bookings (every 1 min), 0 17 * * * = 17:00 UTC Midnight Cloud Backup

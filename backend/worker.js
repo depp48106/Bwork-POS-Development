@@ -3698,26 +3698,144 @@ export default {
     }
   },
 
-  // Scheduled Midnight Auto-Backup Trigger (Cloudflare Cron)
+  // Scheduled Trigger (Cloudflare Cron)
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
+      // 1. Auto-Cancel Expired Online Bookings (runs on every cron tick)
       try {
-        console.log('Daily midnight Cloudflare D1 to OneDrive backup started...');
-        const refTokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_refresh_token'").first();
-        if (refTokenRow && refTokenRow.value) {
-          const sql = await generateD1DumpSql(env);
-          const now = new Date();
-          const dStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-          const fileName = `bwork_backup_${dStr}.sql`;
-          await uploadToOneDriveFromWorker(env, sql, fileName);
-          console.log('Daily midnight OneDrive backup completed successfully:', fileName);
+        await cancelExpiredBookings(env);
+      } catch (cancelErr) {
+        console.error('[Auto-Cancel] Scheduled auto-cancel error:', cancelErr);
+      }
+
+      // 2. Daily Midnight Auto-Backup Trigger (Cloudflare Cron: 0 17 * * *)
+      if (event.cron === '0 17 * * *') {
+        try {
+          console.log('Daily midnight Cloudflare D1 to OneDrive backup started...');
+          const refTokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'onedrive_refresh_token'").first();
+          if (refTokenRow && refTokenRow.value) {
+            const sql = await generateD1DumpSql(env);
+            const now = new Date();
+            const dStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const fileName = `bwork_backup_${dStr}.sql`;
+            await uploadToOneDriveFromWorker(env, sql, fileName);
+            console.log('Daily midnight OneDrive backup completed successfully:', fileName);
+          }
+        } catch (err) {
+          console.error('Scheduled daily backup error:', err);
         }
-      } catch (err) {
-        console.error('Scheduled daily backup error:', err);
       }
     })());
   }
 };
+
+/**
+ * Automatically cancels expired online bookings where:
+ * - payment_status = 'pending' (strict explicit equality, never NULL)
+ * - booking_source = 'online'
+ * - slip_image_url is NULL or empty string ''
+ * - created_at is valid and nowMs >= deadlineMs (created_at + payment_window_minutes * 60 * 1000)
+ *
+ * @param {object} env - Cloudflare Worker environment containing env.DB
+ * @param {object} [options] - Optional overrides (e.g. nowMs for unit testing)
+ * @returns {Promise<{ scanned: number, cancelled: number, skipped: number, results: Array }>}
+ */
+async function cancelExpiredBookings(env, options = {}) {
+  try {
+    let windowMins = 15;
+    try {
+      const pwRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'payment_window_minutes'").first();
+      if (pwRow && pwRow.value) {
+        const parsed = parseInt(pwRow.value, 10);
+        if (!isNaN(parsed) && parsed >= 1) {
+          windowMins = parsed;
+        }
+      }
+    } catch (sErr) {
+      console.warn('[Auto-Cancel] Failed to load payment_window_minutes from settings, fallback to 15:', sErr.message);
+    }
+
+    const windowMs = windowMins * 60 * 1000;
+    const nowMs = typeof options.nowMs === 'number' && Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+    const cancelReasonMsg = `ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (${windowMins} นาที)`;
+
+    // Strict eligibility query: ONLY explicit payment_status = 'pending' and online with no slip
+    const { results: candidates } = await env.DB.prepare(`
+      SELECT id, receipt_number, created_at, payment_status, booking_source, slip_image_url
+      FROM bookings
+      WHERE payment_status = 'pending'
+        AND booking_source = 'online'
+        AND (slip_image_url IS NULL OR slip_image_url = '')
+    `).all();
+
+    let scanned = 0;
+    let cancelled = 0;
+    let skipped = 0;
+    const actionResults = [];
+
+    for (const b of (candidates || [])) {
+      scanned++;
+      if (!b.created_at) {
+        skipped++;
+        actionResults.push({ id: b.id, action: 'skipped', reason: 'missing_created_at' });
+        continue;
+      }
+
+      const createdAtMs = Date.parse(b.created_at);
+      if (!Number.isFinite(createdAtMs)) {
+        skipped++;
+        actionResults.push({ id: b.id, action: 'skipped', reason: 'malformed_created_at' });
+        continue;
+      }
+
+      const deadlineMs = createdAtMs + windowMs;
+      // If nowMs < deadlineMs, not expired yet -> skip
+      if (nowMs < deadlineMs) {
+        skipped++;
+        actionResults.push({ id: b.id, action: 'skipped', reason: 'not_expired' });
+        continue;
+      }
+
+      // Atomic conditional update on bookings
+      const updateRes = await env.DB.prepare(`
+        UPDATE bookings
+        SET payment_status = 'cancelled',
+            checkin_status = 'cancelled',
+            cancellation_reason = ?
+        WHERE id = ?
+          AND payment_status = 'pending'
+          AND booking_source = 'online'
+          AND (slip_image_url IS NULL OR slip_image_url = '')
+      `).bind(cancelReasonMsg, b.id).run();
+
+      if (updateRes.meta?.changes !== 1) {
+        // Race condition or status changed (e.g. user uploaded slip, staff approved, or already cancelled)
+        skipped++;
+        actionResults.push({ id: b.id, action: 'skipped', reason: 'race_or_already_changed' });
+        continue;
+      }
+
+      cancelled++;
+      actionResults.push({ id: b.id, action: 'cancelled' });
+
+      // Secondary consistency update on booking_items
+      try {
+        await env.DB.prepare(`
+          UPDATE booking_items
+          SET checkin_status = 'cancelled'
+          WHERE booking_id = ?
+        `).bind(b.id).run();
+      } catch (itemErr) {
+        console.warn(`[Auto-Cancel] Warning: failed to update booking_items for booking #${b.id}:`, itemErr.message);
+      }
+    }
+
+    return { scanned, cancelled, skipped, results: actionResults };
+  } catch (err) {
+    console.error('[Auto-Cancel] Error in cancelExpiredBookings:', err);
+    throw err;
+  }
+}
 
 const BACKUP_TABLES = [
   'rooms', 'categories', 'items', 'users', 'roles',
