@@ -213,10 +213,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
   const columns = [
     { key: 'id', label: 'รหัส / วันที่สร้าง', width: '14%' },
     { key: 'customer_name', label: 'ผู้จอง', width: '18%' },
-    { key: 'room_info', label: 'ห้อง / เวลาใช้งาน', width: '25%' },
+    { key: 'room_info', label: 'ห้อง / เวลาใช้งาน', width: '24%' },
     { key: 'total_amount', label: 'ยอดชำระ', width: '9%' },
     { key: 'status', label: 'สถานะ', width: '11%' },
-    { key: 'pin_code', label: 'รหัสเข้าห้อง', width: '10%' },
+    { key: 'pin_code', label: 'รหัสเข้าห้อง', width: '11%' },
     { key: 'actions', label: 'การดำเนินการ', width: '13%' }
   ];
 
@@ -1849,10 +1849,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
             <colgroup>
               <col style={{ width: '14%' }} />
               <col style={{ width: '18%' }} />
-              <col style={{ width: '25%' }} />
+              <col style={{ width: '24%' }} />
               <col style={{ width: '9%' }} />
               <col style={{ width: '11%' }} />
-              <col style={{ width: '10%' }} />
+              <col style={{ width: '11%' }} />
               <col style={{ width: '13%' }} />
             </colgroup>
             <thead>
@@ -2180,82 +2180,98 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                       {/* Column 6: รหัสเข้าห้อง (Door PIN - masked by default, reveal & copy) */}
                       <td style={{ padding: '6px 4px', textAlign: 'center', verticalAlign: 'middle', boxSizing: 'border-box' }}>
                         {hasPin ? (
-                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', justifyContent: 'center', flexWrap: 'nowrap' }}>
+                          <div style={{
+                            display: 'inline-flex',
+                            flexDirection: isBuiltland ? 'column' : 'row',
+                            alignItems: 'center',
+                            gap: isBuiltland ? '3px' : '5px',
+                            justifyContent: 'center'
+                          }}>
                             {isBuiltland && (
                               <span style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
-                                gap: '2px',
-                                padding: '1px 5px',
+                                gap: '3px',
+                                padding: '1px 6px',
                                 borderRadius: '4px',
-                                fontSize: '0.64rem',
+                                fontSize: '0.65rem',
                                 fontWeight: 700,
-                                backgroundColor: 'rgba(234, 88, 12, 0.1)',
-                                color: '#ea580c',
-                                border: '1px solid rgba(234, 88, 12, 0.25)',
+                                backgroundColor: 'rgba(234, 88, 12, 0.08)',
+                                color: '#c2410c',
+                                border: '1px solid rgba(234, 88, 12, 0.22)',
                                 whiteSpace: 'nowrap',
-                                flexShrink: 0
+                                lineHeight: 1.2
                               }}>
-                                <Key size={9} />
+                                <Key size={9} style={{ opacity: 0.85 }} />
                                 <span>PIN บริษัท</span>
                               </span>
                             )}
-                            <span
-                              style={{
-                                fontFamily: 'monospace',
-                                fontSize: revealedPins[b.id] ? '0.78rem' : '0.7rem',
-                                fontWeight: 700,
-                                letterSpacing: revealedPins[b.id] ? '0.5px' : '1.5px',
-                                color: 'var(--text-main)',
-                                minWidth: '40px',
-                                textAlign: 'center',
-                                userSelect: 'all'
-                              }}
-                              title={revealedPins[b.id] ? `รหัสเข้าห้อง: ${pinRaw}` : 'รหัสถูกซ่อนอยู่ คลิกดูเพื่อเปิดเผย'}
-                            >
-                              {revealedPins[b.id] ? pinRaw : '••••••'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleToggleRevealPin(b.id); }}
-                              title={revealedPins[b.id] ? 'ซ่อนรหัส' : 'ดูรหัสเข้าห้อง'}
-                              style={{
-                                padding: '2px 4px',
-                                borderRadius: '4px',
-                                border: '1px solid var(--border-color)',
-                                background: 'var(--bg-hover)',
-                                color: revealedPins[b.id] ? 'var(--primary-color)' : 'var(--text-muted)',
-                                cursor: 'pointer',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                flexShrink: 0
-                              }}
-                            >
-                              {revealedPins[b.id] ? <EyeOff size={11} /> : <Eye size={11} />}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleCopyPin(b.id, pinRaw); }}
-                              title="คัดลอกรหัสเข้าห้อง"
-                              style={{
-                                padding: '2px 4px',
-                                borderRadius: '4px',
-                                border: copiedPin === b.id ? '1px solid #10b981' : '1px solid var(--border-color)',
-                                background: copiedPin === b.id ? 'rgba(16, 185, 129, 0.1)' : 'var(--bg-hover)',
-                                color: copiedPin === b.id ? '#10b981' : 'var(--text-muted)',
-                                cursor: 'pointer',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                flexShrink: 0
-                              }}
-                            >
-                              {copiedPin === b.id ? <Check size={11} /> : <Copy size={11} />}
-                            </button>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', justifyContent: 'center' }}>
+                              <span
+                                style={{
+                                  fontFamily: 'monospace',
+                                  fontSize: revealedPins[b.id] ? '0.8rem' : '0.74rem',
+                                  fontWeight: 700,
+                                  letterSpacing: revealedPins[b.id] ? '0.5px' : '1.5px',
+                                  color: 'var(--text-main)',
+                                  minWidth: '42px',
+                                  textAlign: 'center',
+                                  userSelect: 'all'
+                                }}
+                                title={revealedPins[b.id] ? `รหัสเข้าห้อง: ${pinRaw}` : 'รหัสถูกซ่อนอยู่ คลิกแสดงรหัสเพื่อเปิดเผย'}
+                              >
+                                {revealedPins[b.id] ? pinRaw : '••••••'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); handleToggleRevealPin(b.id); }}
+                                title={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                                aria-label={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                                style={{
+                                  width: '26px',
+                                  height: '26px',
+                                  padding: 0,
+                                  borderRadius: '5px',
+                                  border: '1px solid var(--border-color)',
+                                  background: 'var(--bg-hover)',
+                                  color: revealedPins[b.id] ? 'var(--primary-color)' : 'var(--text-muted)',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  flexShrink: 0,
+                                  transition: 'all 0.15s ease'
+                                }}
+                              >
+                                {revealedPins[b.id] ? <EyeOff size={12} /> : <Eye size={12} />}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); handleCopyPin(b.id, pinRaw); }}
+                                title={copiedPin === b.id ? 'คัดลอกเรียบร้อย' : 'คัดลอกรหัส'}
+                                aria-label="คัดลอกรหัส"
+                                style={{
+                                  width: '26px',
+                                  height: '26px',
+                                  padding: 0,
+                                  borderRadius: '5px',
+                                  border: copiedPin === b.id ? '1px solid #10b981' : '1px solid var(--border-color)',
+                                  background: copiedPin === b.id ? 'rgba(16, 185, 129, 0.1)' : 'var(--bg-hover)',
+                                  color: copiedPin === b.id ? '#10b981' : 'var(--text-muted)',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  flexShrink: 0,
+                                  transition: 'all 0.15s ease'
+                                }}
+                              >
+                                {copiedPin === b.id ? <Check size={12} /> : <Copy size={12} />}
+                              </button>
+                            </div>
                           </div>
                         ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>-</span>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem', fontWeight: 600 }}>-</span>
                         )}
                       </td>
 
