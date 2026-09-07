@@ -29,6 +29,7 @@ import * as XLSX from 'xlsx';
 import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
+import { formatTransactionDateTime } from '../dateUtils';
 
 const CUSTOMER_TYPE_OPTIONS = [
   { value: 'all', label: 'ทุกประเภท' },
@@ -285,22 +286,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     return isNaN(d.getTime()) ? null : d;
   };
 
-  const formatDate = (dateStr) => {
-    if (!dateStr) return '-';
-    try {
-      const d = parseLocalDate(dateStr);
-      if (!d) return dateStr;
-      const year = d.getFullYear() + 543;
-      const monthNames = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
-      const month = monthNames[d.getMonth()];
-      const day = d.getDate();
-      const hours = String(d.getHours()).padStart(2, '0');
-      const minutes = String(d.getMinutes()).padStart(2, '0');
-      return `${day} ${month} ${year} ${hours}:${minutes} น.`;
-    } catch (e) {
-      return dateStr;
-    }
-  };
+  const formatDate = (dateStr) => formatTransactionDateTime(dateStr);
 
   const monthNamesThai = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 

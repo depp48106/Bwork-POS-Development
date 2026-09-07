@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatTransactionDateTime } from '../dateUtils';
 
 function ReceiptPrint({ booking, settings }) {
   if (!booking) return null;
@@ -11,8 +12,7 @@ function ReceiptPrint({ booking, settings }) {
 
   const monthNamesThai = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 
-  // Format Created At Date (Local Time with Thai year & timezone conversion)
-  // Safe Local Date Parser
+  // Safe Local Date Parser for room usage periods (wall-clock slots)
   const parseLocalDate = (dateStr) => {
     if (!dateStr) return null;
     const str = String(dateStr).trim().replace(' ', 'T');
@@ -30,21 +30,8 @@ function ReceiptPrint({ booking, settings }) {
     return isNaN(d.getTime()) ? null : d;
   };
 
-  const formatDateTime = (dateString) => {
-    if (!dateString) return '';
-    try {
-      const d = parseLocalDate(dateString);
-      if (!d) return String(dateString);
-      const year = d.getFullYear() + 543;
-      const month = monthNamesThai[d.getMonth()];
-      const day = d.getDate();
-      const hours = String(d.getHours()).padStart(2, '0');
-      const minutes = String(d.getMinutes()).padStart(2, '0');
-      return `${day} ${month} ${year} ${hours}:${minutes} น.`;
-    } catch (e) {
-      return String(dateString);
-    }
-  };
+  // Format Created At Date (Point-in-time timestamp in Asia/Bangkok)
+  const formatDateTime = (dateString) => formatTransactionDateTime(dateString);
 
   // Format Booking Item Period (e.g. 20 ส.ค. 2569 (08:00 - 17:00))
   const formatPeriod = (start, end) => {
