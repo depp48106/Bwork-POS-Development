@@ -1437,24 +1437,40 @@ export default {
         const { results: rooms } = await env.DB.prepare("SELECT * FROM rooms WHERE status = 'active'").all();
         const roomsOccupancy = [];
 
+        const currentTimeISO = current_time ? normalizeToLocalISO(current_time) : normalizeToLocalISO(new Date().toISOString());
         for (const room of (rooms || [])) {
           let currentBooking = null;
-          if (current_time) {
+          if (currentTimeISO) {
             currentBooking = await env.DB.prepare(`
-              SELECT bi.*, b.customer_name, b.payment_status, b.pin_code
+              SELECT bi.id as item_id, b.id as booking_id, bi.room_id, bi.start_time, bi.end_time,
+                     b.customer_name, b.department, b.booking_source, b.payment_status, b.pin_code
               FROM booking_items bi
               JOIN bookings b ON bi.booking_id = b.id
               WHERE bi.room_id = ?
-                AND bi.start_time <= ?
-                AND bi.end_time > ?
+                AND replace(bi.start_time, ' ', 'T') <= ?
+                AND replace(bi.end_time, ' ', 'T') > ?
+                AND b.payment_status IN ('paid', 'internal_free', 'pending', 'reviewing', 'rejected', 'unpaid')
                 AND b.payment_status != 'cancelled'
+                AND (b.checkin_status IS NULL OR b.checkin_status != 'cancelled')
+                AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+              ORDER BY
+                CASE
+                  WHEN b.payment_status IN ('paid', 'internal_free') THEN 1
+                  WHEN b.payment_status = 'reviewing' THEN 2
+                  WHEN b.payment_status IN ('pending', 'unpaid') THEN 3
+                  WHEN b.payment_status = 'rejected' THEN 4
+                  ELSE 5
+                END ASC,
+                bi.id DESC
               LIMIT 1
-            `).bind(room.id, current_time, current_time).first();
+            `).bind(room.id, currentTimeISO, currentTimeISO).first();
           }
           roomsOccupancy.push({
             ...room,
             is_occupied: !!currentBooking,
-            current_booking: currentBooking || null
+            isOccupied: !!currentBooking,
+            current_booking: currentBooking || null,
+            currentBooking: currentBooking || null
           });
         }
         return new Response(JSON.stringify(roomsOccupancy), { headers: corsHeaders });

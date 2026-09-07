@@ -348,6 +348,9 @@ app.get('/api/rooms/:id/bookings', async (req, res) => {
        FROM booking_items bi
        JOIN bookings b ON bi.booking_id = b.id
        WHERE bi.room_id = ?
+         AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed'))
+         AND (b.checkin_status IS NULL OR b.checkin_status != 'cancelled')
+         AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
        ORDER BY bi.start_time ASC`,
       [req.params.id]
     );
@@ -3102,25 +3105,43 @@ app.get('/api/rooms/occupancy', async (req, res) => {
   }
 
   try {
+    const currentTimeISO = (current_time ? normalizeToLocalISO(current_time) : getBangkokLocalISO(new Date())).replace(' ', 'T');
     const rooms = await dbQuery.all('SELECT * FROM rooms WHERE status = "active"');
     const roomsOccupancy = [];
 
     for (const room of rooms) {
-      // Find if there is a booking overlapping with the current local time
+      // Find if there is an active/valid booking overlapping with the current local time
       const activeBooking = await dbQuery.get(
-        `SELECT b.id as booking_id, b.customer_name, b.department, b.booking_source, bi.start_time, bi.end_time, b.payment_status
+        `SELECT bi.id as item_id, b.id as booking_id, b.customer_name, b.department, b.booking_source,
+                bi.start_time, bi.end_time, b.payment_status, b.pin_code
          FROM booking_items bi
          JOIN bookings b ON bi.booking_id = b.id
          WHERE bi.room_id = ?
-           AND ? >= bi.start_time
-           AND ? <= bi.end_time`,
-        [room.id, current_time, current_time]
+           AND replace(bi.start_time, ' ', 'T') <= ?
+           AND replace(bi.end_time, ' ', 'T') > ?
+           AND b.payment_status IN ('paid', 'internal_free', 'pending', 'reviewing', 'rejected', 'unpaid')
+           AND b.payment_status != 'cancelled'
+           AND (b.checkin_status IS NULL OR b.checkin_status != 'cancelled')
+           AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+          ORDER BY
+            CASE
+             WHEN b.payment_status IN ('paid', 'internal_free') THEN 1
+             WHEN b.payment_status = 'reviewing' THEN 2
+             WHEN b.payment_status IN ('pending', 'unpaid') THEN 3
+             WHEN b.payment_status = 'rejected' THEN 4
+             ELSE 5
+           END ASC,
+           bi.id DESC
+         LIMIT 1`,
+        [room.id, currentTimeISO, currentTimeISO]
       );
 
       roomsOccupancy.push({
         ...room,
         isOccupied: !!activeBooking,
-        currentBooking: activeBooking || null
+        is_occupied: !!activeBooking,
+        currentBooking: activeBooking || null,
+        current_booking: activeBooking || null
       });
     }
 

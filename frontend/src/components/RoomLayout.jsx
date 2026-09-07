@@ -5,7 +5,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
   const [rooms, setRooms] = useState([]);
   const [loading, setLoading] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
-  
+
   // Modal for displaying occupied room details
   const [activeRoomDetail, setActiveRoomDetail] = useState(null);
   const [roomBookings, setRoomBookings] = useState([]);
@@ -53,7 +53,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
   const fetchOccupancy = async () => {
     setLoading(true);
     try {
-      const clientTimeStr = new Date().toISOString(); 
+      const clientTimeStr = new Date().toISOString();
       const res = await fetch(`/api/rooms/occupancy?current_time=${clientTimeStr}`);
       if (res.ok) {
         const data = await res.json();
@@ -147,11 +147,11 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
     setActiveRoomDetail(room);
     const todayStr = new Date().toLocaleDateString('en-CA'); // 'YYYY-MM-DD'
     setSelectedDate(todayStr);
-    
+
     const d = new Date();
     setCalendarMonth(d.getMonth());
     setCalendarYear(d.getFullYear());
-    
+
     try {
       const res = await fetch(`/api/rooms/${room.id}/bookings`);
       if (res.ok) {
@@ -166,407 +166,823 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
     }
   };
 
-  const getRoomByName = (numberStr) => {
-    return rooms.find(r => r.name.includes(numberStr));
+  // --- Data Normalization Helper (Local & Worker compatibility) ---
+  const normalizeRoom = (room) => {
+    if (!room) return null;
+    const rawOccupied = Boolean(room.isOccupied ?? room.is_occupied);
+    const booking = room.currentBooking ?? room.current_booking ?? null;
+
+    // Defensive check: If booking is cancelled or no booking exists, it is vacant
+    const isCancelled = booking && (booking.payment_status === 'cancelled' || booking.checkin_status === 'cancelled');
+    const isOccupied = rawOccupied && Boolean(booking) && !isCancelled;
+    const safeBooking = isOccupied ? booking : null;
+
+    let statusKey = 'vacant';
+    if (isOccupied && safeBooking) {
+      const pStatus = safeBooking.payment_status;
+      if (pStatus === 'paid' || pStatus === 'internal_free') {
+        statusKey = 'in_use';
+      } else if (['pending', 'unpaid', 'reviewing', 'rejected'].includes(pStatus)) {
+        statusKey = 'booked_pending';
+      } else {
+        statusKey = 'in_use';
+      }
+    }
+
+    return {
+      ...room,
+      isOccupied,
+      booking: safeBooking,
+      statusKey
+    };
+  };
+
+  const getOperationalStatusText = (booking, statusKey) => {
+    if (!booking || statusKey === 'vacant') return 'พร้อมให้บริการ';
+    const pStatus = booking.payment_status;
+    if (pStatus === 'reviewing') return 'รอตรวจสอบสลิป';
+    if (pStatus === 'rejected') return 'รอแนบสลิปใหม่';
+    if (pStatus === 'pending' || pStatus === 'unpaid') return 'รอชำระเงิน';
+    if (statusKey === 'booked_pending') return 'รอชำระเงิน';
+    return 'กำลังใช้งาน';
+  };
+
+  // Safe wall-clock time extractor (never shift UTC or apply tz offsets to slot hours)
+  const formatSlotTime = (timeStr) => {
+    if (!timeStr) return '';
+    if (typeof timeStr === 'string') {
+      const match = timeStr.match(/(?:T|\s)(\d{2}:\d{2})/);
+      if (match) return match[1];
+      const simple = timeStr.match(/^(\d{2}:\d{2})/);
+      if (simple) return simple[1];
+    }
+    try {
+      const d = new Date(timeStr);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+      }
+    } catch (e) {}
+    return String(timeStr);
+  };
+
+  const STATUS_CONFIG = {
+    vacant: {
+      label: 'ว่าง',
+      color: '#10b981',
+      bg: 'rgba(16, 185, 129, 0.06)',
+      border: '1px solid rgba(16, 185, 129, 0.35)',
+      badgeBg: 'rgba(16, 185, 129, 0.15)',
+      badgeColor: '#10b981',
+      dot: '#10b981',
+      actionText: 'คลิกเพื่อดูปฏิทิน / จอง'
+    },
+    booked_pending: {
+      label: 'จอง',
+      color: '#f59e0b',
+      bg: 'rgba(245, 158, 11, 0.06)',
+      border: '1px solid rgba(245, 158, 11, 0.35)',
+      badgeBg: 'rgba(245, 158, 11, 0.15)',
+      badgeColor: '#f59e0b',
+      dot: '#f59e0b',
+      actionText: 'รอชำระเงิน • คลิกดูรายละเอียด'
+    },
+    in_use: {
+      label: 'ใช้งาน',
+      color: '#ef4444',
+      bg: 'rgba(239, 68, 68, 0.06)',
+      border: '1px solid rgba(239, 68, 68, 0.35)',
+      badgeBg: 'rgba(239, 68, 68, 0.15)',
+      badgeColor: '#ef4444',
+      dot: '#ef4444',
+      actionText: 'กำลังใช้งาน • คลิกดูรายละเอียด'
+    }
+  };
+
+  const getJupiterRoom = () => {
+    return rooms.map(normalizeRoom).find(r =>
+      r && (r.name.includes('300') || r.name.toLowerCase().includes('jupiter')) &&
+      !r.name.toLowerCase().includes('co-working') &&
+      !r.name.toLowerCase().includes('coworking')
+    );
+  };
+
+  const getCoworkingRoom = () => {
+    return rooms.map(normalizeRoom).find(r =>
+      r && (r.name.toLowerCase().includes('co-working') || r.name.toLowerCase().includes('coworking'))
+    );
+  };
+
+  const getRoomByNumber = (numStr) => {
+    return rooms.map(normalizeRoom).find(r => r && r.name.includes(numStr));
+  };
+
+  const handleSlotClick = (normRoom) => {
+    if (!normRoom) return;
+    if (normRoom.isOccupied && normRoom.booking) {
+      handleViewBookingDetails(normRoom.booking.booking_id, normRoom.id);
+    } else {
+      handleRoomCardClick(normRoom);
+    }
   };
 
   const renderRoomSlot = (numberStr) => {
-    const room = getRoomByName(numberStr);
-    if (!room) {
+    const normRoom = getRoomByNumber(numberStr);
+    if (!normRoom) {
       return (
         <div style={{
-          height: '110px',
+          minHeight: '136px',
           borderRadius: '16px',
           border: '1px dashed var(--border-color)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          opacity: 0.5
+          opacity: 0.45,
+          backgroundColor: 'rgba(255, 255, 255, 0.01)'
         }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>ห้อง {numberStr}</span>
+          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>ห้อง {numberStr}</span>
         </div>
       );
     }
 
-    // 3 Status color configuration
-    let cardBorder = '2px solid var(--success-color)';
-    let cardBg = 'rgba(34, 197, 94, 0.08)';
-    let cardShadow = '0 6px 16px rgba(34, 197, 94, 0.05)';
-    let cardDot = 'var(--success-color)';
-    let statusText = 'ว่าง';
-    let statusColor = 'var(--success-color)';
-
-    if (room.isOccupied && room.currentBooking) {
-      if (room.currentBooking.payment_status === 'pending') {
-        // Yellow for Pending (จอง)
-        cardBorder = '2px solid #f59e0b';
-        cardBg = 'rgba(245, 158, 11, 0.08)';
-        cardShadow = '0 6px 16px rgba(245, 158, 11, 0.05)';
-        cardDot = '#f59e0b';
-        statusText = 'จอง';
-        statusColor = '#f59e0b';
-      } else {
-        // Red for Paid (ห้องถูกใช้งาน)
-        cardBorder = '2px solid var(--danger-color)';
-        cardBg = 'rgba(239, 68, 68, 0.08)';
-        cardShadow = '0 6px 16px rgba(239, 68, 68, 0.05)';
-        cardDot = 'var(--danger-color)';
-        statusText = 'ห้องถูกใช้งาน';
-        statusColor = 'var(--danger-color)';
-      }
-    }
+    const cfg = STATUS_CONFIG[normRoom.statusKey] || STATUS_CONFIG.vacant;
+    const booking = normRoom.booking;
+    const hasSlotTimes = booking && (booking.start_time || booking.end_time);
 
     return (
-      <div 
-        onClick={() => {
-          if (room.isOccupied && room.currentBooking) {
-            handleViewBookingDetails(room.currentBooking.booking_id, room.id);
-          } else {
-            handleRoomCardClick(room);
-          }
-        }}
+      <div
+        onClick={() => handleSlotClick(normRoom)}
+        className="room-layout-box"
         style={{
-          height: '110px',
+          minHeight: '132px',
           borderRadius: '16px',
-          border: cardBorder,
-          backgroundColor: cardBg,
-          boxShadow: cardShadow,
+          border: cfg.border,
+          backgroundColor: cfg.bg,
+          padding: '12px 14px',
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
+          justifyContent: 'space-between',
           cursor: 'pointer',
           userSelect: 'none',
           transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-          position: 'relative'
+          position: 'relative',
+          overflow: 'hidden'
         }}
-        className="room-layout-box"
+        title={`${normRoom.name} - ${cfg.actionText}`}
       >
-        {/* Room Number */}
-        <span style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--text-main)', lineHeight: 1.3, textAlign: 'center', padding: '0 6px' }}>
-          {room.name}
-        </span>
+        {/* Top: Room Name & Status Badge */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '6px' }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{
+              fontSize: '0.975rem',
+              fontWeight: 800,
+              color: 'var(--text-main)',
+              lineHeight: 1.25,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis'
+            }}>
+              {normRoom.name.replace(/^ห้องประชุม\s*/, '')}
+            </div>
+            <div style={{
+              fontSize: '0.725rem',
+              color: 'var(--text-muted)',
+              marginTop: '3px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}>
+              <Users size={12} style={{ opacity: 0.7 }} />
+              <span>ความจุ {normRoom.capacity} คน</span>
+            </div>
+          </div>
 
-        {/* Room Status Text */}
-        <span style={{ fontSize: '0.75rem', color: statusColor, marginTop: '8px', fontWeight: 750 }}>
-          {statusText}
-        </span>
+          {/* Status Badge */}
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px',
+            padding: '3px 8px',
+            borderRadius: '99px',
+            fontSize: '0.725rem',
+            fontWeight: 700,
+            backgroundColor: cfg.badgeBg,
+            color: cfg.badgeColor,
+            flexShrink: 0
+          }}>
+            <span style={{
+              width: '6px',
+              height: '6px',
+              borderRadius: '50%',
+              backgroundColor: cfg.dot
+            }}></span>
+            <span>{cfg.label}</span>
+          </span>
+        </div>
 
-        {/* Status Dot */}
+        {/* Bottom: Timing line or Available indicator */}
         <div style={{
-          position: 'absolute',
-          top: '10px',
-          right: '10px',
-          width: '6px',
-          height: '6px',
-          borderRadius: '50%',
-          backgroundColor: cardDot,
-          boxShadow: `0 0 6px ${cardDot}`
-        }}></div>
+          marginTop: '10px',
+          paddingTop: '8px',
+          borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          fontSize: '0.775rem'
+        }}>
+          {normRoom.isOccupied && booking ? (
+            <div style={{ minWidth: 0, width: '100%' }}>
+              <div style={{
+                color: cfg.badgeColor,
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}>
+                <Clock size={12} />
+                <span>
+                  {hasSlotTimes
+                    ? `${formatSlotTime(booking.start_time)} - ${formatSlotTime(booking.end_time)} น.`
+                    : getOperationalStatusText(booking, normRoom.statusKey)}
+                </span>
+              </div>
+              <div style={{
+                fontSize: '0.72rem',
+                color: 'var(--text-muted)',
+                marginTop: '2px'
+              }}>
+                {normRoom.statusKey === 'booked_pending'
+                  ? getOperationalStatusText(booking, normRoom.statusKey)
+                  : (hasSlotTimes ? `ถึง ${formatSlotTime(booking.end_time)} น.` : 'กำลังใช้งาน')}
+              </div>
+            </div>
+          ) : (
+            <div style={{
+              color: 'var(--text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              width: '100%'
+            }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#10b981', fontWeight: 600 }}>
+                <CheckCircle size={12} />
+                <span>พร้อมให้บริการ</span>
+              </span>
+              <span style={{ fontSize: '0.72rem', opacity: 0.8 }}>
+                ฿{normRoom.hourly_rate}/ชม.
+              </span>
+            </div>
+          )}
+        </div>
       </div>
     );
   };
 
   const renderJupiterSlot = () => {
-    const room = getRoomByName('300');
-    if (!room) {
+    const normRoom = getJupiterRoom();
+    if (!normRoom) {
       return (
         <div style={{
-          width: '100%',
-          height: '236px',
+          height: '100%',
+          minHeight: '276px',
           borderRadius: '20px',
           border: '1px dashed var(--border-color)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          opacity: 0.5
+          opacity: 0.45
         }}>
-          <span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>ห้องประชุม Jupiter (300)</span>
+          <span style={{ fontSize: '0.95rem', color: 'var(--text-muted)' }}>ห้องประชุม Jupiter (300)</span>
         </div>
       );
     }
 
-    // 3 Status color configuration
-    let cardBorder = '2px solid var(--success-color)';
-    let cardBg = 'rgba(34, 197, 94, 0.08)';
-    let cardShadow = '0 8px 24px rgba(34, 197, 94, 0.08)';
-    let cardDot = 'var(--success-color)';
-    let statusText = 'ว่าง';
-    let statusColor = 'var(--success-color)';
-
-    if (room.isOccupied && room.currentBooking) {
-      if (room.currentBooking.payment_status === 'pending') {
-        cardBorder = '2px solid #f59e0b';
-        cardBg = 'rgba(245, 158, 11, 0.08)';
-        cardShadow = '0 8px 24px rgba(245, 158, 11, 0.08)';
-        cardDot = '#f59e0b';
-        statusText = 'จอง';
-        statusColor = '#f59e0b';
-      } else {
-        cardBorder = '2px solid var(--danger-color)';
-        cardBg = 'rgba(239, 68, 68, 0.08)';
-        cardShadow = '0 8px 24px rgba(239, 68, 68, 0.08)';
-        cardDot = 'var(--danger-color)';
-        statusText = 'ห้องถูกใช้งาน';
-        statusColor = 'var(--danger-color)';
-      }
-    }
+    const cfg = STATUS_CONFIG[normRoom.statusKey] || STATUS_CONFIG.vacant;
+    const booking = normRoom.booking;
+    const hasSlotTimes = booking && (booking.start_time || booking.end_time);
 
     return (
-      <div 
-        onClick={() => {
-          if (room.isOccupied && room.currentBooking) {
-            handleViewBookingDetails(room.currentBooking.booking_id, room.id);
-          } else {
-            handleRoomCardClick(room);
-          }
-        }}
+      <div
+        onClick={() => handleSlotClick(normRoom)}
+        className="room-layout-box"
         style={{
-          width: '100%',
-          height: '236px',
+          height: '100%',
+          minHeight: '276px',
           borderRadius: '20px',
-          border: cardBorder,
-          backgroundColor: cardBg,
-          boxShadow: cardShadow,
+          border: cfg.border,
+          backgroundColor: cfg.bg,
+          padding: '18px 20px',
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
+          justifyContent: 'space-between',
           cursor: 'pointer',
           userSelect: 'none',
           transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
           position: 'relative'
         }}
-        className="room-layout-box"
+        title={`${normRoom.name} - ${cfg.actionText}`}
       >
-        <span style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--text-main)', textAlign: 'center' }}>
-          {room.name}
-        </span>
-        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-          ความจุ {room.capacity} คน
-        </span>
-        <span style={{ fontSize: '0.85rem', color: statusColor, marginTop: '12px', fontWeight: 750 }}>
-          {statusText}
-        </span>
+        {/* Header inside Card */}
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+            <div>
+              <div style={{
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                letterSpacing: '0.05em',
+                color: 'var(--primary-color)',
+                textTransform: 'uppercase'
+              }}>
+                ห้องประชุมใหญ่
+              </div>
+              <h3 style={{
+                fontSize: '1.35rem',
+                fontWeight: 900,
+                color: 'var(--text-main)',
+                margin: '4px 0 0 0',
+                lineHeight: 1.2
+              }}>
+                {normRoom.name}
+              </h3>
+            </div>
+
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 10px',
+              borderRadius: '99px',
+              fontSize: '0.75rem',
+              fontWeight: 700,
+              backgroundColor: cfg.badgeBg,
+              color: cfg.badgeColor
+            }}>
+              <span style={{
+                width: '7px',
+                height: '7px',
+                borderRadius: '50%',
+                backgroundColor: cfg.dot
+              }}></span>
+              <span>{cfg.label}</span>
+            </span>
+          </div>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            marginTop: '10px',
+            fontSize: '0.825rem',
+            color: 'var(--text-muted)'
+          }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              <Users size={14} style={{ opacity: 0.7 }} />
+              <span>ความจุ {normRoom.capacity} คน</span>
+            </span>
+            <span>•</span>
+            <span>฿{normRoom.hourly_rate}/ชม.</span>
+          </div>
+        </div>
+
+        {/* Operational / Timing Status Center & Bottom */}
         <div style={{
-          position: 'absolute',
-          top: '16px',
-          right: '16px',
-          width: '8px',
-          height: '8px',
-          borderRadius: '50%',
-          backgroundColor: cardDot,
-          boxShadow: `0 0 8px ${cardDot}`
-        }}></div>
+          backgroundColor: 'rgba(255, 255, 255, 0.02)',
+          border: '1px solid rgba(255, 255, 255, 0.06)',
+          borderRadius: '14px',
+          padding: '14px 16px',
+          marginTop: '16px'
+        }}>
+          {normRoom.isOccupied && booking ? (
+            <div>
+              <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                ช่วงเวลาการใช้งานปัจจุบัน
+              </div>
+              <div style={{
+                color: cfg.badgeColor,
+                fontWeight: 800,
+                fontSize: '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <Clock size={15} />
+                <span>
+                  {hasSlotTimes
+                    ? `${formatSlotTime(booking.start_time)} - ${formatSlotTime(booking.end_time)} น.`
+                    : getOperationalStatusText(booking, normRoom.statusKey)}
+                </span>
+              </div>
+              <div style={{ fontSize: '0.8rem', color: cfg.badgeColor, fontWeight: 600, marginTop: '6px' }}>
+                {normRoom.statusKey === 'booked_pending'
+                  ? getOperationalStatusText(booking, normRoom.statusKey)
+                  : (hasSlotTimes ? `ถึง ${formatSlotTime(booking.end_time)} น.` : 'กำลังใช้งาน')}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div style={{
+                color: '#10b981',
+                fontWeight: 700,
+                fontSize: '0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <CheckCircle size={16} />
+                <span>พร้อมให้บริการทันที</span>
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                คลิกเพื่อดูตารางคิวจองรายวัน หรือสร้างการจองใหม่
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Action cue footer */}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginTop: '12px',
+          fontSize: '0.75rem',
+          color: 'var(--text-muted)'
+        }}>
+          <span>{cfg.actionText}</span>
+          <Calendar size={13} style={{ opacity: 0.6 }} />
+        </div>
       </div>
     );
   };
 
   const renderCoworkingSlot = () => {
-    const room = rooms.find(r => r.name.toLowerCase().includes('co-working') || r.name.toLowerCase().includes('coworking'));
-    if (!room) {
+    const normRoom = getCoworkingRoom();
+    if (!normRoom) {
       return (
         <div style={{
-          width: '100%',
-          height: '236px',
+          height: '100%',
+          minHeight: '276px',
           borderRadius: '20px',
           border: '1px dashed var(--border-color)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          opacity: 0.5
+          opacity: 0.45
         }}>
-          <span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>โซน Co-working</span>
+          <span style={{ fontSize: '0.95rem', color: 'var(--text-muted)' }}>โซน Co-working</span>
         </div>
       );
     }
 
-    // 3 Status color configuration
-    let cardBorder = '2px solid var(--success-color)';
-    let cardBg = 'rgba(34, 197, 94, 0.08)';
-    let cardShadow = '0 8px 24px rgba(34, 197, 94, 0.08)';
-    let cardDot = 'var(--success-color)';
-    let statusText = 'ว่าง';
-    let statusColor = 'var(--success-color)';
-
-    if (room.isOccupied && room.currentBooking) {
-      if (room.currentBooking.payment_status === 'pending') {
-        cardBorder = '2px solid #f59e0b';
-        cardBg = 'rgba(245, 158, 11, 0.08)';
-        cardShadow = '0 8px 24px rgba(245, 158, 11, 0.08)';
-        cardDot = '#f59e0b';
-        statusText = 'จอง';
-        statusColor = '#f59e0b';
-      } else {
-        cardBorder = '2px solid var(--danger-color)';
-        cardBg = 'rgba(239, 68, 68, 0.08)';
-        cardShadow = '0 8px 24px rgba(239, 68, 68, 0.08)';
-        cardDot = 'var(--danger-color)';
-        statusText = 'โซนถูกใช้งาน';
-        statusColor = 'var(--danger-color)';
-      }
-    }
+    const cfg = STATUS_CONFIG[normRoom.statusKey] || STATUS_CONFIG.vacant;
+    const booking = normRoom.booking;
+    const hasSlotTimes = booking && (booking.start_time || booking.end_time);
 
     return (
-      <div 
-        onClick={() => {
-          if (room.isOccupied && room.currentBooking) {
-            handleViewBookingDetails(room.currentBooking.booking_id, room.id);
-          } else {
-            handleRoomCardClick(room);
-          }
-        }}
+      <div
+        onClick={() => handleSlotClick(normRoom)}
+        className="room-layout-box"
         style={{
-          width: '100%',
-          height: '236px',
+          height: '100%',
+          minHeight: '276px',
           borderRadius: '20px',
-          border: cardBorder,
-          backgroundColor: cardBg,
-          boxShadow: cardShadow,
+          border: cfg.border,
+          backgroundColor: cfg.bg,
+          padding: '18px 20px',
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
+          justifyContent: 'space-between',
           cursor: 'pointer',
           userSelect: 'none',
           transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
           position: 'relative'
         }}
-        className="room-layout-box"
+        title={`${normRoom.name} - ${cfg.actionText}`}
       >
-        <span style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--text-main)', textAlign: 'center', padding: '0 12px' }}>
-          {room.name}
-        </span>
-        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-          ความจุ {room.capacity} คน
-        </span>
-        <span style={{ fontSize: '0.85rem', color: statusColor, marginTop: '12px', fontWeight: 750 }}>
-          {statusText}
-        </span>
+        {/* Header inside Card */}
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+            <div>
+              <div style={{
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                letterSpacing: '0.05em',
+                color: 'var(--primary-color)',
+                textTransform: 'uppercase'
+              }}>
+                พื้นที่ทำงานร่วม
+              </div>
+              <h3 style={{
+                fontSize: '1.25rem',
+                fontWeight: 900,
+                color: 'var(--text-main)',
+                margin: '4px 0 0 0',
+                lineHeight: 1.25
+              }}>
+                {normRoom.name}
+              </h3>
+            </div>
+
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '4px 10px',
+              borderRadius: '99px',
+              fontSize: '0.75rem',
+              fontWeight: 700,
+              backgroundColor: cfg.badgeBg,
+              color: cfg.badgeColor
+            }}>
+              <span style={{
+                width: '7px',
+                height: '7px',
+                borderRadius: '50%',
+                backgroundColor: cfg.dot
+              }}></span>
+              <span>{cfg.label}</span>
+            </span>
+          </div>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            marginTop: '10px',
+            fontSize: '0.825rem',
+            color: 'var(--text-muted)'
+          }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              <Users size={14} style={{ opacity: 0.7 }} />
+              <span>ความจุ {normRoom.capacity} คน</span>
+            </span>
+            <span>•</span>
+            <span>฿{normRoom.hourly_rate}/ชม.</span>
+          </div>
+        </div>
+
+        {/* Operational / Timing Status Center & Bottom */}
         <div style={{
-          position: 'absolute',
-          top: '16px',
-          right: '16px',
-          width: '8px',
-          height: '8px',
-          borderRadius: '50%',
-          backgroundColor: cardDot,
-          boxShadow: `0 0 8px ${cardDot}`
-        }}></div>
+          backgroundColor: 'rgba(255, 255, 255, 0.02)',
+          border: '1px solid rgba(255, 255, 255, 0.06)',
+          borderRadius: '14px',
+          padding: '14px 16px',
+          marginTop: '16px'
+        }}>
+          {normRoom.isOccupied && booking ? (
+            <div>
+              <div style={{ fontSize: '0.725rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                ช่วงเวลาการใช้งานปัจจุบัน
+              </div>
+              <div style={{
+                color: cfg.badgeColor,
+                fontWeight: 800,
+                fontSize: '1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <Clock size={15} />
+                <span>
+                  {hasSlotTimes
+                    ? `${formatSlotTime(booking.start_time)} - ${formatSlotTime(booking.end_time)} น.`
+                    : getOperationalStatusText(booking, normRoom.statusKey)}
+                </span>
+              </div>
+              <div style={{ fontSize: '0.8rem', color: cfg.badgeColor, fontWeight: 600, marginTop: '6px' }}>
+                {normRoom.statusKey === 'booked_pending'
+                  ? getOperationalStatusText(booking, normRoom.statusKey)
+                  : (hasSlotTimes ? `ถึง ${formatSlotTime(booking.end_time)} น.` : 'กำลังใช้งาน')}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div style={{
+                color: '#10b981',
+                fontWeight: 700,
+                fontSize: '0.9rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <CheckCircle size={16} />
+                <span>พร้อมให้บริการทันที</span>
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                คลิกเพื่อดูตารางคิวจองรายวัน หรือสร้างการจองใหม่
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Action cue footer */}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginTop: '12px',
+          fontSize: '0.75rem',
+          color: 'var(--text-muted)'
+        }}>
+          <span>{cfg.actionText}</span>
+          <Calendar size={13} style={{ opacity: 0.6 }} />
+        </div>
       </div>
     );
   };
 
+  // Status counters calculation
+  const normalizedRooms = rooms.map(normalizeRoom).filter(Boolean);
+  const statusCounts = {
+    vacant: normalizedRooms.filter(r => r.statusKey === 'vacant').length,
+    booked_pending: normalizedRooms.filter(r => r.statusKey === 'booked_pending').length,
+    in_use: normalizedRooms.filter(r => r.statusKey === 'in_use').length
+  };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
-      {/* Header and Control Bar */}
-      <div className="tab-header">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {/* 1. Header & Integrated Operational Bar */}
+      <div className="tab-header" style={{
+        margin: 0,
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: '14px'
+      }}>
         <div>
-          <h1 className="tab-title">แผนผังสถานะห้องประชุม</h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>แสดงผังห้องประชุมจำลองแบบเรียลไทม์ และนำทางจองได้ทันที</p>
+          <h1 className="tab-title" style={{ fontSize: '1.4rem', fontWeight: 850, margin: 0 }}>
+            แผนผังสถานะห้องประชุม
+          </h1>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.825rem', marginTop: '3px', marginBottom: 0 }}>
+            กระดานตรวจสถานะห้องแบบเรียลไทม์ (ทั้งหมด {rooms.length} ห้อง/โซน)
+          </p>
         </div>
 
-        {/* Live Clock & Refresh controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <div style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '8px', 
-            backgroundColor: 'rgba(56, 189, 248, 0.08)', 
-            border: '1px solid rgba(56, 189, 248, 0.15)',
-            padding: '8px 16px', 
-            borderRadius: '99px',
-            color: 'var(--primary-color)',
-            fontWeight: 'bold',
-            fontSize: '0.85rem',
-            boxShadow: '0 4px 12px rgba(56,189,248,0.05)'
+        {/* Live Counters & Controls in header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          {/* Integrated Status Counters (acts as legend) */}
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '3px 8px',
+            backgroundColor: 'var(--bg-card)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '12px',
+            fontSize: '0.8rem'
           }}>
-            <Clock size={14} />
-            <span>เวลาปัจจุบัน: {currentTime.toLocaleTimeString('th-TH')} น.</span>
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '4px 8px',
+              borderRadius: '8px',
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              color: '#10b981',
+              fontWeight: 700
+            }}>
+              <span style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#10b981' }}></span>
+              <span>ว่าง {statusCounts.vacant}</span>
+            </div>
+
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '4px 8px',
+              borderRadius: '8px',
+              backgroundColor: 'rgba(245, 158, 11, 0.1)',
+              color: '#f59e0b',
+              fontWeight: 700
+            }}>
+              <span style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#f59e0b' }}></span>
+              <span>จอง {statusCounts.booked_pending}</span>
+            </div>
+
+            <div style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '4px 8px',
+              borderRadius: '8px',
+              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+              color: '#ef4444',
+              fontWeight: 700
+            }}>
+              <span style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#ef4444' }}></span>
+              <span>ใช้งาน {statusCounts.in_use}</span>
+            </div>
           </div>
 
-          <button 
-            className="btn btn-secondary" 
-            style={{ padding: '8px 14px', borderRadius: '99px', fontSize: '0.85rem', gap: '6px' }}
+          {/* Live Clock */}
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            backgroundColor: 'var(--bg-card)',
+            border: '1px solid var(--border-color)',
+            padding: '6px 12px',
+            borderRadius: '12px',
+            color: 'var(--text-main)',
+            fontWeight: 600,
+            fontSize: '0.825rem'
+          }}>
+            <Clock size={13} style={{ color: 'var(--primary-color)' }} />
+            <span>{currentTime.toLocaleTimeString('th-TH')} น.</span>
+          </div>
+
+          {/* Refresh button */}
+          <button
+            className="btn btn-secondary"
+            style={{ padding: '6px 12px', borderRadius: '12px', fontSize: '0.825rem', gap: '6px', height: '34px' }}
             onClick={fetchOccupancy}
             disabled={loading}
+            title="รีเฟรชข้อมูลสถานะห้อง"
           >
-            <RefreshCw size={14} className={loading ? 'spin-anim' : ''} />
+            <RefreshCw size={13} className={loading ? 'spin-anim' : ''} />
             <span>รีเฟรช</span>
           </button>
         </div>
       </div>
 
-      {/* Legends Row (Matching Reference Image with 3 status colors) */}
-      <div style={{ display: 'flex', gap: '20px', alignItems: 'center', paddingLeft: '8px', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-main)' }}>
-          <div style={{ width: '16px', height: '16px', borderRadius: '4px', border: '2px solid var(--success-color)', backgroundColor: 'rgba(34, 197, 94, 0.1)' }}></div>
-          <span>ว่าง</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-main)' }}>
-          <div style={{ width: '16px', height: '16px', borderRadius: '4px', border: '2px solid #f59e0b', backgroundColor: 'rgba(245, 158, 11, 0.1)' }}></div>
-          <span>จอง (ยังไม่ชำระเงิน)</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-main)' }}>
-          <div style={{ width: '16px', height: '16px', borderRadius: '4px', border: '2px solid var(--danger-color)', backgroundColor: 'rgba(239, 68, 68, 0.1)' }}></div>
-          <span>ห้องถูกใช้งาน (ชำระเงินแล้ว)</span>
-        </div>
-      </div>
-
+      {/* 2. Architectural Floor Plan Layout Board */}
       {loading && rooms.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '60px' }}>
           <span style={{ fontSize: '1.1rem', color: 'var(--text-muted)' }}>กำลังเปิดแผนผังห้อง...</span>
         </div>
       ) : (
-        /* Architectural Floor Plan Layout Board (Matching Reference Blueprint Image but updated) */
-        <div className="layout-board-container" style={{ overflowX: 'auto', padding: '24px' }}>
-          <div style={{ 
-            display: 'flex', 
-            gap: '24px', 
-            minWidth: '1000px',
+        <div className="layout-board-container" style={{
+          overflowX: 'auto',
+          padding: '16px 20px',
+          backgroundColor: 'var(--bg-card)',
+          borderRadius: '20px',
+          border: '1px solid var(--border-color)'
+        }}>
+          <div style={{
+            display: 'flex',
+            gap: '14px',
+            minWidth: '960px',
             alignItems: 'stretch',
             justifyContent: 'space-between',
             width: '100%'
           }}>
             {/* 1. Left Section: ห้องประชุม Jupiter (300) */}
             <div style={{
-              flex: '1',
-              border: '2px solid var(--border-color)',
-              borderRadius: '20px',
-              padding: '20px',
-              backgroundColor: 'rgba(255, 255, 255, 0.02)',
+              flex: '1.05',
+              minWidth: '220px',
+              border: '1px solid var(--border-color)',
+              borderRadius: '18px',
+              padding: '14px',
+              backgroundColor: 'rgba(255, 255, 255, 0.01)',
               display: 'flex',
               flexDirection: 'column',
-              justifyContent: 'center',
-              minHeight: '260px',
               position: 'relative'
             }}>
-              <div style={{ position: 'absolute', top: '-10px', left: '16px', backgroundColor: 'var(--bg-card)', padding: '0 8px', fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>
+              <div style={{
+                position: 'absolute',
+                top: '-10px',
+                left: '16px',
+                backgroundColor: 'var(--bg-card)',
+                padding: '0 8px',
+                fontSize: '0.75rem',
+                color: 'var(--text-muted)',
+                fontWeight: 700,
+                borderRadius: '4px'
+              }}>
                 ห้องประชุม Jupiter (300)
               </div>
               {renderJupiterSlot()}
             </div>
 
-            {/* 2. Right Section: Meeting Rooms 2x3 Grid (301-306) */}
+            {/* 2. Center Section: Rooms 301 - 306 (3x2 Grid) */}
             <div style={{
-              flex: '2.2',
-              border: '2px solid var(--border-color)',
-              borderRadius: '20px',
-              padding: '20px',
-              backgroundColor: 'rgba(255, 255, 255, 0.02)',
-              minHeight: '260px',
+              flex: '2.6',
+              minWidth: '500px',
+              border: '1px solid var(--border-color)',
+              borderRadius: '18px',
+              padding: '14px',
+              backgroundColor: 'rgba(255, 255, 255, 0.01)',
               position: 'relative'
             }}>
-              <div style={{ position: 'absolute', top: '-10px', left: '16px', backgroundColor: 'var(--bg-card)', padding: '0 8px', fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>
-                โซนห้องประชุม (Rooms 301 - 306)
+              <div style={{
+                position: 'absolute',
+                top: '-10px',
+                left: '16px',
+                backgroundColor: 'var(--bg-card)',
+                padding: '0 8px',
+                fontSize: '0.75rem',
+                color: 'var(--text-muted)',
+                fontWeight: 700,
+                borderRadius: '4px'
+              }}>
+                โซนห้องประชุมย่อย (Rooms 301 - 306)
               </div>
               <div style={{
                 display: 'grid',
                 gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: '16px',
+                gap: '12px',
                 height: '100%'
               }}>
                 {/* Row 1 */}
@@ -581,20 +997,29 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
               </div>
             </div>
 
-            {/* 3. Third Section: Co-working Space Zone */}
+            {/* 3. Right Section: Co-working Space Zone */}
             <div style={{
-              flex: '1.2',
-              border: '2px solid var(--border-color)',
-              borderRadius: '20px',
-              padding: '20px',
-              backgroundColor: 'rgba(255, 255, 255, 0.02)',
+              flex: '1.05',
+              minWidth: '220px',
+              border: '1px solid var(--border-color)',
+              borderRadius: '18px',
+              padding: '14px',
+              backgroundColor: 'rgba(255, 255, 255, 0.01)',
               display: 'flex',
               flexDirection: 'column',
-              justifyContent: 'center',
-              minHeight: '260px',
               position: 'relative'
             }}>
-              <div style={{ position: 'absolute', top: '-10px', left: '16px', backgroundColor: 'var(--bg-card)', padding: '0 8px', fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 'bold' }}>
+              <div style={{
+                position: 'absolute',
+                top: '-10px',
+                left: '16px',
+                backgroundColor: 'var(--bg-card)',
+                padding: '0 8px',
+                fontSize: '0.75rem',
+                color: 'var(--text-muted)',
+                fontWeight: 700,
+                borderRadius: '4px'
+              }}>
                 โซน Co-working
               </div>
               {renderCoworkingSlot()}
@@ -635,7 +1060,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
             borderRadius: '24px'
           }}>
             {/* Close button */}
-            <button 
+            <button
               style={{ position: 'absolute', right: '20px', top: '20px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
               onClick={() => setActiveRoomDetail(null)}
             >
@@ -654,7 +1079,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
 
             {/* Side-by-side Layout (Selected Day schedule left, Calendar right) */}
             <div className="grid-cols-2" style={{ gap: '20px', marginTop: '8px' }}>
-              
+
               {/* Left Column: Selected Date Schedule & Action */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', borderRight: '1px solid var(--border-color)', paddingRight: '20px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -664,11 +1089,11 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                       return `${parts[2]}/${parts[1]}/${parseInt(parts[0], 10) + 543}`;
                     })()}
                   </span>
-                  
+
                   {/* Vacant Badge */}
-                  <span style={{ 
-                    fontSize: '0.75rem', 
-                    padding: '2px 8px', 
+                  <span style={{
+                    fontSize: '0.75rem',
+                    padding: '2px 8px',
                     borderRadius: '99px',
                     fontWeight: 'bold',
                     backgroundColor: roomBookings.some(b => getLocalDateStr(b.start_time) === selectedDate) ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)',
@@ -679,9 +1104,9 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                 </div>
 
                 {/* Bookings List for Selected Date */}
-                <div style={{ 
-                  flex: 1, 
-                  maxHeight: '220px', 
+                <div style={{
+                  flex: 1,
+                  maxHeight: '220px',
                   overflowY: 'auto',
                   display: 'flex',
                   flexDirection: 'column',
@@ -709,13 +1134,13 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                     return dayBookings.map((b, idx) => {
                       const sTime = new Date(b.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
                       const eTime = new Date(b.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                      
+
                       return (
-                        <div key={idx} 
+                        <div key={idx}
                           onClick={() => handleViewBookingDetails(b.booking_id, activeRoomDetail.id)}
-                          style={{ 
-                            padding: '10px 12px', 
-                            borderRadius: '12px', 
+                          style={{
+                            padding: '10px 12px',
+                            borderRadius: '12px',
                             border: '1px solid var(--border-color)',
                             backgroundColor: 'rgba(255, 255, 255, 0.015)',
                             fontSize: '0.85rem',
@@ -746,7 +1171,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                               }}>
                                 {b.booking_source === 'online' ? '🌐 ออนไลน์' : '🏬 Walk-in'}
                               </span>
-                              <span style={{ 
+                              <span style={{
                                 color: b.payment_status === 'paid' ? 'var(--success-color)' : '#f59e0b',
                                 fontSize: '0.725rem'
                               }}>
@@ -763,7 +1188,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                 </div>
 
                 {/* Quick Booking Button */}
-                <button 
+                <button
                   className="btn btn-primary"
                   style={{ width: '100%', padding: '10px', borderRadius: '12px', gap: '6px' }}
                   onClick={() => {
@@ -788,18 +1213,18 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                     borderRadius: '12px',
                     border: '1px solid var(--border-color)'
                   }}>
-                    <button 
-                      type="button" 
-                      style={{ 
-                        width: '28px', 
-                        height: '28px', 
-                        borderRadius: '8px', 
-                        border: 'none', 
-                        backgroundColor: 'transparent', 
-                        color: 'var(--text-main)', 
-                        cursor: 'pointer', 
-                        display: 'flex', 
-                        alignItems: 'center', 
+                    <button
+                      type="button"
+                      style={{
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '8px',
+                        border: 'none',
+                        backgroundColor: 'transparent',
+                        color: 'var(--text-main)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
                         justifyContent: 'center',
                         transition: 'all 0.15s ease'
                       }}
@@ -820,18 +1245,18 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                     <span style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--text-main)' }}>
                       {["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"][calendarMonth]} {calendarYear + 543}
                     </span>
-                    <button 
-                      type="button" 
-                      style={{ 
-                        width: '28px', 
-                        height: '28px', 
-                        borderRadius: '8px', 
-                        border: 'none', 
-                        backgroundColor: 'transparent', 
-                        color: 'var(--text-main)', 
-                        cursor: 'pointer', 
-                        display: 'flex', 
-                        alignItems: 'center', 
+                    <button
+                      type="button"
+                      style={{
+                        width: '28px',
+                        height: '28px',
+                        borderRadius: '8px',
+                        border: 'none',
+                        backgroundColor: 'transparent',
+                        color: 'var(--text-main)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
                         justifyContent: 'center',
                         transition: 'all 0.15s ease'
                       }}
@@ -857,7 +1282,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px', textAlign: 'center', fontWeight: 'bold', fontSize: '0.725rem', color: 'var(--text-muted)' }}>
                     {["อา", "จ", "อ", "พ", "พฤ", "ศ", "ส"].map(name => <div key={name}>{name}</div>)}
                   </div>
-                  
+
                   {/* Calendar Grid Numbers */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px', justifyItems: 'center' }}>
                     {(() => {
@@ -874,7 +1299,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                       for (let day = 1; day <= daysInMonth; day++) {
                         const targetStr = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                         const isSelected = selectedDate === targetStr;
-                        
+
                         // Check booking status for this specific calendar day
                         const dayBks = roomBookings.filter(b => {
                           try {
@@ -917,7 +1342,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                             }}
                           >
                             <span>{day}</span>
-                            
+
                             {/* Small status dot inside cell */}
                             {hasBooking && (
                               <div style={{
@@ -971,7 +1396,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
             gap: '20px'
           }}>
             {/* Close button */}
-            <button 
+            <button
               type="button"
               style={{ position: 'absolute', right: '20px', top: '20px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
               onClick={() => setViewedEvent(null)}
@@ -1007,7 +1432,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              
+
               {/* Event Info Card */}
               <div style={{
                 background: 'rgba(255, 255, 255, 0.02)',
@@ -1054,7 +1479,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                   const diffMs = end - start;
                   const diffHrs = diffMs / (1000 * 60 * 60);
                   const hoursRounded = Math.ceil(diffHrs);
-                  
+
                   if (viewedEvent.booking_type === 'daily') {
                     return '1 วัน (9 ชั่วโมง)';
                   } else if (viewedEvent.booking_type === 'halfday') {
@@ -1103,7 +1528,7 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
                     </span>
                   </div>
                 </div>
-                
+
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ราคาสุทธิเฉพาะห้องนี้</div>
                   <div style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--text-main)' }}>
@@ -1114,10 +1539,10 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
 
             </div>
 
-            <button 
-              type="button" 
-              className="btn btn-primary" 
-              style={{ width: '100%', height: '44px', borderRadius: '14px', marginTop: '8px' }} 
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: '100%', height: '44px', borderRadius: '14px', marginTop: '8px' }}
               onClick={() => setViewedEvent(null)}
             >
               ปิดหน้าต่าง
