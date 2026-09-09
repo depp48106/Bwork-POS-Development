@@ -478,12 +478,13 @@ test('BUG 2 - KBank Fallback: "Transaction No" reference marker', () => {
   ].join('\n');
 
   const ext = extractReceiverSection(ocrText);
-  assert.equal(ext.template, 'kbank_structural');
-  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+  assert.equal(ext.template, 'unrecognized'); // C: conservative backend parity
+  assert.equal(ext.text, '');
+  assert.deepEqual(ext, require('../slipVerifier').extractReceiverSection(ocrText));
 
   const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, kbankCompanySettings, kbankQr);
-  assert.equal(res.receiver.matched, true);
-  assert.equal(res.receiver.statusText, 'ตรง');
+  assert.equal(res.receiver.matched, false);
+  assert.equal(res.receiver.statusText, 'ตรวจไม่ได้');
 });
 
 test('BUG 2 - KBank Fallback: "Ref ID" reference marker', () => {
@@ -498,12 +499,13 @@ test('BUG 2 - KBank Fallback: "Ref ID" reference marker', () => {
   ].join('\n');
 
   const ext = extractReceiverSection(ocrText);
-  assert.equal(ext.template, 'kbank_structural');
-  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+  assert.equal(ext.template, 'unrecognized'); // C: conservative backend parity
+  assert.equal(ext.text, '');
+  assert.deepEqual(ext, require('../slipVerifier').extractReceiverSection(ocrText));
 
   const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, kbankCompanySettings, kbankQr);
-  assert.equal(res.receiver.matched, true);
-  assert.equal(res.receiver.statusText, 'ตรง');
+  assert.equal(res.receiver.matched, false);
+  assert.equal(res.receiver.statusText, 'ตรวจไม่ได้');
 });
 
 test('BUG 2 - KBank Fallback: "ธ.กสิกรไทย" sender marker', () => {
@@ -537,12 +539,13 @@ test('BUG 2 - KBank Fallback: "KBANK" uppercase marker', () => {
   ].join('\n');
 
   const ext = extractReceiverSection(ocrText);
-  assert.equal(ext.template, 'kbank_structural');
-  assert.match(ext.text, /บริษัท บิลท์ ฮาร์ท จำกัด/);
+  assert.equal(ext.template, 'unrecognized'); // C: conservative backend parity
+  assert.equal(ext.text, '');
+  assert.deepEqual(ext, require('../slipVerifier').extractReceiverSection(ocrText));
 
   const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, kbankCompanySettings, kbankQr);
-  assert.equal(res.receiver.matched, true);
-  assert.equal(res.receiver.statusText, 'ตรง');
+  assert.equal(res.receiver.matched, false);
+  assert.equal(res.receiver.statusText, 'ตรวจไม่ได้');
 });
 
 test('BUG 2 - KBank Fallback: "K+" logo text marker', () => {
@@ -576,7 +579,7 @@ test('BUG 2 - Negative Safety: sender section only -> FAIL CLOSED (statusText: �
 
   const ext = extractReceiverSection(ocrText);
   assert.equal(ext.text, '');
-  assert.equal(ext.template, 'unknown');
+  assert.equal(ext.template, 'unrecognized'); // C: canonical shared status
 
   const res = evaluateBrowserAssistant(ocrText, { total_amount: 300 }, defaultCompanySettings);
   assert.equal(res.receiver.matched, false);
@@ -638,7 +641,7 @@ test('BUG 2 - Negative Safety: unrelated OCR text -> FAIL CLOSED', () => {
 
   const ext = extractReceiverSection(ocrText);
   assert.equal(ext.text, '');
-  assert.equal(ext.template, 'unknown');
+  assert.equal(ext.template, 'unrecognized'); // C: canonical shared status
 
   const res = evaluateBrowserAssistant(ocrText, { total_amount: 60 }, defaultCompanySettings);
   assert.equal(res.receiver.matched, false);

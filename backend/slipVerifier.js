@@ -16,40 +16,7 @@ try {
 }
 
 // Bank Code Mapping (PromptPay / ITMX Interbank Bank Identifiers)
-const BANK_CODES = {
-  '002': { code: '002', name: 'ธนาคารกรุงเทพ', enName: 'Bangkok Bank (BBL)', shortName: 'BBL' },
-  '004': { code: '004', name: 'ธนาคารกสิกรไทย', enName: 'Kasikornbank (KBank)', shortName: 'KBANK' },
-  '006': { code: '006', name: 'ธนาคารกรุงไทย', enName: 'Krungthai Bank (KTB)', shortName: 'KTB' },
-  '011': { code: '011', name: 'ธนาคารทหารไทยธนชาต', enName: 'TMBThanachart Bank (TTB)', shortName: 'TTB' },
-  '014': { code: '014', name: 'ธนาคารไทยพาณิชย์', enName: 'Siam Commercial Bank (SCB)', shortName: 'SCB' },
-  '025': { code: '025', name: 'ธนาคารกรุงศรีอยุธยา', enName: 'Bank of Ayudhya (BAY)', shortName: 'BAY' },
-  '030': { code: '030', name: 'ธนาคารออมสิน', enName: 'Government Savings Bank (GSB)', shortName: 'GSB' },
-  '034': { code: '034', name: 'ธนาคารเพื่อการเกษตรและสหกรณ์การเกษตร', enName: 'BAAC', shortName: 'BAAC' },
-  '065': { code: '065', name: 'ธนาคารธนชาต', enName: 'Thanachart Bank', shortName: 'TBANK' },
-  '069': { code: '069', name: 'ธนาคารเกียรตินาคินภัทร', enName: 'Kiatnakin Phatra Bank', shortName: 'KKP' },
-  '073': { code: '073', name: 'ธนาคารแลนด์ แอนด์ เฮ้าส์', enName: 'LH Bank', shortName: 'LHBANK' },
-  '098': { code: '098', name: 'ธนาคารพัฒนาวิสาหกิจขนาดกลางและขนาดย่อม', enName: 'SME D Bank', shortName: 'SME' }
-};
-
-const KNOWN_BANK_CODES = Object.keys(BANK_CODES);
-
-// Legacy exported labels only; never sufficient for automatic receiver approval.
-const COMPANY_KEYWORDS = ['บิลท์', 'บิ้วท์', 'ปิลท์', 'built', 'heart', 'bwork', 'b-work', '38429', '0125554000401'];
-
-function normalizeForMatch(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/\u0E4D\u0E32/g, '\u0E33')
-    .replace(/บริษัท|จำกัด|มหาชน|บจก|หจก|บัญชี|เลขที่|ผู้รับ|นาย|นางสาว|นาง/g, '')
-    .normalize('NFKC')
-    .replace(/\u0E4D\u0E32/g, '\u0E33')
-    .replace(/บริษัท|จำกัด|มหาชน|บจก|หจก|บัญชี|เลขที่|ผู้รับ|นาย|นางสาว|นาง/g, '')
-    .replace(/[^a-z0-9ก-๙]/g, '');
-}
-
-function accountDigits(value) {
-  return String(value || '').replace(/\D/g, '');
-}
+const { BANK_CODES, KNOWN_BANK_CODES, COMPANY_KEYWORDS, normalizeForMatch, accountDigits, parseTLV, parseThaiBankSlipQR, toSatang, extractPreciseAmount, extractReceiverSection, analyzeSlipText } = require('../shared/slipVerificationCore.mjs');
 
 async function loadCompanyAccountConfig(dbQuery) {
   const defaults = {
@@ -87,135 +54,6 @@ async function loadCompanyAccountConfig(dbQuery) {
 
 /**
  * Parse EMVCo / ITMX / PromptPay TLV (Tag-Length-Value) string
- */
-function parseTLV(str) {
-  const result = {};
-  let i = 0;
-  while (i < str.length) {
-    const tag = str.substring(i, i + 2);
-    const len = parseInt(str.substring(i + 2, i + 4), 10);
-    if (isNaN(len) || len < 0) break;
-    const val = str.substring(i + 4, i + 4 + len);
-    result[tag] = val;
-    i += 4 + len;
-  }
-  return result;
-}
-
-/**
- * Parse PromptPay / ITMX Mini QR Standard on Thai Bank Slips
- * AND strictly filter out Merchant Payment QRs (QR สำหรับจ่ายเงิน)
- */
-function parseThaiBankSlipQR(qrString) {
-  if (!qrString || typeof qrString !== 'string') return null;
-
-  try {
-    const root = parseTLV(qrString);
-
-    // =========================================================
-    // Format A: ITMX / SCB / Thai Bank Transfer Slip Mini QR
-    // (e.g. 0046000600000101030140225202608275pmz0lPQPi1Ti9x1g5102TH91048A2D)
-    // =========================================================
-    if (root['00'] && root['00'].length > 10) {
-      const sub00 = parseTLV(root['00']);
-      const bankCode = sub00['01'];
-      const transRef = sub00['02'];
-
-      if (bankCode && KNOWN_BANK_CODES.includes(bankCode) && transRef) {
-        return {
-          isValidSlipQR: true,
-          isMerchantPaymentQR: false,
-          bankCode: bankCode,
-          bankName: BANK_CODES[bankCode].name,
-          transRef: transRef,
-          amount: null,
-          countryCode: root['51'] || 'TH',
-          format: 'ITMX_MINI_QR',
-          rawQR: qrString
-        };
-      }
-    }
-
-    // =========================================================
-    // Format B: EMVCo PromptPay Standard Slip Mini QR
-    // =========================================================
-    if (root['00'] === '01') {
-      // 1. Check if Merchant Payment QR (Reject!)
-      const isStaticPaymentQR = root['01'] === '11';
-      const hasMerchantInfo = !!(root['59'] || root['60'] || root['52']);
-      
-      if (isStaticPaymentQR || hasMerchantInfo) {
-        return {
-          isValidSlipQR: false,
-          isMerchantPaymentQR: true,
-          merchantName: root['59'] || null,
-          rejectionReason: 'รูปภาพที่อัปโหลดคือ QR Code สำหรับสแกนจ่ายเงิน (Payment QR) ไม่ใช่สลิปหลักฐานการโอนเงินสำเร็จของธนาคาร'
-        };
-      }
-
-      // 2. Check Bank Slip tags
-      let isBankSlipQR = false;
-      let sendingBank = null;
-      let bankCode = null;
-      let sendingAccount = null;
-
-      for (const tag of ['29', '30', '31']) {
-        if (root[tag]) {
-          const sub = parseTLV(root[tag]);
-          if (sub['00'] && (sub['00'] === 'A000000677010111' || sub['00'] === 'A000000677010112')) {
-            if (sub['01'] && sub['01'].length >= 3) {
-              const rawCode = sub['01'].substring(0, 3);
-              if (KNOWN_BANK_CODES.includes(rawCode) && sub['01'].length <= 13) {
-                bankCode = rawCode;
-                sendingBank = BANK_CODES[bankCode].name;
-                sendingAccount = sub['02'] || null;
-                isBankSlipQR = true;
-              }
-            }
-          }
-        }
-      }
-
-      let transRef = null;
-      if (root['62']) {
-        const sub62 = parseTLV(root['62']);
-        transRef = sub62['07'] || null;
-      }
-
-      if (isBankSlipQR && transRef) {
-        return {
-          isValidSlipQR: true,
-          isMerchantPaymentQR: false,
-          bankCode,
-          bankName: sendingBank,
-          transRef,
-          amount: root['54'] ? parseFloat(root['54']) : null,
-          sendingAccount,
-          countryCode: root['58'] || 'TH',
-          format: 'EMVCO_MINI_QR',
-          rawQR: qrString
-        };
-      }
-    }
-
-    return {
-      isValidSlipQR: false,
-      isMerchantPaymentQR: false,
-      rawText: qrString,
-      rejectionReason: 'QR Code ในรูปภาพไม่ใช่สลิปโอนเงินของธนาคาร (กรุณาแนบรูปสลิปที่ได้จากแอปธนาคาร)'
-    };
-  } catch (err) {
-    return {
-      isValidSlipQR: false,
-      isMerchantPaymentQR: false,
-      rawText: qrString,
-      rejectionReason: err.message
-    };
-  }
-}
-
-/**
- * Decode Mini QR Code from image Buffer with multi-pass image enhancement
  */
 async function decodeMiniQR(imageBuffer) {
   try {
@@ -257,248 +95,6 @@ async function decodeMiniQR(imageBuffer) {
     console.error('Mini QR decode error:', err);
     return null;
   }
-}
-
-// Parse OCR evidence independently. Booking amounts are used only after extraction.
-function toSatang(value) {
-  const match = String(value ?? '').match(/^(\d+)(?:\.(\d{1,2}))?$/);
-  if (!match) return null;
-  const satang = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0'));
-  return Number.isSafeInteger(satang) ? satang : null;
-}
-
-function normalizeAmountToken(token) {
-  if (/[\u00a0\u202f ]/.test(token) &&
-      !/^\d{1,3}(?:[\u00a0\u202f ]\d{3})+(?:[.,]\d{1,2})?$/.test(token)) return null;
-  let value = token.replace(/[\u00a0\u202f ]/g, '');
-  if (/^\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$/.test(value)) value = value.replace(/,/g, '');
-  else if (/^\d{1,3}(?:\.\d{3})+,\d{1,2}$/.test(value)) value = value.replace(/\./g, '').replace(',', '.');
-  else if (/^\d+,\d{1,2}$/.test(value)) value = value.replace(',', '.');
-  return toSatang(value);
-}
-
-function extractPreciseAmount(ocrText) {
-  const lines = String(ocrText || '').normalize('NFKC')
-    .replace(/[๐-๙]/g, digit => String(digit.charCodeAt(0) - 0x0E50))
-    .split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  const label = /(?:จำนวนเงิน|จํานวนเงิน|จำนวน|จํานวน|ยอดเงิน|ยอดชำระ|ยอดโอน|\bamount\b|\btotal\b)/i;
-  const stop = /ค่าธรรมเนียม|\bfee\b|ผู้รับ|ผู้โอน|ผู้ส่ง|ไปยัง|^ถึง|\b(?:from|to|beneficiary|ref(?:erence)?|date|time|note|memo)\b|เลขที่|วันที่|เวลา|บัญชี|พร้อมเพย์|หมายเหตุ/i;
-  const labelled = [];
-  const currency = [];
-  const collect = (line, target) => {
-    // Consume complete tokens: never match a suffix of 1300.00 or a reference.
-    const tokens = line.match(/(?<![\w.,:+-])\d[\d.,]*(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d{1,2})?(?![\w.,:])/g) || [];
-    for (const token of tokens) {
-      const value = normalizeAmountToken(token);
-      if (value !== null && value > 0) target.push(value);
-    }
-  };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const matchedLabel = line.match(label);
-    if (matchedLabel && !/ค่าธรรมเนียม|\bfee\b/i.test(line)) {
-      const remainder = line.slice(matchedLabel.index + matchedLabel[0].length);
-      collect(remainder.split(stop)[0], labelled);
-      if (!/\d/.test(remainder) && !stop.test(remainder)) {
-        for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
-          if (stop.test(lines[j]) || label.test(lines[j])) break;
-          collect(lines[j], labelled);
-          if (/\d/.test(lines[j])) break;
-        }
-      }
-    } else if (!stop.test(line) && !(i > 0 && /ค่าธรรมเนียม|\bfee\b/i.test(lines[i - 1])) &&
-      (/บาท|\bbaht\b|\bthb\b|฿/i.test(line) || (lines.length === 1 && /^[\d.,\s]+$/.test(line)))) {
-      collect(line, currency);
-    }
-  }
-  const candidates = [...new Set(labelled.length ? labelled : currency)];
-  return candidates.length === 1 ? candidates[0] / 100 : null;
-}
-
-function extractReceiverSection(ocrText) {
-  const lines = String(ocrText || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  const receiver = /^(?:บัญชีผู้รับ|ผู้รับ(?:เงิน)?|ไปยัง|ถึง|รับเงินโดย|TO\b|Beneficiary\b)\s*[:：-]?\s*/i;
-  const boundary = /^(?:จาก|ผู้โอน|ผู้ส่ง|FROM\b|Sender\b|จำนวน|จํานวน|ยอดเงิน|ยอดโอน|ยอดชำระ|Amount\b|Total\b|ค่าธรรมเนียม|Fee\b|วันที่|เวลา|เลขที่รายการ|รหัสอ้างอิง|หมายเหตุ|บันทึก|Reference\b|Ref\b|Date\b|Time\b|Note\b|Memo\b)/i;
-  const starts = lines.map((line, index) => receiver.test(line) ? index : -1).filter(index => index >= 0);
-
-  if (starts.length === 1) {
-    const section = [lines[starts[0]].replace(receiver, '')];
-    for (let i = starts[0] + 1; i < lines.length && i <= starts[0] + 8; i++) {
-      if (boundary.test(lines[i]) || receiver.test(lines[i])) break;
-      section.push(lines[i]);
-    }
-    const text = section.join('\n').trim();
-    return { text, template: 'standard_labeled' };
-  }
-
-  // Ambiguous layout: multiple receiver markers found -> fail-safe, cannot pick safely
-  if (starts.length > 1) {
-    return { text: '', template: 'ambiguous' };
-  }
-
-  // Verified KBank Structural Template (when "TO / ไปยัง" keyword is absent in app design)
-  // Proven from real KBank K+ slip layout:
-  // - Sender bank marker: /(?:ธ\.กสิกรไทย|kbank|k\+)/i
-  // - Followed by sender account pattern
-  // - Trailing boundary: /(?:เลขที่รายการ|รหัสอ้างอิง|transaction\s*no|ref\s*id)/i
-  const kbankSenderIdx = lines.findIndex(l => /(?:ธ\.กสิกรไทย|kbank|kasikorn|k\+)/i.test(l));
-  const kbankRefIdx = lines.findIndex(l => /(?:เลขที่รายการ|รหัสอ้างอิง|transaction\s*no|ref\s*id)/i.test(l));
-
-  if (kbankSenderIdx >= 0 && kbankRefIdx > kbankSenderIdx + 1) {
-    let senderEndIdx = -1;
-    for (let i = kbankSenderIdx; i < kbankRefIdx; i++) {
-      if (/[\d๐-๙xX*•%-]{5,}/.test(lines[i])) {
-        senderEndIdx = i;
-        break;
-      }
-    }
-    const receiverStart = senderEndIdx >= 0 ? senderEndIdx + 1 : kbankSenderIdx + 1;
-    if (receiverStart < kbankRefIdx) {
-      const section = [];
-      for (let i = receiverStart; i < kbankRefIdx && i <= receiverStart + 6; i++) {
-        if (boundary.test(lines[i])) break;
-        section.push(lines[i]);
-      }
-      const text = section.join('\n').trim();
-      if (text.length > 0) {
-        return { text, template: 'kbank_structural' };
-      }
-    }
-  }
-
-  return { text: '', template: 'unrecognized' };
-}
-
-function normalizeReceiverLine(line, configuredName) {
-  // 1. Strip leading artifact noise from icons/bullets (e.g. "5 ", "1 ", "• ", "ด ")
-  let cleaned = String(line || '')
-    .replace(/^[\d•\-\*><)\s]+/, '')
-    .replace(/^[A-Za-z]\)\s*/, '')
-    .replace(/^(?:ด|จ|ฉ)\s+/, '') // strip OCR artifact where บจก. is misread as single letter
-    .trim();
-
-  let norm = normalizeForMatch(cleaned);
-
-  // 2. Scoped whitelist confusion pair for Thai loopless fonts (e.g. KBank / SCB)
-  // ONLY applied when comparing with configuredName starting with "บิลท์" / "บิ้วท์"
-  if (configuredName && configuredName.startsWith('บิลท์') && norm.startsWith('ปิลท์')) {
-    norm = 'บิลท์' + norm.slice(5);
-  } else if (configuredName && configuredName.startsWith('บิ้วท์') && norm.startsWith('ปิ้วท์')) {
-    norm = 'บิ้วท์' + norm.slice(6);
-  }
-
-  return norm;
-}
-
-function analyzeSlipText(ocrText, accountConfig = {}, qrResult = null) {
-  const extracted = extractReceiverSection(ocrText);
-  const receiverText = typeof extracted === 'object' ? extracted.text : String(extracted || '');
-  const rawTemplate = typeof extracted === 'object' ? extracted.template : 'standard_labeled';
-
-  const configuredName = normalizeForMatch(accountConfig.accountName || accountConfig.companyName);
-  const receiverLines = receiverText.split('\n').map(l => l.trim()).filter(Boolean);
-
-  const hasNameMatch = configuredName.length >= 6 &&
-    receiverLines.some(line => normalizeReceiverLine(line, configuredName) === configuredName);
-
-  const accountTokens = receiverText.match(/(?<![a-z0-9])(?:[0-9xX*•][ -]?){4,}(?![a-z0-9])/gi) || [];
-  const matchesAccount = (configured, allowMasked) => {
-    const digits = accountDigits(configured);
-    if (digits.length < 9) return false;
-    return accountTokens.some(token => {
-      const candidate = token.replace(/[ -]/g, '').toLowerCase();
-      if (candidate.length !== digits.length || (candidate.match(/\d/g) || []).length < 4) return false;
-      return [...candidate].every((char, index) => char === digits[index] || (allowMasked && /[x*•]/.test(char)));
-    });
-  };
-  const hasAccountMatch = matchesAccount(accountConfig.accountNumber, true);
-  const hasPromptPayMatch = matchesAccount(accountConfig.promptpayId, false);
-  const hasTaxIdMatch = matchesAccount(accountConfig.taxId, false);
-  const hasAccountOrPromptPay = Boolean(hasAccountMatch || hasPromptPayMatch || hasTaxIdMatch);
-
-  const aliases = {
-    '002': ['กรุงเทพ', 'bangkokbank', 'bbl'],
-    '004': ['กสิกรไทย', 'kasikornbank', 'kbank'],
-    '006': ['กรุงไทย', 'krungthai', 'ktb'],
-    '011': ['ทหารไทยธนชาต', 'ttb', 'tmbthanachart'],
-    '014': ['ไทยพาณิชย์', 'scb', 'siamcommercialbank'],
-    '025': ['กรุงศรี', 'krungsri', 'ayudhya', 'bay'],
-    '030': ['ออมสิน', 'gsb', 'governmentsavingsbank'],
-    '034': ['เพื่อการเกษตร', 'ธกส', 'baac'],
-    '065': ['ธนาคารธนชาต', 'tbank', 'thanachartbank'],
-    '069': ['เกียรตินาคิน', 'kkp', 'kiatnakin'],
-    '073': ['แลนด์แอนด์เฮ้าส์', 'lhbank', 'lhb'],
-    '098': ['พัฒนาวิสาหกิจ', 'smedbank']
-  };
-
-  const bankCodesIn = text => Object.keys(aliases).filter(code =>
-    aliases[code].some(alias => normalizeForMatch(text).includes(normalizeForMatch(alias))));
-
-  const expectedBanks = bankCodesIn(accountConfig.bankName);
-  const nonNameBankLines = receiverLines.filter(line => normalizeReceiverLine(line, configuredName) !== configuredName);
-  const detectedBanks = [...new Set(nonNameBankLines.flatMap(bankCodesIn))];
-
-  const hasExplicitBankMatch = expectedBanks.length === 1 && detectedBanks.length === 1 && expectedBanks[0] === detectedBanks[0];
-  const hasBankConflict = detectedBanks.length > 0 && !hasExplicitBankMatch;
-
-  // Specific verified bank template classification
-  let detectedTemplate = rawTemplate;
-  // Isolate pre-sender header so sender bank keywords NEVER leak into template detection:
-  const preSenderText = String(ocrText || '').split(/(?:จาก|ผู้โอน|FROM\b|Sender\b)/i)[0] || '';
-  const isScbSlip = qrResult?.bankCode === '014' || /(?:scb|ไทยพาณิชย์|siam\s*commercial)/i.test(preSenderText);
-  const isKbankSlip = qrResult?.bankCode === '004' || (rawTemplate === 'kbank_structural') || /(?:kbank|กสิกรไทย|k\+)/i.test(preSenderText);
-
-  if (rawTemplate === 'standard_labeled' && isScbSlip) {
-    detectedTemplate = 'scb_template';
-  } else if (rawTemplate === 'kbank_structural' || (isKbankSlip && rawTemplate === 'standard_labeled')) {
-    detectedTemplate = 'kbank_template';
-  }
-
-  // Destination bank compatibility check for Tier B:
-  // SCB template is ONLY compatible if expected bank is SCB ('014') or if payment is via PromptPay ('hasPromptPayMatch'/'hasTaxIdMatch')
-  // KBank template is ONLY compatible if expected bank is KBANK ('004') or if payment is via PromptPay
-  const destinationBankMatchesTemplate = (
-    (detectedTemplate === 'scb_template' && (expectedBanks.includes('014') || hasPromptPayMatch || hasTaxIdMatch)) ||
-    (detectedTemplate === 'kbank_template' && (expectedBanks.includes('004') || hasPromptPayMatch || hasTaxIdMatch))
-  );
-
-  // Tiered verification:
-  // Tier A: Strict Verified (Name + Account/PromptPay + Explicit Bank Text in Receiver block)
-  // Tier B: Template Verified (Name + Account/PromptPay 100% match on verified bank template without bank text)
-  // Tier C: Manual Review (Ambiguous, incomplete, mismatch, or unknown template)
-  let verificationTier = 'manual_review';
-  let hasCompanyMatch = false;
-
-  if (hasNameMatch && hasAccountOrPromptPay && !hasBankConflict) {
-    if (hasExplicitBankMatch) {
-      verificationTier = 'strict_verified';
-      hasCompanyMatch = true;
-    } else if (detectedBanks.length === 0 && destinationBankMatchesTemplate) {
-      // Allowed ONLY for verified bank templates proven from real slips not to render bank text in receiver block
-      const ALLOWED_TIER_B_TEMPLATES = ['scb_template', 'kbank_template'];
-      if (ALLOWED_TIER_B_TEMPLATES.includes(detectedTemplate)) {
-        verificationTier = 'template_verified';
-        hasCompanyMatch = true;
-      }
-    }
-  }
-
-  return {
-    success: true,
-    ocrText,
-    detectedAmount: extractPreciseAmount(ocrText),
-    receiverText,
-    receiverTemplate: detectedTemplate,
-    verificationTier,
-    hasCompanyMatch,
-    hasNameMatch,
-    hasAccountMatch,
-    hasTaxIdMatch,
-    hasPromptPayMatch,
-    hasBankMatch: hasExplicitBankMatch,
-    hasBankConflict,
-    hasAliasMatch: false
-  };
 }
 
 /**
@@ -558,10 +154,13 @@ async function performSlipOCR(imageBuffer, accountConfig = {}, qrResult = null) 
 
     api.Recognize();
     const ocrText = api.GetUTF8Text() || '';
+    let metadata = null;
+    // Serialize existing recognition results, never call Recognize again.
+    try { if (typeof api.GetTSVText === 'function') metadata = { tsv: api.GetTSVText(0) || '' }; } catch (_) {}
     api.Clear();
     try { Tess.FS.unlink('/input'); } catch (_) {}
 
-    return analyzeSlipText(ocrText, accountConfig, qrResult);
+    return analyzeSlipText(ocrText, accountConfig, qrResult, metadata);
   } catch (err) {
     console.warn('Slip OCR warning:', err.message);
     return {
@@ -654,12 +253,113 @@ async function verifySlip(imageBuffer, booking, dbQuery, _clientQrData = null, d
     result.details.ocr = ocrResult;
     result.verificationTier = ocrResult.verificationTier || 'manual_review';
 
+    // SLIP-PARSER-PHASE4K: Strict Runtime Shadow Integration for Datetime ROI
+    // Strictly opt-in via exact process.env.BWORK_SLIP_ROI_SHADOW === 'true'.
+    // Failure in shadow must NEVER break baseline verify or alter payment decisions.
+    const isRoiShadowEnabled = (dependencies.roiShadowEnabled !== undefined)
+      ? dependencies.roiShadowEnabled === true
+      : (process.env.BWORK_SLIP_ROI_SHADOW === 'true');
+
+    if (isRoiShadowEnabled) {
+      try {
+        const policyModPath = '../shared/' + 'slipRoi' + 'DatetimePolicy.mjs';
+        const { determinePhase4gRoiTarget, extractDatetimeRoi, mergeDatetimeRoi } = require(policyModPath);
+        const layoutLines = ocrResult.evidence?.layout || [];
+        const jimpLib = dependencies.Jimp || Jimp;
+        const jimpImg = await jimpLib.read(imageBuffer);
+        if (!jimpImg || !jimpImg.bitmap || jimpImg.bitmap.width <= 0 || jimpImg.bitmap.height <= 0) {
+          throw new Error('Invalid image dimensions for shadow ROI');
+        }
+        const size = { width: jimpImg.bitmap.width, height: jimpImg.bitmap.height };
+
+        const decision = determinePhase4gRoiTarget(ocrResult.evidence, layoutLines, size, 'policy1');
+        const primaryTarget = decision.primary;
+
+        if (primaryTarget && primaryTarget.shouldTrigger && primaryTarget.bbox) {
+          const bbox = primaryTarget.bbox;
+          const cropX = Math.max(0, Math.min(size.width - 20, Math.floor(bbox.x0)));
+          const cropY = Math.max(0, Math.min(size.height - 20, Math.floor(bbox.y0)));
+          const cropW = Math.max(20, Math.min(size.width - cropX, Math.ceil(bbox.x1 - bbox.x0)));
+          const cropH = Math.max(20, Math.min(size.height - cropY, Math.ceil(bbox.y1 - bbox.y0)));
+
+          const crop = jimpImg.clone().crop(cropX, cropY, cropW, cropH);
+          crop.greyscale();
+          crop.contrast(0.15);
+          crop.scale(1.75);
+          const cropBuffer = await crop.getBufferAsync(jimpLib.MIME_PNG || 'image/png');
+
+          // Pass 2: single targeted ROI OCR (max 2 total)
+          const roiResult = await runOCR(cropBuffer);
+          const roiExtraction = extractDatetimeRoi(roiResult?.ocrText, roiResult?.evidence?.layout);
+          const mergedEvidence = mergeDatetimeRoi(ocrResult.evidence, roiExtraction);
+
+          const baseDate = ocrResult.evidence?.datetime?.date ?? null;
+          const baseTime = ocrResult.evidence?.datetime?.time ?? null;
+          const roiDate = roiExtraction?.date ?? null;
+          const roiTime = roiExtraction?.time ?? null;
+
+          result.details.shadowDatetimeRoi = {
+            enabled: true,
+            triggered: true,
+            region: primaryTarget.region || null,
+            date: roiDate,
+            time: roiTime,
+            dateConflict: Boolean(mergedEvidence?.datetime?.roiAdvisory?.roiConflict && roiExtraction?.provenance?.dateConflict),
+            timeConflict: Boolean(mergedEvidence?.datetime?.roiAdvisory?.roiConflict && roiExtraction?.provenance?.timeConflict),
+            paymentUseAllowed: false,
+            comparison: {
+              dateSame: (baseDate !== null && roiDate !== null) ? baseDate === roiDate : null,
+              timeSame: (baseTime !== null && roiTime !== null) ? baseTime === roiTime : null
+            }
+          };
+        } else {
+          result.details.shadowDatetimeRoi = {
+            enabled: true,
+            triggered: false,
+            region: null,
+            date: null,
+            time: null,
+            dateConflict: false,
+            timeConflict: false,
+            paymentUseAllowed: false,
+            comparison: {
+              dateSame: null,
+              timeSame: null
+            }
+          };
+        }
+      } catch (shadowErr) {
+        // Shadow failure must NEVER break baseline verify
+        result.details.shadowDatetimeRoi = {
+          enabled: true,
+          triggered: false,
+          region: null,
+          date: null,
+          time: null,
+          dateConflict: false,
+          timeConflict: false,
+          paymentUseAllowed: false,
+          shadowError: true,
+          comparison: {
+            dateSame: null,
+            timeSame: null
+          }
+        };
+      }
+    }
+
     if (!ocrResult.success) {
       result.reasons.push('ระบบอ่านข้อมูลในสลิปไม่สำเร็จ กรุณาใช้สลิปต้นฉบับที่เห็นชื่อผู้รับ ยอดเงิน และ QR ชัดเจน แล้วอัปโหลดใหม่');
       return result;
     }
     result.detectedAmount = ocrResult.detectedAmount;
-    if (!ocrResult.hasCompanyMatch) {
+    // Extraction improvement is evidence, not permission to expand payment eligibility.
+    if (ocrResult.evidence?.amount?.evidence?.recoveredAcrossFeeContext === true) {
+      result.verificationTier = 'manual_review';
+      result.reasons.push('ข้อมูลยอดโอนแยกจากค่าธรรมเนียมไม่ชัดเจน กรุณาแนบสลิปต้นฉบับที่แสดงยอดโอนชัดเจน');
+      return result; // Existing failure route; NOT the receiver-only manual-review path.
+    }
+    if (!ocrResult.hasCompanyMatch && !ocrResult.receiverOcrUncertain) {
       result.reasons.push('บัญชีผู้รับเงินหรือธนาคารปลายทางในสลิปไม่ตรงกับ ' + accountConfig.accountName + ' กรุณาตรวจสอบแล้วอัปโหลดสลิปที่ถูกต้อง');
       return result;
     }
@@ -685,6 +385,13 @@ async function verifySlip(imageBuffer, booking, dbQuery, _clientQrData = null, d
 
     result.confidence += 30;
     result.isValid = true;
+    if (ocrResult.receiverOcrUncertain) {
+      result.manualReviewRequired = true;
+      result.evidenceState = 'uncertain';
+      result.verificationTier = 'manual_review';
+      result.reasons.push('ข้อมูลชื่อผู้รับอ่านได้ไม่ชัดเจน กรุณารอเจ้าหน้าที่ตรวจสอบสลิป');
+      return result;
+    }
     result.eligibleForAutoApproval = (result.verificationTier === 'strict_verified' || result.verificationTier === 'template_verified');
     return result;
   } catch (err) {

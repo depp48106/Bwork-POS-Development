@@ -509,7 +509,7 @@ test('Tier B Regression: SCB sender has company name but receiver wrong -> REJEC
   assert.equal(analysis.hasCompanyMatch, false);
 });
 
-test('Tier B Regression: KBank OCR "ปิลท์ ฮาร์ท" + account correct -> PASS Tier B', () => {
+test('Tier B Regression: KBank OCR "ปิลท์ ฮาร์ท" + account correct -> approved uncertainty', () => {
   const kbankConfig = {
     companyName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
     accountName: 'บริษัท บิลท์ ฮาร์ท จำกัด',
@@ -530,10 +530,12 @@ test('Tier B Regression: KBank OCR "ปิลท์ ฮาร์ท" + account c
     '300.00 บาท'
   ].join('\n');
   const analysis = analyzeSlipText(kbankText, kbankConfig, { bankCode: '004', bankName: 'KBANK' });
-  assert.equal(analysis.hasNameMatch, true);
+  assert.equal(analysis.hasNameMatch, false); // A: no target correction
   assert.equal(analysis.hasPromptPayMatch, true);
-  assert.equal(analysis.verificationTier, 'template_verified');
-  assert.equal(analysis.hasCompanyMatch, true);
+  assert.equal(analysis.verificationTier, 'manual_review');
+  assert.equal(analysis.hasCompanyMatch, false);
+  assert.equal(analysis.receiverOcrUncertain, true);
+  assert.equal(analysis.evidence.receiver.rawName, 'ด ปิลท์ ฮาร์ท');
 });
 
 test('Tier B Regression: KBank "ปิลท์ ฮาร์ท" but account wrong -> REJECT', () => {
@@ -557,12 +559,92 @@ test('Tier B Regression: KBank "ปิลท์ ฮาร์ท" but account wro
     '300.00 บาท'
   ].join('\n');
   const analysis = analyzeSlipText(kbankWrongAccountText, kbankConfig, { bankCode: '004' });
-  assert.equal(analysis.hasNameMatch, true);
+  assert.equal(analysis.hasNameMatch, false); // A: wrong identifier must still fail
+  assert.equal(analysis.receiverOcrUncertain, false);
   assert.equal(analysis.hasAccountMatch, false);
   assert.equal(analysis.hasPromptPayMatch, false);
   assert.equal(analysis.verificationTier, 'manual_review');
   assert.equal(analysis.hasCompanyMatch, false);
 });
+
+// Phase2 approved payment deltas; all databases below are isolated in-memory fixtures.
+for (const [amountText, recovered, amount, eligible] of [
+  ['Amount\nFee 30.00\n300.00 THB', true, 300, false],
+  ['Amount\nค่าธรรมเนียม 30.00\n300.00 บาท', true, 300, false],
+  ['Amount\nFee\n30.00 THB\n300.00 THB', true, 300, false],
+  ['Amount 300.00 THB\nFee 30.00 THB', false, 300, true],
+  ['Amount\n300.00 THB\nFee\n30.00 THB', false, 300, true],
+  ['Fee 30 THB\nAmount 300 THB', false, 300, true],
+  ['Balance 300.00 THB', false, null, false]
+]) {
+  test('Phase2 fee provenance payment guard: ' + JSON.stringify(amountText), async t => {
+    const query = await fixture(t);
+    const text = ['From', 'Other Sender', 'TO', config.accountName, config.bankName,
+      config.accountNumber, amountText].join('\n');
+    const result = await scan(query, text);
+    assert.equal(result.detectedAmount, amount);
+    assert.equal(result.details.ocr.evidence.amount.evidence.recoveredAcrossFeeContext, recovered);
+    assert.equal(result.eligibleForAutoApproval, eligible);
+    assert.equal(result.isValid, eligible);
+    assert.notEqual(result.manualReviewRequired, true);
+    if (!eligible) assert.notEqual(result.verificationTier, 'strict_verified');
+    if (recovered) {
+      assert.equal(result.details.ocr.evidence.amount.raw, '300.00');
+      assert.ok(result.details.ocr.evidence.amount.warnings.includes('amount_recovered_across_fee'));
+    }
+    const response = await localUpload(query, text);
+    assert.equal(response.statusCode, eligible ? 200 : 400);
+    assert.equal((await query.get('SELECT payment_status FROM bookings WHERE id = 1')).payment_status, eligible ? 'paid' : 'pending');
+    assert.equal((await query.get('SELECT COUNT(*) AS count FROM slip_verifications')).count, eligible ? 1 : 0);
+  });
+}
+
+for (const scenario of ['uncertain', 'amount mismatch', 'wrong receiver', 'wrong bank', 'duplicate', 'insert failure', 'update failure']) {
+  test('Phase2 local receiver uncertainty route: ' + scenario, async t => {
+    const query = await fixture(t);
+    await query.run("UPDATE settings SET value = ? WHERE key = 'payment_bank_account_name'", ['บริษัท บิลท์ ฮาร์ท จำกัด']);
+    const name = scenario === 'wrong receiver' ? 'บริษัท อื่น จำกัด' : 'ด ปิลท์ ฮาร์ท';
+    const text = ['From', 'Other Sender', 'TO', name,
+      scenario === 'wrong bank' ? 'SCB' : config.bankName, config.accountNumber,
+      'Amount', scenario === 'amount mismatch' ? '1300 THB' : '300 THB'].join('\n');
+    if (scenario === 'duplicate') await query.run("INSERT INTO slip_verifications (booking_id, trans_ref, verification_status) VALUES (2, 'SYNTHETIC-REF', 'pending_manual')");
+    if (scenario === 'insert failure') await query.exec("CREATE TRIGGER fail_manual BEFORE INSERT ON slip_verifications BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;");
+    if (scenario === 'update failure') await query.exec("CREATE TRIGGER fail_manual_update BEFORE UPDATE ON bookings BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;");
+    const result = await localUpload(query, text);
+    const review = scenario === 'uncertain';
+    assert.equal(result.statusCode, review ? 200 : scenario.includes('failure') ? 503 : 400);
+    assert.equal(result.data.auto_approved, false);
+    const booking = await query.get('SELECT * FROM bookings WHERE id = 1');
+    assert.equal(booking.payment_status, review ? 'reviewing' : 'pending');
+    assert.equal(booking.pin_code, null);
+    assert.equal(booking.receipt_number, null);
+    assert.equal(result.files.size, review ? 1 : 0);
+    const record = await query.get('SELECT * FROM slip_verifications WHERE booking_id = 1');
+    if (review) {
+      assert.equal(record.verification_status, 'pending_manual');
+      assert.equal(record.is_auto_approved, 0);
+      assert.equal(result.data.verifyResult.eligibleForAutoApproval, false);
+      assert.equal(result.data.verifyResult.details.ocr.evidence.receiver.rawName, name);
+    } else assert.equal(record, undefined);
+  });
+}
+for (const label of ['Balance', 'Fee', 'ยอดคงเหลือ', 'ยอดเงินคงเหลือ', 'ค่าธรรมเนียม']) {
+  test('Phase2 non-transfer amount cannot pay or enter review: ' + label, async t => {
+    const query = await fixture(t);
+    const text = ['From', 'Other Sender', 'TO', config.accountName, config.bankName,
+      config.accountNumber, label + ' 300.00 THB'].join('\n');
+    const scanned = await scan(query, text);
+    assert.equal(scanned.detectedAmount, null);
+    assert.notEqual(scanned.verificationTier, 'strict_verified');
+    assert.equal(scanned.isValid, false);
+    assert.equal(scanned.eligibleForAutoApproval, false);
+    assert.notEqual(scanned.manualReviewRequired, true);
+    const response = await localUpload(query, text);
+    assert.equal(response.statusCode, 400);
+    assert.equal((await query.get('SELECT payment_status FROM bookings WHERE id = 1')).payment_status, 'pending');
+    assert.equal((await query.get('SELECT COUNT(*) AS count FROM slip_verifications')).count, 0);
+  });
+}
 
 test('Tier B Regression: Unknown bank/template without bank text -> CANNOT use Tier B (REJECT)', () => {
   const gsbConfig = {

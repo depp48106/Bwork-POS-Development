@@ -71,19 +71,9 @@ export function decodeBrowserQR(imgElement) {
     if (!code || !code.data) return null;
 
     const raw = code.data;
-    // Check if it's a payment QR instead of a bank transfer slip Mini QR
-    if (raw.startsWith('000201') || raw.includes('0016A000000677010111')) {
-      return {
-        isValidSlipQR: false,
-        isPaymentQR: true,
-        rawQR: raw,
-        transRef: null
-      };
-    }
-
     const parsed = parseThaiBankSlipQR(raw);
     if (parsed) {
-      return parsed;
+      return { ...parsed, isPaymentQR: Boolean(parsed.isMerchantPaymentQR) };
     }
 
     return {
@@ -197,7 +187,7 @@ export async function analyzeSlipInBrowser(imageUrl, bookingInfo, settings, onPr
     // 3. Run OCR
     const ocrStart = performance.now();
     const worker = await getTesseractWorker(onProgress);
-    const ocrResponse = await worker.recognize(imgElement);
+    const ocrResponse = await worker.recognize(imgElement, {}, { text: true, blocks: true });
     result.timing.ocrTimeMs = Math.round(performance.now() - ocrStart);
     result.timing.totalTimeMs = Math.round(performance.now() - startTime);
 
@@ -214,7 +204,9 @@ export async function analyzeSlipInBrowser(imageUrl, bookingInfo, settings, onPr
       promptpay_id: settings?.promptpay_id || ''
     };
 
-    const analysis = analyzeSlipText(ocrText, accountConfig, qrResult);
+    const analysis = analyzeSlipText(ocrText, accountConfig, qrResult, ocrResponse?.data);
+    result.evidence = analysis.evidence;
+    result.evidenceState = analysis.evidenceState;
     result.verificationTier = analysis.verificationTier;
 
     // 5. Evaluate Amount
@@ -239,7 +231,7 @@ export async function analyzeSlipInBrowser(imageUrl, bookingInfo, settings, onPr
     result.receiver.template = analysis.detectedTemplate || analysis.receiverTemplate;
     const isReceiverValid = analysis.hasCompanyMatch;
     result.receiver.matched = isReceiverValid;
-    result.receiver.statusText = isReceiverValid ? 'ตรง' : (analysis.receiverText ? 'ไม่ตรง' : 'ตรวจไม่ได้');
+    result.receiver.statusText = analysis.receiverOcrUncertain ? 'อ่านไม่ชัดเจน' : isReceiverValid ? 'ตรง' : (analysis.receiverText ? 'ไม่ตรง' : 'ตรวจไม่ได้');
 
     // Extract first line of receiver for masked display
     const firstReceiverLine = (analysis.receiverText || '').split(/\r?\n/)[0] || '';
@@ -247,7 +239,7 @@ export async function analyzeSlipInBrowser(imageUrl, bookingInfo, settings, onPr
     result.receiver.detectedNameMasked = firstReceiverLine ? maskName(firstReceiverLine) : '-';
 
     // Mask configured account for display
-    result.receiver.detectedAccountMasked = maskAccount(accountConfig.payment_bank_account);
+    result.receiver.detectedAccountMasked = maskAccount(analysis.evidence.receiver.accountMasked);
 
     // 7. Contextual Helper Message (Strictly non-authoritative Decision Support)
     result.status = 'completed';
@@ -257,6 +249,9 @@ export async function analyzeSlipInBrowser(imageUrl, bookingInfo, settings, onPr
       result.messageType = 'success';
     } else if (result.amount.matched === false) {
       result.decisionSupportMessage = `ยอดเงินในสลิปที่อ่านได้ (฿${Number(detectedAmt || 0).toLocaleString()}) ไม่ตรงกับยอดที่ต้องชำระ (฿${Number(bookingInfo?.total_amount || 0).toLocaleString()}) กรุณาตรวจสอบก่อนอนุมัติ`;
+      result.messageType = 'warning';
+    } else if (analysis.receiverOcrUncertain) {
+      result.decisionSupportMessage = 'ชื่อผู้รับอ่านได้ไม่ชัดเจน กรุณาตรวจสอบรูปสลิปด้วยตนเอง';
       result.messageType = 'warning';
     } else if (isReceiverValid === false && analysis.receiverText) {
       result.decisionSupportMessage = 'ข้อมูลผู้รับในสลิปไม่ตรงกับบัญชีที่กำหนด กรุณาตรวจสอบความถูกต้องของสลิป';
