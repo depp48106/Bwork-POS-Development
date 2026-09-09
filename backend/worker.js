@@ -1227,7 +1227,7 @@ export default {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, X-Booking-Contact, X-Booking-Token',
       'Content-Type': 'application/json'
     };
 
@@ -2936,32 +2936,46 @@ export default {
 
       if (pathname.startsWith('/api/public/bookings/') && method === 'GET') {
         const idParam = pathname.replace('/api/public/bookings/', '');
-        const contact = url.searchParams.get('contact');
 
-        let bookingId = idParam;
-        if (typeof idParam === 'string' && idParam.startsWith('BK-')) {
+        let bookingId = isNaN(Number(idParam)) ? null : Number(idParam);
+        if (!bookingId && typeof idParam === 'string' && idParam.startsWith('BK-')) {
           const raw = idParam.replace('BK-', '');
-          if (raw.length <= 6 && !isNaN(raw)) {
+          if (raw.length <= 6 && !isNaN(Number(raw))) {
             bookingId = parseInt(raw, 10);
           }
         }
 
-        let booking;
-        if (contact) {
-          const cleanContact = String(contact).replace(/\D/g, '');
-          booking = await env.DB.prepare(
-            `SELECT * FROM bookings
-             WHERE (id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?))
-               AND (REPLACE(REPLACE(REPLACE(contact, '-', ''), ' ', ''), '+', '') = ? OR contact = ?)`
-          ).bind(bookingId, idParam, idParam, cleanContact, contact).first();
-        } else {
-          booking = await env.DB.prepare(
-            'SELECT * FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
-          ).bind(bookingId, idParam, idParam).first();
-        }
+        const booking = await env.DB.prepare(
+          'SELECT * FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
+        ).bind(bookingId || 0, idParam, idParam).first();
 
         if (!booking) {
-          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง หรือเบอร์โทรศัพท์ไม่ถูกต้อง' }), { status: 404, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        // Public booking authorization check (Headers primary, legacy query fallback)
+        const suppliedToken = request.headers.get('x-booking-token') || url.searchParams.get('access_token');
+        const suppliedContact = request.headers.get('x-booking-contact') || url.searchParams.get('contact');
+        const normalizedContact = String(suppliedContact || '').replace(/\D/g, '');
+
+        const safeEqual = async (left, right) => {
+          if (!left || !right) return false;
+          const encoder = new TextEncoder();
+          const [a, b] = await Promise.all([left, right].map(value =>
+            crypto.subtle.digest('SHA-256', encoder.encode(String(value)))));
+          const bytesA = new Uint8Array(a);
+          const bytesB = new Uint8Array(b);
+          let difference = 0;
+          for (let i = 0; i < bytesA.length; i++) difference |= bytesA[i] ^ bytesB[i];
+          return difference === 0;
+        };
+
+        const tokenMatches = booking.qr_token && await safeEqual(suppliedToken, booking.qr_token);
+        const contactMatches = normalizedContact.length >= 9 &&
+          await safeEqual(normalizedContact, String(booking.contact || '').replace(/\D/g, ''));
+
+        if (!tokenMatches && !contactMatches) {
+          return new Response(JSON.stringify({ error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' }), { status: 403, headers: corsHeaders });
         }
 
         const { results: items } = await env.DB.prepare(
@@ -2994,11 +3008,35 @@ export default {
         const pwRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'payment_window_minutes'").first();
         const windowMins = Math.max(1, parseInt(pwRow?.value || '15', 10) || 15);
 
+        // Sanitize public response: strip private credentials, PIN, tax secrets, internal notes
+        const {
+          pin_code,
+          qr_token,
+          line_user_id,
+          slip_trans_ref,
+          slip_image_url,
+          customer_email,
+          tax_name,
+          tax_address,
+          tax_id,
+          tax_phone,
+          tax_delivery_method,
+          tax_postal_address,
+          internal_department,
+          ...safeBooking
+        } = booking;
+
+        const safeItems = (items || []).map(item => {
+          const { pin_code: itemPin, ...safeItem } = item;
+          return safeItem;
+        });
+
         return new Response(JSON.stringify({
-          ...booking,
+          ...safeBooking,
+          has_slip: Boolean(slip_image_url),
           rejection_reason: rejectionReason,
           bookingCode,
-          items: items || [],
+          items: safeItems,
           room: roomInfo,
           start_time: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[1].substring(0, 5) : items[0].start_time) : null,
           end_time: items && items.length ? (items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time) : null,

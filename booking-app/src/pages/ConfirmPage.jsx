@@ -20,12 +20,29 @@ export default function ConfirmPage() {
   const [booking, setBooking] = useState(() => {
     try {
       const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (!bookingId || String(parsed?.id) === String(bookingId) || String(parsed?.booking_id) === String(bookingId) || String(parsed?.bookingId) === String(bookingId)) {
+          return parsed;
+        }
+      }
       const pendingRaw = typeof window !== 'undefined' ? localStorage.getItem('bwork_pending_booking') : null;
-      if (pendingRaw) return JSON.parse(pendingRaw);
+      if (pendingRaw) {
+        const parsed = JSON.parse(pendingRaw);
+        if (!bookingId || String(parsed?.id) === String(bookingId) || String(parsed?.booking_id) === String(bookingId) || String(parsed?.bookingId) === String(bookingId)) {
+          return parsed;
+        }
+      }
     } catch (e) {}
     return null;
   });
+  const [loadingBooking, setLoadingBooking] = useState(() => Boolean(bookingId));
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [verifyPhoneInput, setVerifyPhoneInput] = useState('');
+  const [verifyingPhone, setVerifyingPhone] = useState(false);
+  const [verificationError, setVerificationError] = useState('');
+  const [bookingCodeMismatch, setBookingCodeMismatch] = useState(false);
+
   const [paymentSettings, setPaymentSettings] = useState({
     promptpay_number: '0125554000401',
     bank_name: 'ธนาคารกรุงศรีอยุธยา (Krungsri)',
@@ -126,19 +143,32 @@ export default function ConfirmPage() {
   }, [booking, uploadSuccess, paymentWindowMinutes, isRejected]);
 
   // Fetch fresh booking info from backend
-  const fetchFreshBooking = useCallback(async () => {
-    if (!bookingId || bookingId === 'undefined') return null;
+  const fetchFreshBooking = useCallback(async (overrideContact = null) => {
+    if (!bookingId || bookingId === 'undefined') {
+      setLoadingBooking(false);
+      return null;
+    }
 
     let storedBooking = null;
     try {
       const raw = sessionStorage.getItem('completed_booking_result');
-      if (raw) storedBooking = JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (String(parsed?.id) === String(bookingId) || String(parsed?.booking_id) === String(bookingId) || String(parsed?.bookingId) === String(bookingId)) {
+          storedBooking = parsed;
+        }
+      }
     } catch (e) {}
 
     let pendingBooking = null;
     try {
       const pendingRaw = localStorage.getItem('bwork_pending_booking');
-      if (pendingRaw) pendingBooking = JSON.parse(pendingRaw);
+      if (pendingRaw) {
+        const parsed = JSON.parse(pendingRaw);
+        if (String(parsed?.id) === String(bookingId) || String(parsed?.booking_id) === String(bookingId) || String(parsed?.bookingId) === String(bookingId)) {
+          pendingBooking = parsed;
+        }
+      }
     } catch (e) {}
 
     let statusAccess = null;
@@ -147,8 +177,9 @@ export default function ConfirmPage() {
       if (statusRaw) statusAccess = JSON.parse(statusRaw);
     } catch (e) {}
 
-    const accessToken = storedBooking?.access_token || pendingBooking?.accessToken || statusAccess?.accessToken;
-    const accessContact = storedBooking?.customer_contact || storedBooking?.contact || pendingBooking?.contact || statusAccess?.contact;
+    const accessToken = storedBooking?.access_token || storedBooking?.accessToken || pendingBooking?.accessToken || statusAccess?.accessToken;
+    const accessContact = overrideContact || statusAccess?.contact || storedBooking?.customer_contact || storedBooking?.contact || pendingBooking?.contact;
+
     const accessHeaders = {
       ...(accessToken ? { 'X-Booking-Token': accessToken } : {}),
       ...(accessContact ? { 'X-Booking-Contact': accessContact } : {})
@@ -156,32 +187,109 @@ export default function ConfirmPage() {
 
     try {
       const res = await fetch(`${API_BASE}/api/public/bookings/${bookingId}`, { headers: accessHeaders });
+
+      if (res.status === 403 || res.status === 401) {
+        setNeedsVerification(true);
+        setLoadingBooking(false);
+        return null;
+      }
+
       const data = await res.json();
-      if (data && !data.error) {
-        if (data.payment_window_minutes) {
-          setPaymentWindowMinutes(parseInt(data.payment_window_minutes, 10) || 15);
+      if (res.ok && data && !data.error) {
+        // Canonical booking code verification
+        if (queryCode) {
+          const validCodes = [
+            data.receipt_number,
+            data.booking_code,
+            data.bookingCode,
+            data.id ? `BK-${String(data.id).padStart(6, '0')}` : null
+          ].filter(Boolean).map(c => String(c).trim().toUpperCase());
+
+          if (!validCodes.includes(String(queryCode).trim().toUpperCase())) {
+            setBookingCodeMismatch(true);
+            setBooking(null);
+            setLoadingBooking(false);
+            return null;
+          }
         }
+
+        setNeedsVerification(false);
+        setBookingCodeMismatch(false);
+        setVerificationError('');
+
+        if (accessContact) {
+          try {
+            sessionStorage.setItem(`bwork_booking_access_${bookingId}`, JSON.stringify({
+              contact: accessContact,
+              accessToken: accessToken || data.access_token || undefined
+            }));
+          } catch (e) {}
+        }
+
+        const winMins = data.payment_window_minutes ? parseInt(data.payment_window_minutes, 10) || 15 : 15;
+        setPaymentWindowMinutes(winMins);
+
+        const { remainingSeconds, isExpired: exp } = calcPaymentTimeLeft(data, winMins, Date.now());
         if (data.payment_status === 'rejected' || data.slip_verify_status === 'rejected') {
           setIsExpired(false);
         } else if (data.payment_status === 'cancelled') {
           setIsExpired(true);
           setTimeLeftSeconds(0);
           localStorage.removeItem('bwork_pending_booking');
+        } else {
+          setIsExpired(exp);
+          setTimeLeftSeconds(remainingSeconds);
         }
+
         setBooking(prev => ({
           ...prev,
           ...data,
           paymentDeadline: data.paymentDeadline || prev?.paymentDeadline,
-          payment_window_minutes: data.payment_window_minutes || prev?.payment_window_minutes,
+          payment_window_minutes: winMins,
           room_name: data.room?.name || prev?.room_name,
           booking_code: data.receipt_number || data.bookingCode || prev?.booking_code,
-          total_amount: data.total_amount || prev?.total_amount
+          total_amount: data.total_amount || prev?.total_amount,
+          customer_contact: data.customer_contact || data.contact || accessContact || prev?.customer_contact
         }));
+        setLoadingBooking(false);
         return data;
+      } else if (data?.error && (res.status === 403 || data.error.includes('สิทธิ์เข้าถึง') || data.error.includes('เบอร์โทรศัพท์'))) {
+        setNeedsVerification(true);
+        setLoadingBooking(false);
+        return null;
+      } else {
+        setError(data?.error || 'ไม่สามารถโหลดข้อมูลการจองได้');
+        setLoadingBooking(false);
+        return null;
       }
-    } catch (e) {}
+    } catch (e) {
+      setLoadingBooking(false);
+    }
     return null;
-  }, [bookingId]);
+  }, [bookingId, queryCode]);
+
+  // Handle phone verification submit for cold visitors
+  const handlePhoneVerifySubmit = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const cleanInput = verifyPhoneInput.replace(/\D/g, '');
+    if (cleanInput.length < 9 || cleanInput.length > 15) {
+      setVerificationError('กรุณากรอกเบอร์โทรศัพท์ให้ถูกต้อง (9-10 หลัก)');
+      return;
+    }
+
+    setVerifyingPhone(true);
+    setVerificationError('');
+    try {
+      const result = await fetchFreshBooking(cleanInput);
+      if (!result) {
+        setVerificationError('ไม่สามารถยืนยันข้อมูลการจองได้ กรุณาตรวจสอบข้อมูลอีกครั้ง');
+      }
+    } catch (err) {
+      setVerificationError('เกิดข้อผิดพลาดในการตรวจสอบ กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setVerifyingPhone(false);
+    }
+  };
 
   // When timer expires, fetch status immediately, and bounded short retry (every 5s, max 4 times) to confirm cancellation
   useEffect(() => {
@@ -205,14 +313,6 @@ export default function ConfirmPage() {
 
   // Load completed booking info on mount
   useEffect(() => {
-    const raw = sessionStorage.getItem('completed_booking_result');
-    if (raw) {
-      try {
-        const storedBooking = JSON.parse(raw);
-        setBooking(storedBooking);
-      } catch (e) {}
-    }
-
     // Auto-fetch fresh booking info from backend if id is provided
     fetchFreshBooking();
 
@@ -359,15 +459,28 @@ export default function ConfirmPage() {
         finalPayload = await compressImage(slipFile, 800, 800, 0.70);
       }
 
+      let statusAccess = null;
+      try {
+        const statusRaw = sessionStorage.getItem(`bwork_booking_access_${targetId}`);
+        if (statusRaw) statusAccess = JSON.parse(statusRaw);
+      } catch (e) {}
+
+      const currentContact = booking?.customer_contact || booking?.contact || statusAccess?.contact;
+      const currentToken = booking?.access_token || statusAccess?.accessToken;
+
       // Send Base64 payload + QR data (Enables 100% Automated Instant Verification)
       const res = await fetch(`${API_BASE}/api/public/bookings/${targetId}/upload-slip`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(currentToken ? { 'X-Booking-Token': currentToken } : {}),
+          ...(currentContact ? { 'X-Booking-Contact': currentContact } : {})
+        },
         body: JSON.stringify({
           slip_image: finalPayload,
           qr_data: slipQrData,
-          contact: booking?.customer_contact || booking?.contact,
-          access_token: booking?.access_token
+          contact: currentContact,
+          access_token: currentToken
         })
       });
 
@@ -434,7 +547,93 @@ export default function ConfirmPage() {
         </div>
       )}
 
-      {uploadSuccess || booking?.payment_status === 'paid' ? (
+      {bookingCodeMismatch ? (
+        /* BOOKING CODE MISMATCH FAIL-CLOSED VIEW */
+        <div className="booking-card" style={{ textAlign: 'center', padding: '36px 20px' }}>
+          <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: 'rgba(239, 68, 68, 0.12)', color: '#ef4444', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px auto' }}>
+            <AlertCircle size={36} />
+          </div>
+          <h2 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 8px 0' }}>
+            ข้อมูลรหัสการจองไม่ถูกต้อง
+          </h2>
+          <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', maxWidth: '460px', margin: '0 auto 20px auto' }}>
+            รหัสการจองในลิงก์ไม่ตรงกับข้อมูลในระบบ กรุณาตรวจสอบลิงก์อีกครั้ง หรือค้นหารายการจองผ่านเบอร์โทรศัพท์ที่หน้าสถานะ
+          </p>
+          <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', maxWidth: '360px', margin: '0 auto' }}>
+            <button type="button" onClick={() => navigate('/status')} className="btn-secondary" style={{ flex: 1 }}>
+              ดูสถานะการจอง
+            </button>
+            <button type="button" onClick={() => navigate('/')} className="btn-primary" style={{ flex: 1 }}>
+              กลับหน้าหลัก
+            </button>
+          </div>
+        </div>
+      ) : needsVerification && !booking ? (
+        /* COLD-VISIT PHONE VERIFICATION FORM */
+        <div className="booking-card" style={{ maxWidth: '440px', margin: '20px auto', padding: '32px 24px', textAlign: 'center' }}>
+          <div style={{ width: '56px', height: '56px', borderRadius: '50%', backgroundColor: 'rgba(37, 99, 235, 0.12)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px auto' }}>
+            <ShieldCheck size={32} />
+          </div>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 8px 0' }}>
+            ยืนยันเบอร์โทรศัพท์ที่ใช้จอง
+          </h2>
+          <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', margin: '0 0 20px 0' }}>
+            เพื่อความปลอดภัยและความเป็นส่วนตัว กรุณากรอกเบอร์โทรศัพท์ที่ใช้ในการจองเพื่อดำเนินการชำระเงินต่อ
+            {displayBookingCode && displayBookingCode !== '-' ? ` (รหัส: ${displayBookingCode})` : ''}
+          </p>
+          <form onSubmit={handlePhoneVerifySubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <input
+              type="tel"
+              className="form-input"
+              placeholder="กรอกเบอร์โทรศัพท์ 10 หลัก (เช่น 0812345678)"
+              value={verifyPhoneInput}
+              onChange={e => setVerifyPhoneInput(e.target.value)}
+              autoFocus
+              style={{ textAlign: 'center', fontSize: '1.05rem', letterSpacing: '1px' }}
+            />
+            {verificationError && (
+              <div style={{
+                padding: '8px 12px',
+                borderRadius: '8px',
+                backgroundColor: 'var(--danger-light)',
+                color: 'var(--danger)',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
+              }}>
+                <AlertCircle size={15} />
+                <span>{verificationError}</span>
+              </div>
+            )}
+            <button
+              type="submit"
+              className="btn-primary"
+              disabled={verifyingPhone || !verifyPhoneInput.trim()}
+              style={{ padding: '12px', fontWeight: 700 }}
+            >
+              {verifyingPhone ? 'กำลังตรวจสอบ...' : 'ยืนยันเพื่อชำระเงินต่อ'}
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/status')}
+              className="btn-secondary"
+              style={{ padding: '10px', fontSize: '0.84rem' }}
+            >
+              ค้นหาการจองทั้งหมดที่หน้าสถานะ
+            </button>
+          </form>
+        </div>
+      ) : loadingBooking && !booking ? (
+        /* LOADING VIEW */
+        <div className="booking-card" style={{ textAlign: 'center', padding: '48px 20px' }}>
+          <div style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+            กำลังโหลดข้อมูลการจอง...
+          </div>
+        </div>
+      ) : uploadSuccess || booking?.payment_status === 'paid' ? (
         /* AFTER SUBMISSION SUCCESS VIEW */
         <div className="booking-card" style={{ textAlign: 'center', padding: '36px 20px' }}>
           {isPaidOrAutoApproved ? (
@@ -746,14 +945,24 @@ export default function ConfirmPage() {
                   ? 'ระบบได้เปิดสิทธิ์การจองให้ผู้อื่นแล้ว หากต้องการใช้งาน กรุณาทำรายการจองใหม่อีกครั้งครับ'
                   : 'เกินกำหนดเวลาชำระเงินแล้ว ระบบกำลังดำเนินการตรวจสอบสถานะรายการจอง กรุณาทำรายการจองใหม่หากต้องการจองอีกครั้งครับ'}
               </div>
-              <button
-                type="button"
-                onClick={() => navigate('/')}
-                className="btn-primary"
-                style={{ marginTop: '8px', padding: '8px 20px', width: 'auto', fontSize: '0.86rem' }}
-              >
-                ทำรายการจองใหม่
-              </button>
+              <div style={{ display: 'flex', gap: '10px', marginTop: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => navigate('/status')}
+                  className="btn-secondary"
+                  style={{ padding: '8px 18px', width: 'auto', fontSize: '0.86rem' }}
+                >
+                  ดูสถานะการจอง
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/')}
+                  className="btn-primary"
+                  style={{ padding: '8px 20px', width: 'auto', fontSize: '0.86rem' }}
+                >
+                  ทำรายการจองใหม่
+                </button>
+              </div>
             </div>
           ) : (
             <div style={{
@@ -790,8 +999,10 @@ export default function ConfirmPage() {
             </div>
           )}
 
-          {/* PAYMENT DETAILS CARD (OFFICIAL MERCHANT QR CODE) */}
-          <div className="booking-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          {/* PAYMENT DETAILS CARD & SLIP UPLOAD CARD (Active or Rejected Only) */}
+          {!isExpired && (
+            <>
+              <div className="booking-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div style={{
               display: 'flex',
               flexDirection: 'column',
@@ -1007,6 +1218,8 @@ export default function ConfirmPage() {
               </button>
             </form>
           </div>
+            </>
+          )}
         </div>
       )}
     </div>

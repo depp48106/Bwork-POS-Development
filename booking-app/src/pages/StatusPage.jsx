@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, AlertCircle, ArrowLeft, Upload, CheckCircle2, Clock, XCircle, Calendar, Download, Check } from 'lucide-react';
+import { Search, AlertCircle, ArrowLeft, Upload, CheckCircle2, Clock, XCircle, Calendar, Download, Check, CreditCard } from 'lucide-react';
 import { API_BASE } from '../apiConfig';
 import { generateGoogleCalendarUrl, downloadIcsFile } from '../utils/calendarUtils';
+import { calcPaymentTimeLeft } from '../utils/paymentCountdown';
 
 const THAI_MONTHS = [
   'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
@@ -72,7 +73,7 @@ export default function StatusPage() {
     fetchBookingsByPhone(phone);
   };
 
-  const getStatusBadge = (status, hasSlip) => {
+  const getStatusBadge = (status, hasSlip, isExpired) => {
     const s = String(status || '').toLowerCase();
     if (s === 'rejected') {
       return (
@@ -127,11 +128,11 @@ export default function StatusPage() {
           gap: '4px'
         }}>
           <Clock size={13} />
-          <span>รอตรวจสอบสลิป</span>
+          <span>กำลังตรวจสอบการชำระเงิน</span>
         </span>
       );
     }
-    if (s === 'cancelled') {
+    if (s === 'cancelled' || isExpired) {
       return (
         <span style={{
           backgroundColor: 'rgba(239, 68, 68, 0.12)',
@@ -146,7 +147,7 @@ export default function StatusPage() {
           gap: '4px'
         }}>
           <XCircle size={13} />
-          <span>ยกเลิกการจอง</span>
+          <span>{s === 'cancelled' ? 'ยกเลิกการจอง' : 'หมดเวลาชำระเงิน'}</span>
         </span>
       );
     }
@@ -260,6 +261,8 @@ export default function StatusPage() {
             const isCancelled = item.payment_status === 'cancelled';
             const isRejected = item.payment_status === 'rejected';
             const isPending = !isPaid && !isCancelled && !isRejected && (item.payment_status === 'pending' || item.payment_status === 'unpaid' || !item.payment_status);
+            const timeLeft = isPending ? calcPaymentTimeLeft(item, 15, Date.now()) : null;
+            const isExpiredLocally = isPending && Boolean(timeLeft?.isExpired);
 
             const usageDateStr = item.usage_date || (item.items && item.items[0]?.start_time?.split('T')[0]) || item.created_at?.split(' ')[0];
             const startTimeStr = item.start_time || (item.items && item.items[0]?.start_time?.includes('T') ? item.items[0].start_time.split('T')[1].substring(0, 5) : '08:00');
@@ -284,7 +287,7 @@ export default function StatusPage() {
                 className="booking-card"
                 style={{
                   padding: '20px',
-                  borderLeft: `5px solid ${isPaid ? '#10b981' : isCancelled ? '#ef4444' : isRejected ? '#d97706' : isPending ? '#f59e0b' : '#0284c7'}`
+                  borderLeft: `5px solid ${isPaid ? '#10b981' : (isCancelled || isExpiredLocally) ? '#ef4444' : isRejected ? '#d97706' : isPending ? '#f59e0b' : '#0284c7'}`
                 }}
               >
                 {/* Header */}
@@ -298,7 +301,7 @@ export default function StatusPage() {
                     </span>
                   </div>
                   <div style={{ flexShrink: 0 }}>
-                    {getStatusBadge(item.payment_status, Boolean(item.has_slip))}
+                    {getStatusBadge(item.payment_status, Boolean(item.has_slip), isExpiredLocally)}
                   </div>
                 </div>
 
@@ -442,8 +445,8 @@ export default function StatusPage() {
                   </div>
                 )}
 
-                {/* Action to go to payment if pending */}
-                {isPending && !item.has_slip && (
+                {/* Action to resume payment if pending and not expired */}
+                {isPending && !item.has_slip && !isExpiredLocally && (
                   <div style={{ marginTop: '14px', display: 'flex', justifyContent: 'flex-end' }}>
                     <button
                       type="button"
@@ -455,20 +458,30 @@ export default function StatusPage() {
                         display: 'flex',
                         alignItems: 'center',
                         gap: '6px',
-                        padding: '8px 16px',
-                        borderRadius: '8px',
+                        padding: '9px 18px',
+                        borderRadius: '10px',
                         backgroundColor: '#0284c7',
                         color: '#ffffff',
                         border: 'none',
-                        fontSize: '0.82rem',
+                        fontSize: '0.84rem',
                         fontWeight: 800,
                         cursor: 'pointer',
-                        boxShadow: '0 2px 6px rgba(2, 132, 199, 0.3)'
+                        boxShadow: '0 2px 6px rgba(2, 132, 199, 0.3)',
+                        transition: 'all 0.15s ease'
                       }}
                     >
-                      <Upload size={14} />
-                      <span>แนบสลิปชำระเงิน</span>
+                      <CreditCard size={15} />
+                      <span>ดำเนินการชำระเงินต่อ</span>
                     </button>
+                  </div>
+                )}
+
+                {/* Notice if pending but expired locally */}
+                {isPending && !item.has_slip && isExpiredLocally && (
+                  <div style={{ marginTop: '12px', display: 'flex', justifyContent: 'flex-end' }}>
+                    <span style={{ fontSize: '0.8rem', color: '#ef4444', fontWeight: 700 }}>
+                      หมดเวลาชำระเงินแล้ว (กรุณาทำรายการจองใหม่)
+                    </span>
                   </div>
                 )}
 
@@ -500,19 +513,20 @@ export default function StatusPage() {
                           display: 'flex',
                           alignItems: 'center',
                           gap: '6px',
-                          padding: '8px 16px',
-                          borderRadius: '8px',
+                          padding: '9px 18px',
+                          borderRadius: '10px',
                           backgroundColor: '#d97706',
                           color: '#ffffff',
                           border: 'none',
-                          fontSize: '0.82rem',
+                          fontSize: '0.84rem',
                           fontWeight: 800,
                           cursor: 'pointer',
-                          boxShadow: '0 2px 6px rgba(217, 119, 6, 0.3)'
+                          boxShadow: '0 2px 6px rgba(217, 119, 6, 0.3)',
+                          transition: 'all 0.15s ease'
                         }}
                       >
-                        <Upload size={14} />
-                        <span>แนบสลิปใหม่</span>
+                        <Upload size={15} />
+                        <span>อัปโหลดสลิปใหม่</span>
                       </button>
                     </div>
                   </div>
