@@ -363,7 +363,7 @@ export default function StatusPage() {
                   }}>
                     <span style={{ fontSize: '1.2rem' }}>🔑</span>
                     <div style={{ fontSize: '0.8rem', color: '#0369a1' }}>
-                      <strong>การรับรหัสเข้าห้อง:</strong> กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์ (ชั้น 3) เมื่อถึงเวลาใช้งาน เจ้าหน้าที่จะทำการส่งรหัส PIN ปลดล็อกประตูให้ท่านครับ
+                      <strong>การรับรหัสเข้าห้อง:</strong> กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์ (ชั้น L) เมื่อถึงเวลาใช้งาน เจ้าหน้าที่จะทำการส่งรหัส PIN ปลดล็อกประตูให้ท่านครับ
                     </div>
                   </div>
                 )}
@@ -382,7 +382,7 @@ export default function StatusPage() {
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#1e293b', fontSize: '0.82rem', fontWeight: 800 }}>
                       <Calendar size={16} style={{ color: 'var(--primary)' }} />
-                      <span>บันทึกการจองลงในปฏิทินของคุณ</span>
+                      <span>เพิ่มวันจองนี้ลงในปฏิทิน</span>
                     </div>
 
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>

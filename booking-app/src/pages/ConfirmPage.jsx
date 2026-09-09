@@ -672,7 +672,7 @@ export default function ConfirmPage() {
                 <div style={{ fontSize: '0.82rem', color: '#0369a1' }}>
                   <strong>การรับรหัสผ่านเข้าห้องประชุม:</strong>
                   <div style={{ marginTop: '2px', color: 'var(--text-muted)' }}>
-                    เมื่อถึงวันและเวลาเข้าใช้งาน กรุณาติดต่อที่ <strong>เคาน์เตอร์ประชาสัมพันธ์ (ชั้น 3)</strong> เจ้าหน้าที่จะทำการส่งรหัส PIN สำหรับเปิดประตูให้ท่านครับ
+                    เมื่อถึงวันและเวลาเข้าใช้งาน กรุณาติดต่อที่ <strong>เคาน์เตอร์ประชาสัมพันธ์ (ชั้น L)</strong> เจ้าหน้าที่จะทำการส่งรหัส PIN สำหรับเปิดประตูให้ท่านครับ
                   </div>
                 </div>
               </div>
@@ -758,9 +758,14 @@ export default function ConfirmPage() {
               flexDirection: 'column',
               gap: '12px'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#1e293b', fontSize: '0.86rem', fontWeight: 800 }}>
-                <Calendar size={18} style={{ color: 'var(--primary)' }} />
-                <span>บันทึกการจองลงในปฏิทินของคุณ</span>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#1e293b', fontSize: '0.88rem', fontWeight: 800 }}>
+                  <Calendar size={18} style={{ color: 'var(--primary)' }} />
+                  <span>เพิ่มการจองลงในปฏิทิน</span>
+                </div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '3px', marginLeft: '26px' }}>
+                  บันทึกวันและเวลาไว้ เพื่อไม่พลาดการใช้งานห้อง
+                </div>
               </div>
 
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>

@@ -605,6 +605,15 @@ function buildLineBookingConfirmationFlex(booking, item, room) {
                 align: 'center',
                 wrap: true,
                 margin: 'xs'
+              },
+              {
+                type: 'text',
+                text: 'สามารถเพิ่มวันจองลงในปฏิทินได้จากหน้าตรวจสอบการจอง',
+                size: 'xxs',
+                color: '#047857',
+                align: 'center',
+                wrap: true,
+                margin: 'sm'
               }
             ]
           }
@@ -621,8 +630,8 @@ function buildLineBookingConfirmationFlex(booking, item, room) {
             height: 'sm',
             action: {
               type: 'uri',
-              label: '📱 ตรวจสอบสถานะการจอง',
-              uri: `https://bwork-booking.pages.dev/status?contact=${encodeURIComponent(booking.contact || '')}`
+              label: 'ดูรายละเอียด / เพิ่มลงปฏิทิน',
+              uri: 'https://bwork-booking.pages.dev/status'
             }
           }
         ]

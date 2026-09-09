@@ -1705,9 +1705,18 @@ function buildLineConfirmationFlex(booking, item, room) {
               },
               {
                 type: 'text',
-                text: 'เมื่อถึงเวลาใช้งาน กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์ (ชั้น 3) เจ้าหน้าที่จะกดส่งรหัส PIN เข้าห้องให้ท่าน',
+                text: 'เมื่อถึงเวลาใช้งาน กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์ (ชั้น L) เจ้าหน้าที่จะกดส่งรหัส PIN เข้าห้องให้ท่าน',
                 size: 'xs',
                 color: '#0284c7',
+                align: 'center',
+                wrap: true,
+                margin: 'xs'
+              },
+              {
+                type: 'text',
+                text: 'สามารถเพิ่มวันจองลงในปฏิทินได้จากหน้าตรวจสอบการจอง',
+                size: 'xxs',
+                color: '#0369a1',
                 align: 'center',
                 wrap: true,
                 margin: 'xs'
@@ -1721,11 +1730,15 @@ function buildLineConfirmationFlex(booking, item, room) {
         layout: 'vertical',
         contents: [
           {
-            type: 'text',
-            text: 'ขอบคุณที่ใช้บริการ B-WORK สอบถามเพิ่มเติม โทร 02-xxx-xxxx',
-            size: 'xxs',
-            color: '#94a3b8',
-            align: 'center'
+            type: 'button',
+            style: 'primary',
+            color: '#1e3a8a',
+            height: 'sm',
+            action: {
+              type: 'uri',
+              label: 'ดูรายละเอียด / เพิ่มลงปฏิทิน',
+              uri: 'https://bwork-booking.pages.dev/status'
+            }
           }
         ]
       }
@@ -4113,6 +4126,37 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
           error: 'สลิปนี้เคยถูกปฏิเสธแล้ว กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'
         });
       }
+    }
+
+    // Only the approved former target-correction class can enter local manual review.
+    if (verifyResult.manualReviewRequired === true && !verifyResult.eligibleForAutoApproval &&
+        verifyResult.details?.ocr?.receiverOcrUncertain === true) {
+      try {
+        await dbQuery.transaction(async () => {
+          const current = await dbQuery.get('SELECT id, total_amount, payment_status FROM bookings WHERE id = ?', [targetBookingId]);
+          if (!current || ['paid', 'cancelled'].includes(current.payment_status) ||
+              Number(current.total_amount) !== verifyResult.expectedAmount) throw new Error('BOOKING_STATE_CHANGED');
+          const existing = await dbQuery.get('SELECT booking_id FROM slip_verifications WHERE trans_ref = ? LIMIT 1', [verifyResult.transRef]);
+          const paid = await dbQuery.get("SELECT id FROM bookings WHERE slip_trans_ref = ? AND payment_status = 'paid' LIMIT 1", [verifyResult.transRef]);
+          if (existing || paid) throw new Error('DUPLICATE_SLIP');
+          await dbQuery.run(
+            "INSERT INTO slip_verifications (booking_id, trans_ref, bank_code, bank_name, amount, is_auto_approved, confidence_score, verification_status, rejection_reason, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, 'pending_manual', ?, ?)",
+            [targetBookingId, verifyResult.transRef, verifyResult.bankCode, verifyResult.bankName,
+              verifyResult.detectedAmount, verifyResult.confidence, 'receiver_ocr_uncertain', nowIso]
+          );
+          const update = await dbQuery.run(
+            "UPDATE bookings SET slip_image_url = ?, slip_trans_ref = ?, slip_verified_at = NULL, slip_verify_status = 'pending_manual', payment_status = 'reviewing' WHERE id = ? AND total_amount = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')",
+            [slipUrl, verifyResult.transRef, targetBookingId, verifyResult.expectedAmount]
+          );
+          if (update?.changes !== 1) throw new Error('BOOKING_STATE_CHANGED');
+        });
+      } catch (error) {
+        if (fs.existsSync(filePath)) { try { fs.unlinkSync(filePath); } catch (_) {} }
+        return res.status(/DUPLICATE|UNIQUE|BOOKING_STATE_CHANGED/.test(String(error.message)) ? 409 : 503)
+          .json({ success: false, auto_approved: false, error: 'ไม่สามารถบันทึกสลิปเพื่อตรวจสอบได้ กรุณาตรวจสอบสถานะรายการแล้วลองใหม่' });
+      }
+      return res.json({ success: true, auto_approved: false, slipUrl, verifyResult,
+        message: 'ข้อมูลชื่อผู้รับอ่านได้ไม่ชัดเจน กรุณารอเจ้าหน้าที่ตรวจสอบสลิป' });
     }
 
     // 2. AUTO-APPROVE if valid bank slip and all criteria pass
