@@ -3,11 +3,12 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   CheckCircle2, Copy, Upload, Check,
-  ShieldCheck, AlertCircle, Download, CreditCard, QrCode, Clock
+  ShieldCheck, AlertCircle, Download, CreditCard, QrCode, Clock, Calendar
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { calcPaymentTimeLeft } from '../utils/paymentCountdown';
+import { generateGoogleCalendarUrl, downloadIcsFile } from '../utils/calendarUtils';
 
 export default function ConfirmPage() {
   const navigate = useNavigate();
@@ -410,6 +411,17 @@ export default function ConfirmPage() {
   const totalAmt = booking ? parseFloat(booking.total_amount || 0) : 0;
   const qrImageSrc = paymentSettings.qr_image || '/bwork_payment_qr.png';
 
+  const isPaidOrAutoApproved = Boolean(uploadResultData?.auto_approved || booking?.payment_status === 'paid');
+  const bookingForCalendar = booking ? {
+    ...booking,
+    booking_code: displayBookingCode,
+    room_name: booking?.room_name || booking?.room?.name,
+    date: booking?.date || booking?.booking_date,
+    start_time: booking?.start_time,
+    end_time: booking?.end_time
+  } : null;
+  const googleCalendarUrl = isPaidOrAutoApproved ? generateGoogleCalendarUrl(bookingForCalendar) : null;
+
   return (
     <div className="main-content">
       <StepProgress currentStep={4} />
@@ -422,20 +434,24 @@ export default function ConfirmPage() {
         </div>
       )}
 
-      {uploadSuccess ? (
+      {uploadSuccess || booking?.payment_status === 'paid' ? (
         /* AFTER SUBMISSION SUCCESS VIEW */
         <div className="booking-card" style={{ textAlign: 'center', padding: '36px 20px' }}>
-          {uploadResultData?.auto_approved ? (
+          {isPaidOrAutoApproved ? (
             <>
               <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: 'rgba(16, 185, 129, 0.12)', color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px auto' }}>
                 <CheckCircle2 size={36} />
               </div>
 
               <h2 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 8px 0' }}>
-                ชำระเงินสำเร็จ! (ระบบตรวจสอบสลิปอัตโนมัติ)
+                {booking?.payment_status === 'paid'
+                  ? 'การจองห้องประชุมได้รับการยืนยันแล้ว'
+                  : 'ชำระเงินสำเร็จ! (ระบบตรวจสอบสลิปอัตโนมัติ)'}
               </h2>
               <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', maxWidth: '500px', margin: '0 auto 16px auto' }}>
-                ระบบได้ตรวจสอบสลิปโอนเงินของท่านถูกต้องเรียบร้อยแล้ว การจองห้องประชุมได้รับการยืนยันทันที
+                {booking?.payment_status === 'paid'
+                  ? 'รายการจองของท่านได้รับการชำระเงินและยืนยันเรียบร้อยแล้ว'
+                  : 'ระบบได้ตรวจสอบสลิปโอนเงินของท่านถูกต้องเรียบร้อยแล้ว การจองห้องประชุมได้รับการยืนยันทันที'}
               </p>
 
               {/* Reception Contact Box */}
@@ -528,8 +544,88 @@ export default function ConfirmPage() {
             </div>
           </div>
 
+          {/* CALENDAR INTEGRATION (Confirmed / Paid Only) */}
+          {isPaidOrAutoApproved && googleCalendarUrl && (
+            <div style={{
+              maxWidth: '400px',
+              margin: '0 auto 20px auto',
+              backgroundColor: '#ffffff',
+              border: '1.5px solid #cbd5e1',
+              borderRadius: '14px',
+              padding: '16px',
+              textAlign: 'left',
+              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#1e293b', fontSize: '0.86rem', fontWeight: 800 }}>
+                <Calendar size={18} style={{ color: 'var(--primary)' }} />
+                <span>บันทึกการจองลงในปฏิทินของคุณ</span>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <a
+                  href={googleCalendarUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    flex: '1 1 170px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: '#ffffff',
+                    color: '#1e40af',
+                    border: '1.5px solid #bfdbfe',
+                    fontSize: '0.82rem',
+                    fontWeight: 700,
+                    textDecoration: 'none',
+                    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <Calendar size={15} />
+                  <span>เพิ่มลง Google Calendar</span>
+                </a>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = downloadIcsFile(bookingForCalendar);
+                    if (!res.success && res.error) {
+                      setToastMessage(res.error);
+                      setTimeout(() => setToastMessage(''), 4000);
+                    }
+                  }}
+                  style={{
+                    flex: '1 1 150px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: '#f8fafc',
+                    color: '#334155',
+                    border: '1.5px solid #cbd5e1',
+                    fontSize: '0.82rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <Download size={15} />
+                  <span>ดาวน์โหลดปฏิทิน (.ics)</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', maxWidth: '420px', margin: '0 auto', flexWrap: 'wrap' }}>
-            {!uploadResultData?.auto_approved && (
+            {!isPaidOrAutoApproved && (
               <button
                 type="button"
                 onClick={() => {

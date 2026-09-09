@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, AlertCircle, ArrowLeft, Upload, CheckCircle2, Clock, XCircle } from 'lucide-react';
+import { Search, AlertCircle, ArrowLeft, Upload, CheckCircle2, Clock, XCircle, Calendar, Download, Check } from 'lucide-react';
 import { API_BASE } from '../apiConfig';
+import { generateGoogleCalendarUrl, downloadIcsFile } from '../utils/calendarUtils';
 
 const THAI_MONTHS = [
   'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
@@ -32,6 +33,7 @@ export default function StatusPage() {
   const [bookings, setBookings] = useState([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState('');
+  const [toastMessage, setToastMessage] = useState('');
 
   const fetchBookingsByPhone = async (phoneNumber) => {
     const clean = phoneNumber.replace(/\D/g, '');
@@ -169,6 +171,14 @@ export default function StatusPage() {
 
   return (
     <div className="main-content" style={{ maxWidth: '680px' }}>
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="toast-container">
+          <Check size={18} style={{ color: '#10b981' }} />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* Top Back Navigation */}
       <button
         type="button"
@@ -255,6 +265,18 @@ export default function StatusPage() {
             const startTimeStr = item.start_time || (item.items && item.items[0]?.start_time?.includes('T') ? item.items[0].start_time.split('T')[1].substring(0, 5) : '08:00');
             const endTimeStr = item.end_time || (item.items && item.items[0]?.end_time?.includes('T') ? item.items[0].end_time.split('T')[1].substring(0, 5) : '17:00');
             const createdDateStr = item.created_date || item.created_at;
+            const roomName = item.room_name || (item.items && item.items[0]?.room_name) || 'ห้องประชุม';
+
+            const bookingForCalendar = isPaid ? {
+              ...item,
+              id: item.id,
+              booking_code: bookingCode,
+              room_name: roomName,
+              date: usageDateStr,
+              start_time: startTimeStr,
+              end_time: endTimeStr
+            } : null;
+            const googleCalendarUrl = isPaid && bookingForCalendar ? generateGoogleCalendarUrl(bookingForCalendar) : null;
 
             return (
               <div
@@ -272,7 +294,7 @@ export default function StatusPage() {
                       {bookingCode.startsWith('BK-') ? bookingCode : `#${bookingCode}`}
                     </span>
                     <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginLeft: '8px' }}>
-                      ({item.room_name || (item.items && item.items[0]?.room_name) || 'ห้องประชุม'})
+                      ({roomName})
                     </span>
                   </div>
                   <div style={{ flexShrink: 0 }}>
@@ -336,9 +358,86 @@ export default function StatusPage() {
                     alignItems: 'center',
                     gap: '10px'
                   }}>
-                    <span style={{ fontSize: '1.2rem' }}></span>
+                    <span style={{ fontSize: '1.2rem' }}>🔑</span>
                     <div style={{ fontSize: '0.8rem', color: '#0369a1' }}>
                       <strong>การรับรหัสเข้าห้อง:</strong> กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์ (ชั้น 3) เมื่อถึงเวลาใช้งาน เจ้าหน้าที่จะทำการส่งรหัส PIN ปลดล็อกประตูให้ท่านครับ
+                    </div>
+                  </div>
+                )}
+
+                {/* Calendar Actions (if paid) */}
+                {isPaid && googleCalendarUrl && (
+                  <div style={{
+                    marginTop: '12px',
+                    padding: '12px 14px',
+                    borderRadius: '12px',
+                    backgroundColor: '#ffffff',
+                    border: '1.5px solid #cbd5e1',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#1e293b', fontSize: '0.82rem', fontWeight: 800 }}>
+                      <Calendar size={16} style={{ color: 'var(--primary)' }} />
+                      <span>บันทึกการจองลงในปฏิทินของคุณ</span>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <a
+                        href={googleCalendarUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          flex: '1 1 150px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          backgroundColor: '#ffffff',
+                          color: '#1e40af',
+                          border: '1.5px solid #bfdbfe',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          textDecoration: 'none',
+                          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <Calendar size={14} />
+                        <span>เพิ่มลง Google Calendar</span>
+                      </a>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const res = downloadIcsFile(bookingForCalendar);
+                          if (!res.success && res.error) {
+                            setToastMessage(res.error);
+                            setTimeout(() => setToastMessage(''), 4000);
+                          }
+                        }}
+                        style={{
+                          flex: '1 1 140px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          backgroundColor: '#f8fafc',
+                          color: '#334155',
+                          border: '1.5px solid #cbd5e1',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <Download size={14} />
+                        <span>ดาวน์โหลดปฏิทิน (.ics)</span>
+                      </button>
                     </div>
                   </div>
                 )}
