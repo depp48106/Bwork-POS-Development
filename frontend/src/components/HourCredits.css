@@ -1,0 +1,14 @@
+.hour-credits{max-width:1200px;margin:auto;color:var(--text-primary);padding:12px}
+.hour-credits.credit-pending{position:fixed;inset:0;z-index:10000;max-width:none;background:var(--bg-primary,#fff);overflow:auto;padding:24px}
+.hour-credits fieldset{border:0;padding:0;margin:8px 0;min-width:0}
+.hour-credits label{display:inline-flex;flex-direction:column;gap:6px;margin:6px 12px 6px 0}
+.hour-credits input,.hour-credits select,.hour-credits textarea{padding:9px;border:1px solid #aaa;border-radius:6px;max-width:100%;color:inherit;background:var(--bg-secondary)}
+.hour-credits button,.credit-voucher button{padding:9px 14px;margin:4px;border:1px solid #888;border-radius:6px;cursor:pointer}
+.hour-credits button:disabled{opacity:.5;cursor:not-allowed}
+.credit-card{border:1px solid #aaa;border-radius:12px;padding:20px;margin:20px 0;overflow-wrap:anywhere}
+.credit-toolbar,.credit-fields{display:flex;align-items:end;gap:12px;flex-wrap:wrap}
+.credit-error{color:#b42318;background:#fff0ed;padding:12px}
+.credit-scroll{overflow:auto}.hour-credits table{width:100%;border-collapse:collapse}.hour-credits td,.hour-credits th{padding:10px;text-align:left;border-bottom:1px solid #aaa}.hour-credits li{padding:10px 0}
+.credit-voucher-overlay{position:fixed;inset:0;z-index:10000;background:#555b;overflow:auto;padding:24px}
+.credit-voucher{background:white;color:#111;max-width:720px;margin:auto;padding:32px;overflow-wrap:anywhere}.credit-voucher h2{font-size:20px}
+@media print{body:has(>.credit-voucher-overlay)>*:not(.credit-voucher-overlay){display:none!important}.credit-voucher-overlay{position:static;background:white;padding:0;overflow:visible;page:creditVoucher}.credit-voucher{max-width:none;padding:16mm}.credit-no-print{display:none!important}@page creditVoucher{size:A4;margin:12mm}}

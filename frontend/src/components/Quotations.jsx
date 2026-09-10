@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
+import { toLocalDateString } from '../dateUtils';
 
 const TIME_SLOT_OPTIONS = [
   '08:00', '08:30', '09:00', '09:30',
@@ -113,7 +114,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
   const [jobName, setJobName] = useState('Meeting Room');
   const [quotationNo, setQuotationNo] = useState('');
   const [validUntil, setValidUntil] = useState('');
-  const [issueDate, setIssueDate] = useState(new Date().toISOString().split('T')[0]);
+  const [issueDate, setIssueDate] = useState(toLocalDateString());
   const [items, setItems] = useState([]);
 
   // Financial Options
@@ -124,7 +125,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
   // Quick Add Bar State
   const [isCatalogModalOpen, setIsCatalogModalOpen] = useState(false);
   const [selectedCatalogValue, setSelectedCatalogValue] = useState('');
-  const [quickAddDate, setQuickAddDate] = useState(new Date().toISOString().split('T')[0]);
+  const [quickAddDate, setQuickAddDate] = useState(toLocalDateString());
   const [quickAddStartTime, setQuickAddStartTime] = useState('09:00');
   const [quickAddEndTime, setQuickAddEndTime] = useState('12:00');
   const [quickAddBookingType, setQuickAddBookingType] = useState('hourly');
@@ -204,7 +205,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
         subtotal: item.subtotal,
         layout: item.layout || 'standard',
         booking_type: item.booking_type || 'hourly',
-        item_date: new Date().toISOString().split('T')[0]
+        item_date: toLocalDateString()
       }));
 
       setItems(mapped);
@@ -467,7 +468,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
       subtotal: qty * p,
       booking_type: bType,
       layout: lType,
-      item_date: quickAddDate || new Date().toISOString().split('T')[0],
+      item_date: quickAddDate || toLocalDateString(),
       start_time: quickAddStartTime || '09:00',
       end_time: quickAddEndTime || '12:00'
     };
@@ -489,7 +490,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
       subtotal: 0,
       booking_type: 'hourly',
       layout: 'standard',
-      item_date: issueDate || new Date().toISOString().split('T')[0],
+      item_date: issueDate || toLocalDateString(),
       start_time: '09:00',
       end_time: '12:00'
     }]);
@@ -546,7 +547,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
     
     const nextNo = await fetchNextQuotationNo();
     setQuotationNo(nextNo);
-    setIssueDate(new Date().toISOString().split('T')[0]);
+    setIssueDate(toLocalDateString());
 
     const validDays = Number(liveSt?.quotation_valid_days) || 7;
     const d = new Date();
@@ -573,7 +574,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
         setJobName(fullQ.job_name || 'Meeting Room');
         setQuotationNo(fullQ.quotation_no || (fullQ.id ? `QT-${String(new Date(fullQ.created_at || Date.now()).getFullYear()).slice(-2)}${(new Date(fullQ.created_at || Date.now()).getMonth()+1).toString().padStart(2,'0')}${String(fullQ.id || '').padStart(3,'0')}` : 'QT-2608001'));
         setValidUntil(fullQ.valid_until || '');
-        setIssueDate(fullQ.created_at ? new Date(fullQ.created_at).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+        setIssueDate(fullQ.created_at ? toLocalDateString(new Date(fullQ.created_at)) : toLocalDateString());
         setOverallDiscountPercent(Number(fullQ.overall_discount) || 0);
         setHasVat(fullQ.has_vat !== undefined ? String(fullQ.has_vat) !== '0' && !!fullQ.has_vat : true);
         setWhtRate(Number(fullQ.wht_rate) || 0);
@@ -2359,7 +2360,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
                         </div>
                         <div>
                           <div style={{ height: '32px', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', paddingBottom: '3px', fontSize: '0.74rem', fontWeight: 400, color: '#0F172A', fontFamily: "'Inter', monospace" }}>
-                            {formatDateThai(issueDate || new Date().toISOString().split('T')[0])}
+                            {formatDateThai(issueDate || toLocalDateString())}
                           </div>
                           <div style={{ borderTop: '1px solid #CBD5E1', width: '100%' }}></div>
                           <div style={{ fontSize: '0.74rem', fontWeight: 700, color: '#334155', marginTop: '5px' }}>วันที่</div>

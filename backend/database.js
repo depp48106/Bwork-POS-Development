@@ -2,19 +2,67 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { runMigrations } = require('./migrator');
 
-const dbFilename = 'database.sqlite';
-const dbPath = path.join(__dirname, dbFilename);
+// Load environment variables from backend/.env
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+
+const appEnv = process.env.APP_ENV || 'development';
+// Default database filename based on environment: development -> database_dev.sqlite | production -> database_prod.sqlite
+const defaultDbFilename = appEnv === 'production' ? 'database_prod.sqlite' : 'database_dev.sqlite';
+let dbFilename = process.env.DB_DATABASE || defaultDbFilename;
+if (appEnv === 'production' && dbFilename === 'database_dev.sqlite') {
+  dbFilename = 'database_prod.sqlite';
+}
+
+const dbPath = process.env.DB_PATH
+  ? path.resolve(process.env.DB_PATH)
+  : (process.env.BWORK_DB_PATH 
+      ? path.resolve(process.env.BWORK_DB_PATH) 
+      : path.join(__dirname, dbFilename));
+
+console.log(`[Database] Environment: ${appEnv} | Database File: ${dbPath}`);
 const db = new sqlite3.Database(dbPath, (err) => {
   if (!err) {
     db.run("PRAGMA foreign_keys = ON;");
+    db.run("PRAGMA journal_mode = WAL;");
+    db.run("PRAGMA synchronous = NORMAL;");
+    db.run("PRAGMA busy_timeout = 5000;");
+  } else {
+    console.error('[Database] Connection error:', err.message);
   }
 });
 
-// Helper function to hash password
+// Password hashes use Scrypt for high security with legacy SHA-256 fallback
 function hashPassword(password) {
-  return crypto.createHash('sha256').update(password).digest('hex');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derivedKey = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `scrypt$${salt}$${derivedKey}`;
 }
+
+function verifyPassword(password, storedHash) {
+  if (!storedHash || typeof storedHash !== 'string') return false;
+
+  if (storedHash.startsWith('scrypt$')) {
+    const [, salt, expectedHex] = storedHash.split('$');
+    if (!salt || !expectedHex) return false;
+    try {
+      const actual = crypto.scryptSync(String(password), salt, 64);
+      const expected = Buffer.from(expectedHex, 'hex');
+      return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  const legacyHash = crypto.createHash('sha256').update(String(password)).digest('hex');
+  const actual = Buffer.from(legacyHash, 'utf8');
+  const expected = Buffer.from(storedHash, 'utf8');
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+// Global Transaction Mutex for serialized SQLite transactions
+let txLock = Promise.resolve();
 
 // Wrap sqlite3 queries in promises
 const dbQuery = {
@@ -49,12 +97,35 @@ const dbQuery = {
         else resolve();
       });
     });
+  },
+  transaction(callback) {
+    let release;
+    const currentLock = new Promise(res => { release = res; });
+    const previousLock = txLock;
+    txLock = currentLock;
+
+    return previousLock.then(async () => {
+      try {
+        await dbQuery.run('BEGIN EXCLUSIVE TRANSACTION');
+        const result = await callback();
+        await dbQuery.run('COMMIT');
+        return result;
+      } catch (err) {
+        try { await dbQuery.run('ROLLBACK'); } catch (rbErr) {}
+        throw err;
+      } finally {
+        release();
+      }
+    });
   }
 };
 
 // Initialize database schema and seed data
 async function initDatabase() {
   console.log('Initializing SQLite database...');
+
+  // Run versioned migrations
+  await runMigrations(dbQuery);
 
   // Create tables
   await dbQuery.exec(`
@@ -74,6 +145,7 @@ async function initDatabase() {
       image_url TEXT,
       category TEXT DEFAULT 'Meeting Room',
       pin_code TEXT,
+      builtland_pin_code TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -262,6 +334,13 @@ async function initDatabase() {
   try { await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_daily_rate REAL DEFAULT 0'); } catch (e) {}
   try { await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_capacity INTEGER DEFAULT 0'); } catch (e) {}
   try { await dbQuery.run('ALTER TABLE rooms ADD COLUMN classroom_image_url TEXT'); } catch (e) {}
+  try {
+    const roomCols = await dbQuery.all("PRAGMA table_info(rooms)");
+    if (!roomCols.some(c => c.name === 'builtland_pin_code')) {
+      await dbQuery.run("ALTER TABLE rooms ADD COLUMN builtland_pin_code TEXT");
+      console.log('Migration: Added builtland_pin_code column to rooms table.');
+    }
+  } catch (e) {}
 
   // Migration: Add layout column to booking_items if not exists
   try {
@@ -544,8 +623,10 @@ async function initDatabase() {
 }
 
 module.exports = {
+  dbPath,
   db,
   dbQuery,
   initDatabase,
-  hashPassword
+  hashPassword,
+  verifyPassword
 };

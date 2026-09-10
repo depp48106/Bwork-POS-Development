@@ -6,7 +6,9 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "db:backup": "node backup.js",
+    "db:migrate": "node -e \"require('./database').initDatabase().then(() => process.exit(0))\""
   },
   "dependencies": {
     "cors": "^2.8.5",

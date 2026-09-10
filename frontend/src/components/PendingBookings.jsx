@@ -2140,7 +2140,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                         </div>
                         {b.payment_method ? (
                           <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.2 }}>
-                            {b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : b.payment_method)}
+                            {b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : b.payment_method)}
                           </div>
                         ) : null}
                       </td>

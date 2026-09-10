@@ -26,6 +26,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
     status: 'active',
     image_url: '',
     pin_code: '',
+    builtland_pin_code: '',
     dbType: 'room' // 'room' or 'service'
   });
   const [showModal, setShowModal] = useState(false);
@@ -205,7 +206,8 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
             has_halfday: r.has_halfday,
             has_daily: r.has_daily,
             image_url: r.image_url || '',
-            pin_code: r.pin_code || ''
+            pin_code: r.pin_code || '',
+            builtland_pin_code: r.builtland_pin_code || ''
           })),
           ...servicesData.map(s => ({
             id: s.id,
@@ -291,6 +293,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
         status: currentItemForm.status,
         image_url: currentItemForm.image_url || null,
         pin_code: currentItemForm.pin_code || null,
+        builtland_pin_code: currentItemForm.builtland_pin_code || null,
         category: roomCategoryName
       };
     } else {
@@ -329,6 +332,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
           status: 'active',
           image_url: '',
           pin_code: '',
+          builtland_pin_code: '',
           dbType: 'room',
           originalDbType: 'room',
           has_hourly: true,
@@ -362,6 +366,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
       status: item.status,
       image_url: item.image_url || '',
       pin_code: item.pin_code || '',
+      builtland_pin_code: item.builtland_pin_code || '',
       dbType: item.dbType,
       originalDbType: item.dbType,
       has_hourly: item.has_hourly === 1 || item.has_hourly === true || (item.dbType === 'room' && item.hourly_rate > 0),
@@ -765,20 +770,42 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                         </span>
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        {item.dbType === 'room' && item.pin_code ? (
-                          <span style={{ 
-                            fontFamily: 'monospace', 
-                            fontWeight: '800', 
-                            fontSize: '0.9rem', 
-                            padding: '4px 10px', 
-                            borderRadius: '8px', 
-                            backgroundColor: 'rgba(16, 185, 129, 0.12)', 
-                            color: '#10b981',
-                            border: '1px solid rgba(16, 185, 129, 0.25)',
-                            letterSpacing: '1px'
-                          }}>
-                            {item.pin_code}
-                          </span>
+                        {item.dbType === 'room' ? (
+                          <div style={{ display: 'inline-flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
+                            {item.pin_code && (
+                              <span style={{ 
+                                fontFamily: 'monospace', 
+                                fontWeight: '800', 
+                                fontSize: '0.82rem', 
+                                padding: '2px 8px', 
+                                borderRadius: '6px', 
+                                backgroundColor: 'rgba(16, 185, 129, 0.12)', 
+                                color: '#10b981',
+                                border: '1px solid rgba(16, 185, 129, 0.25)',
+                                letterSpacing: '0.5px'
+                              }} title="รหัสผ่านสำหรับลูกค้าทั่วไป (LINE OA / Walk-in / Basecamp)">
+                                🔑 {item.pin_code}
+                              </span>
+                            )}
+                            {item.builtland_pin_code && (
+                              <span style={{ 
+                                fontFamily: 'monospace', 
+                                fontWeight: '800', 
+                                fontSize: '0.82rem', 
+                                padding: '2px 8px', 
+                                borderRadius: '6px', 
+                                backgroundColor: 'rgba(249, 115, 22, 0.12)', 
+                                color: '#ea580c',
+                                border: '1px solid rgba(249, 115, 22, 0.25)',
+                                letterSpacing: '0.5px'
+                              }} title="รหัสผ่านเฉพาะพนักงาน Builtland">
+                                🏢 {item.builtland_pin_code}
+                              </span>
+                            )}
+                            {!item.pin_code && !item.builtland_pin_code && (
+                              <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>-</span>
+                            )}
+                          </div>
                         ) : (
                           <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>-</span>
                         )}
@@ -1137,23 +1164,41 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                 </div>
               </div>
 
-              {/* Fixed Room PIN Code (Only for Room) */}
+              {/* Room Door PIN Codes (Customer & Builtland) */}
               {itemForm.dbType === 'room' && (
-                <div className="form-group" style={{ margin: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: 'bold' }}>
-                    รหัสผ่านเข้าห้องประชุม
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    placeholder="ระบุรหัสผ่านเข้าใช้งานห้องประชุม"
-                    value={itemForm.pin_code || ''}
-                    onChange={e => setItemForm({ ...itemForm, pin_code: e.target.value })}
-                    style={{ height: '42px', fontSize: '0.9rem', padding: '0 12px', borderRadius: '10px', fontWeight: 'bold', letterSpacing: '1px' }}
-                  />
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
-                    * เมื่อมีคนจองห้องนี้ รหัสนี้จะถูกพิมพ์บนสลิปและส่งเข้า LINE OA ตอนเช็คอินให้อัตโนมัติ (เปลี่ยนรหัสใหม่ได้ทุกเดือน)
-                  </span>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span>🔑 รหัสเข้าห้องลูกค้าทั่วไป</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="เช่น 393478#"
+                      value={itemForm.pin_code || ''}
+                      onChange={e => setItemForm({ ...itemForm, pin_code: e.target.value })}
+                      style={{ height: '42px', fontSize: '0.9rem', padding: '0 12px', borderRadius: '10px', fontWeight: 'bold', letterSpacing: '1px' }}
+                    />
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                      * สำหรับ LINE OA, Walk-in และ Basecamp
+                    </span>
+                  </div>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#ea580c', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span>🏢 รหัสเข้าห้อง Builtland</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="เช่น 112233#"
+                      value={itemForm.builtland_pin_code || ''}
+                      onChange={e => setItemForm({ ...itemForm, builtland_pin_code: e.target.value })}
+                      style={{ height: '42px', fontSize: '0.9rem', padding: '0 12px', borderRadius: '10px', fontWeight: 'bold', letterSpacing: '1px' }}
+                    />
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                      * เฉพาะพนักงาน Builtland (ไม่ส่งให้ลูกค้าทั่วไป)
+                    </span>
+                  </div>
                 </div>
               )}
 

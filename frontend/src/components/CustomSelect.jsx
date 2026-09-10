@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown, Check } from 'lucide-react';
 
 function CustomSelect({ 
@@ -14,15 +15,22 @@ function CustomSelect({
   menuStyle = {},
   align = 'left',
   size = 'medium',
-  wrap = false
+  wrap = false,
+  usePortal = false,
+  noTruncate = false
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef(null);
+  const popoverRef = useRef(null);
 
   // Close when clicking outside
   useEffect(() => {
     function handleClickOutside(event) {
-      if (containerRef.current && !containerRef.current.contains(event.target)) {
+      if (
+        containerRef.current && 
+        !containerRef.current.contains(event.target) &&
+        (!popoverRef.current || !popoverRef.current.contains(event.target))
+      ) {
         setIsOpen(false);
       }
     }
@@ -33,6 +41,33 @@ function CustomSelect({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [isOpen]);
+
+  const [popoverPos, setPopoverPos] = useState({ top: 0, left: 0, right: 0, minWidth: 0 });
+
+  const updatePopoverPos = useCallback(() => {
+    if (usePortal && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      const rightDistance = window.innerWidth - rect.right;
+      setPopoverPos({
+        top: rect.bottom + 6,
+        left: rect.left,
+        right: rightDistance,
+        minWidth: rect.width
+      });
+    }
+  }, [usePortal]);
+
+  useEffect(() => {
+    if (isOpen && usePortal) {
+      updatePopoverPos();
+      window.addEventListener('resize', updatePopoverPos);
+      window.addEventListener('scroll', updatePopoverPos, true);
+      return () => {
+        window.removeEventListener('resize', updatePopoverPos);
+        window.removeEventListener('scroll', updatePopoverPos, true);
+      };
+    }
+  }, [isOpen, usePortal, updatePopoverPos]);
 
   const selectedOption = options.find(opt => {
     if (typeof opt === 'object' && opt !== null) {
@@ -45,6 +80,14 @@ function CustomSelect({
     if (!opt) return placeholder;
     if (typeof opt === 'object' && opt !== null) {
       return opt.label || opt.name || opt.value;
+    }
+    return opt;
+  };
+
+  const getTriggerLabel = (opt) => {
+    if (!opt) return placeholder;
+    if (typeof opt === 'object' && opt !== null) {
+      return opt.triggerLabel || opt.label || opt.name || opt.value;
     }
     return opt;
   };
@@ -110,8 +153,8 @@ function CustomSelect({
           display: 'flex', 
           alignItems: 'center', 
           gap: '8px', 
-          overflow: shouldWrap ? 'visible' : 'hidden', 
-          textOverflow: shouldWrap ? 'clip' : 'ellipsis', 
+          overflow: noTruncate ? 'visible' : (shouldWrap ? 'visible' : 'hidden'), 
+          textOverflow: noTruncate ? 'clip' : (shouldWrap ? 'clip' : 'ellipsis'), 
           whiteSpace: shouldWrap ? 'normal' : 'nowrap', 
           flex: 1, 
           minWidth: 0,
@@ -120,14 +163,14 @@ function CustomSelect({
           {Icon && <Icon size={15} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />}
           {selectedOption && getOptionIcon(selectedOption)}
           <span style={{ 
-            overflow: shouldWrap ? 'visible' : 'hidden', 
-            textOverflow: shouldWrap ? 'clip' : 'ellipsis', 
+            overflow: noTruncate ? 'visible' : (shouldWrap ? 'visible' : 'hidden'), 
+            textOverflow: noTruncate ? 'clip' : (shouldWrap ? 'clip' : 'ellipsis'), 
             whiteSpace: shouldWrap ? 'normal' : 'nowrap',
             wordBreak: shouldWrap ? 'break-word' : 'normal',
-            lineHeight: shouldWrap ? 1.35 : 'inherit',
+            lineHeight: shouldWrap ? 1.35 : 1,
             color: selectedOption ? 'var(--text-main)' : 'var(--text-muted)' 
           }}>
-            {getLabel(selectedOption)}
+            {getTriggerLabel(selectedOption)}
           </span>
         </div>
 
@@ -143,94 +186,115 @@ function CustomSelect({
       </div>
 
       {/* Popover Dropdown Menu */}
-      {isOpen && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            ...(align === 'right' ? { right: 0 } : { left: 0 }),
-            width: 'max-content',
-            minWidth: '100%',
-            maxWidth: '380px',
-            maxHeight: '260px',
-            overflowY: 'auto',
-            backgroundColor: 'var(--bg-card)',
-            backdropFilter: 'blur(16px)',
-            WebkitBackdropFilter: 'blur(16px)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '14px',
-            boxShadow: '0 12px 35px rgba(0, 0, 0, 0.25)',
-            zIndex: 3000,
-            padding: '5px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '2px',
-            boxSizing: 'border-box',
-            animation: 'fadeIn 0.15s ease-out',
-            ...menuStyle
-          }}
-          className="scrollbar-thin"
-        >
-          {options.length === 0 ? (
-            <div style={{ padding: '10px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-              ไม่มีตัวเลือก
-            </div>
-          ) : (
-            options.map((opt, idx) => {
-              const optVal = typeof opt === 'object' && opt !== null ? opt.value : opt;
-              const isSelected = String(optVal) === String(value);
-
-              return (
-                <div
-                  key={idx}
-                  onClick={() => {
-                    onChange(optVal);
-                    setIsOpen(false);
-                  }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '8px',
-                    padding: '8px 10px',
-                    borderRadius: '9px',
-                    fontSize: '0.8rem',
-                    fontWeight: isSelected ? 800 : 500,
-                    color: isSelected ? 'var(--primary-color)' : 'var(--text-main)',
-                    backgroundColor: isSelected ? 'rgba(37, 99, 235, 0.1)' : 'transparent',
-                    cursor: 'pointer',
-                    transition: 'all 0.12s ease'
-                  }}
-                  onMouseEnter={e => {
-                    if (!isSelected) e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
-                  }}
-                  onMouseLeave={e => {
-                    if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                >
-                  <div style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: '8px', 
-                    overflow: 'hidden', 
-                    whiteSpace: shouldWrap ? 'normal' : 'nowrap',
-                    wordBreak: shouldWrap ? 'break-word' : 'normal',
-                    lineHeight: shouldWrap ? 1.35 : 'inherit',
-                    flex: 1 
-                  }}>
-                    {getOptionIcon(opt)}
-                    <span>{getLabel(opt)}</span>
-                  </div>
-
-                  {isSelected && (
-                    <Check size={14} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
-                  )}
+      {isOpen && (() => {
+        const menuNode = (
+          <>
+            {usePortal && (
+              <div 
+                onClick={(e) => { e.stopPropagation(); setIsOpen(false); }}
+                style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99998 }}
+              />
+            )}
+            <div
+              ref={popoverRef}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: usePortal ? 'fixed' : 'absolute',
+                top: usePortal ? `${popoverPos.top}px` : 'calc(100% + 6px)',
+                ...(usePortal
+                  ? (align === 'right' ? { right: `${Math.max(10, popoverPos.right)}px` } : { left: `${Math.max(10, popoverPos.left)}px` })
+                  : (align === 'right' ? { right: 0 } : { left: 0 })
+                ),
+                width: 'max-content',
+                minWidth: usePortal ? `${Math.max(popoverPos.minWidth, 140)}px` : '100%',
+                maxWidth: '380px',
+                maxHeight: '280px',
+                overflowY: 'auto',
+                backgroundColor: 'var(--bg-card)',
+                backdropFilter: 'blur(16px)',
+                WebkitBackdropFilter: 'blur(16px)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '14px',
+                boxShadow: '0 16px 40px rgba(0, 0, 0, 0.35)',
+                zIndex: 99999,
+                padding: '5px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '2px',
+                boxSizing: 'border-box',
+                animation: 'fadeIn 0.15s ease-out',
+                ...menuStyle
+              }}
+              className="scrollbar-thin"
+            >
+              {options.length === 0 ? (
+                <div style={{ padding: '10px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                  ไม่มีตัวเลือก
                 </div>
-              );
-            })
-          )}
-        </div>
-      )}
+              ) : (
+                options.map((opt, idx) => {
+                  const optVal = typeof opt === 'object' && opt !== null ? opt.value : opt;
+                  const isSelected = String(optVal) === String(value);
+
+                  return (
+                    <div
+                      key={idx}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        console.log('[CustomSelect] Option clicked:', optVal);
+                        onChange(optVal);
+                        setIsOpen(false);
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '8px',
+                        padding: '8px 10px',
+                        borderRadius: '9px',
+                        fontSize: '0.84rem',
+                        fontWeight: isSelected ? 800 : 500,
+                        color: isSelected ? 'var(--primary-color)' : 'var(--text-main)',
+                        backgroundColor: isSelected ? 'rgba(37, 99, 235, 0.1)' : 'transparent',
+                        cursor: 'pointer',
+                        transition: 'all 0.12s ease'
+                      }}
+                      onMouseEnter={e => {
+                        if (!isSelected) e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+                      }}
+                      onMouseLeave={e => {
+                        if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
+                      }}
+                    >
+                      <div style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: '8px', 
+                        overflow: noTruncate ? 'visible' : 'hidden', 
+                        whiteSpace: shouldWrap ? 'normal' : 'nowrap',
+                        wordBreak: shouldWrap ? 'break-word' : 'normal',
+                        lineHeight: shouldWrap ? 1.35 : 1,
+                        flex: 1 
+                      }}>
+                        {getOptionIcon(opt)}
+                        <span style={{ whiteSpace: shouldWrap ? 'normal' : 'nowrap' }}>{getLabel(opt)}</span>
+                      </div>
+
+                      {isSelected && (
+                        <Check size={14} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </>
+        );
+
+        return usePortal && typeof document !== 'undefined'
+          ? createPortal(menuNode, document.body)
+          : menuNode;
+      })()}
     </div>
   );
 }

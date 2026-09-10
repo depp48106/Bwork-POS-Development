@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
 import './index.css';
 import { API_BASE } from './apiConfig';
+import { authManager } from './authManager';
 
 // Global API Interceptor: rewrite API URLs in production & attach JWT token to protected requests
 const ORIGINAL_FETCH = window.fetch;
@@ -16,7 +17,7 @@ window.fetch = function(url, options = {}) {
 
   // Attach JWT token to all API requests except login and public endpoints
   if (typeof url === 'string' && url.includes('/api/') && !url.includes('/api/auth/login') && !url.includes('/api/public/')) {
-    const token = localStorage.getItem('pos_token') || localStorage.getItem('token');
+    const token = authManager.getToken();
     if (token) {
       if (options.headers instanceof Headers) {
         if (!options.headers.has('Authorization')) {

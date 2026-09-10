@@ -4,7 +4,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
-const { initDatabase, dbQuery, hashPassword, verifyPassword } = require('./database');
+const { initDatabase, dbQuery, dbPath, hashPassword, verifyPassword } = require('./database');
 const { performBackup } = require('./backup');
 const {
   generateDatabaseDumpSql,
@@ -237,6 +237,12 @@ app.use('/api/upload', authenticateToken, requireAnyPermission('manage', 'admin-
 app.use('/api/backup', authenticateToken, requireAnyPermission('admin-management', 'admin-backup'));
 app.use('/api/admin', authenticateToken, requireAnyPermission('admin-management', 'admin-backup'));
 app.use('/api/basecamp', authenticateToken, requireAnyPermission('pos', 'manage'));
+const { createHourCreditService } = require('./hourCredits/service');
+const { creditRouter, creditMutationGuard } = require('./hourCredits/routes');
+const hourCredits = createHourCreditService({ filename: dbPath, overlap: checkRoomOverlap, receipt: generateReceiptNumber, pin: generateUniquePinCode });
+app.use('/api/hour-credits', authenticateToken, requireAnyPermission('pos'), creditRouter(hourCredits));
+app.use('/api/bookings', creditMutationGuard(dbQuery));
+app.use('/api/admin/clear-history', creditMutationGuard(dbQuery, true));
 
 // ==========================================
 // 2. ROOMS ENDPOINTS
@@ -458,14 +464,14 @@ app.delete('/api/categories/:name', requireAnyPermission('manage'), async (req, 
 // ==========================================================
 // 4. BOOKINGS (POS CHECKOUT & HISTORY)
 // ==========================================
-async function generateReceiptNumber() {
+async function generateReceiptNumber(query = dbQuery) {
   const bangkokOffsetMs = 7 * 60 * 60 * 1000;
   const bkkDate = new Date(Date.now() + bangkokOffsetMs);
   const yy = String(bkkDate.getUTCFullYear()).slice(-2);
   const mm = String(bkkDate.getUTCMonth() + 1).padStart(2, '0');
   const prefix = `BK-${yy}${mm}`;
 
-  const lastBooking = await dbQuery.get(
+  const lastBooking = await query.get(
     `SELECT receipt_number FROM bookings
      WHERE receipt_number LIKE ?
      ORDER BY id DESC LIMIT 1`,
@@ -485,14 +491,14 @@ async function generateReceiptNumber() {
 }
 
 // Helper function to generate 6-digit PIN Code
-async function generateUniquePinCode() {
+async function generateUniquePinCode(query = dbQuery) {
   let pin = Math.floor(100000 + Math.random() * 900000).toString();
   // Ensure uniqueness among active bookings
-  let existing = await dbQuery.get('SELECT id FROM bookings WHERE pin_code = ? AND checkin_status != "expired"', [pin]);
+  let existing = await query.get('SELECT id FROM bookings WHERE pin_code = ? AND checkin_status != "expired"', [pin]);
   let tries = 0;
   while (existing && tries < 10) {
     pin = Math.floor(100000 + Math.random() * 900000).toString();
-    existing = await dbQuery.get('SELECT id FROM bookings WHERE pin_code = ? AND checkin_status != "expired"', [pin]);
+    existing = await query.get('SELECT id FROM bookings WHERE pin_code = ? AND checkin_status != "expired"', [pin]);
     tries++;
   }
   return pin;
@@ -570,9 +576,9 @@ function normalizeToLocalISO(dateStr, timeStr) {
 }
 
 // Helper: Get cleaning buffer minutes from settings (defaults to 30 mins)
-async function getCleaningBufferMinutes() {
+async function getCleaningBufferMinutes(query = dbQuery) {
   try {
-    const row = await dbQuery.get("SELECT value FROM settings WHERE key = 'cleaning_buffer_minutes'");
+    const row = await query.get("SELECT value FROM settings WHERE key = 'cleaning_buffer_minutes'");
     if (row && row.value !== undefined && row.value !== null && !isNaN(row.value)) {
       return Math.max(0, parseInt(row.value, 10));
     }
@@ -581,10 +587,10 @@ async function getCleaningBufferMinutes() {
 }
 
 // Helper: Check if a room has overlapping bookings or conflicts with cleaning buffer (cross-system safe)
-async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = null) {
+async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = null, creditQuery = dbQuery) {
   const normStart = normalizeToLocalISO(startISO);
   const normEnd = normalizeToLocalISO(endISO);
-  const bufferMins = await getCleaningBufferMinutes();
+  const bufferMins = await getCleaningBufferMinutes(creditQuery);
   const bufferMs = bufferMins * 60 * 1000;
 
   const reqStartMs = new Date(normStart.replace(' ', 'T')).getTime();
@@ -605,7 +611,7 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
     params.push(excludeBookingId);
   }
 
-  const bookings = await dbQuery.all(query, params);
+  const bookings = await creditQuery.all(query, params);
 
   for (const b of bookings) {
     if (!b.start_time || !b.end_time) continue;

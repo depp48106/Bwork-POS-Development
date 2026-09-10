@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Calendar, DollarSign, FileText, CheckCircle, Clock, TrendingUp } from 'lucide-react';
 import CustomDatePicker from './CustomDatePicker';
+import { toLocalDateString } from '../dateUtils';
 
 function Dashboard() {
   const [dateRange, setDateRange] = useState({
@@ -52,15 +53,15 @@ function Dashboard() {
     let end = '';
 
     if (type === 'today') {
-      const todayStr = now.toISOString().split('T')[0];
+      const todayStr = toLocalDateString(now);
       start = todayStr;
       end = todayStr;
     } else if (type === 'month') {
       // First day of current month
       const y = now.getFullYear();
       const m = now.getMonth();
-      start = new Date(y, m, 1).toISOString().split('T')[0];
-      end = new Date(y, m + 1, 0).toISOString().split('T')[0];
+      start = toLocalDateString(new Date(y, m, 1));
+      end = toLocalDateString(new Date(y, m + 1, 0));
     } else if (type === 'year') {
       const y = now.getFullYear();
       start = `${y}-01-01`;

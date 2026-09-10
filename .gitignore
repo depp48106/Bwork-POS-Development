@@ -39,12 +39,18 @@ booking-app.backup/
 *.sqlite
 *.sqlite3
 *.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 *.traineddata
 backups/
-
 # User uploads & slips
 backend/uploads/slips/*
 !backend/uploads/slips/.gitkeep
 backend/uploads/*
 !backend/uploads/.gitkeep
 
+# Scratch and evaluation data
+scratch/
+backend/tessdata/
+backend/test_tessdata/
+backend/evaluation/
