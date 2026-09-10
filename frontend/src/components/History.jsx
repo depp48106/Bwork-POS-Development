@@ -514,7 +514,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       else if (cType === 'basecamp') source = `Basecamp (${b.basecamp_sub_type === 'hotdesk' ? 'Hotdesk ' : 'Office '}${b.basecamp_unit || ''})`;
       else if (cType === 'general' || bChannel === 'line_oa' || b.booking_source === 'online') source = 'LINE OA (ลูกค้าทั่วไป)';
       const status = b.payment_status === 'paid' ? 'สำเร็จ' : (b.payment_status === 'cancelled' ? 'ยกเลิก' : (b.payment_status || 'รอชำระ'));
-      const method = b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : (b.payment_method || '-'));
+      const method = b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : (b.payment_method || '-'));
       const taxReq = b.tax_invoice_required === 1 ? 'ขอใบกำกับภาษี' : 'ไม่ขอ';
 
       return {
@@ -1249,7 +1249,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                   border: '1px solid var(--border-color)',
                                   color: 'var(--text-muted)'
                                 }}>
-                                  {b.payment_method === 'cash' ? '💵 เงินสด' : b.payment_method === 'transfer' ? '📱 โอนเงิน' : (b.payment_method || '-')}
+                                  {b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? '💵 เงินสด' : b.payment_method === 'transfer' ? '📱 โอนเงิน' : (b.payment_method || '-')}
                                 </span>
                               </div>
                             </td>
@@ -1550,7 +1550,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '4px', borderTop: '1px dashed var(--border-color)' }}>
                     <div>
                       <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                        {b.payment_method === 'cash' ? '💵 เงินสด' : b.payment_method === 'transfer' ? '📱 โอนเงิน' : (b.payment_method || '-')}
+                        {b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? '💵 เงินสด' : b.payment_method === 'transfer' ? '📱 โอนเงิน' : (b.payment_method || '-')}
                       </div>
                       <div style={{ fontWeight: 850, color: 'var(--primary-color)', fontSize: '1rem' }}>
                         ฿{Number(b.total_amount || 0).toLocaleString()}
@@ -1871,7 +1871,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
                     <span>ชำระเงินเสร็จสิ้นแล้ว</span>
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>
-                      ช่องทางชำระ: {selectedBooking.payment_method === 'cash' ? 'เงินสด (Cash)' : 'โอนเงินเข้าบัญชี (Transfer)'}
+                      ช่องทางชำระ: {selectedBooking.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : selectedBooking.payment_method === 'cash' ? 'เงินสด (Cash)' : 'โอนเงินเข้าบัญชี (Transfer)'}
                     </span>
                   </div>
                 </div>

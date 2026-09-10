@@ -330,6 +330,247 @@ async function generateUniquePinCode(env) {
 }
 
 // ==========================================
+// 3.5 ROOM HOUR CREDIT HELPERS
+// ==========================================
+const formatHourCreditDurationThai = minutes => {
+  const m = Math.abs(Number(minutes) || 0);
+  return `${Math.floor(m / 60)} ชั่วโมง ${m % 60} นาที`;
+};
+
+function parseHourCreditTimestamp(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::00)?$/.test(value)) {
+    throw Object.assign(new Error('Use Bangkok wall time YYYY-MM-DDTHH:mm, whole minutes'), { statusCode: 400 });
+  }
+  const local = value.replace(' ', 'T').slice(0, 16) + ':00';
+  const ms = Date.parse(local + '+07:00');
+  if (!Number.isFinite(ms) || new Date(ms + 7 * 3600000).toISOString().slice(0, 19) !== local) {
+    throw Object.assign(new Error('Invalid date/time'), { statusCode: 400 });
+  }
+  return { local, ms };
+}
+
+function buildHourCreditVoucherFlex({ credit_id, room_name, remaining_minutes, sent_at }) {
+  const remainingText = formatHourCreditDurationThai(remaining_minutes);
+  const sentDisplay = sent_at || new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
+  return {
+    type: 'flex',
+    altText: `ใบยืนยันชั่วโมงคงเหลือ: ${credit_id} (${remainingText})`,
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#0284c7',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'B-WORK COWORKING & MEETING', weight: 'bold', color: '#ffffff', size: 'xs', letterSpacing: '1px' },
+          { type: 'text', text: 'ใบยืนยันชั่วโมงคงเหลือ', weight: 'bold', color: '#ffffff', size: 'xl', margin: 'xs' }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '18px',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'Credit ID', size: 'sm', color: '#64748b', flex: 3 },
+              { type: 'text', text: String(credit_id), size: 'sm', color: '#0f172a', weight: 'bold', flex: 5, align: 'end', wrap: true }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'ห้อง', size: 'sm', color: '#64748b', flex: 3 },
+              { type: 'text', text: String(room_name || '-'), size: 'sm', color: '#0f172a', weight: 'bold', flex: 5, align: 'end' }
+            ]
+          },
+          { type: 'separator', margin: 'md' },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            backgroundColor: '#f0fdf4',
+            cornerRadius: '8px',
+            paddingAll: '12px',
+            contents: [
+              { type: 'text', text: 'ชั่วโมงคงเหลือ', size: 'xs', color: '#166534', align: 'center' },
+              { type: 'text', text: remainingText, size: 'xl', weight: 'bold', color: '#15803d', align: 'center', margin: 'xs' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            margin: 'md',
+            contents: [
+              { type: 'text', text: 'เวลาที่ส่ง', size: 'xs', color: '#94a3b8', flex: 3 },
+              { type: 'text', text: `${sentDisplay} (เวลาไทย)`, size: 'xs', color: '#94a3b8', flex: 5, align: 'end' }
+            ]
+          },
+          {
+            type: 'text',
+            text: 'ยอดในระบบเป็นข้อมูลอ้างอิงสูงสุด เอกสารนี้แสดงยอด ณ เวลาที่ส่ง',
+            size: 'xxs',
+            color: '#94a3b8',
+            wrap: true,
+            margin: 'md',
+            align: 'center'
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        paddingAll: '12px',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#0284c7',
+            action: {
+              type: 'message',
+              label: 'แสดง Credit ID',
+              text: String(credit_id)
+            }
+          }
+        ]
+      }
+    }
+  };
+}
+
+async function createHourCreditFingerprint(kind, creditId, input, actor, allowed) {
+  if (!Number.isSafeInteger(actor) || actor <= 0) {
+    throw Object.assign(new Error('Staff identity required'), { statusCode: 403 });
+  }
+  if (!input || typeof input !== 'object' || Object.keys(input).some(k => !allowed.includes(k))) {
+    throw Object.assign(new Error('Unsupported credit fields'), { statusCode: 400 });
+  }
+  if (typeof input.idempotency_key !== 'string' || !/^[\w:-]{8,120}$/.test(input.idempotency_key)) {
+    throw Object.assign(new Error('Idempotency key required (8-120 characters)'), { statusCode: 400 });
+  }
+  if (typeof input.reason !== 'string' || !input.reason.trim() || input.reason.length > 1000) {
+    throw Object.assign(new Error('Reason required'), { statusCode: 400 });
+  }
+  const payload = Object.fromEntries(Object.keys(input).sort().map(k => [k, input[k]]));
+  const raw = JSON.stringify({ kind, creditId, actor, payload });
+  const msgUint8 = new TextEncoder().encode(raw);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function getWorkerHourCreditDetail(db, id) {
+  const c = await db.prepare(`SELECT c.credit_id, c.source_booking_id, c.source_item_id, c.customer_name, c.customer_phone, c.line_user_id, c.room_id, c.created_by, c.created_at,
+    b.receipt_number AS source_reference, r.name AS room_name FROM room_hour_credits c JOIN bookings b ON b.id = c.source_booking_id JOIN rooms r ON r.id = c.room_id WHERE c.credit_id = ?`).bind(id).first();
+  if (!c) return null;
+
+  const historyRes = await db.prepare(`SELECT e.id, e.entry_type, e.minutes_delta, e.booking_item_id, e.reverses_entry_id, e.reason, e.created_by, e.created_at,
+    i.start_time, b.id AS booking_id, b.receipt_number AS booking_reference, b.payment_status
+    FROM room_hour_credit_entries e LEFT JOIN booking_items i ON i.id = e.booking_item_id
+    LEFT JOIN bookings b ON b.id = i.booking_id WHERE e.credit_id = ? ORDER BY e.id`).bind(id).all();
+  const history = historyRes?.results || [];
+
+  const total = type => history.filter(e => e.entry_type === type).reduce((n, e) => n + e.minutes_delta, 0);
+  const remaining = history.reduce((n, e) => n + e.minutes_delta, 0);
+  const has_line = Boolean(c.line_user_id && c.line_user_id.trim());
+  delete c.line_user_id;
+
+  return {
+    ...c,
+    has_line,
+    original_granted_minutes: total('grant'),
+    redeemed_minutes: -total('redeem') - total('reversal'),
+    remaining_minutes: remaining,
+    status: remaining === 0 ? 'exhausted' : remaining === total('grant') ? 'available' : 'partially_used',
+    history
+  };
+}
+
+async function replayHourCreditEntry(db, key, fingerprint) {
+  const e = await db.prepare('SELECT * FROM room_hour_credit_entries WHERE idempotency_key = ?').bind(key).first();
+  if (!e) return null;
+  if (e.request_fingerprint !== fingerprint) {
+    throw Object.assign(new Error('Idempotency key already used with a different request'), { statusCode: 409 });
+  }
+  let bookingId = null;
+  if (e.booking_item_id) {
+    const item = await db.prepare('SELECT booking_id FROM booking_items WHERE id = ?').bind(e.booking_item_id).first();
+    bookingId = item?.booking_id ?? null;
+  }
+  return {
+    credit_id: e.credit_id,
+    entry_id: e.id,
+    entry_type: e.entry_type,
+    minutes_delta: e.minutes_delta,
+    booking_id: bookingId,
+    booking_item_id: e.booking_item_id
+  };
+}
+
+async function checkHourCreditMutationGuard(env, pathname, method) {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return null;
+  if (method === 'POST' && pathname.endsWith('/send-pin')) return null;
+
+  try {
+    const tableExists = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='room_hour_credits'").first();
+    if (!tableExists) return null;
+
+    if (pathname === '/api/admin/clear-history') {
+      const hasCredit = await env.DB.prepare('SELECT credit_id FROM room_hour_credits LIMIT 1').first();
+      if (hasCredit) {
+        return { error: 'History contains hour credit; clearing is disabled', status: 409 };
+      }
+      return null;
+    }
+
+    if (pathname.startsWith('/api/bookings/')) {
+      const parts = pathname.replace('/api/bookings/', '').split('/');
+      const ref = decodeURIComponent(parts[0] || '');
+      if (!ref) return null;
+
+      const b = await env.DB.prepare('SELECT id, billing_option, payment_method FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)').bind(ref, ref, ref).first();
+      if (!b) return null;
+
+      const linked = await env.DB.prepare('SELECT e.id FROM room_hour_credit_entries e JOIN booking_items i ON i.id = e.booking_item_id WHERE i.booking_id = ? LIMIT 1').bind(b.id).first();
+      if (linked || b.billing_option === 'hour_credit' || b.payment_method === 'hour_credit') {
+        return { error: 'Use hour-credit reversal; generic booking mutations are disabled', status: 409 };
+      }
+
+      if (method === 'DELETE') {
+        const sourceLinked = await env.DB.prepare('SELECT credit_id FROM room_hour_credits WHERE source_booking_id = ?').bind(b.id).first();
+        if (sourceLinked) {
+          return { error: 'Source booking is linked to hour credit', status: 409 };
+        }
+      }
+    }
+  } catch (err) {
+    return { error: 'Unable to verify hour-credit mutation safety', status: 503 };
+  }
+  return null;
+}
+
+function checkStaffPosAuth(auth) {
+  if (auth.error) return { error: auth.error, status: auth.status };
+  const user = auth.user;
+  if (!user || (!Number.isSafeInteger(user.id)) || user.id <= 0) {
+    return { error: 'Staff identity required', status: 403 };
+  }
+  if (user.role !== 'admin') {
+    const perms = (user.permissions || '').split(',').map(p => p.trim());
+    if (!perms.includes('pos')) {
+      return { error: 'ไม่มีสิทธิ์เข้าถึงระบบเครดิตชั่วโมง', status: 403 };
+    }
+  }
+  return null;
+}
+
+// ==========================================
 // 4. FILE UPLOAD & R2 HELPERS
 // ==========================================
 async function saveUploadedFile(env, fileData, folder = 'uploads') {
@@ -1247,6 +1488,13 @@ export default {
     try {
       // Ensure D1 database schema has all latest columns
       await ensureD1Schema(env);
+
+      // Generic Hour-Credit mutation safety guard
+      const mutationGuard = await checkHourCreditMutationGuard(env, pathname, method);
+      if (mutationGuard) {
+        return new Response(JSON.stringify({ error: mutationGuard.error }), { status: mutationGuard.status, headers: corsHeaders });
+      }
+
       // ----------------------------------------------------
       // SERVE R2 UPLOADS / STATIC IMAGES (/uploads/*)
       // ----------------------------------------------------
@@ -2663,6 +2911,369 @@ export default {
           await env.DB.prepare("DELETE FROM bookings WHERE id = ?").bind(bookingId).run();
           return new Response(JSON.stringify({ success: true, message: 'ลบรายการจองออกจากระบบอย่างถาวรสำเร็จ' }), { headers: corsHeaders });
         }
+      }
+
+      // ----------------------------------------------------
+      // 4.5 ROOM HOUR CREDITS ENDPOINTS
+      // ----------------------------------------------------
+      if (pathname === '/api/hour-credits' && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        const authErr = checkStaffPosAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const term = String(url.searchParams.get('search') || '').trim().slice(0, 120);
+        const digits = term.replace(/\D/g, '').replace(/^66(?=\d{9}$)/, '0');
+        const rowsRes = await env.DB.prepare(`SELECT credit_id FROM room_hour_credits WHERE instr(lower(credit_id), lower(?)) > 0 OR (? != '' AND instr(customer_phone, ?) > 0) ORDER BY created_at DESC, credit_id LIMIT 100`).bind(term, digits, digits).all();
+        const rows = rowsRes?.results || [];
+        const details = await Promise.all(rows.map(r => getWorkerHourCreditDetail(env.DB, r.credit_id)));
+        return new Response(JSON.stringify(details.filter(Boolean)), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/hour-credits/source/') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        const authErr = checkStaffPosAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const ref = decodeURIComponent(pathname.replace('/api/hour-credits/source/', ''));
+        const b = await env.DB.prepare("SELECT id, receipt_number, customer_name, contact, payment_status, total_amount FROM bookings WHERE id = ? OR receipt_number = ?").bind(ref, ref).first();
+        if (!b) return new Response(JSON.stringify({ error: 'Source booking not found' }), { status: 404, headers: corsHeaders });
+
+        const items = await env.DB.prepare(`SELECT i.id, i.room_id, r.name AS room_name, i.booking_type, i.start_time, i.end_time, i.checkin_status,
+          c.credit_id AS existing_credit_id FROM booking_items i LEFT JOIN rooms r ON r.id = i.room_id
+          LEFT JOIN room_hour_credits c ON c.source_item_id = i.id WHERE i.booking_id = ?`).bind(b.id).all();
+        return new Response(JSON.stringify({ ...b, items: items?.results || [] }), { headers: corsHeaders });
+      }
+
+      if (pathname === '/api/hour-credits' && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        const authErr = checkStaffPosAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const body = await request.json().catch(() => null);
+        const actor = auth.user.id;
+        let fp;
+        try {
+          fp = await createHourCreditFingerprint('grant', null, body, actor, ['source_booking_id', 'source_item_id', 'minutes', 'reason', 'idempotency_key']);
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: err.statusCode || 400, headers: corsHeaders });
+        }
+
+        if (!Number.isSafeInteger(body.minutes) || body.minutes <= 0) {
+          return new Response(JSON.stringify({ error: 'Positive integer minutes required' }), { status: 400, headers: corsHeaders });
+        }
+
+        try {
+          const old = await replayHourCreditEntry(env.DB, body.idempotency_key, fp);
+          if (old) return new Response(JSON.stringify(old), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: err.statusCode || 409, headers: corsHeaders });
+        }
+
+        const source = await env.DB.prepare(`SELECT b.id, b.customer_name, b.contact, b.line_user_id, b.payment_status, b.total_amount, b.billing_option,
+          i.room_id, i.booking_type, i.start_time, i.end_time, i.checkin_status FROM bookings b JOIN booking_items i ON i.booking_id = b.id WHERE b.id = ? AND i.id = ?`).bind(body.source_booking_id, body.source_item_id).first();
+        if (!source) {
+          return new Response(JSON.stringify({ error: 'Source booking/item not found' }), { status: 404, headers: corsHeaders });
+        }
+        if (!source.room_id || source.booking_type !== 'hourly' || source.payment_status !== 'paid' || source.total_amount <= 0 || source.billing_option === 'hour_credit' || source.checkin_status === 'cancelled') {
+          return new Response(JSON.stringify({ error: 'Source must be a paid hourly room item' }), { status: 409, headers: corsHeaders });
+        }
+
+        let duration;
+        try {
+          duration = (parseHourCreditTimestamp(source.end_time).ms - parseHourCreditTimestamp(source.start_time).ms) / 60000;
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 400, headers: corsHeaders });
+        }
+
+        if (body.minutes > duration) {
+          return new Response(JSON.stringify({ error: 'Grant exceeds original duration' }), { status: 409, headers: corsHeaders });
+        }
+
+        const existingCredit = await env.DB.prepare('SELECT credit_id FROM room_hour_credits WHERE source_item_id = ?').bind(body.source_item_id).first();
+        if (existingCredit) {
+          return new Response(JSON.stringify({ error: 'Source item already has credit' }), { status: 409, headers: corsHeaders });
+        }
+
+        const id = 'HC-' + crypto.randomUUID();
+        const created = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 19);
+        const cleanPhone = String(source.contact || '').replace(/\D/g, '').replace(/^66(?=\d{9}$)/, '0');
+
+        try {
+          await env.DB.prepare(`INSERT INTO room_hour_credits (credit_id, source_booking_id, source_item_id, customer_name, customer_phone, line_user_id, room_id, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, source.id, body.source_item_id, source.customer_name, cleanPhone, source.line_user_id || null, source.room_id, actor, created).run();
+
+          const insEntry = await env.DB.prepare(`INSERT INTO room_hour_credit_entries
+            (credit_id, entry_type, minutes_delta, booking_item_id, reverses_entry_id, reason, created_by, created_at, idempotency_key, request_fingerprint)
+            VALUES (?, 'grant', ?, NULL, NULL, ?, ?, ?, ?, ?)`).bind(id, body.minutes, body.reason.trim(), actor, created, body.idempotency_key, fp).run();
+
+          const entryId = insEntry.meta.last_row_id;
+          return new Response(JSON.stringify({
+            credit_id: id,
+            entry_id: entryId,
+            entry_type: 'grant',
+            minutes_delta: body.minutes,
+            booking_id: null,
+            booking_item_id: null
+          }), { headers: corsHeaders });
+        } catch (err) {
+          if (err.message?.includes('UNIQUE constraint failed') || err.message?.includes('already')) {
+            return new Response(JSON.stringify({ error: 'Credit constraint conflict' }), { status: 409, headers: corsHeaders });
+          }
+          return new Response(JSON.stringify({ error: err.message || 'Hour credit operation failed' }), { status: 409, headers: corsHeaders });
+        }
+      }
+
+      if (pathname.startsWith('/api/hour-credits/') && pathname.endsWith('/redeem') && method === 'POST') {
+        const creditId = decodeURIComponent(pathname.replace('/api/hour-credits/', '').replace('/redeem', ''));
+        const auth = await authenticateUser(request, env);
+        const authErr = checkStaffPosAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const body = await request.json().catch(() => null);
+        const actor = auth.user.id;
+        let fp;
+        try {
+          fp = await createHourCreditFingerprint('redeem', creditId, body, actor, ['minutes', 'start_time', 'end_time', 'reason', 'idempotency_key']);
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: err.statusCode || 400, headers: corsHeaders });
+        }
+
+        let start, end;
+        try {
+          start = parseHourCreditTimestamp(body.start_time);
+          end = parseHourCreditTimestamp(body.end_time);
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 400, headers: corsHeaders });
+        }
+
+        if (!Number.isSafeInteger(body.minutes) || body.minutes <= 0 || (end.ms - start.ms) !== body.minutes * 60000) {
+          return new Response(JSON.stringify({ error: 'Duration must equal positive integer minutes' }), { status: 400, headers: corsHeaders });
+        }
+
+        try {
+          const old = await replayHourCreditEntry(env.DB, body.idempotency_key, fp);
+          if (old) return new Response(JSON.stringify(old), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: err.statusCode || 409, headers: corsHeaders });
+        }
+
+        if (start.ms <= Date.now()) {
+          return new Response(JSON.stringify({ error: 'Booking must start in the future' }), { status: 409, headers: corsHeaders });
+        }
+
+        const c = await env.DB.prepare('SELECT * FROM room_hour_credits WHERE credit_id = ?').bind(creditId).first();
+        if (!c) {
+          return new Response(JSON.stringify({ error: 'Credit not found' }), { status: 404, headers: corsHeaders });
+        }
+
+        const balance = await env.DB.prepare('SELECT COALESCE(SUM(minutes_delta), 0) AS minutes FROM room_hour_credit_entries WHERE credit_id = ?').bind(creditId).first();
+        if (!balance || balance.minutes < body.minutes) {
+          return new Response(JSON.stringify({ error: 'Insufficient credit' }), { status: 409, headers: corsHeaders });
+        }
+
+        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(c.room_id).first();
+        if (!room || room.status !== 'active') {
+          return new Response(JSON.stringify({ error: 'Room unavailable' }), { status: 409, headers: corsHeaders });
+        }
+
+        const overlapResult = await checkRoomOverlap(env, c.room_id, start.local, end.local, null);
+        if (overlapResult.hasOverlap) {
+          return new Response(JSON.stringify({ error: formatOverlapErrorMessage(room.name, overlapResult) }), { status: 409, headers: corsHeaders });
+        }
+
+        const receiptNumber = await generateReceiptNumber(env);
+        const pinCode = room.pin_code?.trim() || await generateUniquePinCode(env);
+        const created = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 19);
+
+        let bookingId = null;
+        let itemId = null;
+        try {
+          const insBooking = await env.DB.prepare(`INSERT INTO bookings (customer_name, contact, total_amount, payment_status, payment_method, billing_option, receipt_number, pin_code, booking_source, customer_type, checkin_status, created_at)
+            VALUES (?, ?, 0, 'paid', 'hour_credit', 'hour_credit', ?, ?, 'walk-in', 'walkin', 'pending', ?)`).bind(
+            c.customer_name, c.customer_phone, receiptNumber, pinCode, created
+          ).run();
+          bookingId = insBooking.meta.last_row_id;
+
+          const insItem = await env.DB.prepare(`INSERT INTO booking_items (booking_id, room_id, quantity, price, subtotal, start_time, end_time, booking_type, layout, pin_code, checkin_status)
+            VALUES (?, ?, ?, 0, 0, ?, ?, 'hourly', 'standard', ?, 'pending')`).bind(
+            bookingId, c.room_id, body.minutes / 60, start.local, end.local, pinCode
+          ).run();
+          itemId = insItem.meta.last_row_id;
+
+          const insEntry = await env.DB.prepare(`INSERT INTO room_hour_credit_entries
+            (credit_id, entry_type, minutes_delta, booking_item_id, reverses_entry_id, reason, created_by, created_at, idempotency_key, request_fingerprint)
+            VALUES (?, 'redeem', ?, ?, NULL, ?, ?, ?, ?, ?)`).bind(
+            creditId, -body.minutes, itemId, body.reason.trim(), actor, created, body.idempotency_key, fp
+          ).run();
+          const entryId = insEntry.meta.last_row_id;
+
+          return new Response(JSON.stringify({
+            credit_id: creditId,
+            entry_id: entryId,
+            entry_type: 'redeem',
+            minutes_delta: -body.minutes,
+            booking_id: bookingId,
+            booking_item_id: itemId
+          }), { headers: corsHeaders });
+        } catch (err) {
+          if (bookingId) {
+            await env.DB.prepare('DELETE FROM booking_items WHERE booking_id = ?').bind(bookingId).run().catch(() => {});
+            await env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId).run().catch(() => {});
+          }
+          if (err.message?.includes('insufficient balance')) {
+            return new Response(JSON.stringify({ error: 'Insufficient credit' }), { status: 409, headers: corsHeaders });
+          }
+          return new Response(JSON.stringify({ error: err.message || 'Hour credit operation failed' }), { status: 409, headers: corsHeaders });
+        }
+      }
+
+      if (pathname.startsWith('/api/hour-credits/') && pathname.endsWith('/reversals') && method === 'POST') {
+        const creditId = decodeURIComponent(pathname.replace('/api/hour-credits/', '').replace('/reversals', ''));
+        const auth = await authenticateUser(request, env);
+        const authErr = checkStaffPosAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const body = await request.json().catch(() => null);
+        const actor = auth.user.id;
+        let fp;
+        try {
+          fp = await createHourCreditFingerprint('reverse', creditId, body, actor, ['entry_id', 'reason', 'idempotency_key']);
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: err.statusCode || 400, headers: corsHeaders });
+        }
+
+        try {
+          const old = await replayHourCreditEntry(env.DB, body.idempotency_key, fp);
+          if (old) return new Response(JSON.stringify(old), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: err.statusCode || 409, headers: corsHeaders });
+        }
+
+        const e = await env.DB.prepare("SELECT * FROM room_hour_credit_entries WHERE id = ? AND credit_id = ? AND entry_type = 'redeem'").bind(body.entry_id, creditId).first();
+        if (!e) {
+          return new Response(JSON.stringify({ error: 'Redeem entry not found' }), { status: 404, headers: corsHeaders });
+        }
+        const alreadyReversed = await env.DB.prepare('SELECT id FROM room_hour_credit_entries WHERE reverses_entry_id = ?').bind(e.id).first();
+        if (alreadyReversed) {
+          return new Response(JSON.stringify({ error: 'Redeem already reversed' }), { status: 409, headers: corsHeaders });
+        }
+
+        const item = await env.DB.prepare('SELECT * FROM booking_items WHERE id = ?').bind(e.booking_item_id).first();
+        let itemStartMs;
+        try {
+          itemStartMs = parseHourCreditTimestamp(item?.start_time).ms;
+        } catch {
+          itemStartMs = 0;
+        }
+        if (!item || itemStartMs <= Date.now()) {
+          return new Response(JSON.stringify({ error: 'Reversal allowed only before booking start' }), { status: 409, headers: corsHeaders });
+        }
+
+        const created = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 19);
+
+        await env.DB.prepare("UPDATE bookings SET payment_status = 'cancelled', checkin_status = 'cancelled', cancellation_reason = ? WHERE id = ?").bind(body.reason.trim(), item.booking_id).run();
+        await env.DB.prepare("UPDATE booking_items SET checkin_status = 'cancelled' WHERE booking_id = ?").bind(item.booking_id).run();
+
+        try {
+          const insEntry = await env.DB.prepare(`INSERT INTO room_hour_credit_entries
+            (credit_id, entry_type, minutes_delta, booking_item_id, reverses_entry_id, reason, created_by, created_at, idempotency_key, request_fingerprint)
+            VALUES (?, 'reversal', ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+            creditId, -e.minutes_delta, item.id, e.id, body.reason.trim(), actor, created, body.idempotency_key, fp
+          ).run();
+          const entryId = insEntry.meta.last_row_id;
+
+          return new Response(JSON.stringify({
+            credit_id: creditId,
+            entry_id: entryId,
+            entry_type: 'reversal',
+            minutes_delta: -e.minutes_delta,
+            booking_id: item.booking_id,
+            booking_item_id: item.id
+          }), { headers: corsHeaders });
+        } catch (err) {
+          await env.DB.prepare("UPDATE bookings SET payment_status = 'paid', checkin_status = 'pending', cancellation_reason = NULL WHERE id = ?").bind(item.booking_id).run().catch(() => {});
+          await env.DB.prepare("UPDATE booking_items SET checkin_status = 'pending' WHERE booking_id = ?").bind(item.booking_id).run().catch(() => {});
+          return new Response(JSON.stringify({ error: err.message || 'Hour credit operation failed' }), { status: 409, headers: corsHeaders });
+        }
+      }
+
+      if (pathname.startsWith('/api/hour-credits/') && pathname.endsWith('/send-line') && method === 'POST') {
+        const creditId = decodeURIComponent(pathname.replace('/api/hour-credits/', '').replace('/send-line', ''));
+        const auth = await authenticateUser(request, env);
+        const authErr = checkStaffPosAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const body = await request.json().catch(() => ({}));
+        if (body && (body.to || body.line_user_id)) {
+          return new Response(JSON.stringify({ error: 'Client cannot specify LINE recipient' }), { status: 400, headers: corsHeaders });
+        }
+
+        const c = await env.DB.prepare(`SELECT c.credit_id, c.line_user_id, c.room_id, r.name AS room_name
+          FROM room_hour_credits c JOIN rooms r ON r.id = c.room_id WHERE c.credit_id = ?`).bind(creditId).first();
+        if (!c) {
+          return new Response(JSON.stringify({ error: 'Credit not found' }), { status: 404, headers: corsHeaders });
+        }
+        if (!c.line_user_id || !c.line_user_id.trim()) {
+          return new Response(JSON.stringify({ error: 'เครดิตนี้ไม่มีข้อมูล LINE ของลูกค้า' }), { status: 400, headers: corsHeaders });
+        }
+
+        const balanceRow = await env.DB.prepare('SELECT COALESCE(SUM(minutes_delta), 0) AS minutes FROM room_hour_credit_entries WHERE credit_id = ?').bind(creditId).first();
+        const remaining = balanceRow ? balanceRow.minutes : 0;
+
+        const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
+        const channelAccessToken = tokenSetting?.value?.trim() || env.LINE_CHANNEL_ACCESS_TOKEN;
+        if (!channelAccessToken) {
+          return new Response(JSON.stringify({ error: 'ไม่ได้ตั้งค่า LINE Channel Access Token ในระบบ' }), { status: 503, headers: corsHeaders });
+        }
+
+        const sentAt = new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
+        const flexMessage = buildHourCreditVoucherFlex({
+          credit_id: c.credit_id,
+          room_name: c.room_name,
+          remaining_minutes: remaining,
+          sent_at: sentAt
+        });
+
+        let lineRes;
+        try {
+          lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${channelAccessToken}`
+            },
+            body: JSON.stringify({
+              to: c.line_user_id.trim(),
+              messages: [flexMessage]
+            })
+          });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: 'การเชื่อมต่อกับ LINE API ล้มเหลว: ' + err.message }), { status: 502, headers: corsHeaders });
+        }
+
+        if (!lineRes.ok) {
+          const errText = await lineRes.text().catch(() => '');
+          return new Response(JSON.stringify({ error: `LINE API ตอบกลับผิดพลาด (${lineRes.status}): ${errText || 'ส่งข้อความไม่สำเร็จ'}` }), { status: 502, headers: corsHeaders });
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'ส่งใบยืนยันชั่วโมงคงเหลือเข้า LINE OA ลูกค้าสำเร็จ',
+          credit_id: c.credit_id
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/hour-credits/') && method === 'GET') {
+        const creditId = decodeURIComponent(pathname.replace('/api/hour-credits/', ''));
+        const auth = await authenticateUser(request, env);
+        const authErr = checkStaffPosAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const detail = await getWorkerHourCreditDetail(env.DB, creditId);
+        if (!detail) {
+          return new Response(JSON.stringify({ error: 'Credit not found' }), { status: 404, headers: corsHeaders });
+        }
+        return new Response(JSON.stringify(detail), { headers: corsHeaders });
       }
 
       // ----------------------------------------------------

@@ -58,7 +58,34 @@ CREATE TABLE IF NOT EXISTS bookings (
   tax_delivery_method TEXT,
   tax_postal_address TEXT,
   guest_count INTEGER,
+  customer_type TEXT DEFAULT 'walkin',
+  basecamp_sub_type TEXT,
+  basecamp_unit TEXT,
+  internal_department TEXT,
+  billing_option TEXT DEFAULT 'paid',
+  quota_hours_used REAL DEFAULT 0,
+  slip_trans_ref TEXT,
+  slip_verified_at TEXT,
+  slip_verify_status TEXT,
+  cancellation_reason TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS slip_verifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  booking_id INTEGER REFERENCES bookings(id) ON DELETE CASCADE,
+  trans_ref TEXT,
+  bank_code TEXT,
+  bank_name TEXT,
+  amount REAL,
+  slip_image_url TEXT,
+  is_auto_approved INTEGER DEFAULT 0,
+  confidence_score REAL DEFAULT 0,
+  raw_qr_data TEXT,
+  ocr_text TEXT,
+  verification_status TEXT DEFAULT 'pending',
+  rejection_reason TEXT,
+  created_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS booking_items (

@@ -9,6 +9,7 @@ import RoomLayout from './components/RoomLayout';
 import PendingBookings from './components/PendingBookings';
 import Quotations from './components/Quotations';
 import BasecampQuotaModal from './components/BasecampQuotaModal';
+import HourCredits from './components/HourCredits';
 
 function App() {
   const [activeTab, setActiveTab] = useState('pos');
@@ -666,6 +667,7 @@ function App() {
 
           {/* Horizontal Desktop Menu Bar */}
           <nav className="desktop-menu-bar" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '12px' }}>
+            {hasPermission('pos') && <button type="button" className={`top-menu-item ${activeTab === 'hour-credits' ? 'active' : ''}`} onClick={()=>setActiveTab('hour-credits')}><Clock size={15}/><span>ชั่วโมงคงเหลือ</span></button>}
             {hasPermission('pos') && (
               <button 
                 type="button"
@@ -1194,6 +1196,7 @@ function App() {
           <div>
             <div className="menu-section-title">เมนูหลัก / Services</div>
             <div className="menu-grid">
+              {hasPermission('pos') && <button className="menu-card" onClick={()=>setActiveTab('hour-credits')}><Clock size={22}/> ชั่วโมงคงเหลือ</button>}
               {hasPermission('pos') && (
                 <div className={`menu-card ${activeTab === 'pos' ? 'active' : ''}`} onClick={() => setActiveTab('pos')}>
                   <div className="menu-card-icon-wrapper">
@@ -1287,6 +1290,7 @@ function App() {
         {activeTab === 'pending' && <PendingBookings settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
         {activeTab === 'dashboard' && <Dashboard />}
         {activeTab === 'history' && <HistoryLog settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
+        {activeTab === 'hour-credits' && hasPermission('pos') && <HourCredits sysConfirm={customConfirm}/>}
         {activeTab === 'quotations' && <Quotations user={user} settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} quotationCartData={quotationCartData} clearQuotationCartData={() => setQuotationCartData(null)} onNavigate={setActiveTab} />}
         
         {activeTab === 'settings' && hasPermission('admin-management') && (
