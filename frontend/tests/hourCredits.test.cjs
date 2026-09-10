@@ -22,8 +22,37 @@ test('voucher renders only intended public confirmation fields',()=>{
 test('search calls encoded query through API client',async()=>{let requested;const old=global.fetch;global.fetch=async url=>{requested=url;return {ok:true,json:async()=>[]};};try{await ui.creditRequest('?search='+encodeURIComponent('081 123'));assert.equal(requested,'/api/hour-credits?search=081%20123');}finally{global.fetch=old;}});
 test('network retry keeps same operation key; rejects changed payload',async()=>{const calls=[];let first=true;const submit=ui.createCreditSubmitter(async(p,o)=>{calls.push(JSON.parse(o.body));if(first){first=false;throw Error('network');}return {ok:true};},()=> 'fixed-key');await assert.rejects(submit('/redeem',{minutes:60}));await assert.rejects(submit('/redeem',{minutes:120}));await submit('/redeem',{minutes:60});assert.equal(calls.length,2);assert.equal(calls[0].idempotency_key,calls[1].idempotency_key);});
 test('validation rejection permits corrected request',async()=>{let first=true;const submit=ui.createCreditSubmitter(async()=>{if(first){first=false;throw Object.assign(Error('validation'),{status:400});}return true;},()=> 'key');await assert.rejects(submit('',{minutes:0}));assert.equal(await submit('',{minutes:60}),true);});
-test('UI wiring uses safe source/QR endpoints, reversal only, no LINE feature',()=>{
-  const code=fs.readFileSync(path.join(root,'src/components/HourCredits.jsx'),'utf8');assert.match(code,/\/source\//);assert.match(code,/\/voucher-qr/);assert.match(code,/\/reversals/);assert.doesNotMatch(code,/\/api\/bookings|send-line|line_user_id|pin_code|dangerouslySetInnerHTML/);
+test('UI wiring uses safe source/QR endpoints, reversal and sendCreditLine, no sensitive leaks',()=>{
+  const code=fs.readFileSync(path.join(root,'src/components/HourCredits.jsx'),'utf8');assert.match(code,/\/source\//);assert.match(code,/\/voucher-qr/);assert.match(code,/\/reversals/);assert.match(code,/sendCreditLine/);assert.doesNotMatch(code,/\/api\/bookings|line_user_id|pin_code|dangerouslySetInnerHTML/);
   const app=fs.readFileSync(path.join(root,'src/App.jsx'),'utf8');assert.match(app,/activeTab === 'hour-credits' && hasPermission\('pos'\)/);
+});
+test('Phase3: voucher renders "ส่ง LINE" button conditionally based on has_line and lineSending',()=>{
+  const onSendLine=()=>{};
+  const htmlWithLine=ui.renderVoucher({credit:{credit_id:'HC-test',customer_name:'A',room_name:'B',remaining_minutes:60,has_line:true},qr:'data:image/png;base64,TEST',onSendLine});
+  assert.match(htmlWithLine,/>ส่ง LINE<\/button>/);
+  assert.doesNotMatch(htmlWithLine,/<button disabled=""[^>]*>ส่ง LINE<\/button>/);
+
+  const htmlNoLine=ui.renderVoucher({credit:{credit_id:'HC-test',customer_name:'A',room_name:'B',remaining_minutes:60,has_line:false},qr:'data:image/png;base64,TEST',onSendLine});
+  assert.match(htmlNoLine,/<button disabled=""[^>]*>ส่ง LINE \(ไม่ได้เชื่อมต่อ\)<\/button>/);
+
+  const htmlSending=ui.renderVoucher({credit:{credit_id:'HC-test',customer_name:'A',room_name:'B',remaining_minutes:60,has_line:true},qr:'data:image/png;base64,TEST',onSendLine,lineSending:true});
+  assert.match(htmlSending,/<button disabled=""[^>]*>กำลังส่ง LINE\.\.\.<\/button>/);
+});
+test('Phase3: sendCreditLine calls encoded POST endpoint',async()=>{
+  let calledUrl,calledOpts;
+  const old=global.fetch;
+  global.fetch=async(url,opts)=>{
+    calledUrl=url;
+    calledOpts=opts;
+    return {ok:true,json:async()=>({success:true,message:'ok'})};
+  };
+  try {
+    const res=await ui.sendCreditLine('HC 123/456');
+    assert.equal(calledUrl,'/api/hour-credits/HC%20123%2F456/send-line');
+    assert.equal(calledOpts.method,'POST');
+    assert.equal(res.success,true);
+  } finally {
+    global.fetch=old;
+  }
 });
 test('voucher print rules do not hide ordinary POS print views',()=>{const css=fs.readFileSync(path.join(root,'src/components/HourCredits.css'),'utf8');assert.match(css,/body:has\(>\.credit-voucher-overlay\)/);assert.doesNotMatch(css,/@media print\{body>\*/);assert.match(css,/@page creditVoucher/);});

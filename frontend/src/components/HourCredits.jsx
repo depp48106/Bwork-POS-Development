@@ -1,11 +1,11 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {creditMenuLabel,durationLabel,statusLabel,minutesValue,bookingTimes,canReverse,redeemMessage,reversalMessage,voucherNotice,creditRequest,createCreditSubmitter} from '../utils/hourCreditUI';
+import {creditMenuLabel,durationLabel,statusLabel,minutesValue,bookingTimes,canReverse,redeemMessage,reversalMessage,voucherNotice,creditRequest,createCreditSubmitter,sendCreditLine} from '../utils/hourCreditUI';
 import './HourCredits.css';
 
-export function CreditVoucherContent({credit,qr,generated,onClose}){
+export function CreditVoucherContent({credit,qr,generated,onClose,onSendLine,lineSending}){
   return <section className="credit-voucher-overlay"><article className="credit-voucher">
-    <div className="credit-no-print"><button onClick={onClose}>ปิด</button> <button disabled={!qr} onClick={()=>window.print()}>พิมพ์ / บันทึก PDF</button></div>
+    <div className="credit-no-print"><button onClick={onClose}>ปิด</button> <button disabled={!qr} onClick={()=>window.print()}>พิมพ์ / บันทึก PDF</button> {onSendLine&&<button disabled={lineSending||!credit?.has_line} onClick={onSendLine}>{lineSending?'กำลังส่ง LINE...':credit?.has_line?'ส่ง LINE':'ส่ง LINE (ไม่ได้เชื่อมต่อ)'}</button>}</div>
     <h1>ใบยืนยันชั่วโมงคงเหลือ</h1><h2>ไม่ใช่ใบเสร็จรับเงิน</h2>
     <p>Credit ID: {credit.credit_id}</p><p>ลูกค้า: {credit.customer_name}</p><p>ห้อง: {credit.room_name}</p>
     <h2>คงเหลือ {durationLabel(credit.remaining_minutes)}</h2><p>วันที่ออกเครดิต: {credit.created_at}</p>
@@ -20,7 +20,7 @@ function DurationInputs({hours,minutes,setHours,setMinutes}){
 }
 export default function HourCredits({sysConfirm}){
   const [search,setSearch]=useState(''),[rows,setRows]=useState([]),[detail,setDetail]=useState(null),[activeOnly,setActiveOnly]=useState(true);
-  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
+  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[lineSending,setLineSending]=useState(false);
   const [mode,setMode]=useState(null),[sourceRef,setSourceRef]=useState(''),[source,setSource]=useState(null),[itemId,setItemId]=useState('');
   const [hours,setHours]=useState('0'),[minutes,setMinutes]=useState('0'),[reason,setReason]=useState(''),[date,setDate]=useState(''),[time,setTime]=useState('');
   const [reversal,setReversal]=useState(null),[voucher,setVoucher]=useState(null),[locked,setLocked]=useState(false);
@@ -55,6 +55,19 @@ export default function HourCredits({sysConfirm}){
     if(!locked&&!await confirm(reversalMessage))return;
     await commit('/'+detail.credit_id+'/reversals',{entry_id:reversal.id,reason});
   });};
+  const sendLine=async id=>{
+    if(busy||locked||lineSending)return;
+    if(!await confirm('ต้องการส่งใบยืนยันชั่วโมงคงเหลือเข้า LINE OA ของลูกค้าใช่หรือไม่?'))return;
+    setLineSending(true);setError('');setNotice('');
+    try {
+      const res=await sendCreditLine(id);
+      setNotice(res.message||'ส่งใบยืนยันชั่วโมงคงเหลือเข้า LINE OA ลูกค้าสำเร็จ');
+    } catch(err) {
+      setError(err.message||'ไม่สามารถส่ง LINE ได้');
+    } finally {
+      setLineSending(false);
+    }
+  };
   return <section className={`hour-credits${locked?' credit-pending':''}`}><header><h1>{creditMenuLabel}</h1><p>เครดิตห้องแบบเจ้าหน้าที่ดำเนินการ • ไม่มีการรับเงินเพิ่ม</p></header>
     {error&&<p role="alert" className="credit-error">{error}</p>}{notice&&<p role="status">{notice}</p>}
     {locked&&<p role="alert">ยังไม่ยืนยันผลรายการ กรุณาคงหน้านี้และส่งรายการเดิมซ้ำ ห้ามสร้างรายการใหม่เพื่อทดแทน</p>}
@@ -70,7 +83,7 @@ export default function HourCredits({sysConfirm}){
       <button disabled={busy||locked||detail.remaining_minutes<=0} onClick={()=>form('redeem')}>ใช้เครดิต</button> <button disabled={busy||locked} onClick={()=>perform(async()=>{
         const fresh=await creditRequest('/'+detail.credit_id),qr=await creditRequest('/'+detail.credit_id+'/voucher-qr');setDetail(fresh);
         setVoucher({credit:fresh,qr:qr.data_url,generated:new Date().toLocaleString('th-TH',{timeZone:'Asia/Bangkok'})});
-      })}>ดูใบยืนยัน</button>
+      })}>ดูใบยืนยัน</button> <button disabled={busy||locked||lineSending||!detail.has_line} onClick={()=>sendLine(detail.credit_id)}>{lineSending?'กำลังส่ง LINE...':detail.has_line?'ส่ง LINE':'ส่ง LINE (ไม่ได้เชื่อมต่อ)'}</button>
       <h3>ประวัติเครดิต</h3><ul>{detail.history.map(e=><li key={e.id}>{({grant:'ออกเครดิต',redeem:'ใช้เครดิต',reversal:'คืนเครดิต'})[e.entry_type]} {e.minutes_delta<0?'−':'+'}{durationLabel(e.minutes_delta)} — {e.reason} • เจ้าหน้าที่ #{e.created_by} • {e.created_at}
         {e.booking_id&&<span> • Booking {e.booking_reference||e.booking_id}</span>}
         {canReverse(e,detail.history)&&<button disabled={busy||locked} onClick={()=>{form('reverse');setReversal(e);}}>ยกเลิกการใช้เครดิต</button>}
@@ -80,10 +93,10 @@ export default function HourCredits({sysConfirm}){
       {source&&<><p>{source.receipt_number||source.id} • {source.customer_name} • {source.contact} • {source.payment_status}</p><form onSubmit={grant}><fieldset disabled={busy}><label>ห้องต้นทาง<select disabled={locked} required value={itemId} onChange={e=>setItemId(e.target.value)}><option value="">เลือกห้อง</option>{source.items.filter(i=>i.room_id).map(i=><option key={i.id} value={i.id} disabled={i.booking_type!=='hourly'||!!i.existing_credit_id||i.checkin_status==='cancelled'}>{i.room_name} • {i.start_time} – {i.end_time}{i.existing_credit_id?' (ออกเครดิตแล้ว)':''}</option>)}</select></label>
         {currentItem&&<p>เวลาที่จอง: {currentItem.start_time} – {currentItem.end_time} ({durationLabel(Math.round((Date.parse(currentItem.end_time)-Date.parse(currentItem.start_time))/60000))})</p>}
         <fieldset disabled={locked}><DurationInputs {...{hours,minutes,setHours,setMinutes}}/><label>เหตุผล<textarea required value={reason} onChange={e=>setReason(e.target.value)}/></label></fieldset><p>การออกเครดิตไม่แก้ไขยอดเงินหรือเวลาการจองเดิม</p><button disabled={!currentItem}>ยืนยันออกเครดิต</button></fieldset></form></>}
-    </article>}
+      </article>}
     {mode==='redeem'&&detail&&<form className="credit-card" onSubmit={redeem}><h2>ใช้เครดิต • {detail.room_name}</h2><p>ห้องเดิม / รายชั่วโมง / ไม่มีบริการเสริม / ไม่มีเงินผสม</p><fieldset disabled={busy}><fieldset disabled={locked}><label>วันที่<input required type="date" value={date} onChange={e=>setDate(e.target.value)}/></label><label>เวลาเริ่ม<input required type="time" value={time} onChange={e=>setTime(e.target.value)}/></label><DurationInputs {...{hours,minutes,setHours,setMinutes}}/><label>เหตุผล<textarea required value={reason} onChange={e=>setReason(e.target.value)}/></label></fieldset><p style={{whiteSpace:'pre-line'}}>{redeemMessage(Number(hours)*60+Number(minutes),detail.remaining_minutes)}</p><button>ยืนยันใช้เครดิต</button></fieldset></form>}
     {mode==='reverse'&&<form className="credit-card" onSubmit={reverse}><h2>ยกเลิกการใช้เครดิต • Booking {reversal.booking_reference||reversal.booking_id}</h2><p>{reversalMessage}</p><fieldset disabled={busy}><label>เหตุผล<textarea required disabled={locked} value={reason} onChange={e=>setReason(e.target.value)}/></label><button>ยืนยันยกเลิกและคืนเครดิต</button></fieldset></form>}
     {mode&&<button disabled={busy||locked} onClick={()=>setMode(null)}>ปิดแบบฟอร์ม</button>}
-    {voucher&&<CreditVoucher {...voucher} onClose={()=>setVoucher(null)}/>}
+    {voucher&&<CreditVoucher {...voucher} lineSending={lineSending} onSendLine={()=>sendLine(voucher.credit.credit_id)} onClose={()=>setVoucher(null)}/>}
   </section>;
 }

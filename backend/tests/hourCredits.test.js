@@ -22,14 +22,27 @@ async function fixture(t){
   await q.run("INSERT INTO bookings(id,customer_name,contact,total_amount,payment_status,billing_option,receipt_number) VALUES(1,'Test customer','081-234-5678',2000,'paid','standard','A-1')");
   await q.run("INSERT INTO booking_items(id,booking_id,room_id,quantity,price,subtotal,start_time,end_time,booking_type) VALUES(1,1,1,8,250,2000,'2030-01-01T08:00:00','2030-01-01T16:00:00','hourly')");
   let clock=Date.parse('2030-01-02T00:00:00+07:00'),failure=null;
-  const options={filename,overlap:context.checkRoomOverlap,receipt:context.generateReceiptNumber,pin:context.generateUniquePinCode,now:()=>clock,fault:async point=>{if(point===failure)throw Error('injected failure');}};
+  const lineCalls=[];
+  let lineFetch=async(url,opts)=>{
+    lineCalls.push({url,opts,body:JSON.parse(opts.body||'{}')});
+    return {ok:true,status:200,json:async()=>({}),text:async()=>''};
+  };
+  const options={
+    filename,
+    overlap:context.checkRoomOverlap,
+    receipt:context.generateReceiptNumber,
+    pin:context.generateUniquePinCode,
+    now:()=>clock,
+    fault:async point=>{if(point===failure)throw Error('injected failure');},
+    fetch:(...args)=>lineFetch(...args)
+  };
   const service=createHourCreditService(options);
   t.after(async()=>{await q.close();fs.rmSync(dir,{recursive:true,force:true});});
   let seq=0;
   const grant=(extra={})=>service.grant({source_booking_id:1,source_item_id:1,minutes:240,reason:'Staff approved',idempotency_key:'grant-key-'+(++seq),...extra},1);
   const redeem=(id,extra={})=>service.redeem(id,{minutes:120,start_time:'2030-01-03T08:00',end_time:'2030-01-03T10:00',reason:'Use credit',idempotency_key:'redeem-key-'+(++seq),...extra},1);
   const reverse=(id,entry,extra={})=>service.reverse(id,{entry_id:entry,reason:'Cancelled before use',idempotency_key:'reverse-key-'+(++seq),...extra},1);
-  return {q,service,options,grant,redeem,reverse,setFailure:v=>failure=v,setClock:v=>clock=v};
+  return {q,service,options,grant,redeem,reverse,setFailure:v=>failure=v,setClock:v=>clock=v,lineCalls,setLineFetch:fn=>lineFetch=fn};
 }
 test('grant, derived balance, snapshots and Booking A unchanged',async t=>{
   const f=await fixture(t),a=await f.q.get('SELECT * FROM bookings WHERE id=1'),i=await f.q.get('SELECT * FROM booking_items WHERE id=1');
@@ -150,4 +163,144 @@ test('Phase2 voucher QR decodes to Credit ID only',async t=>{
   const response=await fetch('http://127.0.0.1:'+server.address().port+'/'+g.credit_id+'/voucher-qr');assert.equal(response.status,200);const {data_url}=await response.json();
   const image=await require('jimp').read(Buffer.from(data_url.split(',')[1],'base64'));const qr=require('jsqr')(new Uint8ClampedArray(image.bitmap.data),image.bitmap.width,image.bitmap.height);
   assert.equal(qr.data,g.credit_id);
+});
+test('Phase3: detail exposes has_line boolean and suppresses line_user_id',async t=>{
+  const f=await fixture(t);
+  const g1=await f.grant();
+  const d1=await f.service.read(g1.credit_id);
+  assert.equal(d1.has_line,false);
+  assert.equal('line_user_id' in d1,false);
+
+  await f.q.run("INSERT INTO bookings(id,customer_name,contact,total_amount,payment_status,billing_option,receipt_number,line_user_id) VALUES(2,'Line customer','089-999-8888',1000,'paid','standard','B-2','U_LINE_999')");
+  await f.q.run("INSERT INTO booking_items(id,booking_id,room_id,quantity,price,subtotal,start_time,end_time,booking_type) VALUES(2,2,1,4,250,1000,'2030-01-02T08:00:00','2030-01-02T12:00:00','hourly')");
+  const g2=await f.service.grant({source_booking_id:2,source_item_id:2,minutes:120,reason:'Line test',idempotency_key:'grant-line-1'},1);
+  const d2=await f.service.read(g2.credit_id);
+  assert.equal(d2.has_line,true);
+  assert.equal('line_user_id' in d2,false);
+});
+test('Phase3: manual send-line pushes valid voucher Flex message with live balance and safe action',async t=>{
+  const f=await fixture(t);
+  await f.q.run("UPDATE bookings SET line_user_id='U_CUSTOMER_VALID' WHERE id=1");
+  await f.q.run("INSERT OR REPLACE INTO settings(key,value) VALUES('line_channel_access_token','TEST_LINE_TOKEN_XYZ')");
+  const g=await f.grant();
+  await f.redeem(g.credit_id,{minutes:60,start_time:'2030-01-03T08:00',end_time:'2030-01-03T09:00'});
+
+  const res=await f.service.sendLine(g.credit_id,1,{});
+  assert.equal(res.success,true);
+  assert.equal(res.credit_id,g.credit_id);
+  assert.equal(f.lineCalls.length,1);
+
+  const call=f.lineCalls[0];
+  assert.equal(call.url,'https://api.line.me/v2/bot/message/push');
+  assert.equal(call.opts.headers['Authorization'],'Bearer TEST_LINE_TOKEN_XYZ');
+  assert.equal(call.body.to,'U_CUSTOMER_VALID');
+  assert.equal(call.body.messages.length,1);
+
+  const flex=call.body.messages[0];
+  assert.equal(flex.type,'flex');
+  assert.match(flex.altText,new RegExp(`ใบยืนยันชั่วโมงคงเหลือ.*${g.credit_id}`));
+
+  const json=JSON.stringify(flex);
+  assert.match(json,/ใบยืนยันชั่วโมงคงเหลือ/);
+  assert.match(json,/3 ชั่วโมง 0 นาที/);
+  assert.match(json,/Test room/);
+  assert.match(json,/ยอดในระบบเป็นข้อมูลอ้างอิงสูงสุด เอกสารนี้แสดงยอด ณ เวลาที่ส่ง/);
+
+  const button=flex.contents.footer.contents[0];
+  assert.equal(button.type,'button');
+  assert.equal(button.action.type,'message');
+  assert.equal(button.action.label,'แสดง Credit ID');
+  assert.equal(button.action.text,g.credit_id);
+
+  assert.doesNotMatch(json,/081-234-5678|0812345678/);
+  assert.doesNotMatch(json,/123456/);
+  assert.doesNotMatch(json,/grant-key|redeem-key|Staff approved|Use credit/);
+  assert.doesNotMatch(json,/http:\/\/|https:\/\//);
+});
+test('Phase3: client recipient override rejected and staff auth required',async t=>{
+  const f=await fixture(t);
+  await f.q.run("UPDATE bookings SET line_user_id='U_CUSTOMER_SAFE' WHERE id=1");
+  await f.q.run("INSERT OR REPLACE INTO settings(key,value) VALUES('line_channel_access_token','TEST_TOKEN')");
+  const g=await f.grant();
+
+  await assert.rejects(f.service.sendLine(g.credit_id,null),/Staff identity required/);
+  await assert.rejects(f.service.sendLine(g.credit_id,0),/Staff identity required/);
+  await assert.rejects(f.service.sendLine(g.credit_id,-1),/Staff identity required/);
+  await assert.rejects(f.service.sendLine(g.credit_id,1,{to:'U_INJECTED'}),/Client cannot specify LINE recipient/);
+  await assert.rejects(f.service.sendLine(g.credit_id,1,{line_user_id:'U_INJECTED'}),/Client cannot specify LINE recipient/);
+  assert.equal(f.lineCalls.length,0);
+});
+test('Phase3: missing customer line_user_id and missing settings token fail closed',async t=>{
+  const f=await fixture(t);
+  const g1=await f.grant();
+  await assert.rejects(f.service.sendLine(g1.credit_id,1),/เครดิตนี้ไม่มีข้อมูล LINE/);
+
+  await f.q.run("INSERT INTO bookings(id,customer_name,contact,total_amount,payment_status,billing_option,receipt_number,line_user_id) VALUES(3,'Line user','081-111-2222',2000,'paid','standard','C-3','U_SOMEONE')");
+  await f.q.run("INSERT INTO booking_items(id,booking_id,room_id,quantity,price,subtotal,start_time,end_time,booking_type) VALUES(3,3,1,8,250,2000,'2030-01-03T08:00:00','2030-01-03T16:00:00','hourly')");
+  const g2=await f.service.grant({source_booking_id:3,source_item_id:3,minutes:120,reason:'Line test',idempotency_key:'grant-token-fail'},1);
+  await assert.rejects(f.service.sendLine(g2.credit_id,1),/ไม่ได้ตั้งค่า LINE Channel Access Token/);
+  assert.equal(f.lineCalls.length,0);
+});
+test('Phase3: LINE API failure throws 502 with zero ledger writes or rollbacks',async t=>{
+  const f=await fixture(t);
+  await f.q.run("UPDATE bookings SET line_user_id='U_CUSTOMER_ERR' WHERE id=1");
+  await f.q.run("INSERT OR REPLACE INTO settings(key,value) VALUES('line_channel_access_token','TEST_TOKEN')");
+  const g=await f.grant();
+
+  const entriesBefore=await f.q.all('SELECT * FROM room_hour_credit_entries WHERE credit_id=?',[g.credit_id]);
+  const bookingsBefore=await f.q.all('SELECT * FROM bookings');
+
+  f.setLineFetch(async()=>({ok:false,status:400,text:async()=>'Bad Request from LINE'}));
+  await assert.rejects(f.service.sendLine(g.credit_id,1),/LINE API ตอบกลับผิดพลาด \(400\)/);
+
+  f.setLineFetch(async()=>{throw Error('fetch failed (network down)');});
+  await assert.rejects(f.service.sendLine(g.credit_id,1),/การเชื่อมต่อกับ LINE API ล้มเหลว/);
+
+  const entriesAfter=await f.q.all('SELECT * FROM room_hour_credit_entries WHERE credit_id=?',[g.credit_id]);
+  const bookingsAfter=await f.q.all('SELECT * FROM bookings');
+  assert.deepEqual(entriesAfter,entriesBefore);
+  assert.deepEqual(bookingsAfter,bookingsBefore);
+  assert.equal((await f.service.read(g.credit_id)).remaining_minutes,240);
+});
+test('Phase3: grant, redeem, reverse NEVER trigger LINE messages (no auto-send)',async t=>{
+  const f=await fixture(t);
+  await f.q.run("UPDATE bookings SET line_user_id='U_CUSTOMER_AUTO' WHERE id=1");
+  await f.q.run("INSERT OR REPLACE INTO settings(key,value) VALUES('line_channel_access_token','TEST_TOKEN')");
+
+  f.lineCalls.length=0;
+  const g=await f.grant();
+  assert.equal(f.lineCalls.length,0,'grant must not send LINE');
+
+  const r=await f.redeem(g.credit_id);
+  assert.equal(f.lineCalls.length,0,'redeem must not send LINE');
+
+  await f.reverse(g.credit_id,r.entry_id);
+  assert.equal(f.lineCalls.length,0,'reversal must not send LINE');
+});
+test('Phase3: router POST /:creditId/send-line integration and staff auth',async t=>{
+  const f=await fixture(t);
+  await f.q.run("UPDATE bookings SET line_user_id='U_CUSTOMER_ROUTER' WHERE id=1");
+  await f.q.run("INSERT OR REPLACE INTO settings(key,value) VALUES('line_channel_access_token','TEST_TOKEN')");
+  const g=await f.grant();
+
+  const app=express();
+  app.use(express.json());
+  let currentUser={id:1};
+  app.use((req,res,next)=>{req.user=currentUser;next();});
+  app.use('/api/hour-credits',creditRouter(f.service));
+
+  const server=app.listen(0,'127.0.0.1');
+  await new Promise(resolve=>server.once('listening',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+
+  const base='http://127.0.0.1:'+server.address().port+'/api/hour-credits';
+
+  const response=await fetch(base+'/'+g.credit_id+'/send-line',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+  assert.equal(response.status,200);
+  const data=await response.json();
+  assert.equal(data.success,true);
+
+  currentUser=null;
+  const unauthRes=await fetch(base+'/'+g.credit_id+'/send-line',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+  assert.equal(unauthRes.status,403);
 });

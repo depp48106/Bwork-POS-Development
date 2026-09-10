@@ -9,7 +9,105 @@ function timestamp(value) {
   if (!Number.isFinite(ms) || new Date(ms+7*3600000).toISOString().slice(0,19)!==local) fail('Invalid date/time',400);
   return {local,ms};
 }
-function createHourCreditService({ filename, overlap, receipt, pin, now = () => Date.now(), fault = async () => {} }) {
+const formatDurationThai = minutes => {
+  const m = Math.abs(Number(minutes) || 0);
+  return `${Math.floor(m / 60)} ชั่วโมง ${m % 60} นาที`;
+};
+function buildHourCreditVoucherFlex({ credit_id, room_name, remaining_minutes, sent_at }) {
+  const remainingText = formatDurationThai(remaining_minutes);
+  const sentDisplay = sent_at || new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
+  return {
+    type: 'flex',
+    altText: `ใบยืนยันชั่วโมงคงเหลือ: ${credit_id} (${remainingText})`,
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#0284c7',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'B-WORK COWORKING & MEETING', weight: 'bold', color: '#ffffff', size: 'xs', letterSpacing: '1px' },
+          { type: 'text', text: 'ใบยืนยันชั่วโมงคงเหลือ', weight: 'bold', color: '#ffffff', size: 'xl', margin: 'xs' }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '18px',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'Credit ID', size: 'sm', color: '#64748b', flex: 3 },
+              { type: 'text', text: String(credit_id), size: 'sm', color: '#0f172a', weight: 'bold', flex: 5, align: 'end', wrap: true }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'ห้อง', size: 'sm', color: '#64748b', flex: 3 },
+              { type: 'text', text: String(room_name || '-'), size: 'sm', color: '#0f172a', weight: 'bold', flex: 5, align: 'end' }
+            ]
+          },
+          { type: 'separator', margin: 'md' },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            backgroundColor: '#f0fdf4',
+            cornerRadius: '8px',
+            paddingAll: '12px',
+            contents: [
+              { type: 'text', text: 'ชั่วโมงคงเหลือ', size: 'xs', color: '#166534', align: 'center' },
+              { type: 'text', text: remainingText, size: 'xl', weight: 'bold', color: '#15803d', align: 'center', margin: 'xs' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            margin: 'md',
+            contents: [
+              { type: 'text', text: 'เวลาที่ส่ง', size: 'xs', color: '#94a3b8', flex: 3 },
+              { type: 'text', text: `${sentDisplay} (เวลาไทย)`, size: 'xs', color: '#94a3b8', flex: 5, align: 'end' }
+            ]
+          },
+          {
+            type: 'text',
+            text: 'ยอดในระบบเป็นข้อมูลอ้างอิงสูงสุด เอกสารนี้แสดงยอด ณ เวลาที่ส่ง',
+            size: 'xxs',
+            color: '#94a3b8',
+            wrap: true,
+            margin: 'md',
+            align: 'center'
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        paddingAll: '12px',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#0284c7',
+            action: {
+              type: 'message',
+              label: 'แสดง Credit ID',
+              text: String(credit_id)
+            }
+          }
+        ]
+      }
+    }
+  };
+}
+function createHourCreditService({ filename, overlap, receipt, pin, now = () => Date.now(), fault = async () => {}, fetch: fetchFn = globalThis.fetch }) {
   async function use(write, fn) {
     const q = await openConnection(filename);
     try {
@@ -50,7 +148,7 @@ function createHourCreditService({ filename, overlap, receipt, pin, now = () => 
     return result(q,await q.get('SELECT * FROM room_hour_credit_entries WHERE id=?',[r.id]));
   }
   async function detail(q,id) {
-    const c=await q.get(`SELECT c.credit_id,c.source_booking_id,c.source_item_id,c.customer_name,c.customer_phone,c.room_id,c.created_by,c.created_at,
+    const c=await q.get(`SELECT c.credit_id,c.source_booking_id,c.source_item_id,c.customer_name,c.customer_phone,c.line_user_id,c.room_id,c.created_by,c.created_at,
       b.receipt_number AS source_reference,r.name AS room_name FROM room_hour_credits c JOIN bookings b ON b.id=c.source_booking_id JOIN rooms r ON r.id=c.room_id WHERE c.credit_id=?`,[id]);
     if(!c)fail('Credit not found',404);
     const history=await q.all(`SELECT e.id,e.entry_type,e.minutes_delta,e.booking_item_id,e.reverses_entry_id,e.reason,e.created_by,e.created_at,
@@ -59,7 +157,9 @@ function createHourCreditService({ filename, overlap, receipt, pin, now = () => 
       LEFT JOIN bookings b ON b.id=i.booking_id WHERE e.credit_id=? ORDER BY e.id`,[id]);
     const total=type=>history.filter(e=>e.entry_type===type).reduce((n,e)=>n+e.minutes_delta,0);
     const remaining=history.reduce((n,e)=>n+e.minutes_delta,0);
-    return {...c,original_granted_minutes:total('grant'),redeemed_minutes:-total('redeem')-total('reversal'),remaining_minutes:remaining,status:remaining===0?'exhausted':remaining===total('grant')?'available':'partially_used',history};
+    const has_line=Boolean(c.line_user_id&&c.line_user_id.trim());
+    delete c.line_user_id;
+    return {...c,has_line,original_granted_minutes:total('grant'),redeemed_minutes:-total('redeem')-total('reversal'),remaining_minutes:remaining,status:remaining===0?'exhausted':remaining===total('grant')?'available':'partially_used',history};
   }
   return {
     source:reference=>use(false,async q=>{
@@ -126,7 +226,54 @@ function createHourCreditService({ filename, overlap, receipt, pin, now = () => 
         await fault('after_cancel');
         return append(q,id,'reversal',-e.minutes_delta,i.id,e.id,input,actor,fp);
       });
+    },
+    sendLine:async(id,actor,input={})=>{
+      if(!Number.isSafeInteger(actor)||actor<=0)fail('Staff identity required',403);
+      if(input&&(input.to||input.line_user_id))fail('Client cannot specify LINE recipient',400);
+      return use(false,async q=>{
+        const c=await q.get(`SELECT c.credit_id,c.line_user_id,c.room_id,r.name AS room_name
+          FROM room_hour_credits c JOIN rooms r ON r.id=c.room_id WHERE c.credit_id=?`,[id]);
+        if(!c)fail('Credit not found',404);
+        if(!c.line_user_id||!c.line_user_id.trim())fail('เครดิตนี้ไม่มีข้อมูล LINE ของลูกค้า',400);
+        const balanceRow=await q.get('SELECT COALESCE(SUM(minutes_delta),0) AS minutes FROM room_hour_credit_entries WHERE credit_id=?',[id]);
+        const remaining=balanceRow?balanceRow.minutes:0;
+        const tokenSetting=await q.get("SELECT value FROM settings WHERE key='line_channel_access_token'");
+        const channelAccessToken=tokenSetting?.value?.trim();
+        if(!channelAccessToken)fail('ไม่ได้ตั้งค่า LINE Channel Access Token ในระบบ',503);
+        const sentAt=new Date(now()+7*3600000).toISOString().replace('T',' ').slice(0,19);
+        const flexMessage=buildHourCreditVoucherFlex({
+          credit_id:c.credit_id,
+          room_name:c.room_name,
+          remaining_minutes:remaining,
+          sent_at:sentAt
+        });
+        let res;
+        try {
+          res=await fetchFn('https://api.line.me/v2/bot/message/push',{
+            method:'POST',
+            headers:{
+              'Content-Type':'application/json',
+              'Authorization':`Bearer ${channelAccessToken}`
+            },
+            body:JSON.stringify({
+              to:c.line_user_id.trim(),
+              messages:[flexMessage]
+            })
+          });
+        } catch(err) {
+          fail('การเชื่อมต่อกับ LINE API ล้มเหลว: '+err.message,502);
+        }
+        if(!res.ok) {
+          const errText=await res.text().catch(()=>'');
+          fail(`LINE API ตอบกลับผิดพลาด (${res.status}): ${errText||'ส่งข้อความไม่สำเร็จ'}`,502);
+        }
+        return {
+          success:true,
+          message:'ส่งใบยืนยันชั่วโมงคงเหลือเข้า LINE OA ลูกค้าสำเร็จ',
+          credit_id:c.credit_id
+        };
+      });
     }
   };
 }
-module.exports={createHourCreditService,phone,timestamp};
+module.exports={createHourCreditService,phone,timestamp,formatDurationThai,buildHourCreditVoucherFlex};

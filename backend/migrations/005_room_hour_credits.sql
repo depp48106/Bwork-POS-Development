@@ -1,4 +1,3 @@
-BEGIN IMMEDIATE;
 CREATE TABLE room_hour_credits (
   credit_id TEXT PRIMARY KEY NOT NULL,
   source_booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE RESTRICT,
@@ -55,4 +54,3 @@ CREATE TRIGGER hour_credit_item_no_delete BEFORE DELETE ON booking_items
 WHEN EXISTS(SELECT 1 FROM room_hour_credits WHERE source_item_id=OLD.id)
  OR EXISTS(SELECT 1 FROM room_hour_credit_entries WHERE booking_item_id=OLD.id)
 BEGIN SELECT RAISE(ABORT,'item linked to hour credit cannot be deleted'); END;
-COMMIT;

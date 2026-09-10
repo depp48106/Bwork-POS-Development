@@ -16,6 +16,7 @@ function creditRouter(service) {
   router.post('/',action(req=>service.grant(req.body,req.user.id)));
   router.post('/:creditId/redeem',action(req=>service.redeem(req.params.creditId,req.body,req.user.id)));
   router.post('/:creditId/reversals',action(req=>service.reverse(req.params.creditId,req.body,req.user.id)));
+  router.post('/:creditId/send-line',action(req=>service.sendLine(req.params.creditId,req.user?.id,req.body)));
   return router;
 }
 function creditMutationGuard(q,clearHistory=false) {

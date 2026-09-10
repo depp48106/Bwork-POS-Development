@@ -27,6 +27,9 @@ export async function creditRequest(path='',options={}){
   if(!response.ok)throw Object.assign(new Error(body.error||'ทำรายการไม่สำเร็จ'),{status:response.status});
   return body;
 }
+export async function sendCreditLine(creditId){
+  return creditRequest('/'+encodeURIComponent(creditId)+'/send-line',{method:'POST'});
+}
 // Keep an operation key stable across network failures; never render or log it.
 export function createCreditSubmitter(api=creditRequest,keyFactory=()=>crypto.randomUUID()){
   let pending=null;
