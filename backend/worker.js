@@ -351,7 +351,9 @@ function parseHourCreditTimestamp(value) {
 
 function buildHourCreditVoucherFlex({ credit_id, room_name, remaining_minutes, sent_at }) {
   const remainingText = formatHourCreditDurationThai(remaining_minutes);
-  const sentDisplay = sent_at || new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
+  const rawSent = sent_at || new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
+  const sentMatch = String(rawSent).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  const sentDisplay = sentMatch ? `${sentMatch[3]}/${sentMatch[2]}/${sentMatch[1]} ${sentMatch[4]}:${sentMatch[5]}` : rawSent;
   return {
     type: 'flex',
     altText: `ใบยืนยันชั่วโมงคงเหลือ: ${credit_id} (${remainingText})`,
@@ -385,7 +387,7 @@ function buildHourCreditVoucherFlex({ credit_id, room_name, remaining_minutes, s
             type: 'box',
             layout: 'horizontal',
             contents: [
-              { type: 'text', text: 'ห้อง', size: 'sm', color: '#64748b', flex: 3 },
+              { type: 'text', text: 'ห้องต้นทาง', size: 'sm', color: '#64748b', flex: 3 },
               { type: 'text', text: String(room_name || '-'), size: 'sm', color: '#0f172a', weight: 'bold', flex: 5, align: 'end' }
             ]
           },
@@ -465,15 +467,27 @@ async function createHourCreditFingerprint(kind, creditId, input, actor, allowed
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+async function nextWorkerHourCreditId(db, createdAt) {
+  const dateCode = String(createdAt).slice(2, 10).replace(/-/g, '');
+  if (!/^\d{6}$/.test(dateCode)) throw Object.assign(new Error('Cannot generate Credit ID'), { statusCode: 500 });
+  const prefix = `HC-${dateCode}-`;
+  const row = await db.prepare(`SELECT MAX(CAST(substr(credit_id, 11, 4) AS INTEGER)) AS max_suffix
+    FROM room_hour_credits WHERE credit_id GLOB ?`).bind(`${prefix}[0-9][0-9][0-9][0-9]`).first();
+  const suffix = Number(row?.max_suffix || 0) + 1;
+  if (suffix > 9999) throw Object.assign(new Error('Daily Credit ID limit reached'), { statusCode: 503 });
+  return prefix + String(suffix).padStart(4, '0');
+}
+
 async function getWorkerHourCreditDetail(db, id) {
   const c = await db.prepare(`SELECT c.credit_id, c.source_booking_id, c.source_item_id, c.customer_name, c.customer_phone, c.line_user_id, c.room_id, c.created_by, c.created_at,
-    b.receipt_number AS source_reference, r.name AS room_name FROM room_hour_credits c JOIN bookings b ON b.id = c.source_booking_id JOIN rooms r ON r.id = c.room_id WHERE c.credit_id = ?`).bind(id).first();
+    b.receipt_number AS source_reference, r.name AS room_name, r.hourly_rate AS source_hourly_rate
+    FROM room_hour_credits c JOIN bookings b ON b.id = c.source_booking_id JOIN rooms r ON r.id = c.room_id WHERE c.credit_id = ?`).bind(id).first();
   if (!c) return null;
 
   const historyRes = await db.prepare(`SELECT e.id, e.entry_type, e.minutes_delta, e.booking_item_id, e.reverses_entry_id, e.reason, e.created_by, e.created_at,
-    i.start_time, b.id AS booking_id, b.receipt_number AS booking_reference, b.payment_status
+    i.start_time, i.end_time, i.room_id, r.name AS room_name, b.id AS booking_id, b.receipt_number AS booking_reference, b.payment_status
     FROM room_hour_credit_entries e LEFT JOIN booking_items i ON i.id = e.booking_item_id
-    LEFT JOIN bookings b ON b.id = i.booking_id WHERE e.credit_id = ? ORDER BY e.id`).bind(id).all();
+    LEFT JOIN rooms r ON r.id = i.room_id LEFT JOIN bookings b ON b.id = i.booking_id WHERE e.credit_id = ? ORDER BY e.id`).bind(id).all();
   const history = historyRes?.results || [];
 
   const total = type => history.filter(e => e.entry_type === type).reduce((n, e) => n + e.minutes_delta, 0);
@@ -2938,7 +2952,7 @@ export default {
         const b = await env.DB.prepare("SELECT id, receipt_number, customer_name, contact, payment_status, total_amount FROM bookings WHERE id = ? OR receipt_number = ?").bind(ref, ref).first();
         if (!b) return new Response(JSON.stringify({ error: 'Source booking not found' }), { status: 404, headers: corsHeaders });
 
-        const items = await env.DB.prepare(`SELECT i.id, i.room_id, r.name AS room_name, i.booking_type, i.start_time, i.end_time, i.checkin_status,
+        const items = await env.DB.prepare(`SELECT i.id, i.room_id, r.name AS room_name, r.hourly_rate, i.booking_type, i.start_time, i.end_time, i.checkin_status,
           c.credit_id AS existing_credit_id FROM booking_items i LEFT JOIN rooms r ON r.id = i.room_id
           LEFT JOIN room_hour_credits c ON c.source_item_id = i.id WHERE i.booking_id = ?`).bind(b.id).all();
         return new Response(JSON.stringify({ ...b, items: items?.results || [] }), { headers: corsHeaders });
@@ -2994,13 +3008,23 @@ export default {
           return new Response(JSON.stringify({ error: 'Source item already has credit' }), { status: 409, headers: corsHeaders });
         }
 
-        const id = 'HC-' + crypto.randomUUID();
         const created = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 19);
         const cleanPhone = String(source.contact || '').replace(/\D/g, '').replace(/^66(?=\d{9}$)/, '0');
 
+        let id = null;
         try {
-          await env.DB.prepare(`INSERT INTO room_hour_credits (credit_id, source_booking_id, source_item_id, customer_name, customer_phone, line_user_id, room_id, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, source.id, body.source_item_id, source.customer_name, cleanPhone, source.line_user_id || null, source.room_id, actor, created).run();
+          for (let attempt = 0; attempt < 5; attempt++) {
+            id = await nextWorkerHourCreditId(env.DB, created);
+            try {
+              await env.DB.prepare(`INSERT INTO room_hour_credits (credit_id, source_booking_id, source_item_id, customer_name, customer_phone, line_user_id, room_id, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, source.id, body.source_item_id, source.customer_name, cleanPhone, source.line_user_id || null, source.room_id, actor, created).run();
+              break;
+            } catch (insertError) {
+              const creditIdCollision = /room_hour_credits\.credit_id/i.test(insertError.message || '');
+              if (!creditIdCollision || attempt === 4) throw insertError;
+            }
+          }
+          if (!id) throw new Error('Cannot generate Credit ID');
 
           const insEntry = await env.DB.prepare(`INSERT INTO room_hour_credit_entries
             (credit_id, entry_type, minutes_delta, booking_item_id, reverses_entry_id, reason, created_by, created_at, idempotency_key, request_fingerprint)
@@ -3023,6 +3047,46 @@ export default {
         }
       }
 
+      if (pathname.startsWith('/api/hour-credits/') && pathname.endsWith('/eligible-rooms') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        const authErr = checkStaffPosAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const creditId = decodeURIComponent(pathname.replace('/api/hour-credits/', '').replace('/eligible-rooms', ''));
+        const source = await env.DB.prepare(`SELECT r.hourly_rate FROM room_hour_credits c JOIN rooms r ON r.id = c.room_id WHERE c.credit_id = ?`).bind(creditId).first();
+        if (!source) return new Response(JSON.stringify({ error: 'Credit not found' }), { status: 404, headers: corsHeaders });
+        const rooms = await env.DB.prepare(`SELECT id, name, hourly_rate, status, has_hourly FROM rooms WHERE status = 'active'
+          AND COALESCE(has_hourly, 1) = 1 AND hourly_rate = ? ORDER BY name, id`).bind(source.hourly_rate).all();
+        return new Response(JSON.stringify(rooms?.results || []), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/hour-credits/') && pathname.endsWith('/blocked-ranges') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        const authErr = checkStaffPosAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const creditId = decodeURIComponent(pathname.replace('/api/hour-credits/', '').replace('/blocked-ranges', ''));
+        const roomId = Number(url.searchParams.get('room_id'));
+        const date = String(url.searchParams.get('date') || '');
+        if (!Number.isSafeInteger(roomId) || roomId <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          return new Response(JSON.stringify({ error: 'Room and date required' }), { status: 400, headers: corsHeaders });
+        }
+        const eligible = await env.DB.prepare(`SELECT selected.id FROM room_hour_credits c JOIN rooms source ON source.id = c.room_id
+          JOIN rooms selected ON selected.id = ? WHERE c.credit_id = ? AND selected.status = 'active'
+          AND COALESCE(selected.has_hourly, 1) = 1 AND selected.hourly_rate = source.hourly_rate`).bind(roomId, creditId).first();
+        if (!eligible) return new Response(JSON.stringify({ error: 'ห้องที่เลือกมีอัตราค่าบริการไม่ตรงกับเครดิตนี้' }), { status: 409, headers: corsHeaders });
+        const setting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'cleaning_buffer_minutes'").first();
+        const configuredBuffer = Number.parseInt(setting?.value, 10);
+        const rows = await env.DB.prepare(`SELECT bi.start_time, bi.end_time FROM booking_items bi JOIN bookings b ON b.id = bi.booking_id
+          WHERE bi.room_id = ? AND substr(replace(bi.start_time, ' ', 'T'), 1, 10) = ?
+          AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed'))
+          AND (b.checkin_status IS NULL OR b.checkin_status != 'cancelled')
+          AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled') ORDER BY bi.start_time`).bind(roomId, date).all();
+        return new Response(JSON.stringify({ room_id: roomId, date,
+          cleaning_buffer_minutes: Number.isFinite(configuredBuffer) ? Math.max(0, configuredBuffer) : 30,
+          ranges: rows?.results || [] }), { headers: corsHeaders });
+      }
+
       if (pathname.startsWith('/api/hour-credits/') && pathname.endsWith('/redeem') && method === 'POST') {
         const creditId = decodeURIComponent(pathname.replace('/api/hour-credits/', '').replace('/redeem', ''));
         const auth = await authenticateUser(request, env);
@@ -3033,7 +3097,7 @@ export default {
         const actor = auth.user.id;
         let fp;
         try {
-          fp = await createHourCreditFingerprint('redeem', creditId, body, actor, ['minutes', 'start_time', 'end_time', 'reason', 'idempotency_key']);
+          fp = await createHourCreditFingerprint('redeem', creditId, body, actor, ['room_id', 'minutes', 'start_time', 'end_time', 'reason', 'idempotency_key']);
         } catch (err) {
           return new Response(JSON.stringify({ error: err.message }), { status: err.statusCode || 400, headers: corsHeaders });
         }
@@ -3061,7 +3125,8 @@ export default {
           return new Response(JSON.stringify({ error: 'Booking must start in the future' }), { status: 409, headers: corsHeaders });
         }
 
-        const c = await env.DB.prepare('SELECT * FROM room_hour_credits WHERE credit_id = ?').bind(creditId).first();
+        const c = await env.DB.prepare(`SELECT c.*, source.hourly_rate AS source_hourly_rate FROM room_hour_credits c
+          JOIN rooms source ON source.id = c.room_id WHERE c.credit_id = ?`).bind(creditId).first();
         if (!c) {
           return new Response(JSON.stringify({ error: 'Credit not found' }), { status: 404, headers: corsHeaders });
         }
@@ -3071,14 +3136,21 @@ export default {
           return new Response(JSON.stringify({ error: 'Insufficient credit' }), { status: 409, headers: corsHeaders });
         }
 
-        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(c.room_id).first();
-        if (!room || room.status !== 'active') {
+        const selectedRoomId = body.room_id === undefined ? c.room_id : Number(body.room_id);
+        if (!Number.isSafeInteger(selectedRoomId) || selectedRoomId <= 0) {
+          return new Response(JSON.stringify({ error: 'Eligible room required' }), { status: 400, headers: corsHeaders });
+        }
+        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(selectedRoomId).first();
+        if (!room || room.status !== 'active' || Number(room.has_hourly ?? 1) !== 1) {
           return new Response(JSON.stringify({ error: 'Room unavailable' }), { status: 409, headers: corsHeaders });
         }
+        if (Number(room.hourly_rate) !== Number(c.source_hourly_rate)) {
+          return new Response(JSON.stringify({ error: 'ห้องที่เลือกมีอัตราค่าบริการไม่ตรงกับเครดิตนี้' }), { status: 409, headers: corsHeaders });
+        }
 
-        const overlapResult = await checkRoomOverlap(env, c.room_id, start.local, end.local, null);
+        const overlapResult = await checkRoomOverlap(env, selectedRoomId, start.local, end.local, null);
         if (overlapResult.hasOverlap) {
-          return new Response(JSON.stringify({ error: formatOverlapErrorMessage(room.name, overlapResult) }), { status: 409, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: 'ช่วงเวลานี้มีการจองแล้ว กรุณาเลือกเวลาอื่น' }), { status: 409, headers: corsHeaders });
         }
 
         const receiptNumber = await generateReceiptNumber(env);
@@ -3096,7 +3168,7 @@ export default {
 
           const insItem = await env.DB.prepare(`INSERT INTO booking_items (booking_id, room_id, quantity, price, subtotal, start_time, end_time, booking_type, layout, pin_code, checkin_status)
             VALUES (?, ?, ?, 0, 0, ?, ?, 'hourly', 'standard', ?, 'pending')`).bind(
-            bookingId, c.room_id, body.minutes / 60, start.local, end.local, pinCode
+            bookingId, selectedRoomId, body.minutes / 60, start.local, end.local, pinCode
           ).run();
           itemId = insItem.meta.last_row_id;
 

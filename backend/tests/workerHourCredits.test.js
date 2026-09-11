@@ -89,6 +89,11 @@ function setupTestDb() {
   // Insert test room
   db.exec("INSERT INTO rooms (id, name, capacity, hourly_rate, status, pin_code) VALUES (1, 'Meeting Room A', 6, 250, 'active', '1234');");
   db.exec("INSERT INTO rooms (id, name, capacity, hourly_rate, status, pin_code) VALUES (2, 'Meeting Room B', 10, 400, 'active', '5678');");
+  db.exec("INSERT INTO rooms (id, name, capacity, hourly_rate, status, pin_code, has_hourly) VALUES (3, 'Meeting Room Same Rate', 8, 250, 'active', '3333', 1);");
+  db.exec("INSERT INTO rooms (id, name, capacity, hourly_rate, status, pin_code, has_hourly) VALUES (4, 'Meeting Room Lower Rate', 8, 200, 'active', '4444', 1);");
+  db.exec("INSERT INTO rooms (id, name, capacity, hourly_rate, status, pin_code, has_hourly) VALUES (5, 'Meeting Room Higher Rate', 8, 300, 'active', '5555', 1);");
+  db.exec("INSERT INTO rooms (id, name, capacity, hourly_rate, status, pin_code, has_hourly) VALUES (6, 'Inactive Same Rate', 8, 250, 'inactive', '6666', 1);");
+  db.exec("INSERT INTO rooms (id, name, capacity, hourly_rate, status, pin_code, has_hourly) VALUES (7, 'Non-hourly Same Rate', 8, 250, 'active', '7777', 0);");
 
   // Insert admin staff user
   db.exec("INSERT INTO users (id, username, password_hash, role, permissions) VALUES (1, 'admin', 'hash', 'admin', 'pos,admin');");
@@ -181,7 +186,7 @@ test('Worker Hour Credits - Full Parity & D1 Concurrency Test Suite', async (t) 
     });
 
     assert.strictEqual(res.status, 200);
-    assert.ok(res.data.credit_id.startsWith('HC-'));
+    assert.match(res.data.credit_id, /^HC-\d{6}-\d{4}$/);
     assert.strictEqual(res.data.entry_type, 'grant');
     assert.strictEqual(res.data.minutes_delta, 240);
     createdCreditId = res.data.credit_id;
@@ -267,8 +272,61 @@ test('Worker Hour Credits - Full Parity & D1 Concurrency Test Suite', async (t) 
   const futureRedeemStart = new Date(now + 48 * 3600000).toISOString().slice(0, 10) + 'T13:00:00';
   const futureRedeemEnd = new Date(now + 48 * 3600000).toISOString().slice(0, 10) + 'T15:00:00';
 
+  await t.test('8A. Eligible-room endpoint returns active hourly rooms at exact source rate', async () => {
+    const res = await callWorker(`/api/hour-credits/${createdCreditId}/eligible-rooms`);
+    assert.strictEqual(res.status, 200);
+    assert.deepEqual(res.data.map(room => room.id).sort((a,b)=>a-b), [1, 3]);
+  });
+
+  await t.test('8AA. Legacy long-ID credit is searchable and can redeem into another same-rate room', async () => {
+    const legacyId = 'HC-b5a8ebd4-7aed-40f1-9183-6055379514ff';
+    db.prepare(`INSERT INTO room_hour_credits
+      (credit_id, source_booking_id, source_item_id, customer_name, customer_phone, room_id, created_by, created_at)
+      VALUES (?, 102, 202, 'Legacy customer', '0822222222', 1, 1, '2026-01-01T10:00:00')`).run(legacyId);
+    db.prepare(`INSERT INTO room_hour_credit_entries
+      (credit_id, entry_type, minutes_delta, reason, created_by, created_at, idempotency_key, request_fingerprint)
+      VALUES (?, 'grant', 60, 'Legacy grant', 1, '2026-01-01T10:00:00', 'legacy-worker-grant', 'legacy-worker-fingerprint')`).run(legacyId);
+    const rooms = await callWorker(`/api/hour-credits/${legacyId}/eligible-rooms`);
+    assert.strictEqual(rooms.status, 200);
+    assert.deepEqual(rooms.data.map(room => room.id).sort((a,b)=>a-b), [1, 3]);
+    const search = await callWorker(`/api/hour-credits?search=${encodeURIComponent(legacyId)}`);
+    assert.strictEqual(search.data[0].credit_id, legacyId);
+    const legacyDate = new Date(now + 120 * 3600000).toISOString().slice(0, 10);
+    const redeemed = await callWorker(`/api/hour-credits/${legacyId}/redeem`, 'POST', {
+      room_id: 3,
+      minutes: 60,
+      start_time: legacyDate + 'T09:00:00',
+      end_time: legacyDate + 'T10:00:00',
+      reason: 'Legacy flexible-room test',
+      idempotency_key: 'legacy-worker-redeem'
+    });
+    assert.strictEqual(redeemed.status, 200);
+    assert.strictEqual(db.prepare('SELECT room_id FROM booking_items WHERE id = ?').get(redeemed.data.booking_item_id).room_id, 3);
+    assert.strictEqual(db.prepare('SELECT room_id FROM room_hour_credits WHERE credit_id = ?').get(legacyId).room_id, 1);
+  });
+
+  await t.test('8B. Worker independently rejects different-rate/inactive/non-hourly rooms without deduction', async () => {
+    const bookingCount = db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n;
+    for (const roomId of [2, 4, 5, 6, 7]) {
+      const res = await callWorker(`/api/hour-credits/${createdCreditId}/redeem`, 'POST', {
+        room_id: roomId,
+        minutes: 60,
+        start_time: futureRedeemStart,
+        end_time: futureRedeemStart.slice(0, 11) + '14:00:00',
+        reason: 'ทดสอบกฎอัตราห้อง',
+        idempotency_key: `redeem-invalid-room-${roomId}`
+      });
+      assert.strictEqual(res.status, 409);
+      assert.match(res.data.error, /อัตราค่าบริการ|unavailable/i);
+    }
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM bookings').get().n, bookingCount);
+    const detail = await callWorker(`/api/hour-credits/${createdCreditId}`);
+    assert.strictEqual(detail.data.remaining_minutes, 240);
+  });
+
   await t.test('9. Redeem credit (Booking B): POST /api/hour-credits/:creditId/redeem (120 minutes)', async () => {
     const res = await callWorker(`/api/hour-credits/${createdCreditId}/redeem`, 'POST', {
+      room_id: 3,
       minutes: 120,
       start_time: futureRedeemStart,
       end_time: futureRedeemEnd,
@@ -298,6 +356,7 @@ test('Worker Hour Credits - Full Parity & D1 Concurrency Test Suite', async (t) 
     assert.strictEqual(itemRow.subtotal, 0);
     assert.strictEqual(itemRow.start_time, futureRedeemStart);
     assert.strictEqual(itemRow.end_time, futureRedeemEnd);
+    assert.strictEqual(itemRow.room_id, 3);
 
     // Verify detail remaining balance is now 120
     const detailRes = await callWorker(`/api/hour-credits/${createdCreditId}`);
@@ -311,6 +370,7 @@ test('Worker Hour Credits - Full Parity & D1 Concurrency Test Suite', async (t) 
   await t.test('10. Over-redeem rejection: cannot redeem more than remaining balance', async () => {
     const bookingsCountBefore = db.prepare('SELECT COUNT(*) AS c FROM bookings').get().c;
     const res = await callWorker(`/api/hour-credits/${createdCreditId}/redeem`, 'POST', {
+      room_id: 3,
       minutes: 180, // remaining is only 120
       start_time: new Date(now + 72 * 3600000).toISOString().slice(0, 10) + 'T10:00:00',
       end_time: new Date(now + 72 * 3600000).toISOString().slice(0, 10) + 'T13:00:00',
@@ -332,6 +392,7 @@ test('Worker Hour Credits - Full Parity & D1 Concurrency Test Suite', async (t) 
     const conflictEnd = new Date(now + 48 * 3600000).toISOString().slice(0, 10) + 'T16:00:00';
 
     const res = await callWorker(`/api/hour-credits/${createdCreditId}/redeem`, 'POST', {
+      room_id: 3,
       minutes: 120,
       start_time: conflictStart,
       end_time: conflictEnd,
@@ -340,7 +401,23 @@ test('Worker Hour Credits - Full Parity & D1 Concurrency Test Suite', async (t) 
     });
 
     assert.strictEqual(res.status, 409);
-    assert.match(res.data.error, /ไม่ว่างในช่วงเวลาดังกล่าว|ทับซ้อน|ซ้ำซ้อน|เวลาทำความสะอาด|buffer/i);
+    assert.strictEqual(res.data.error, 'ช่วงเวลานี้มีการจองแล้ว กรุณาเลือกเวลาอื่น');
+
+    const bufferRes = await callWorker(`/api/hour-credits/${createdCreditId}/redeem`, 'POST', {
+      room_id: 3,
+      minutes: 60,
+      start_time: futureRedeemStart.slice(0, 11) + '15:15:00',
+      end_time: futureRedeemStart.slice(0, 11) + '16:15:00',
+      reason: 'ชนเวลาทำความสะอาด',
+      idempotency_key: 'redeem-key-cleaning-buffer'
+    });
+    assert.strictEqual(bufferRes.status, 409);
+    assert.strictEqual(bufferRes.data.error, 'ช่วงเวลานี้มีการจองแล้ว กรุณาเลือกเวลาอื่น');
+
+    const blocked = await callWorker(`/api/hour-credits/${createdCreditId}/blocked-ranges?room_id=3&date=${futureRedeemStart.slice(0,10)}`);
+    assert.strictEqual(blocked.status, 200);
+    assert.strictEqual(blocked.data.cleaning_buffer_minutes, 30);
+    assert.strictEqual(blocked.data.ranges.length, 1);
 
     // Verify remaining minutes still 120
     const detailRes = await callWorker(`/api/hour-credits/${createdCreditId}`);

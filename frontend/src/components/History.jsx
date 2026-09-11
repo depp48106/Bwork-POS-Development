@@ -23,13 +23,27 @@ import {
   RefreshCw,
   MoreHorizontal,
   Phone,
-  User
+  User,
+  Copy
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import ReceiptPrint from './ReceiptPrint';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { formatTransactionDateTime } from '../dateUtils';
+import {
+  getTodayBangkokDate,
+  formatExportDate,
+  filterBookingsForExport,
+  buildDashboardExportRows,
+  generateDashboardCsv,
+  generateDashboardTsv,
+  downloadDashboardCsvFile,
+  downloadDashboardXlsxFile,
+  EXPORT_CUSTOMER_TYPE_OPTIONS,
+  getDateOffsetBangkok,
+  getStartOfMonthBangkok
+} from '../utils/dashboardExport';
 
 const CUSTOMER_TYPE_OPTIONS = [
   { value: 'all', label: 'ทุกประเภท' },
@@ -54,7 +68,6 @@ const STATUS_TABS = [
 function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   // Search & Filter State (Instant reactive filtering)
   const [searchQuery, setSearchQuery] = useState('');
@@ -71,6 +84,13 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [viewingSlipBooking, setViewingSlipBooking] = useState(null);
   const [taxCopied, setTaxCopied] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
+
+  // Dashboard Export Modal State
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportStartDate, setExportStartDate] = useState(getTodayBangkokDate());
+  const [exportEndDate, setExportEndDate] = useState(getTodayBangkokDate());
+  const [exportCustomerType, setExportCustomerType] = useState('all');
+  const [copyFeedback, setCopyFeedback] = useState(false);
 
   // Active Dropdown Action Menu in table row
   const [activeActionMenuBooking, setActiveActionMenuBooking] = useState(null);
@@ -495,130 +515,78 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
   const sortedBookings = getSortedBookings();
 
-  // Export to genuine Excel (.xlsx) file
-  const exportToExcel = () => {
-    if (sortedBookings.length === 0) {
-      if (sysAlert) sysAlert('ไม่มีข้อมูลสำหรับการส่งออก Excel');
-      return;
-    }
-
-    const data = sortedBookings.map((b, idx) => {
-      const usage = formatUsageDate(b);
-      const usageDateStr = usage && usage.dateStr !== '-' ? usage.dateStr : '-';
-      const usageTimeStr = usage && usage.timeStr ? usage.timeStr : '-';
-      const roomName = (b.items?.[0]?.room_name || b.room_name || '-');
-      const cType = b.customer_type || (b.booking_source === 'online' ? 'general' : 'walkin');
-      const bChannel = b.booking_channel || (b.booking_source === 'online' ? 'line_oa' : 'pos_web');
-      let source = 'POS (Walk-in)';
-      if (cType === 'builtland') source = `Builtland (${b.internal_department || 'พนักงาน'})`;
-      else if (cType === 'basecamp') source = `Basecamp (${b.basecamp_sub_type === 'hotdesk' ? 'Hotdesk ' : 'Office '}${b.basecamp_unit || ''})`;
-      else if (cType === 'general' || bChannel === 'line_oa' || b.booking_source === 'online') source = 'LINE OA (ลูกค้าทั่วไป)';
-      const status = b.payment_status === 'paid' ? 'สำเร็จ' : (b.payment_status === 'cancelled' ? 'ยกเลิก' : (b.payment_status || 'รอชำระ'));
-      const method = b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : (b.payment_method || '-'));
-      const taxReq = b.tax_invoice_required === 1 ? 'ขอใบกำกับภาษี' : 'ไม่ขอ';
-
-      return {
-        'ลำดับ': idx + 1,
-        'เลขที่ใบเสร็จ': b.receipt_number || `#${String(b.id).padStart(6, '0')}`,
-        'วันที่ทำรายการ': formatDate(b.created_at),
-        'วันที่ใช้งาน': usageDateStr,
-        'เวลาที่ใช้งาน': usageTimeStr,
-        'ห้อง/บริการ': roomName,
-        'ช่องทางการจอง': source,
-        'ชื่อผู้จอง': b.customer_name || '-',
-        'เบอร์ติดต่อ': b.contact || '-',
-        'หน่วยงาน/บริษัท': b.department || '-',
-        'ยอดชำระสุทธิ (บาท)': Number(b.total_amount || 0),
-        'สถานะการชำระ': status,
-        'ช่องทางชำระเงิน': method,
-        'ขอใบกำกับภาษี': taxReq,
-        'ชื่อผู้เสียภาษี': b.tax_name || '-',
-        'เลขประจำตัวผู้เสียภาษี': b.tax_id || '-',
-        'ที่อยู่ใบกำกับภาษี': b.tax_address || '-',
-        'ที่อยู่จัดส่งจดหมาย': b.tax_postal_address || '-'
-      };
+  // Dashboard Export Handlers & Matching Logic
+  const isInvalidDateRange = Boolean(exportStartDate && exportEndDate && exportEndDate < exportStartDate);
+  const exportMatchingPairs = useMemo(() => {
+    if (isInvalidDateRange) return [];
+    return filterBookingsForExport(bookings, {
+      startDate: exportStartDate,
+      endDate: exportEndDate,
+      customerType: exportCustomerType
     });
+  }, [bookings, exportStartDate, exportEndDate, exportCustomerType, isInvalidDateRange]);
 
-    const worksheet = XLSX.utils.json_to_sheet(data);
-
-    worksheet['!cols'] = [
-      { wch: 6 },  // ลำดับ
-      { wch: 16 }, // เลขที่ใบเสร็จ
-      { wch: 20 }, // วันที่ทำรายการ
-      { wch: 16 }, // วันที่ใช้งาน
-      { wch: 20 }, // เวลาที่ใช้งาน
-      { wch: 24 }, // ห้อง/บริการ
-      { wch: 14 }, // ช่องทาง
-      { wch: 22 }, // ชื่อผู้จอง
-      { wch: 14 }, // เบอร์ติดต่อ
-      { wch: 22 }, // หน่วยงาน/บริษัท
-      { wch: 16 }, // ยอดชำระสุทธิ
-      { wch: 12 }, // สถานะ
-      { wch: 14 }, // ช่องทางชำระ
-      { wch: 14 }, // ขอใบกำกับภาษี
-      { wch: 26 }, // ชื่อผู้เสียภาษี
-      { wch: 18 }, // เลขผู้เสียภาษี
-      { wch: 35 }, // ที่อยู่ภาษี
-      { wch: 35 }  // ที่อยู่จัดส่ง
-    ];
-
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'ประวัติการใช้งาน');
-
-    const now = new Date();
-    const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-    XLSX.writeFile(workbook, `bwork_history_${dateStr}.xlsx`);
-  };
-
-  // Export to PDF Report (A4 Landscape)
-  const exportToPDF = async () => {
-    if (sortedBookings.length === 0) {
-      if (sysAlert) sysAlert('ไม่มีข้อมูลสำหรับการส่งออก PDF');
-      return;
-    }
-
-    if (!window.html2pdf) {
-      if (sysAlert) sysAlert('ระบบพิมพ์ PDF ยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง');
-      return;
-    }
-
-    setIsExportingPdf(true);
-
+  const handleExportDashboardCsv = () => {
     try {
-      const element = document.getElementById('history-pdf-report-container');
-      if (!element) {
-        if (sysAlert) sysAlert('ไม่พบโครงสร้างรายงาน PDF');
+      if (isInvalidDateRange) {
+        if (sysAlert) sysAlert('ช่วงวันที่ไม่ถูกต้อง: วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น');
         return;
       }
-
-      element.style.display = 'block';
-
-      const now = new Date();
-      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-
-      const opt = {
-        margin: [8, 8, 8, 8],
-        filename: `bwork_history_report_${dateStr}.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: {
-          scale: 2,
-          useCORS: true,
-          letterRendering: false,
-          scrollY: 0,
-          logging: false
-        },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-      };
-
-      await window.html2pdf().from(element).set(opt).save();
+      if (exportMatchingPairs.length === 0) {
+        if (sysAlert) sysAlert('ไม่พบรายการในช่วงวันที่และประเภทลูกค้าที่เลือก');
+        return;
+      }
+      const rows = buildDashboardExportRows(exportMatchingPairs);
+      const csv = generateDashboardCsv(rows);
+      const filename = exportStartDate === exportEndDate
+        ? `BWORK-Dashboard-Export-${exportStartDate}.csv`
+        : `BWORK-Dashboard-Export-${exportStartDate}_to_${exportEndDate}.csv`;
+      downloadDashboardCsvFile(csv, filename);
     } catch (err) {
-      console.error('PDF export error:', err);
-      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการส่งออก PDF: ' + err.message);
-    } finally {
-      const element = document.getElementById('history-pdf-report-container');
-      if (element) element.style.display = 'none';
-      setIsExportingPdf(false);
+      console.error('CSV Export error:', err);
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการสร้างไฟล์ CSV: ' + err.message);
+    }
+  };
+
+  const handleExportDashboardXlsx = () => {
+    try {
+      if (isInvalidDateRange) {
+        if (sysAlert) sysAlert('ช่วงวันที่ไม่ถูกต้อง: วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น');
+        return;
+      }
+      if (exportMatchingPairs.length === 0) {
+        if (sysAlert) sysAlert('ไม่พบรายการในช่วงวันที่และประเภทลูกค้าที่เลือก');
+        return;
+      }
+      const rows = buildDashboardExportRows(exportMatchingPairs);
+      const filename = exportStartDate === exportEndDate
+        ? `BWORK-Dashboard-Export-${exportStartDate}.xlsx`
+        : `BWORK-Dashboard-Export-${exportStartDate}_to_${exportEndDate}.xlsx`;
+      downloadDashboardXlsxFile(rows, filename, XLSX);
+    } catch (err) {
+      console.error('XLSX Export error:', err);
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการสร้างไฟล์ XLSX: ' + err.message);
+    }
+  };
+
+  const handleCopyDashboardTsv = async () => {
+    try {
+      if (isInvalidDateRange) {
+        if (sysAlert) sysAlert('ช่วงวันที่ไม่ถูกต้อง: วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น');
+        return;
+      }
+      if (exportMatchingPairs.length === 0) {
+        if (sysAlert) sysAlert('ไม่พบรายการในช่วงวันที่และประเภทลูกค้าที่เลือก');
+        return;
+      }
+      const rows = buildDashboardExportRows(exportMatchingPairs);
+      const tsv = generateDashboardTsv(rows);
+      await navigator.clipboard.writeText(tsv);
+      setCopyFeedback(true);
+      setTimeout(() => setCopyFeedback(false), 2500);
+    } catch (err) {
+      console.error('Clipboard copy error:', err);
+      if (sysAlert) sysAlert('ไม่สามารถคัดลอกข้อมูลได้: ' + err.message);
     }
   };
 
@@ -681,49 +649,30 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-          {/* Export XLSX */}
+          {/* Export สำหรับ Dashboard */}
           <button
             type="button"
-            className="btn btn-secondary"
-            onClick={exportToExcel}
+            className="btn btn-primary"
+            onClick={() => {
+              const today = getTodayBangkokDate();
+              setExportStartDate(today);
+              setExportEndDate(today);
+              setExportCustomerType('all');
+              setShowExportModal(true);
+            }}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
               gap: '6px',
               fontSize: '0.82rem',
-              fontWeight: 600,
-              padding: '7px 12px',
-              borderRadius: '10px',
-              border: '1px solid var(--border-color)',
-              background: 'var(--bg-card)'
+              fontWeight: 700,
+              padding: '7px 14px',
+              borderRadius: '10px'
             }}
-            title="ส่งออกรายการทั้งหมดเป็นไฟล์ Excel (.xlsx)"
+            title="ส่งออกข้อมูลสำหรับลงระบบ Dashboard ภายนอก"
           >
-            <FileSpreadsheet size={14} style={{ color: '#10b981' }} />
-            <span>ส่งออก XLSX</span>
-          </button>
-
-          {/* Export PDF Report */}
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={exportToPDF}
-            disabled={isExportingPdf}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-              padding: '7px 12px',
-              borderRadius: '10px',
-              border: '1px solid var(--border-color)',
-              background: 'var(--bg-card)'
-            }}
-            title="พิมพ์รายงานสรุปรายรับลงแบบฟอร์ม A4 แนวนอน"
-          >
-            <FileText size={14} style={{ color: '#2563eb' }} />
-            <span>{isExportingPdf ? 'กำลังส่งออก...' : 'รายงาน PDF'}</span>
+            <FileSpreadsheet size={15} />
+            <span>Export สำหรับ Dashboard</span>
           </button>
 
           {/* Refresh */}
@@ -811,14 +760,6 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
               </button>
             );
           })}
-        </div>
-
-        {/* Total Ledger Revenue Stats */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingRight: '4px' }}>
-          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดรับรวม:</span>
-          <span style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--success-color)' }}>
-            ฿{totalAmountPaid.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </span>
         </div>
       </div>
 
@@ -2398,138 +2339,452 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
         </div>
       )}
 
-      {/* HIDDEN PRINTABLE PDF REPORT CONTAINER (Rendered during exportToPDF) */}
-      <div
-        id="history-pdf-report-container"
-        style={{
-          display: 'none',
-          backgroundColor: '#ffffff',
-          color: '#0f172a',
-          padding: '24px 28px',
-          fontFamily: "'Sarabun', 'Noto Sans Thai', 'Prompt', sans-serif",
-          width: '1020px',
-          boxSizing: 'border-box',
-          lineHeight: '1.4'
-        }}
-      >
-        {/* Report Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2.5px solid #1e293b', paddingBottom: '14px', marginBottom: '14px' }}>
-          <div>
-            <h1 style={{ fontSize: '1.25rem', fontWeight: 900, color: '#0f172a', margin: 0 }}>
-              {settings?.company_name || settings?.quotation_company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)'}
-            </h1>
-            <div style={{ fontSize: '0.74rem', color: '#64748b', marginTop: '2px' }}>
-              {settings?.company_address || settings?.quotation_company_address || '98 หมู่ 2 อาคารบีเวิร์ค ยูนิต 602 ซอยแจ้งวัฒนะ-ปากเกร็ด 35 ต.คลองเกลือ อ.ปากเกร็ด จ.นนทบุรี 11120'}
-              {(settings?.company_tax_id || settings?.quotation_company_tax_id) && (
-                <span> • เลขประจำตัวผู้เสียภาษี: {settings?.company_tax_id || settings?.quotation_company_tax_id}</span>
-              )}
+      {/* DASHBOARD EXPORT MODAL */}
+      {showExportModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(10px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 12000,
+            padding: '16px'
+          }}
+          onClick={() => setShowExportModal(false)}
+        >
+          <div
+            style={{
+              backgroundColor: 'var(--bg-card)',
+              borderRadius: '20px',
+              maxWidth: '560px',
+              width: '100%',
+              maxHeight: '92vh',
+              overflowY: 'auto',
+              padding: '24px',
+              border: '1px solid var(--border-color)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.4)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '18px',
+              position: 'relative'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <FileSpreadsheet size={22} style={{ color: 'var(--primary-color)' }} />
+                  Export สำหรับ Dashboard
+                </h3>
+                <p style={{ margin: '4px 0 0 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                  เลือกช่วงวันที่และประเภทลูกค้า เพื่อส่งออกข้อมูลสำหรับบันทึกในระบบ Dashboard
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn-icon"
+                onClick={() => setShowExportModal(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'var(--text-muted)',
+                  padding: '4px',
+                  borderRadius: '8px'
+                }}
+              >
+                <X size={20} />
+              </button>
             </div>
-            <h2 style={{ fontSize: '1.05rem', fontWeight: 800, color: '#2563eb', margin: '8px 0 0 0' }}>
-              รายงานประวัติการใช้บริการและรายรับ (Service & Revenue History Report)
-            </h2>
-            <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '3px' }}>
-              {startDate || endDate ? (
-                <span>ช่วงวันที่ค้นหา: <strong>{startDate || 'ทั้งหมด'}</strong> ถึง <strong>{endDate || 'ปัจจุบัน'}</strong></span>
-              ) : (
-                <span>ช่วงวันที่ค้นหา: <strong>ข้อมูลทั้งหมดในระบบ</strong></span>
-              )}
-              {statusFilter && statusFilter !== 'all' && (
-                <span style={{ marginLeft: '12px' }}>
-                  สถานะ: <strong>{statusFilter === 'paid' ? 'สำเร็จ (Paid)' : statusFilter === 'cancelled' ? 'ยกเลิก (Cancelled)' : 'ขอใบกำกับภาษี'}</strong>
-                </span>
-              )}
-            </div>
-          </div>
 
-          <div style={{ textAlign: 'right', fontSize: '0.78rem', color: '#64748b', flexShrink: 0 }}>
-            <div>วันที่ออกรายงาน: <strong>{new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} น.</strong></div>
-            <div style={{ marginTop: '2px' }}>จำนวนรายการ: <strong>{sortedBookings.length} รายการ</strong></div>
-            <div style={{ marginTop: '3px', fontSize: '1.05rem', fontWeight: 900, color: '#059669' }}>
-              ยอดรวมสุทธิ: ฿{sortedBookings.reduce((sum, b) => sum + (b.payment_status === 'cancelled' ? 0 : Number(b.total_amount || 0)), 0).toLocaleString()}
-            </div>
-          </div>
-        </div>
+            {/* Modal Filters */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {/* Section A: Date Range */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap', gap: '6px' }}>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Calendar size={15} style={{ color: 'var(--primary-color)' }} />
+                    ช่วงวันที่เข้าใช้บริการ (Service Date) <span style={{ color: 'var(--danger-color)' }}>*</span>
+                  </label>
+                  {/* Quick Preset Buttons */}
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const today = getTodayBangkokDate();
+                        setExportStartDate(today);
+                        setExportEndDate(today);
+                      }}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: '0.74rem',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border-color)',
+                        background: exportStartDate === getTodayBangkokDate() && exportEndDate === getTodayBangkokDate() ? 'var(--primary-light)' : 'transparent',
+                        color: exportStartDate === getTodayBangkokDate() && exportEndDate === getTodayBangkokDate() ? 'var(--primary-color)' : 'var(--text-muted)',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      วันนี้
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const today = getTodayBangkokDate();
+                        const past7 = getDateOffsetBangkok(-6);
+                        setExportStartDate(past7);
+                        setExportEndDate(today);
+                      }}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: '0.74rem',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border-color)',
+                        background: exportStartDate === getDateOffsetBangkok(-6) && exportEndDate === getTodayBangkokDate() ? 'var(--primary-light)' : 'transparent',
+                        color: exportStartDate === getDateOffsetBangkok(-6) && exportEndDate === getTodayBangkokDate() ? 'var(--primary-color)' : 'var(--text-muted)',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      7 วันล่าสุด
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const today = getTodayBangkokDate();
+                        const startMonth = getStartOfMonthBangkok();
+                        setExportStartDate(startMonth);
+                        setExportEndDate(today);
+                      }}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: '0.74rem',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border-color)',
+                        background: exportStartDate === getStartOfMonthBangkok() && exportEndDate === getTodayBangkokDate() ? 'var(--primary-light)' : 'transparent',
+                        color: exportStartDate === getStartOfMonthBangkok() && exportEndDate === getTodayBangkokDate() ? 'var(--primary-color)' : 'var(--text-muted)',
+                        fontWeight: 600,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      เดือนนี้
+                    </button>
+                  </div>
+                </div>
 
-        {/* Report Table with Fixed Columns */}
-        <table style={{ width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.76rem', border: '1px solid #cbd5e1' }}>
-          <colgroup>
-            <col style={{ width: '4%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '11%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '14%' }} />
-            <col style={{ width: '7%' }} />
-            <col style={{ width: '15%' }} />
-            <col style={{ width: '8%' }} />
-            <col style={{ width: '5%' }} />
-          </colgroup>
-          <thead>
-            <tr style={{ backgroundColor: '#1e293b', color: '#ffffff' }}>
-              <th style={{ padding: '7px 4px', textAlign: 'center', fontWeight: 800, border: '1px solid #334155' }}>#</th>
-              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>เลขที่ใบเสร็จ</th>
-              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>วันที่ทำรายการ</th>
-              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>วันที่ใช้งาน</th>
-              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>เวลาใช้งาน</th>
-              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>ห้อง / บริการ</th>
-              <th style={{ padding: '7px 4px', textAlign: 'center', fontWeight: 800, border: '1px solid #334155' }}>ช่องทาง</th>
-              <th style={{ padding: '7px 6px', textAlign: 'left', fontWeight: 800, border: '1px solid #334155' }}>ชื่อผู้จอง / บริษัท</th>
-              <th style={{ padding: '7px 6px', textAlign: 'right', fontWeight: 800, border: '1px solid #334155' }}>ยอดเงิน (฿)</th>
-              <th style={{ padding: '7px 4px', textAlign: 'center', fontWeight: 800, border: '1px solid #334155' }}>สถานะ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedBookings.map((b, idx) => {
-              const usage = formatUsageDate(b);
-              const roomName = (b.items?.[0]?.room_name || b.room_name || '-');
-              const isCancelled = b.payment_status === 'cancelled';
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+                  <div>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                      วันที่เริ่มต้น
+                    </span>
+                    <input
+                      type="date"
+                      className="form-control"
+                      value={exportStartDate}
+                      onChange={(e) => setExportStartDate(e.target.value)}
+                      style={{ width: '100%', padding: '8px 10px', fontSize: '0.88rem', borderRadius: '10px' }}
+                    />
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                      วันที่สิ้นสุด
+                    </span>
+                    <input
+                      type="date"
+                      className="form-control"
+                      value={exportEndDate}
+                      onChange={(e) => setExportEndDate(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        fontSize: '0.88rem',
+                        borderRadius: '10px',
+                        borderColor: isInvalidDateRange ? 'var(--danger-color)' : undefined
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {isInvalidDateRange ? (
+                  <div style={{
+                    marginTop: '6px',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.25)',
+                    color: '#dc2626',
+                    fontSize: '0.76rem',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}>
+                    <Ban size={14} />
+                    <span>วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น</span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    * กรองตามวันที่ลูกค้าเข้าใช้ห้องจริง (ไม่ใช่วันที่ทำรายการจอง)
+                  </div>
+                )}
+              </div>
+
+              {/* Section B: Customer Type */}
+              <div>
+                <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px' }}>
+                  ประเภทลูกค้า (Customer Type)
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '6px' }}>
+                  {EXPORT_CUSTOMER_TYPE_OPTIONS.map(opt => {
+                    const isSelected = exportCustomerType === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => setExportCustomerType(opt.value)}
+                        style={{
+                          padding: '8px 6px',
+                          borderRadius: '10px',
+                          fontSize: '0.8rem',
+                          fontWeight: isSelected ? 800 : 500,
+                          border: isSelected ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                          background: isSelected ? 'var(--primary-light)' : 'transparent',
+                          color: isSelected ? 'var(--primary-color)' : 'var(--text-main)',
+                          cursor: 'pointer',
+                          textAlign: 'center',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', marginTop: '5px' }}>
+                  * ลูกค้าทั่วไปจะรวมทั้งจองผ่าน LINE OA และ Walk-in แต่ไม่รวม บิลท์ แลนด์ และ ผู้เช่ารายเดือน
+                </div>
+              </div>
+            </div>
+
+            {/* Section C: Record Count Preview Card / Summary */}
+            {(() => {
+              const currentTypeLabel = EXPORT_CUSTOMER_TYPE_OPTIONS.find(o => o.value === exportCustomerType)?.label || 'ทั้งหมด';
+              const dateRangeText = exportStartDate === exportEndDate
+                ? formatExportDate(exportStartDate)
+                : `${formatExportDate(exportStartDate)} - ${formatExportDate(exportEndDate)}`;
+
+              if (isInvalidDateRange) {
+                return (
+                  <div style={{
+                    padding: '12px 16px',
+                    borderRadius: '12px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                    border: '1px solid rgba(239, 68, 68, 0.2)',
+                    color: '#dc2626',
+                    fontSize: '0.82rem',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <Ban size={16} />
+                    <span>ช่วงวันที่ไม่ถูกต้อง: วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น</span>
+                  </div>
+                );
+              }
+
+              if (exportMatchingPairs.length === 0) {
+                return (
+                  <div style={{
+                    padding: '14px 16px',
+                    borderRadius: '12px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px dashed var(--border-color)',
+                    textAlign: 'center'
+                  }}>
+                    <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '4px' }}>
+                      ไม่พบรายการในช่วงวันที่และประเภทลูกค้าที่เลือก
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      ช่วงวันที่ {dateRangeText} • {currentTypeLabel}
+                    </div>
+                  </div>
+                );
+              }
 
               return (
-                <tr key={b.id} style={{ backgroundColor: idx % 2 === 1 ? '#f8fafc' : '#ffffff' }}>
-                  <td style={{ padding: '5px 4px', textAlign: 'center', color: '#64748b', border: '1px solid #e2e8f0', verticalAlign: 'middle' }}>{idx + 1}</td>
-                  <td style={{ padding: '5px 6px', fontWeight: 800, color: '#2563eb', border: '1px solid #e2e8f0', verticalAlign: 'middle', wordBreak: 'break-all' }}>{b.receipt_number || `#${String(b.id).padStart(6, '0')}`}</td>
-                  <td style={{ padding: '5px 6px', color: '#475569', border: '1px solid #e2e8f0', verticalAlign: 'middle', fontSize: '0.73rem' }}>{formatDate(b.created_at)}</td>
-                  <td style={{ padding: '5px 6px', fontWeight: 700, color: '#0f172a', border: '1px solid #e2e8f0', verticalAlign: 'middle', fontSize: '0.73rem' }}>{usage.dateStr !== '-' ? usage.dateStr : '-'}</td>
-                  <td style={{ padding: '5px 6px', color: '#64748b', border: '1px solid #e2e8f0', verticalAlign: 'middle', fontSize: '0.72rem' }}>{usage.timeStr || '-'}</td>
-                  <td style={{ padding: '5px 6px', fontWeight: 600, color: '#0f172a', border: '1px solid #e2e8f0', verticalAlign: 'middle', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{roomName}</td>
-                  <td style={{ padding: '5px 4px', textAlign: 'center', border: '1px solid #e2e8f0', verticalAlign: 'middle' }}>
-                    <span style={{ fontSize: '0.68rem', padding: '2px 4px', borderRadius: '4px', backgroundColor: (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? '#e0f2fe' : '#dcfce7', color: (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? '#0369a1' : '#15803d', fontWeight: 700 }}>
-                      {(b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'ออนไลน์' : 'Walk-in'}
+                <div style={{
+                  padding: '12px 16px',
+                  borderRadius: '12px',
+                  backgroundColor: 'var(--bg-hover)',
+                  border: '1px solid var(--border-color)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      จำนวนรายการที่จะส่งออก:
                     </span>
-                  </td>
-                  <td style={{ padding: '5px 6px', color: '#0f172a', border: '1px solid #e2e8f0', verticalAlign: 'middle' }}>
-                    <div style={{ fontWeight: 700, fontSize: '0.74rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.customer_name || '-'}</div>
-                  </td>
-                  <td style={{ padding: '5px 6px', textAlign: 'right', fontWeight: 800, color: isCancelled ? '#94a3b8' : '#0f172a', border: '1px solid #e2e8f0', verticalAlign: 'middle', fontSize: '0.76rem' }}>
-                    {Number(b.total_amount || 0).toLocaleString()}
-                  </td>
-                  <td style={{ padding: '5px 4px', textAlign: 'center', border: '1px solid #e2e8f0', verticalAlign: 'middle' }}>
-                    <span style={{ fontSize: '0.68rem', fontWeight: 800, color: isCancelled ? '#dc2626' : '#16a34a' }}>
-                      {isCancelled ? 'ยกเลิก' : 'สำเร็จ'}
+                    <span style={{
+                      fontSize: '0.95rem',
+                      fontWeight: 800,
+                      color: 'var(--primary-color)'
+                    }}>
+                      {exportMatchingPairs.length} รายการ (แยกรายห้อง)
                     </span>
-                  </td>
-                </tr>
+                  </div>
+                  <div style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: '8px',
+                    fontSize: '0.76rem',
+                    color: 'var(--text-main)',
+                    padding: '4px 0',
+                    borderTop: '1px dashed var(--border-color)',
+                    borderBottom: '1px dashed var(--border-color)'
+                  }}>
+                    <span><strong>ช่วงวันที่:</strong> {dateRangeText}</span>
+                    <span>•</span>
+                    <span><strong>ประเภทลูกค้า:</strong> {currentTypeLabel}</span>
+                  </div>
+                  <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+                    • รูปแบบมาตรฐาน 19 คอลัมน์ (ตรงตาม Dashboard ภายนอก)<br />
+                    • การใช้สิทธิ์เครดิตชั่วโมง (Hour Credit) จะระบุยอดรับจริงเป็น 0 บาท และวิธีชำระเป็น "เครดิตชั่วโมง"
+                  </div>
+                </div>
               );
-            })}
-          </tbody>
-          <tfoot>
-            <tr style={{ backgroundColor: '#f1f5f9', borderTop: '2px solid #1e293b', fontWeight: 900 }}>
-              <td colSpan={8} style={{ padding: '8px 8px', textAlign: 'right', fontSize: '0.82rem', border: '1px solid #cbd5e1' }}>
-                ยอดรวมสุทธิทั้งสิ้น ({sortedBookings.filter(b => b.payment_status !== 'cancelled').length} รายการ):
-              </td>
-              <td style={{ padding: '8px 6px', textAlign: 'right', fontSize: '0.88rem', color: '#059669', border: '1px solid #cbd5e1' }}>
-                ฿{sortedBookings.reduce((sum, b) => sum + (b.payment_status === 'cancelled' ? 0 : Number(b.total_amount || 0)), 0).toLocaleString()}
-              </td>
-              <td style={{ border: '1px solid #cbd5e1' }}></td>
-            </tr>
-          </tfoot>
-        </table>
+            })()}
 
-        <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem', color: '#94a3b8', borderTop: '1px solid #e2e8f0', paddingTop: '8px' }}>
-          <div>{settings?.company_name || settings?.quotation_company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)'} • B-WORK Management POS System</div>
-          <div>พิมพ์รายงานเมื่อ: {new Date().toLocaleString('th-TH')}</div>
+            {/* Copy Feedback Alert */}
+            {copyFeedback && (
+              <div style={{
+                padding: '8px 12px',
+                borderRadius: '8px',
+                backgroundColor: '#dcfce7',
+                color: '#15803d',
+                fontSize: '0.82rem',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <CheckCircle2 size={16} />
+                <span>คัดลอกข้อมูลตาราง (TSV) เรียบร้อยแล้ว สามารถกด Paste (Ctrl+V) ลงสเปรดชีตได้ทันที</span>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            {(() => {
+              const isExportDisabled = isInvalidDateRange || exportMatchingPairs.length === 0;
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={isExportDisabled}
+                      onClick={handleExportDashboardCsv}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        padding: '10px 14px',
+                        borderRadius: '12px',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        opacity: isExportDisabled ? 0.45 : 1,
+                        cursor: isExportDisabled ? 'not-allowed' : 'pointer'
+                      }}
+                      title={isExportDisabled ? 'ไม่มีข้อมูลสำหรับส่งออก' : 'ดาวน์โหลดไฟล์ CSV พร้อม UTF-8 BOM สำหรับเปิดใน Excel'}
+                    >
+                      <Download size={16} />
+                      <span>ดาวน์โหลด CSV</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={isExportDisabled}
+                      onClick={handleExportDashboardXlsx}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        padding: '10px 14px',
+                        borderRadius: '12px',
+                        fontWeight: 700,
+                        fontSize: '0.85rem',
+                        border: '1px solid var(--border-color)',
+                        backgroundColor: 'var(--bg-card)',
+                        opacity: isExportDisabled ? 0.45 : 1,
+                        cursor: isExportDisabled ? 'not-allowed' : 'pointer'
+                      }}
+                      title={isExportDisabled ? 'ไม่มีข้อมูลสำหรับส่งออก' : 'ดาวน์โหลดไฟล์ Microsoft Excel (.xlsx)'}
+                    >
+                      <FileSpreadsheet size={16} style={{ color: isExportDisabled ? 'var(--text-muted)' : '#10b981' }} />
+                      <span>ดาวน์โหลด XLSX</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={isExportDisabled}
+                    onClick={handleCopyDashboardTsv}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      padding: '9px 14px',
+                      borderRadius: '12px',
+                      fontWeight: 600,
+                      fontSize: '0.82rem',
+                      border: '1px dashed var(--border-color)',
+                      backgroundColor: 'transparent',
+                      opacity: isExportDisabled ? 0.45 : 1,
+                      cursor: isExportDisabled ? 'not-allowed' : 'pointer'
+                    }}
+                    title={isExportDisabled ? 'ไม่มีข้อมูลสำหรับส่งออก' : 'คัดลอกข้อมูลลงคลิปบอร์ดแบบ Tab-Separated สำหรับแปะลง Google Sheets หรือ Excel โดยตรง'}
+                  >
+                    <Copy size={15} />
+                    <span>คัดลอกข้อมูล (สำหรับ Paste ลงตาราง)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setShowExportModal(false)}
+                    style={{
+                      width: '100%',
+                      padding: '8px',
+                      borderRadius: '10px',
+                      fontWeight: 600,
+                      fontSize: '0.82rem',
+                      marginTop: '4px',
+                      border: 'none',
+                      color: 'var(--text-muted)'
+                    }}
+                  >
+                    ปิด
+                  </button>
+                </div>
+              );
+            })()}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

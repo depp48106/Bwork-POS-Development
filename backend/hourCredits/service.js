@@ -1,7 +1,17 @@
-const { randomUUID, createHash } = require('node:crypto');
+const { createHash } = require('node:crypto');
 const { openConnection } = require('./connection');
 const fail = (message, statusCode = 409) => { throw Object.assign(new Error(message), { statusCode }); };
 const phone = value => String(value || '').replace(/\D/g, '').replace(/^66(?=\d{9}$)/, '0');
+async function nextShortCreditId(q,createdAt) {
+  const dateCode=String(createdAt).slice(2,10).replace(/-/g,'');
+  if(!/^\d{6}$/.test(dateCode))fail('Cannot generate Credit ID',500);
+  const prefix=`HC-${dateCode}-`;
+  const row=await q.get(`SELECT MAX(CAST(substr(credit_id,11,4) AS INTEGER)) AS max_suffix
+    FROM room_hour_credits WHERE credit_id GLOB ?`,[`${prefix}[0-9][0-9][0-9][0-9]`]);
+  const suffix=Number(row?.max_suffix||0)+1;
+  if(suffix>9999)fail('Daily Credit ID limit reached',503);
+  return prefix+String(suffix).padStart(4,'0');
+}
 function timestamp(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::00)?$/.test(value)) fail('Use Bangkok wall time YYYY-MM-DDTHH:mm, whole minutes', 400);
   const local = value.replace(' ', 'T').slice(0,16) + ':00';
@@ -15,7 +25,9 @@ const formatDurationThai = minutes => {
 };
 function buildHourCreditVoucherFlex({ credit_id, room_name, remaining_minutes, sent_at }) {
   const remainingText = formatDurationThai(remaining_minutes);
-  const sentDisplay = sent_at || new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
+  const rawSent = sent_at || new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
+  const sentMatch = String(rawSent).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  const sentDisplay = sentMatch ? `${sentMatch[3]}/${sentMatch[2]}/${sentMatch[1]} ${sentMatch[4]}:${sentMatch[5]}` : rawSent;
   return {
     type: 'flex',
     altText: `ใบยืนยันชั่วโมงคงเหลือ: ${credit_id} (${remainingText})`,
@@ -49,7 +61,7 @@ function buildHourCreditVoucherFlex({ credit_id, room_name, remaining_minutes, s
             type: 'box',
             layout: 'horizontal',
             contents: [
-              { type: 'text', text: 'ห้อง', size: 'sm', color: '#64748b', flex: 3 },
+              { type: 'text', text: 'ห้องต้นทาง', size: 'sm', color: '#64748b', flex: 3 },
               { type: 'text', text: String(room_name || '-'), size: 'sm', color: '#0f172a', weight: 'bold', flex: 5, align: 'end' }
             ]
           },
@@ -149,12 +161,13 @@ function createHourCreditService({ filename, overlap, receipt, pin, now = () => 
   }
   async function detail(q,id) {
     const c=await q.get(`SELECT c.credit_id,c.source_booking_id,c.source_item_id,c.customer_name,c.customer_phone,c.line_user_id,c.room_id,c.created_by,c.created_at,
-      b.receipt_number AS source_reference,r.name AS room_name FROM room_hour_credits c JOIN bookings b ON b.id=c.source_booking_id JOIN rooms r ON r.id=c.room_id WHERE c.credit_id=?`,[id]);
+      b.receipt_number AS source_reference,r.name AS room_name,r.hourly_rate AS source_hourly_rate
+      FROM room_hour_credits c JOIN bookings b ON b.id=c.source_booking_id JOIN rooms r ON r.id=c.room_id WHERE c.credit_id=?`,[id]);
     if(!c)fail('Credit not found',404);
     const history=await q.all(`SELECT e.id,e.entry_type,e.minutes_delta,e.booking_item_id,e.reverses_entry_id,e.reason,e.created_by,e.created_at,
-      i.start_time,b.id AS booking_id,b.receipt_number AS booking_reference,b.payment_status
+      i.start_time,i.end_time,i.room_id,r.name AS room_name,b.id AS booking_id,b.receipt_number AS booking_reference,b.payment_status
       FROM room_hour_credit_entries e LEFT JOIN booking_items i ON i.id=e.booking_item_id
-      LEFT JOIN bookings b ON b.id=i.booking_id WHERE e.credit_id=? ORDER BY e.id`,[id]);
+      LEFT JOIN rooms r ON r.id=i.room_id LEFT JOIN bookings b ON b.id=i.booking_id WHERE e.credit_id=? ORDER BY e.id`,[id]);
     const total=type=>history.filter(e=>e.entry_type===type).reduce((n,e)=>n+e.minutes_delta,0);
     const remaining=history.reduce((n,e)=>n+e.minutes_delta,0);
     const has_line=Boolean(c.line_user_id&&c.line_user_id.trim());
@@ -165,12 +178,34 @@ function createHourCreditService({ filename, overlap, receipt, pin, now = () => 
     source:reference=>use(false,async q=>{
       const b=await q.get(`SELECT id,receipt_number,customer_name,contact,payment_status,total_amount FROM bookings WHERE id=? OR receipt_number=?`,[reference,reference]);
       if(!b)fail('Source booking not found',404);
-      const items=await q.all(`SELECT i.id,i.room_id,r.name AS room_name,i.booking_type,i.start_time,i.end_time,i.checkin_status,
+      const items=await q.all(`SELECT i.id,i.room_id,r.name AS room_name,r.hourly_rate,i.booking_type,i.start_time,i.end_time,i.checkin_status,
         c.credit_id AS existing_credit_id FROM booking_items i LEFT JOIN rooms r ON r.id=i.room_id
         LEFT JOIN room_hour_credits c ON c.source_item_id=i.id WHERE i.booking_id=?`,[b.id]);
       return {...b,items};
     }),
     read:id=>use(false,q=>detail(q,id)),
+    eligibleRooms:id=>use(false,async q=>{
+      const c=await q.get(`SELECT source.hourly_rate FROM room_hour_credits c
+        JOIN rooms source ON source.id=c.room_id WHERE c.credit_id=?`,[id]);
+      if(!c)fail('Credit not found',404);
+      return q.all(`SELECT id,name,hourly_rate,status,has_hourly FROM rooms
+        WHERE status='active' AND COALESCE(has_hourly,1)=1 AND hourly_rate=? ORDER BY name,id`,[c.hourly_rate]);
+    }),
+    blockedRanges:(id,roomId,date)=>use(false,async q=>{
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(String(date||''))||!Number.isSafeInteger(Number(roomId)))fail('Room and date required',400);
+      const eligible=await q.get(`SELECT selected.id FROM room_hour_credits c JOIN rooms source ON source.id=c.room_id
+        JOIN rooms selected ON selected.id=? WHERE c.credit_id=? AND selected.status='active'
+        AND COALESCE(selected.has_hourly,1)=1 AND selected.hourly_rate=source.hourly_rate`,[Number(roomId),id]);
+      if(!eligible)fail('ห้องที่เลือกมีอัตราค่าบริการไม่ตรงกับเครดิตนี้');
+      const setting=await q.get("SELECT value FROM settings WHERE key='cleaning_buffer_minutes'");
+      const configuredBuffer=Number.parseInt(setting?.value,10);
+      const rows=await q.all(`SELECT bi.start_time,bi.end_time FROM booking_items bi JOIN bookings b ON b.id=bi.booking_id
+        WHERE bi.room_id=? AND substr(replace(bi.start_time,' ','T'),1,10)=?
+        AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled','failed'))
+        AND (b.checkin_status IS NULL OR b.checkin_status!='cancelled')
+        AND (bi.checkin_status IS NULL OR bi.checkin_status!='cancelled') ORDER BY bi.start_time`,[Number(roomId),date]);
+      return {room_id:Number(roomId),date,cleaning_buffer_minutes:Number.isFinite(configuredBuffer)?Math.max(0,configuredBuffer):30,ranges:rows};
+    }),
     search:search=>use(false,async q=>{
       const term=String(search||'').trim().slice(0,120), digits=phone(term);
       const rows=await q.all(`SELECT credit_id FROM room_hour_credits WHERE instr(lower(credit_id),lower(?))>0 OR (?!='' AND instr(customer_phone,?)>0) ORDER BY created_at DESC,credit_id LIMIT 100`,[term,digits,digits]);
@@ -188,27 +223,32 @@ function createHourCreditService({ filename, overlap, receipt, pin, now = () => 
         const duration=(timestamp(source.end_time).ms-timestamp(source.start_time).ms)/60000;
         if(input.minutes>duration)fail('Grant exceeds original duration');
         if(await q.get('SELECT credit_id FROM room_hour_credits WHERE source_item_id=?',[input.source_item_id]))fail('Source item already has credit');
-        const id='HC-'+randomUUID();
-        await q.run(`INSERT INTO room_hour_credits (credit_id,source_booking_id,source_item_id,customer_name,customer_phone,line_user_id,room_id,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)`,[id,source.id,input.source_item_id,source.customer_name,phone(source.contact),source.line_user_id||null,source.room_id,actor,created()]);
+        const createdAt=created(),id=await nextShortCreditId(q,createdAt);
+        await q.run(`INSERT INTO room_hour_credits (credit_id,source_booking_id,source_item_id,customer_name,customer_phone,line_user_id,room_id,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?)`,[id,source.id,input.source_item_id,source.customer_name,phone(source.contact),source.line_user_id||null,source.room_id,actor,createdAt]);
         return append(q,id,'grant',input.minutes,null,null,input,actor,fp);
       });
     },
     redeem:async(id,input,actor)=>{
-      const fp=request('redeem',id,input,actor,['minutes','start_time','end_time','reason','idempotency_key']);
+      const fp=request('redeem',id,input,actor,['room_id','minutes','start_time','end_time','reason','idempotency_key']);
       const start=timestamp(input.start_time),end=timestamp(input.end_time);
       if(!Number.isSafeInteger(input.minutes)||input.minutes<=0||(end.ms-start.ms)!==input.minutes*60000)fail('Duration must equal positive integer minutes',400);
       return use(true,async q=>{
         const old=await replay(q,input.idempotency_key,fp);if(old)return old;
         if(start.ms<=now())fail('Booking must start in the future');
-        const c=await q.get('SELECT * FROM room_hour_credits WHERE credit_id=?',[id]);if(!c)fail('Credit not found',404);
+        const c=await q.get(`SELECT c.*,source.hourly_rate AS source_hourly_rate FROM room_hour_credits c
+          JOIN rooms source ON source.id=c.room_id WHERE c.credit_id=?`,[id]);if(!c)fail('Credit not found',404);
         const balance=await q.get('SELECT COALESCE(SUM(minutes_delta),0) AS minutes FROM room_hour_credit_entries WHERE credit_id=?',[id]);
         if(balance.minutes<input.minutes)fail('Insufficient credit');
-        const room=await q.get('SELECT * FROM rooms WHERE id=?',[c.room_id]);if(!room||room.status!=='active')fail('Room unavailable');
-        if((await overlap(c.room_id,start.local,end.local,null,q)).hasOverlap)fail('Room overlaps another booking or cleaning buffer');
+        const selectedRoomId=input.room_id===undefined?c.room_id:Number(input.room_id);
+        if(!Number.isSafeInteger(selectedRoomId)||selectedRoomId<=0)fail('Eligible room required',400);
+        const room=await q.get('SELECT * FROM rooms WHERE id=?',[selectedRoomId]);
+        if(!room||room.status!=='active'||Number(room.has_hourly??1)!==1)fail('Room unavailable');
+        if(Number(room.hourly_rate)!==Number(c.source_hourly_rate))fail('ห้องที่เลือกมีอัตราค่าบริการไม่ตรงกับเครดิตนี้');
+        if((await overlap(selectedRoomId,start.local,end.local,null,q)).hasOverlap)fail('ช่วงเวลานี้มีการจองแล้ว กรุณาเลือกเวลาอื่น');
         const receiptNumber=await receipt(q),pinCode=room.pin_code?.trim()||await pin(q);
         const booking=await q.run(`INSERT INTO bookings (customer_name,contact,total_amount,payment_status,payment_method,billing_option,receipt_number,pin_code,booking_source,customer_type,checkin_status,created_at)
           VALUES (?,?,0,'paid','hour_credit','hour_credit',?,?,'walk-in','walkin','pending',?)`,[c.customer_name,c.customer_phone,receiptNumber,pinCode,created()]);
-        const item=await q.run(`INSERT INTO booking_items (booking_id,room_id,quantity,price,subtotal,start_time,end_time,booking_type,layout,pin_code,checkin_status) VALUES (?,?,?,0,0,?,?,'hourly','standard',?,'pending')`,[booking.id,c.room_id,input.minutes/60,start.local,end.local,pinCode]);
+        const item=await q.run(`INSERT INTO booking_items (booking_id,room_id,quantity,price,subtotal,start_time,end_time,booking_type,layout,pin_code,checkin_status) VALUES (?,?,?,0,0,?,?,'hourly','standard',?,'pending')`,[booking.id,selectedRoomId,input.minutes/60,start.local,end.local,pinCode]);
         await fault('after_booking');
         return append(q,id,'redeem',-input.minutes,item.id,null,input,actor,fp);
       });
@@ -276,4 +316,4 @@ function createHourCreditService({ filename, overlap, receipt, pin, now = () => 
     }
   };
 }
-module.exports={createHourCreditService,phone,timestamp,formatDurationThai,buildHourCreditVoucherFlex};
+module.exports={createHourCreditService,phone,timestamp,formatDurationThai,buildHourCreditVoucherFlex,nextShortCreditId};

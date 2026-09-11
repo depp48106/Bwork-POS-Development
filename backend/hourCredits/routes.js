@@ -12,6 +12,8 @@ function creditRouter(service) {
     const data_url=await require('qrcode').toDataURL(credit.credit_id,{width:220,margin:2,errorCorrectionLevel:'M'});
     return {data_url};
   }));
+  router.get('/:creditId/eligible-rooms',action(req=>service.eligibleRooms(req.params.creditId)));
+  router.get('/:creditId/blocked-ranges',action(req=>service.blockedRanges(req.params.creditId,req.query.room_id,req.query.date)));
   router.get('/:creditId',action(req=>service.read(req.params.creditId)));
   router.post('/',action(req=>service.grant(req.body,req.user.id)));
   router.post('/:creditId/redeem',action(req=>service.redeem(req.params.creditId,req.body,req.user.id)));

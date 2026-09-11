@@ -1,23 +1,20 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu, Trash2, Package, Bell, CheckCircle2, Calendar, AlertCircle, Volume2, VolumeX, Megaphone } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu, Trash2, Package, Bell, CheckCircle2, Calendar, AlertCircle } from 'lucide-react';
 import BookingPOS from './components/BookingPOS';
 import Dashboard from './components/Dashboard';
 import HistoryLog from './components/History';
-import HourCredits from './components/HourCredits';
 import SettingsPanel from './components/Settings';
 import ManagementPanel from './components/Management';
 import RoomLayout from './components/RoomLayout';
 import PendingBookings from './components/PendingBookings';
 import Quotations from './components/Quotations';
 import BasecampQuotaModal from './components/BasecampQuotaModal';
-import AppVersionDisplay from './components/AppVersionDisplay';
-import { playNotificationSound } from './soundNotification';
-import { authManager } from './authManager';
+import HourCredits from './components/HourCredits';
+import { creditNavigationLabel } from './utils/hourCreditUI';
 
 function App() {
   const [activeTab, setActiveTab] = useState('pos');
   const [showBasecampQuotaModal, setShowBasecampQuotaModal] = useState(false);
-  const [showPatchNotes, setShowPatchNotes] = useState(false);
   const [theme, setTheme] = useState('light');
   const [activeSettingsSubTab, setActiveSettingsSubTab] = useState('manage');
   
@@ -134,13 +131,6 @@ function App() {
   const [toasts, setToasts] = useState([]);
   const [isBellOpen, setIsBellOpen] = useState(false);
   const [bellTab, setBellTab] = useState('incoming');
-  const [isSoundEnabled, setIsSoundEnabled] = useState(() => {
-    try {
-      return localStorage.getItem('bwork_sound_enabled') !== 'false';
-    } catch (e) {
-      return true;
-    }
-  });
   const [readAlertKeys, setReadAlertKeys] = useState(() => {
     try {
       const saved = localStorage.getItem('bwork_read_alerts');
@@ -247,7 +237,6 @@ function App() {
             };
 
             setToasts(prev => [newToast, ...prev]);
-            playNotificationSound('incoming', isSlip);
 
             setTimeout(() => {
               setToasts(prev => prev.filter(t => t.id !== toastId));
@@ -276,7 +265,6 @@ function App() {
             };
 
             setToasts(prev => [newToast, ...prev]);
-            playNotificationSound('upcoming');
 
             setTimeout(() => {
               setToasts(prev => prev.filter(t => t.id !== toastId));
@@ -340,18 +328,34 @@ function App() {
   // Verify session with backend /api/auth/me on initial load
   useEffect(() => {
     const initAuthAndSettings = async () => {
+      const savedUser = localStorage.getItem('pos_user');
+      const savedToken = localStorage.getItem('pos_token');
       const savedTheme = localStorage.getItem('pos_theme') || 'light';
       setTheme(savedTheme);
       document.documentElement.setAttribute('data-theme', savedTheme);
 
-      if (authManager.isAuthenticated()) {
-        const result = await authManager.verifySession();
-        if (result.success && result.user) {
-          setUser(result.user);
-          triggerTransition();
-        } else if (result.is401) {
-          setUser(null);
-          setIsTransitioning(false);
+      if (savedUser && savedToken) {
+        try {
+          const res = await fetch('/api/auth/me', {
+            headers: { 'Authorization': `Bearer ${savedToken}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.user) {
+              setUser(data.user);
+              localStorage.setItem('pos_user', JSON.stringify(data.user));
+              triggerTransition();
+            } else {
+              // Token invalid or user no longer exists
+              handleForceLogout();
+            }
+          } else {
+            // Token expired or invalid
+            handleForceLogout();
+          }
+        } catch (err) {
+          // If server offline, keep local user
+          setUser(JSON.parse(savedUser));
         }
       }
       fetchSettings();
@@ -361,8 +365,10 @@ function App() {
   }, []);
 
   const handleForceLogout = () => {
-    authManager.clearAuth();
     setUser(null);
+    localStorage.removeItem('pos_user');
+    localStorage.removeItem('pos_token');
+    localStorage.removeItem('token');
     setIsTransitioning(false);
   };
 
@@ -411,10 +417,14 @@ function App() {
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        authManager.setAuth(data.token, data.user);
         setUser(data.user);
         setActiveTab('pos');
         setActiveSettingsSubTab(getFirstAllowedSettingsTab(data.user));
+        localStorage.setItem('pos_user', JSON.stringify(data.user));
+        if (data.token) {
+          localStorage.setItem('pos_token', data.token);
+          localStorage.setItem('token', data.token);
+        }
         triggerTransition();
       } else {
         setLoginError(data.error || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
@@ -428,10 +438,12 @@ function App() {
   const handleLogout = async () => {
     const confirm = await customConfirm("คุณต้องการออกจากระบบใช่หรือไม่?");
     if (confirm) {
-      authManager.clearAuth();
       setUser(null);
       setActiveTab('pos');
       setActiveSettingsSubTab('manage');
+      localStorage.removeItem('pos_user');
+      localStorage.removeItem('pos_token');
+    localStorage.removeItem('token');
       setIsTransitioning(false);
       
       // Force theme to light on logout
@@ -656,7 +668,6 @@ function App() {
 
           {/* Horizontal Desktop Menu Bar */}
           <nav className="desktop-menu-bar" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '12px' }}>
-            {hasPermission('pos') && <button type="button" className={`top-menu-item ${activeTab === 'hour-credits' ? 'active' : ''}`} onClick={()=>setActiveTab('hour-credits')}><Clock size={15}/><span>ชั่วโมงคงเหลือ</span></button>}
             {hasPermission('pos') && (
               <button 
                 type="button"
@@ -716,6 +727,16 @@ function App() {
               >
                 <FileText size={15} />
                 <span>ใบเสนอราคา</span>
+              </button>
+            )}
+            {hasPermission('pos') && (
+              <button
+                type="button"
+                className={`top-menu-item ${activeTab === 'hour-credits' ? 'active' : ''}`}
+                onClick={() => setActiveTab('hour-credits')}
+              >
+                <Clock size={15} />
+                <span>{creditNavigationLabel}</span>
               </button>
             )}
           </nav>
@@ -820,24 +841,6 @@ function App() {
             </button>
           )}
 
-          {/* System Announcements / Patch Notes (Megaphone Icon) */}
-          <button 
-            onClick={() => setShowPatchNotes(true)}
-            type="button"
-            className="hamburger-btn"
-            style={{
-              position: 'relative',
-              background: showPatchNotes ? 'var(--primary-color)' : 'transparent',
-              color: showPatchNotes ? '#ffffff' : 'var(--text-main)',
-              width: '38px',
-              height: '38px',
-              borderRadius: '10px'
-            }}
-            title="ประกาศระบบ / บันทึกการปรับปรุง (Patch Notes)"
-          >
-            <Megaphone size={18} />
-          </button>
-
           {/* Upcoming Meeting Alert Notification Bell */}
           <div style={{ position: 'relative' }}>
             <button 
@@ -913,37 +916,7 @@ function App() {
                         การแจ้งเตือน
                       </span>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const next = !isSoundEnabled;
-                          setIsSoundEnabled(next);
-                          try {
-                            localStorage.setItem('bwork_sound_enabled', String(next));
-                          } catch (e) {}
-                          if (next) playNotificationSound('incoming', true);
-                        }}
-                        style={{
-                          background: isSoundEnabled ? 'rgba(16, 185, 129, 0.12)' : 'rgba(148, 163, 184, 0.12)',
-                          border: `1px solid ${isSoundEnabled ? 'rgba(16, 185, 129, 0.3)' : 'rgba(148, 163, 184, 0.3)'}`,
-                          color: isSoundEnabled ? '#10b981' : 'var(--text-muted)',
-                          fontSize: '0.72rem',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                          padding: '3px 8px',
-                          borderRadius: '6px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          transition: 'all 0.15s ease'
-                        }}
-                        title={isSoundEnabled ? 'คลิกเพื่อปิดเสียงแจ้งเตือน' : 'คลิกเพื่อเปิดเสียงแจ้งเตือน'}
-                      >
-                        {isSoundEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
-                        <span>{isSoundEnabled ? 'เปิดเสียง' : 'ปิดเสียง'}</span>
-                      </button>
-
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       {unreadAlerts.length > 0 && (
                         <button
                           type="button"
@@ -1233,7 +1206,6 @@ function App() {
           <div>
             <div className="menu-section-title">เมนูหลัก / Services</div>
             <div className="menu-grid">
-              {hasPermission('pos') && <button className="menu-card" onClick={()=>setActiveTab('hour-credits')}><Clock size={22}/> ชั่วโมงคงเหลือ</button>}
               {hasPermission('pos') && (
                 <div className={`menu-card ${activeTab === 'pos' ? 'active' : ''}`} onClick={() => setActiveTab('pos')}>
                   <div className="menu-card-icon-wrapper">
@@ -1282,6 +1254,14 @@ function App() {
                   <span>ใบเสนอราคา</span>
                 </div>
               )}
+              {hasPermission('pos') && (
+                <button className={`menu-card ${activeTab === 'hour-credits' ? 'active' : ''}`} onClick={() => setActiveTab('hour-credits')}>
+                  <div className="menu-card-icon-wrapper">
+                    <Clock size={20} />
+                  </div>
+                  <span>{creditNavigationLabel}</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -1324,7 +1304,7 @@ function App() {
       }}>
         {activeTab === 'pos' && <BookingPOS user={user} settings={settings} sysAlert={customAlert} preselectedRoom={preselectedRoom} clearPreselectedRoom={() => setPreselectedRoom(null)} onNavigate={setActiveTab} onExportToQuotation={handleExportToQuotation} showCartSidebar={showCartSidebar} setShowCartSidebar={setShowCartSidebar} onCartCountChange={setCartCount} />}
         {activeTab === 'layout' && <RoomLayout sysAlert={customAlert} onNavigateToBook={(room) => { setPreselectedRoom(room); setActiveTab('pos'); }} />}
-        {activeTab === 'pending' && <PendingBookings settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} onNavigateToBook={() => setActiveTab('pos')} />}
+        {activeTab === 'pending' && <PendingBookings settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
         {activeTab === 'dashboard' && <Dashboard />}
         {activeTab === 'history' && <HistoryLog settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
         {activeTab === 'hour-credits' && hasPermission('pos') && <HourCredits sysConfirm={customConfirm}/>}
@@ -1812,9 +1792,6 @@ function App() {
           })}
         </div>
       )}
-
-      {/* App Version & Patch Notes Display */}
-      <AppVersionDisplay isOpen={showPatchNotes} setIsOpen={setShowPatchNotes} />
     </div>
   );
 }
