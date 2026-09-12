@@ -251,13 +251,13 @@ test('Phase3: manual send-line pushes valid voucher Flex message with live balan
 
   const flex=call.body.messages[0];
   assert.equal(flex.type,'flex');
-  assert.match(flex.altText,new RegExp(`ใบยืนยันชั่วโมงคงเหลือ.*${g.credit_id}`));
+  assert.match(flex.altText,new RegExp(`เครดิตชั่วโมงคงเหลือ.*${g.credit_id}`));
 
   const json=JSON.stringify(flex);
-  assert.match(json,/ใบยืนยันชั่วโมงคงเหลือ/);
+  assert.match(json,/เครดิตชั่วโมง/);
   assert.match(json,/3 ชั่วโมง 0 นาที/);
   assert.match(json,/Test room/);
-  assert.match(json,/ยอดในระบบเป็นข้อมูลอ้างอิงสูงสุด เอกสารนี้แสดงยอด ณ เวลาที่ส่ง/);
+  assert.match(json,/สามารถใช้กับห้องที่เข้าเงื่อนไขอัตราค่าบริการเดียวกัน/);
 
   const button=flex.contents.footer.contents[0];
   assert.equal(button.type,'button');
@@ -267,8 +267,8 @@ test('Phase3: manual send-line pushes valid voucher Flex message with live balan
 
   assert.doesNotMatch(json,/081-234-5678|0812345678/);
   assert.doesNotMatch(json,/123456/);
-  assert.doesNotMatch(json,/grant-key|redeem-key|Staff approved|Use credit/);
-  assert.doesNotMatch(json,/http:\/\/|https:\/\//);
+  assert.match(json,/https:\/\/bwork-booking\.pages\.dev\/line-banners\/bwork-hour-credit-banner\.png/);
+  assert.doesNotMatch(json,/(\?|&)(phone|token|pin|secret)=/i);
 });
 test('Phase3: client recipient override rejected and staff auth required',async t=>{
   const f=await fixture(t);

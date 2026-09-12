@@ -24,76 +24,100 @@ const formatDurationThai = minutes => {
   return `${Math.floor(m / 60)} ชั่วโมง ${m % 60} นาที`;
 };
 function buildHourCreditVoucherFlex({ credit_id, room_name, remaining_minutes, sent_at }) {
-  const remainingText = formatDurationThai(remaining_minutes);
+  const remainingText = typeof formatHourCreditDurationThai === 'function'
+    ? formatHourCreditDurationThai(remaining_minutes)
+    : formatDurationThai(remaining_minutes);
+
   const rawSent = sent_at || new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
   const sentMatch = String(rawSent).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
   const sentDisplay = sentMatch ? `${sentMatch[3]}/${sentMatch[2]}/${sentMatch[1]} ${sentMatch[4]}:${sentMatch[5]}` : rawSent;
+
   return {
     type: 'flex',
-    altText: `ใบยืนยันชั่วโมงคงเหลือ: ${credit_id} (${remainingText})`,
+    altText: `เครดิตชั่วโมงคงเหลือ ${credit_id} - ${remainingText}`,
     contents: {
       type: 'bubble',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: '#0284c7',
-        paddingAll: '16px',
-        contents: [
-          { type: 'text', text: 'B-WORK COWORKING & MEETING', weight: 'bold', color: '#ffffff', size: 'xs', letterSpacing: '1px' },
-          { type: 'text', text: 'ใบยืนยันชั่วโมงคงเหลือ', weight: 'bold', color: '#ffffff', size: 'xl', margin: 'xs' }
-        ]
+      size: 'mega',
+      hero: {
+        type: 'image',
+        url: 'https://bwork-booking.pages.dev/line-banners/bwork-hour-credit-banner.png',
+        size: 'full',
+        aspectRatio: '3:1',
+        aspectMode: 'cover'
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '18px',
-        spacing: 'md',
+        paddingAll: '20px',
         contents: [
           {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'Credit ID', size: 'sm', color: '#64748b', flex: 3 },
-              { type: 'text', text: String(credit_id), size: 'sm', color: '#0f172a', weight: 'bold', flex: 5, align: 'end', wrap: true }
-            ]
+            type: 'text',
+            text: 'เครดิตชั่วโมง',
+            size: 'xl',
+            weight: 'bold',
+            color: '#0f172a'
+          },
+          {
+            type: 'text',
+            text: 'สิทธิ์ชั่วโมงคงเหลือสำหรับใช้บริการห้องประชุม',
+            size: 'xs',
+            color: '#64748b',
+            margin: 'xs'
           },
           {
             type: 'box',
-            layout: 'horizontal',
+            layout: 'vertical',
+            margin: 'lg',
+            spacing: 'sm',
             contents: [
-              { type: 'text', text: 'ห้องต้นทาง', size: 'sm', color: '#64748b', flex: 3 },
-              { type: 'text', text: String(room_name || '-'), size: 'sm', color: '#0f172a', weight: 'bold', flex: 5, align: 'end' }
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'Credit ID', size: 'sm', color: '#64748b', flex: 3 },
+                  { type: 'text', text: String(credit_id), size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end', wrap: true }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'ห้องอ้างอิง', size: 'sm', color: '#64748b', flex: 3 },
+                  { type: 'text', text: String(room_name || '-'), size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'เวลาที่ส่ง', size: 'sm', color: '#64748b', flex: 3 },
+                  { type: 'text', text: `${sentDisplay} (เวลาไทย)`, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              }
             ]
           },
-          { type: 'separator', margin: 'md' },
           {
             type: 'box',
             layout: 'vertical',
             margin: 'md',
             backgroundColor: '#f0fdf4',
-            cornerRadius: '8px',
-            paddingAll: '12px',
+            cornerRadius: '10px',
+            borderWidth: '1px',
+            borderColor: '#bbf7d0',
+            paddingAll: '16px',
+            alignItems: 'center',
             contents: [
-              { type: 'text', text: 'ชั่วโมงคงเหลือ', size: 'xs', color: '#166534', align: 'center' },
-              { type: 'text', text: remainingText, size: 'xl', weight: 'bold', color: '#15803d', align: 'center', margin: 'xs' }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            margin: 'md',
-            contents: [
-              { type: 'text', text: 'เวลาที่ส่ง', size: 'xs', color: '#94a3b8', flex: 3 },
-              { type: 'text', text: `${sentDisplay} (เวลาไทย)`, size: 'xs', color: '#94a3b8', flex: 5, align: 'end' }
+              { type: 'text', text: 'จำนวนชั่วโมงคงเหลือ', size: 'xs', color: '#166534', weight: 'bold', align: 'center' },
+              { type: 'text', text: remainingText, size: 'xxl', weight: 'bold', color: '#15803d', align: 'center', margin: 'xs' }
             ]
           },
           {
             type: 'text',
-            text: 'ยอดในระบบเป็นข้อมูลอ้างอิงสูงสุด เอกสารนี้แสดงยอด ณ เวลาที่ส่ง',
+            text: 'สามารถใช้กับห้องที่เข้าเงื่อนไขอัตราค่าบริการเดียวกัน',
             size: 'xxs',
-            color: '#94a3b8',
+            color: '#64748b',
             wrap: true,
-            margin: 'md',
+            margin: 'sm',
             align: 'center'
           }
         ]
@@ -101,13 +125,13 @@ function buildHourCreditVoucherFlex({ credit_id, room_name, remaining_minutes, s
       footer: {
         type: 'box',
         layout: 'vertical',
-        spacing: 'sm',
-        paddingAll: '12px',
+        paddingAll: '16px',
         contents: [
           {
             type: 'button',
             style: 'primary',
-            color: '#0284c7',
+            color: '#312e81',
+            height: 'md',
             action: {
               type: 'message',
               label: 'แสดง Credit ID',

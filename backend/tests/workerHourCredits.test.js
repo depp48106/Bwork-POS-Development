@@ -566,14 +566,14 @@ test('Worker Hour Credits - Full Parity & D1 Concurrency Test Suite', async (t) 
     const msg = call.body.messages[0];
     assert.strictEqual(msg.type, 'flex');
     assert.strictEqual(msg.altText.includes(createdCreditId), true);
-    assert.strictEqual(msg.contents.header.contents[1].text, 'ใบยืนยันชั่วโมงคงเหลือ');
+    assert.strictEqual(msg.contents.hero.url, 'https://bwork-booking.pages.dev/line-banners/bwork-hour-credit-banner.png');
 
     const bodyStr = JSON.stringify(msg.contents.body);
     assert.ok(bodyStr.includes(createdCreditId), 'Must include credit ID');
     assert.ok(bodyStr.includes('Meeting Room A'), 'Must include room name');
-    assert.ok(bodyStr.includes('ชั่วโมงคงเหลือ'), 'Must include balance title');
+    assert.ok(bodyStr.includes('เครดิตชั่วโมง'), 'Must include balance title');
     assert.ok(bodyStr.includes('3 ชั่วโมง 0 นาที'), 'Must show remaining balance 180 mins');
-    assert.ok(bodyStr.includes('ยอดในระบบเป็นข้อมูลอ้างอิงสูงสุด เอกสารนี้แสดงยอด ณ เวลาที่ส่ง'), 'Must include disclaimer');
+    assert.ok(bodyStr.includes('สามารถใช้กับห้องที่เข้าเงื่อนไขอัตราค่าบริการเดียวกัน'), 'Must include disclaimer');
 
     // Strictly verify NO PII, PIN, phone, or tokens in message
     assert.ok(!bodyStr.includes('0812345678'), 'Phone number must NOT be in Flex');

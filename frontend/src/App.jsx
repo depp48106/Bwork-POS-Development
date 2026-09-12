@@ -11,6 +11,7 @@ import Quotations from './components/Quotations';
 import BasecampQuotaModal from './components/BasecampQuotaModal';
 import HourCredits from './components/HourCredits';
 import { creditNavigationLabel } from './utils/hourCreditUI';
+import LinePreview from './components/LinePreview';
 
 function App() {
   const [activeTab, setActiveTab] = useState('pos');
@@ -481,6 +482,17 @@ function App() {
       await customAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
     }
   };
+
+  // Development-Only LINE Flex Preview Sandbox Route (Preview Only - No DB / No Auth required)
+  const isLinePreview = Boolean(import.meta.env.DEV) && typeof window !== 'undefined' && (
+    window.location.pathname === '/line-preview' ||
+    window.location.hash === '#/line-preview' ||
+    window.location.search.includes('tab=line-preview') ||
+    activeTab === 'line-preview'
+  );
+  if (isLinePreview) {
+    return <LinePreview />;
+  }
 
   // If there's no user, we render the login screen (no glass transition needed yet)
   if (!user) {

@@ -6,6 +6,7 @@ import RoomListPage from './pages/RoomListPage';
 import BookingFormPage from './pages/BookingFormPage';
 import ConfirmPage from './pages/ConfirmPage';
 import StatusPage from './pages/StatusPage';
+import LinePreviewPage from './pages/LinePreviewPage';
 import { API_BASE } from './apiConfig';
 
 function App() {
@@ -288,6 +289,7 @@ function App() {
           <Route path="/confirm" element={<ConfirmPage />} />
           <Route path="/confirm/:bookingId" element={<ConfirmPage />} />
           <Route path="/status" element={<StatusPage />} />
+          {import.meta.env.DEV && <Route path="/line-preview" element={<LinePreviewPage />} />}
         </Routes>
       </main>
 
