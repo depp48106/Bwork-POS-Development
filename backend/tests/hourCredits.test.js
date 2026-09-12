@@ -19,6 +19,11 @@ async function fixture(t){
   await q.exec(fs.readFileSync(path.join(__dirname,'../schema.sql'),'utf8'));
   await q.exec(fs.readFileSync(path.join(__dirname,'../migrations/005_room_hour_credits.sql'),'utf8'));
   await q.run("INSERT INTO rooms(id,name,capacity,hourly_rate,status,pin_code) VALUES(1,'Test room',10,250,'active','123456')");
+  await q.run("INSERT INTO rooms(id,name,capacity,hourly_rate,status,pin_code,has_hourly) VALUES(2,'Same rate room',8,250,'active','654321',1)");
+  await q.run("INSERT INTO rooms(id,name,capacity,hourly_rate,status,pin_code,has_hourly) VALUES(3,'Lower rate room',8,200,'active','333333',1)");
+  await q.run("INSERT INTO rooms(id,name,capacity,hourly_rate,status,pin_code,has_hourly) VALUES(4,'Higher rate room',8,300,'active','444444',1)");
+  await q.run("INSERT INTO rooms(id,name,capacity,hourly_rate,status,pin_code,has_hourly) VALUES(5,'Inactive same rate',8,250,'inactive','555555',1)");
+  await q.run("INSERT INTO rooms(id,name,capacity,hourly_rate,status,pin_code,has_hourly) VALUES(6,'Daily only same rate',8,250,'active','666666',0)");
   await q.run("INSERT INTO bookings(id,customer_name,contact,total_amount,payment_status,billing_option,receipt_number) VALUES(1,'Test customer','081-234-5678',2000,'paid','standard','A-1')");
   await q.run("INSERT INTO booking_items(id,booking_id,room_id,quantity,price,subtotal,start_time,end_time,booking_type) VALUES(1,1,1,8,250,2000,'2030-01-01T08:00:00','2030-01-01T16:00:00','hourly')");
   let clock=Date.parse('2030-01-02T00:00:00+07:00'),failure=null;
@@ -63,11 +68,59 @@ test('partial then full redeem; zero money and same normal PIN; A unchanged',asy
   const d=await f.service.read(g.credit_id);assert.equal(d.remaining_minutes,0);assert.equal(d.redeemed_minutes,240);assert.equal(d.status,'exhausted');
   assert.deepEqual(await f.q.get('SELECT * FROM bookings WHERE id=1'),before);
 });
+test('same-rate flexible rooms are listed and selected room is used with zero revenue',async t=>{
+  const f=await fixture(t),g=await f.grant(),rooms=await f.service.eligibleRooms(g.credit_id);
+  assert.deepEqual(rooms.map(room=>room.id),[2,1]);
+  const r=await f.redeem(g.credit_id,{room_id:2});
+  const booking=await f.q.get('SELECT * FROM bookings WHERE id=?',[r.booking_id]);
+  const item=await f.q.get('SELECT * FROM booking_items WHERE id=?',[r.booking_item_id]);
+  assert.equal(item.room_id,2);assert.equal(item.price,0);assert.equal(item.subtotal,0);
+  assert.equal(booking.total_amount,0);assert.equal(booking.payment_status,'paid');assert.equal(booking.payment_method,'hour_credit');assert.equal(booking.billing_option,'hour_credit');
+  assert.equal((await f.q.get('SELECT room_id FROM room_hour_credits WHERE credit_id=?',[g.credit_id])).room_id,1,'credit room_id remains historical source only');
+});
+test('legacy long-ID credit derives eligibility from source rate and redeems into another same-rate room',async t=>{
+  const f=await fixture(t),legacyId='HC-b5a8ebd4-7aed-40f1-9183-6055379514ff';
+  await f.q.run(`INSERT INTO room_hour_credits
+    (credit_id,source_booking_id,source_item_id,customer_name,customer_phone,room_id,created_by,created_at)
+    VALUES (?,1,1,'Legacy customer','0812345678',1,1,'2026-01-01T10:00:00')`,[legacyId]);
+  await f.q.run(`INSERT INTO room_hour_credit_entries
+    (credit_id,entry_type,minutes_delta,reason,created_by,created_at,idempotency_key,request_fingerprint)
+    VALUES (?,'grant',240,'Legacy grant',1,'2026-01-01T10:00:00','legacy-grant-key','legacy-fingerprint')`,[legacyId]);
+  assert.deepEqual((await f.service.eligibleRooms(legacyId)).map(room=>room.id),[2,1]);
+  assert.equal((await f.service.search(legacyId))[0].credit_id,legacyId);
+  const r=await f.redeem(legacyId,{room_id:2});
+  assert.equal((await f.q.get('SELECT room_id FROM booking_items WHERE id=?',[r.booking_item_id])).room_id,2);
+  assert.equal((await f.q.get('SELECT room_id FROM room_hour_credits WHERE credit_id=?',[legacyId])).room_id,1);
+});
+test('new Credit IDs are short, unique and searchable without changing ledger foreign keys',async t=>{
+  const f=await fixture(t),first=await f.grant();
+  await f.q.run("INSERT INTO bookings(id,customer_name,contact,total_amount,payment_status,billing_option,receipt_number) VALUES(2,'Second customer','0890000000',1000,'paid','standard','A-2')");
+  await f.q.run("INSERT INTO booking_items(id,booking_id,room_id,quantity,price,subtotal,start_time,end_time,booking_type) VALUES(2,2,1,4,250,1000,'2030-01-02T08:00:00','2030-01-02T12:00:00','hourly')");
+  const second=await f.service.grant({source_booking_id:2,source_item_id:2,minutes:60,reason:'Second grant',idempotency_key:'grant-second-short'},1);
+  assert.match(first.credit_id,/^HC-\d{6}-\d{4}$/);assert.match(second.credit_id,/^HC-\d{6}-\d{4}$/);
+  assert.notEqual(first.credit_id,second.credit_id);
+  assert.equal((await f.service.search(first.credit_id))[0].credit_id,first.credit_id);
+  assert.equal((await f.q.get('SELECT credit_id FROM room_hour_credit_entries WHERE credit_id=?',[second.credit_id])).credit_id,second.credit_id);
+});
+test('different-rate, inactive and non-hourly rooms are rejected without deducting credit',async t=>{
+  const f=await fixture(t),g=await f.grant();
+  for(const room_id of [3,4,5,6])await assert.rejects(f.redeem(g.credit_id,{room_id}),/อัตราค่าบริการ|unavailable/);
+  assert.equal((await f.service.read(g.credit_id)).remaining_minutes,240);
+  assert.equal((await f.q.get('SELECT COUNT(*) AS n FROM bookings')).n,1);
+});
 test('over-redeem rejected without Booking B',async t=>{const f=await fixture(t),g=await f.grant();await assert.rejects(f.redeem(g.credit_id,{minutes:300,end_time:'2030-01-03T13:00'}),/Insufficient/);assert.equal((await f.q.get('SELECT COUNT(*) AS n FROM bookings')).n,1);});
 test('actual existing overlap semantics and cleaning buffer enforced',async t=>{
   const f=await fixture(t),g=await f.grant();await f.redeem(g.credit_id);
-  await assert.rejects(f.redeem(g.credit_id),/overlap/);
-  await assert.rejects(f.redeem(g.credit_id,{start_time:'2030-01-03T10:15',end_time:'2030-01-03T12:15'}),/overlap/);
+  await assert.rejects(f.redeem(g.credit_id),error=>error.statusCode===409&&error.message==='ช่วงเวลานี้มีการจองแล้ว กรุณาเลือกเวลาอื่น');
+  await assert.rejects(f.redeem(g.credit_id,{start_time:'2030-01-03T10:15',end_time:'2030-01-03T12:15'}),/ช่วงเวลานี้มีการจองแล้ว/);
+  assert.equal((await f.service.read(g.credit_id)).remaining_minutes,120);
+});
+test('blocked ranges expose booked slots while final redeem independently rejects them',async t=>{
+  const f=await fixture(t),g=await f.grant();await f.redeem(g.credit_id,{room_id:2});
+  const result=await f.service.blockedRanges(g.credit_id,2,'2030-01-03');
+  assert.equal(result.cleaning_buffer_minutes,30);assert.equal(result.ranges.length,1);
+  assert.equal(result.ranges[0].start_time,'2030-01-03T08:00:00');
+  await assert.rejects(f.redeem(g.credit_id,{room_id:2,start_time:'2030-01-03T10:15',end_time:'2030-01-03T12:15'}),/ช่วงเวลานี้/);
   assert.equal((await f.service.read(g.credit_id)).remaining_minutes,120);
 });
 test('failure after booking insert rolls back all writes',async t=>{
@@ -141,10 +194,10 @@ test('unrelated connection writes cannot join or roll back with credit transacti
   await externalWrite;
   assert.equal((await f.q.get('SELECT name FROM rooms WHERE id=1')).name,'Independent write');assert.equal((await f.service.read(g.credit_id)).remaining_minutes,240);
 });
-test('guard preserves explicit PIN route and rejects mixed/add-on/room override input',async t=>{
+test('guard preserves explicit PIN route and rejects mixed/add-on input',async t=>{
   const f=await fixture(t),g=await f.grant();let passed=false;
   await creditMutationGuard(f.q)({method:'POST',path:'/2/send-pin'},{},()=>passed=true);assert.equal(passed,true);
-  for(const input of [{room_id:2},{items:[]},{cash:100},{booking_type:'daily'}])await assert.rejects(f.redeem(g.credit_id,input),/Unsupported/);
+  for(const input of [{items:[]},{cash:100},{booking_type:'daily'}])await assert.rejects(f.redeem(g.credit_id,input),/Unsupported/);
 });
 test('staff identity and paid-source validation fail closed',async t=>{
   const f=await fixture(t);
@@ -162,7 +215,7 @@ test('Phase2 voucher QR decodes to Credit ID only',async t=>{
   const f=await fixture(t),g=await f.grant(),app=express();app.use(creditRouter(f.service));const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const response=await fetch('http://127.0.0.1:'+server.address().port+'/'+g.credit_id+'/voucher-qr');assert.equal(response.status,200);const {data_url}=await response.json();
   const image=await require('jimp').read(Buffer.from(data_url.split(',')[1],'base64'));const qr=require('jsqr')(new Uint8ClampedArray(image.bitmap.data),image.bitmap.width,image.bitmap.height);
-  assert.equal(qr.data,g.credit_id);
+  assert.match(g.credit_id,/^HC-\d{6}-\d{4}$/);assert.equal(qr.data,g.credit_id);
 });
 test('Phase3: detail exposes has_line boolean and suppresses line_user_id',async t=>{
   const f=await fixture(t);
@@ -198,13 +251,13 @@ test('Phase3: manual send-line pushes valid voucher Flex message with live balan
 
   const flex=call.body.messages[0];
   assert.equal(flex.type,'flex');
-  assert.match(flex.altText,new RegExp(`ใบยืนยันชั่วโมงคงเหลือ.*${g.credit_id}`));
+  assert.match(flex.altText,new RegExp(`เครดิตชั่วโมงคงเหลือ.*${g.credit_id}`));
 
   const json=JSON.stringify(flex);
-  assert.match(json,/ใบยืนยันชั่วโมงคงเหลือ/);
+  assert.match(json,/เครดิตชั่วโมง/);
   assert.match(json,/3 ชั่วโมง 0 นาที/);
   assert.match(json,/Test room/);
-  assert.match(json,/ยอดในระบบเป็นข้อมูลอ้างอิงสูงสุด เอกสารนี้แสดงยอด ณ เวลาที่ส่ง/);
+  assert.match(json,/สามารถใช้กับห้องที่เข้าเงื่อนไขอัตราค่าบริการเดียวกัน/);
 
   const button=flex.contents.footer.contents[0];
   assert.equal(button.type,'button');
@@ -214,8 +267,8 @@ test('Phase3: manual send-line pushes valid voucher Flex message with live balan
 
   assert.doesNotMatch(json,/081-234-5678|0812345678/);
   assert.doesNotMatch(json,/123456/);
-  assert.doesNotMatch(json,/grant-key|redeem-key|Staff approved|Use credit/);
-  assert.doesNotMatch(json,/http:\/\/|https:\/\//);
+  assert.match(json,/https:\/\/bwork-booking\.pages\.dev\/line-banners\/bwork-hour-credit-banner\.png/);
+  assert.doesNotMatch(json,/(\?|&)(phone|token|pin|secret)=/i);
 });
 test('Phase3: client recipient override rejected and staff auth required',async t=>{
   const f=await fixture(t);

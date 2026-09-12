@@ -1596,136 +1596,167 @@ app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) =>
 });
 
 
+
+function formatThaiDateDisplay(isoString) {
+  if (!isoString) return '-';
+  try {
+    const cleanStr = String(isoString).replace(' ', 'T');
+    const [datePart] = cleanStr.split('T');
+    const [y, m, d] = datePart.split('-').map(Number);
+    if (!y || !m || !d) return String(isoString);
+    const months = [
+      'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+      'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'
+    ];
+    const thaiYear = y + 543;
+    return `${d} ${months[m - 1]} ${thaiYear}`;
+  } catch (e) {
+    return String(isoString);
+  }
+}
+
+function formatRescheduleTimeDisplay(startTime, endTime) {
+  if (!startTime) return '-';
+  try {
+    const sStr = String(startTime).replace(' ', 'T');
+    const dateStr = formatThaiDateDisplay(sStr);
+    const sTime = sStr.includes('T') ? sStr.split('T')[1].substring(0, 5) : '';
+    const eStr = endTime ? String(endTime).replace(' ', 'T') : '';
+    const eTime = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : '';
+    const timeStr = (sTime && eTime) ? `${sTime} - ${eTime} น.` : (sTime ? `${sTime} น.` : '');
+    return timeStr ? `${dateStr} (${timeStr})` : dateStr;
+  } catch (e) {
+    return String(startTime);
+  }
+}
+
 // Helper to build LINE OA Flex Message for booking confirmation
 function buildLineConfirmationFlex(booking, item, room) {
-  const customerName = booking.customer_name || 'ลูกค้าคนพิเศษ';
+  const customerName = booking?.customer_name || 'ลูกค้าคนพิเศษ';
   const roomName = room?.name || 'ห้องประชุม B-WORK';
-  const pinCode = booking.pin_code || '------';
-  const receiptNo = booking.receipt_number || `BK-${String(booking.id).padStart(6, '0')}`;
+  const receiptNo = booking?.receipt_number || `BK-${String(booking?.id || 0).padStart(6, '0')}`;
 
   let dateDisplay = '-';
   let timeDisplay = '-';
   if (item?.start_time) {
     const sStr = String(item.start_time).replace(' ', 'T');
-    const sDate = new Date(sStr);
-    dateDisplay = sDate.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
+    dateDisplay = formatThaiDateDisplay(sStr);
     const sTime = sStr.includes('T') ? sStr.split('T')[1].substring(0, 5) : '';
-    const eStr = item.end_time ? String(item.end_time).replace(' ', 'T') : '';
+    const eStr = item?.end_time ? String(item.end_time).replace(' ', 'T') : '';
     const eTime = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : '';
-    timeDisplay = `${sTime} - ${eTime} น.`;
+    timeDisplay = (sTime && eTime) ? `${sTime} - ${eTime} น.` : (sTime ? `${sTime} น.` : '-');
+  } else if (booking?.date) {
+    dateDisplay = formatThaiDateDisplay(booking.date);
+    if (booking?.start_time) {
+      timeDisplay = `${booking.start_time} - ${booking.end_time || ''} น.`.trim();
+    }
   }
 
   return {
     type: 'flex',
-    altText: `ยืนยันการจองห้องประชุม ${roomName} สำเร็จ (รหัสเข้าห้อง: ${pinCode})`,
+    altText: `ยืนยันการจองสำเร็จ - ${roomName} - ${receiptNo}`,
     contents: {
       type: 'bubble',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: '#10b981',
-        paddingAll: '16px',
-        contents: [
-          {
-            type: 'text',
-            text: 'B-WORK COWORKING & MEETING',
-            weight: 'bold',
-            color: '#ffffff',
-            size: 'xs',
-            letterSpacing: '1px'
-          },
-          {
-            type: 'text',
-            text: 'ยืนยันการจองสำเร็จ ✅',
-            weight: 'bold',
-            color: '#ffffff',
-            size: 'xl',
-            margin: 'xs'
-          }
-        ]
+      size: 'mega',
+      hero: {
+        type: 'image',
+        url: 'https://bwork-booking.pages.dev/line-banners/bwork-booking-confirmation-banner.png',
+        size: 'full',
+        aspectRatio: '3:1',
+        aspectMode: 'cover'
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '18px',
-        spacing: 'md',
+        paddingAll: '20px',
         contents: [
           {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'ชื่อผู้จอง', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: customerName, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
-            ]
+            type: 'text',
+            text: 'ยืนยันการจอง',
+            size: 'xl',
+            weight: 'bold',
+            color: '#0f172a'
           },
           {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'ห้องประชุม', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: roomName, size: 'sm', color: '#0284c7', weight: 'bold', flex: 4, align: 'end' }
-            ]
+            type: 'text',
+            text: 'การจองห้องประชุมของคุณเสร็จสมบูรณ์',
+            size: 'xs',
+            color: '#64748b',
+            margin: 'xs'
           },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'วันที่ใช้งาน', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: dateDisplay, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'เวลา', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: timeDisplay, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'เลขที่ใบจอง', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: receiptNo, size: 'sm', color: '#0f172a', flex: 4, align: 'end' }
-            ]
-          },
-          { type: 'separator', margin: 'md' },
           {
             type: 'box',
             layout: 'vertical',
-            margin: 'md',
-            paddingAll: '14px',
-            backgroundColor: '#f0f9ff',
-            cornerRadius: '12px',
-            borderColor: '#bae6fd',
-            borderWidth: '1px',
+            margin: 'lg',
+            spacing: 'sm',
             contents: [
               {
-                type: 'text',
-                text: '🏢 ติดต่อรับรหัสผ่านเข้าห้อง',
-                size: 'xs',
-                color: '#0369a1',
-                weight: 'bold',
-                align: 'center'
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'รหัสการจอง', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: receiptNo, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'ชื่อลูกค้า', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: customerName, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'ห้องประชุม', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: roomName, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'วันที่ใช้งาน', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: dateDisplay, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'เวลา', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: timeDisplay, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'lg',
+            paddingAll: '14px',
+            backgroundColor: '#ecfdf5',
+            cornerRadius: '10px',
+            borderWidth: '1px',
+            borderColor: '#a7f3d0',
+            contents: [
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'สถานะการชำระเงิน', size: 'xs', color: '#065f46', flex: 3 },
+                  { type: 'text', text: 'ชำระแล้ว', size: 'xs', weight: 'bold', color: '#059669', align: 'end', flex: 2 }
+                ]
               },
               {
                 type: 'text',
-                text: 'เมื่อถึงเวลาใช้งาน กรุณาติดต่อเคาน์เตอร์ประชาสัมพันธ์ (ชั้น L) เจ้าหน้าที่จะกดส่งรหัส PIN เข้าห้องให้ท่าน',
-                size: 'xs',
-                color: '#0284c7',
-                align: 'center',
-                wrap: true,
-                margin: 'xs'
-              },
-              {
-                type: 'text',
-                text: 'สามารถเพิ่มวันจองลงในปฏิทินได้จากหน้าตรวจสอบการจอง',
+                text: 'สามารถรับรหัสเข้าห้องเมื่อถึงเวลาใช้งาน หรือติดต่อเคาน์เตอร์ประชาสัมพันธ์',
                 size: 'xxs',
-                color: '#0369a1',
-                align: 'center',
+                color: '#047857',
                 wrap: true,
-                margin: 'xs'
+                margin: 'sm'
               }
             ]
           }
@@ -1734,17 +1765,18 @@ function buildLineConfirmationFlex(booking, item, room) {
       footer: {
         type: 'box',
         layout: 'vertical',
+        paddingAll: '16px',
         contents: [
           {
             type: 'button',
-            style: 'primary',
-            color: '#1e3a8a',
-            height: 'sm',
             action: {
               type: 'uri',
-              label: 'ดูรายละเอียด / เพิ่มลงปฏิทิน',
+              label: 'ดูรายละเอียดการจอง',
               uri: 'https://bwork-booking.pages.dev/status'
-            }
+            },
+            style: 'primary',
+            color: '#065f46',
+            height: 'md'
           }
         ]
       }
@@ -1849,152 +1881,122 @@ app.post('/api/line/webhook', async (req, res) => {
 
 
 function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal) {
-  const roomName = room ? `${room.name} (${room.room_number || ''})`.replace(' ()', '') : 'ห้องประชุม B-WORK';
-  const bookingCode = booking.receipt_number || `#BK-${String(booking.id).padStart(6, '0')}`;
-  const pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : (booking.pin_code || '------');
+  const roomName = room ? (room.room_number && !room.name.includes(`(${room.room_number})`) ? `${room.name} (${room.room_number})` : room.name) : (item?.room_name || 'ห้องประชุม B-WORK');
+  const bookingCode = booking?.receipt_number || `#BK-${String(booking?.id || 0).padStart(6, '0')}`;
+  const totalAmount = Number(newTotal !== undefined ? newTotal : (booking?.total_amount || 0));
 
-  let oldTimeDisplay = '-';
-  if (oldStartTime) {
-    const sStr = String(oldStartTime).replace(' ', 'T');
-    const sTime = sStr.includes('T') ? sStr.split('T')[1].substring(0, 5) : '';
-    const eStr = oldEndTime ? String(oldEndTime).replace(' ', 'T') : '';
-    const eTime = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : '';
-    oldTimeDisplay = `${sStr.split('T')[0]} (${sTime} - ${eTime} น.)`;
-  }
-
-  let newTimeDisplay = '-';
-  if (newStartTime) {
-    const sStr = String(newStartTime).replace(' ', 'T');
-    const sTime = sStr.includes('T') ? sStr.split('T')[1].substring(0, 5) : '';
-    const eStr = newEndTime ? String(newEndTime).replace(' ', 'T') : '';
-    const eTime = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : '';
-    newTimeDisplay = `${sStr.split('T')[0]} (${sTime} - ${eTime} น.)`;
-  }
+  const oldTimeDisplay = formatRescheduleTimeDisplay(oldStartTime, oldEndTime);
+  const newTimeDisplay = formatRescheduleTimeDisplay(newStartTime, newEndTime);
 
   return {
     type: 'flex',
-    altText: `🔄 แจ้งเปลี่ยนแปลงข้อมูลการจอง ${bookingCode} (${roomName} รหัสเข้าห้อง: ${pinCode})`,
+    altText: `แจ้งเปลี่ยนแปลงการจอง ${roomName} - ${bookingCode}`,
     contents: {
       type: 'bubble',
       size: 'mega',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: '#2563eb',
-        paddingAll: '16px',
-        contents: [
-          {
-            type: 'text',
-            text: '🔄 เปลี่ยนแปลงข้อมูลการจองสำเร็จ',
-            weight: 'bold',
-            color: '#ffffff',
-            size: 'md'
-          },
-          {
-            type: 'text',
-            text: `รหัสการจอง: ${bookingCode}`,
-            color: '#bfdbfe',
-            size: 'xs',
-            margin: 'xs'
-          }
-        ]
+      hero: {
+        type: 'image',
+        url: 'https://bwork-booking.pages.dev/line-banners/bwork-booking-update-banner.png',
+        size: 'full',
+        aspectRatio: '3:1',
+        aspectMode: 'cover'
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        spacing: 'sm',
-        paddingAll: '16px',
+        paddingAll: '20px',
         contents: [
           {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'ชื่อผู้จอง', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: booking.customer_name || 'ลูกค้า', size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
-            ]
+            type: 'text',
+            text: 'เปลี่ยนแปลงการจอง',
+            size: 'xl',
+            weight: 'bold',
+            color: '#0f172a'
+          },
+          {
+            type: 'text',
+            text: 'รายละเอียดวันและเวลาใช้งานใหม่ของคุณ',
+            size: 'xs',
+            color: '#64748b',
+            margin: 'xs'
           },
           {
             type: 'box',
-            layout: 'horizontal',
+            layout: 'vertical',
+            margin: 'lg',
+            spacing: 'sm',
             contents: [
-              { type: 'text', text: 'ห้องประชุม', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: roomName, size: 'sm', color: '#0284c7', weight: 'bold', flex: 4, align: 'end' }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'วัน/เวลาเดิม', size: 'sm', color: '#94a3b8', flex: 2 },
-              { type: 'text', text: oldTimeDisplay, size: 'sm', color: '#94a3b8', weight: 'regular', flex: 4, align: 'end', wrap: true }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'วัน/เวลาใหม่', size: 'sm', color: '#2563eb', flex: 2, weight: 'bold' },
-              { type: 'text', text: newTimeDisplay, size: 'sm', color: '#2563eb', weight: 'bold', flex: 4, align: 'end', wrap: true }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'ยอดสุทธิ', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: `฿${Number(newTotal !== undefined ? newTotal : booking.total_amount || 0).toLocaleString()}`, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'รหัสการจอง', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: bookingCode, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'ห้องประชุม', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: roomName, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              }
             ]
           },
           {
             type: 'box',
             layout: 'vertical',
             margin: 'md',
-            paddingAll: '12px',
-            backgroundColor: '#f0fdf4',
-            cornerRadius: '12px',
-            borderColor: '#86efac',
+            paddingAll: '14px',
+            backgroundColor: '#f8fafc',
+            cornerRadius: '10px',
             borderWidth: '1px',
+            borderColor: '#e2e8f0',
             contents: [
+              { type: 'text', text: 'เดิม', size: 'xs', color: '#94a3b8', weight: 'bold' },
+              { type: 'text', text: oldTimeDisplay, size: 'xs', color: '#94a3b8', decoration: 'line-through', margin: 'xs', wrap: true },
+              { type: 'separator', margin: 'sm' },
+              { type: 'text', text: 'ใหม่', size: 'xs', weight: 'bold', color: '#1e3a8a', margin: 'sm' },
+              { type: 'text', text: newTimeDisplay, size: 'sm', weight: 'bold', color: '#1e3a8a', margin: 'xs', wrap: true },
+              { type: 'separator', margin: 'sm' },
               {
-                type: 'text',
-                text: '🔑 รหัสผ่านปลดล็อกประตูห้องใหม่ (Door PIN)',
-                size: 'xs',
-                color: '#15803d',
-                weight: 'bold',
-                align: 'center'
-              },
-              {
-                type: 'text',
-                text: pinCode,
-                size: 'xl',
-                color: '#166534',
-                weight: 'bold',
-                align: 'center',
-                margin: 'xs'
-              },
-              {
-                type: 'text',
-                text: 'กดรหัส PIN ตามด้วยเครื่องหมาย # ที่หน้าจอแท็บเล็ตหน้าห้องเพื่อปลดล็อก',
-                size: 'xxs',
-                color: '#16a34a',
-                align: 'center',
-                wrap: true,
-                margin: 'xs'
+                type: 'box',
+                layout: 'baseline',
+                margin: 'sm',
+                contents: [
+                  { type: 'text', text: 'ยอดชำระใหม่', size: 'xs', color: '#64748b', flex: 3 },
+                  { type: 'text', text: `฿${totalAmount.toLocaleString()}`, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
+                ]
               }
             ]
+          },
+          {
+            type: 'text',
+            text: 'กรุณารับรหัสเข้าห้องใหม่สำหรับช่วงเวลาที่เปลี่ยนแปลง',
+            size: 'xxs',
+            color: '#1e40af',
+            margin: 'sm',
+            align: 'center',
+            wrap: true
           }
         ]
       },
       footer: {
         type: 'box',
         layout: 'vertical',
+        paddingAll: '16px',
         contents: [
           {
-            type: 'text',
-            text: 'ระบบได้อัปเดตข้อมูลการใช้งานห้องประชุมให้เรียบร้อยแล้วค่ะ',
-            size: 'xxs',
-            color: '#94a3b8',
-            align: 'center'
+            type: 'button',
+            action: {
+              type: 'uri',
+              label: 'ดูรายละเอียดการจอง',
+              uri: 'https://bwork-booking.pages.dev/status'
+            },
+            style: 'primary',
+            color: '#1e3a8a',
+            height: 'md'
           }
         ]
       }
@@ -4330,138 +4332,125 @@ app.listen(PORT, () => {
 
 // Build LINE Door PIN Flex message (Sent by staff when customer arrives at counter)
 function buildLineDoorPinFlex(booking, item, room) {
-  const customerName = booking?.customer_name || 'ลูกค้าผู้มีอุปการคุณ';
-  const roomName = room?.name || item?.room_name || 'ห้องประชุม';
+  const roomName = room?.name || item?.room_name || 'ห้องประชุม B-WORK';
   // LINE OA must ALWAYS send Customer Access Code only
   const pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : (booking?.pin_code || '------');
 
   let dateDisplay = '-';
-  if (item && item.start_time) {
-    const sStr = String(item.start_time).replace(' ', 'T');
-    const [y, m, d] = sStr.split('T')[0].split('-').map(Number);
-    const thaiYear = y + 543;
-    dateDisplay = `${d}/${m}/${thaiYear}`;
-  } else if (booking?.created_at) {
-    const sStr = String(booking.created_at).replace(' ', 'T');
-    const [y, m, d] = sStr.split('T')[0].split('-').map(Number);
-    const thaiYear = y + 543;
-    dateDisplay = `${d}/${m}/${thaiYear}`;
-  }
-
   let timeDisplay = '-';
-  if (item && item.start_time && item.end_time) {
+  if (item?.start_time) {
     const sStr = String(item.start_time).replace(' ', 'T');
+    dateDisplay = formatThaiDateDisplay(sStr);
     const sTime = sStr.includes('T') ? sStr.split('T')[1].substring(0, 5) : '';
-    const eStr = String(item.end_time).replace(' ', 'T');
+    const eStr = item?.end_time ? String(item.end_time).replace(' ', 'T') : '';
     const eTime = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : '';
-    timeDisplay = `${sTime} - ${eTime} น.`;
+    timeDisplay = (sTime && eTime) ? `${sTime} - ${eTime} น.` : (sTime ? `${sTime} น.` : '-');
+  } else if (booking?.created_at || booking?.date) {
+    const sStr = String(booking.date || booking.created_at).replace(' ', 'T');
+    dateDisplay = formatThaiDateDisplay(sStr);
+    if (booking?.start_time) {
+      timeDisplay = `${booking.start_time} - ${booking.end_time || ''} น.`.trim();
+    }
   }
 
   return {
     type: 'flex',
-    altText: `รหัสผ่านเข้าห้องประชุม: ${pinCode} (${roomName})`,
+    altText: `รหัสเข้าห้อง ${roomName}`,
     contents: {
       type: 'bubble',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: '#0284c7',
-        paddingAll: '16px',
-        contents: [
-          {
-            type: 'text',
-            text: 'B-WORK COWORKING & MEETING',
-            weight: 'bold',
-            color: '#ffffff',
-            size: 'xs',
-            letterSpacing: '1px'
-          },
-          {
-            type: 'text',
-            text: 'รหัสผ่านเปิดประตูห้องประชุม 🔑',
-            weight: 'bold',
-            color: '#ffffff',
-            size: 'lg',
-            margin: 'xs'
-          }
-        ]
+      size: 'mega',
+      hero: {
+        type: 'image',
+        url: 'https://bwork-booking.pages.dev/line-banners/bwork-door-pin-banner.png',
+        size: 'full',
+        aspectRatio: '3:1',
+        aspectMode: 'cover'
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '18px',
-        spacing: 'md',
+        paddingAll: '20px',
         contents: [
           {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'ชื่อผู้จอง', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: customerName, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
-            ]
+            type: 'text',
+            text: 'รหัสเข้าห้อง',
+            size: 'xl',
+            weight: 'bold',
+            color: '#0f172a'
           },
           {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'ห้องประชุม', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: roomName, size: 'sm', color: '#0284c7', weight: 'bold', flex: 4, align: 'end' }
-            ]
+            type: 'text',
+            text: 'กดรหัสผ่านที่ประตูก่อนเข้าใช้งานห้องประชุม',
+            size: 'xs',
+            color: '#64748b',
+            margin: 'xs'
           },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'วันที่ใช้งาน', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: dateDisplay, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'เวลา', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: timeDisplay, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
-            ]
-          },
-          { type: 'separator', margin: 'md' },
           {
             type: 'box',
             layout: 'vertical',
-            margin: 'md',
-            paddingAll: '14px',
-            backgroundColor: '#f0fdf4',
-            cornerRadius: '12px',
-            borderColor: '#86efac',
-            borderWidth: '1px',
+            margin: 'lg',
+            spacing: 'sm',
             contents: [
               {
-                type: 'text',
-                text: '🔑 รหัสผ่านปลดล็อกประตู (Door PIN)',
-                size: 'xs',
-                color: '#15803d',
-                weight: 'bold',
-                align: 'center'
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'ห้องประชุม', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: roomName, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
               },
               {
-                type: 'text',
-                text: pinCode,
-                size: 'xxl',
-                color: '#166534',
-                weight: 'bold',
-                align: 'center',
-                margin: 'xs'
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'วันที่ใช้งาน', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: dateDisplay, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
               },
               {
-                type: 'text',
-                text: 'กดรหัส PIN ตามด้วยเครื่องหมาย # ที่หน้าจอแท็บเล็ตหน้าห้องเพื่อปลดล็อกประตู',
-                size: 'xxs',
-                color: '#16a34a',
-                align: 'center',
-                wrap: true,
-                margin: 'xs'
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'เวลา', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: timeDisplay, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
               }
             ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'lg',
+            paddingAll: '16px',
+            backgroundColor: '#f0f9ff',
+            cornerRadius: '12px',
+            borderWidth: '1px',
+            borderColor: '#bae6fd',
+            alignItems: 'center',
+            contents: [
+              { type: 'text', text: 'รหัสเข้าห้อง (PIN)', size: 'xs', weight: 'bold', color: '#0369a1', align: 'center' },
+              { type: 'text', text: pinCode, size: '3xl', weight: 'bold', color: '#0f172a', align: 'center', margin: 'xs' },
+              { type: 'text', text: 'กดรหัส 6 หลัก ตามด้วย #', size: 'xs', weight: 'bold', color: '#0f172a', align: 'center', margin: 'xs' },
+              { type: 'text', text: 'รหัสนี้ใช้ได้เฉพาะในวันและเวลาที่จอง', size: 'xxs', color: '#64748b', align: 'center', margin: 'xs' }
+            ]
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          {
+            type: 'button',
+            action: {
+              type: 'uri',
+              label: 'ดูรายละเอียดการจอง',
+              uri: 'https://bwork-booking.pages.dev/status'
+            },
+            style: 'primary',
+            color: '#0284c7',
+            height: 'md'
           }
         ]
       }
@@ -4533,89 +4522,153 @@ app.post('/api/bookings/:id/send-pin', async (req, res) => {
 
 
 // Helper to build LINE OA Flex Message for Auto-Cancelled booking due to 15-min expiration
-function buildLineBookingCancelledFlex(booking, roomName, reason) {
-  const customerName = booking?.customer_name || 'ลูกค้าผู้มีอุปการคุณ';
-  const displayRoom = roomName || 'ห้องประชุม';
-  const bookingCode = booking?.receipt_number || `BK-${String(booking?.id || 0).padStart(6, '0')}`;
+function buildLineBookingCancelledFlex(booking, roomNameOrItem, reasonOrRoom, itemOrReason) {
+  let item = null;
+  let roomName = '';
+  let reason = '';
+
+  if (roomNameOrItem && typeof roomNameOrItem === 'object') {
+    item = roomNameOrItem;
+    roomName = (reasonOrRoom && typeof reasonOrRoom === 'object') ? reasonOrRoom?.name : (typeof reasonOrRoom === 'string' ? reasonOrRoom : (booking?.room_name || 'ห้องประชุม B-WORK'));
+    reason = (typeof itemOrReason === 'string') ? itemOrReason : '';
+  } else {
+    roomName = (typeof roomNameOrItem === 'string' && roomNameOrItem) ? roomNameOrItem : (booking?.room_name || 'ห้องประชุม B-WORK');
+    reason = (typeof reasonOrRoom === 'string') ? reasonOrRoom : (typeof itemOrReason === 'string' ? itemOrReason : '');
+    item = (itemOrReason && typeof itemOrReason === 'object') ? itemOrReason : null;
+  }
+
+  const bookingCode = booking?.receipt_number || `#BK-${String(booking?.id || 0).padStart(6, '0')}`;
   const cancelReason = reason || 'ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)';
-  const isAutoTimeout = cancelReason.includes('15 นาที');
+
+  let dateDisplay = '-';
+  let timeDisplay = '-';
+  const timeSource = item?.start_time ? item : booking;
+  if (timeSource?.start_time) {
+    const sStr = String(timeSource.start_time).replace(' ', 'T');
+    dateDisplay = formatThaiDateDisplay(sStr);
+    const sTime = sStr.includes('T') ? sStr.split('T')[1].substring(0, 5) : '';
+    const eStr = timeSource.end_time ? String(timeSource.end_time).replace(' ', 'T') : '';
+    const eTime = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : '';
+    timeDisplay = (sTime && eTime) ? `${sTime} - ${eTime} น.` : (sTime ? `${sTime} น.` : '-');
+  } else if (booking?.date) {
+    dateDisplay = formatThaiDateDisplay(booking.date);
+    if (booking?.start_time) {
+      timeDisplay = `${booking.start_time} - ${booking.end_time || ''} น.`.trim();
+    }
+  }
 
   return {
     type: 'flex',
-    altText: `แจ้งยกเลิกการจอง #${bookingCode} (${displayRoom})`,
+    altText: `แจ้งยกเลิกการจอง ${roomName} - ${bookingCode}`,
     contents: {
       type: 'bubble',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: '#ef4444',
-        paddingAll: '16px',
-        contents: [
-          {
-            type: 'text',
-            text: 'B-WORK COWORKING & MEETING',
-            weight: 'bold',
-            color: '#ffffff',
-            size: 'xs',
-            letterSpacing: '1px'
-          },
-          {
-            type: 'text',
-            text: isAutoTimeout ? 'แจ้งยกเลิกการจองอัตโนมัติ' : 'แจ้งยกเลิกการจอง',
-            weight: 'bold',
-            color: '#ffffff',
-            size: 'lg',
-            margin: 'xs'
-          }
-        ]
+      size: 'mega',
+      hero: {
+        type: 'image',
+        url: 'https://bwork-booking.pages.dev/line-banners/bwork-booking-cancel-banner.png',
+        size: 'full',
+        aspectRatio: '3:1',
+        aspectMode: 'cover'
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '18px',
-        spacing: 'md',
+        paddingAll: '20px',
         contents: [
           {
             type: 'text',
-            text: isAutoTimeout
-              ? 'ขออภัยค่ะ รายการจองของท่านถูกยกเลิกอัตโนมัติ เนื่องจากไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (15 นาที)'
-              : `ขออภัยค่ะ รายการจองของท่านได้ถูกยกเลิกเรียบร้อยแล้ว (${cancelReason})`,
-            size: 'sm',
-            color: '#334155',
+            text: 'ยกเลิกการจอง',
+            size: 'xl',
+            weight: 'bold',
+            color: '#0f172a'
+          },
+          {
+            type: 'text',
+            text: 'รายการจองห้องประชุมถูกยกเลิกเรียบร้อย',
+            size: 'xs',
+            color: '#64748b',
+            margin: 'xs'
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'lg',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'รหัสการจอง', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: bookingCode, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'ห้องประชุม', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: roomName, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'วันที่ใช้งาน', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: dateDisplay, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: 'เวลา', color: '#64748b', size: 'sm', flex: 3 },
+                  { type: 'text', text: timeDisplay, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+                ]
+              }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            paddingAll: '14px',
+            backgroundColor: '#fef2f2',
+            cornerRadius: '10px',
+            borderWidth: '1px',
+            borderColor: '#fecaca',
+            contents: [
+              { type: 'text', text: 'เหตุผลในการยกเลิก', size: 'xs', weight: 'bold', color: '#991b1b' },
+              { type: 'text', text: cancelReason, size: 'sm', weight: 'bold', color: '#991b1b', margin: 'xs', wrap: true }
+            ]
+          },
+          {
+            type: 'text',
+            text: 'หากต้องการจองห้องประชุมใหม่ เรายินดีให้บริการเสมอ',
+            size: 'xxs',
+            color: '#64748b',
+            margin: 'sm',
+            align: 'center',
             wrap: true
-          },
-          { type: 'separator', margin: 'md' },
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
           {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'รหัสการจอง', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: bookingCode, size: 'sm', color: '#ef4444', weight: 'bold', flex: 4, align: 'end' }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'ชื่อผู้จอง', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: customerName, size: 'sm', color: '#0f172a', weight: 'bold', flex: 4, align: 'end' }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'ห้องประชุม', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: displayRoom, size: 'sm', color: '#0284c7', weight: 'bold', flex: 4, align: 'end' }
-            ]
-          },
-          {
-            type: 'box',
-            layout: 'horizontal',
-            contents: [
-              { type: 'text', text: 'สาเหตุ', size: 'sm', color: '#64748b', flex: 2 },
-              { type: 'text', text: cancelReason, size: 'sm', color: '#ef4444', flex: 4, align: 'end', wrap: true }
-            ]
+            type: 'button',
+            action: {
+              type: 'uri',
+              label: 'จองห้องใหม่',
+              uri: 'https://bwork-booking.pages.dev'
+            },
+            style: 'primary',
+            color: '#991b1b',
+            height: 'md'
           }
         ]
       }
@@ -4698,3 +4751,20 @@ async function checkAndCancelExpiredBookings() {
 
 // Start background cron worker (Runs every 30 seconds)
 setInterval(checkAndCancelExpiredBookings, 30 * 1000);
+
+const buildLineBookingConfirmationFlex = buildLineConfirmationFlex;
+const buildLineBookingCancellationFlex = buildLineBookingCancelledFlex;
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    app,
+    buildLineConfirmationFlex,
+    buildLineBookingConfirmationFlex,
+    buildLineDoorPinFlex,
+    buildLineBookingRescheduleFlex,
+    buildLineBookingCancelledFlex,
+    buildLineBookingCancellationFlex,
+    formatThaiDateDisplay,
+    formatRescheduleTimeDisplay
+  };
+}
