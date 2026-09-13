@@ -14,10 +14,31 @@ import { creditNavigationLabel } from './utils/hourCreditUI';
 import LinePreview from './components/LinePreview';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('pos');
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [pendingTargetBooking, setPendingTargetBooking] = useState(null);
+  const [posTargetView, setPosTargetView] = useState(null);
   const [showBasecampQuotaModal, setShowBasecampQuotaModal] = useState(false);
   const [theme, setTheme] = useState('light');
   const [activeSettingsSubTab, setActiveSettingsSubTab] = useState('manage');
+
+  const handleNavigateFromHome = (tab, options = {}) => {
+    if (tab === 'pending' && options?.bookingId) {
+      setPendingTargetBooking({
+        id: options.bookingId,
+        action: options.action || 'view'
+      });
+    } else {
+      setPendingTargetBooking(null);
+    }
+
+    if (tab === 'pos' && options?.view) {
+      setPosTargetView(options.view);
+    } else {
+      setPosTargetView(null);
+    }
+
+    setActiveTab(tab);
+  };
   
   const getFirstAllowedSettingsTab = (currentUser) => {
     if (!currentUser) return 'manage';
@@ -69,21 +90,52 @@ function App() {
     setActiveTab('quotations');
   };
 
-  // Check if current user has permission to view tab/menu
-  const hasPermission = (tabKey) => {
-    if (!user) return false;
-    if (user.username === 'admin') return true;
-    const permString = typeof user.permissions === 'string' ? user.permissions : '';
+  // Check if a user has permission to view a tab/menu
+  const checkUserPermission = (currentUser, tabKey) => {
+    if (!currentUser) return false;
+    if (currentUser.username === 'admin') return true;
+    if (tabKey === 'dashboard') return true;
+    const permString = typeof currentUser.permissions === 'string' ? currentUser.permissions : '';
     const perms = permString.split(',').map(p => p.trim()).filter(Boolean);
-    if (tabKey === 'admin-management') {
+    if (tabKey === 'admin-management' || tabKey === 'settings') {
       return perms.includes('admin-management') || perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage');
     }
+    if (tabKey === 'hour-credits') {
+      return perms.includes('pos');
+    }
     // If checking a settings sub-tab, grant it if they have the main 'admin-management' permission
-    if (['manage', 'admin-users', 'admin-system', 'admin-quotation', 'admin-backup'].includes(tabKey)) {
+    if (['manage', 'admin-users', 'admin-system', 'admin-quotation', 'admin-backup', 'admin-dooraccess'].includes(tabKey)) {
       return perms.includes('admin-management') || perms.includes(tabKey);
     }
     return perms.includes(tabKey);
   };
+
+  // Check if current user has permission to view tab/menu
+  const hasPermission = (tabKey) => checkUserPermission(user, tabKey);
+
+  // Preferred fallback order:
+  // 1. dashboard, if allowed
+  // 2. pos, if dashboard unavailable and POS allowed
+  // 3. first valid existing menu destination
+  const getDefaultLandingTab = (currentUser) => {
+    if (!currentUser) return 'dashboard';
+    if (checkUserPermission(currentUser, 'dashboard')) return 'dashboard';
+    if (checkUserPermission(currentUser, 'pos')) return 'pos';
+    const fallbackCandidates = ['pending', 'layout', 'history', 'quotations', 'hour-credits', 'settings'];
+    for (const tab of fallbackCandidates) {
+      if (checkUserPermission(currentUser, tab)) {
+        return tab;
+      }
+    }
+    return 'dashboard';
+  };
+
+  // Ensure current user stays on a permitted tab
+  useEffect(() => {
+    if (user && !hasPermission(activeTab)) {
+      setActiveTab(getDefaultLandingTab(user));
+    }
+  }, [user, activeTab]);
 
   // Change Password states
   const [showChangePassModal, setShowChangePassModal] = useState(false);
@@ -403,7 +455,7 @@ function App() {
   };
 
   const handleLogoClick = () => {
-    setActiveTab('pos');
+    setActiveTab(getDefaultLandingTab(user));
     triggerTransition();
   };
 
@@ -419,7 +471,7 @@ function App() {
       const data = await res.json();
       if (res.ok && data.success) {
         setUser(data.user);
-        setActiveTab('pos');
+        setActiveTab(getDefaultLandingTab(data.user));
         setActiveSettingsSubTab(getFirstAllowedSettingsTab(data.user));
         localStorage.setItem('pos_user', JSON.stringify(data.user));
         if (data.token) {
@@ -440,7 +492,7 @@ function App() {
     const confirm = await customConfirm("คุณต้องการออกจากระบบใช่หรือไม่?");
     if (confirm) {
       setUser(null);
-      setActiveTab('pos');
+      setActiveTab('dashboard');
       setActiveSettingsSubTab('manage');
       localStorage.removeItem('pos_user');
       localStorage.removeItem('pos_token');
@@ -472,8 +524,8 @@ function App() {
       const data = await res.json();
       if (res.ok && data.success) {
         await customAlert(data.message);
-        // Refresh to pos screen to prevent stale data display
-        setActiveTab('pos');
+        // Refresh to default landing screen to prevent stale data display
+        setActiveTab(getDefaultLandingTab(user));
         window.location.reload();
       } else {
         await customAlert(data.error || 'เกิดข้อผิดพลาดในการล้างประวัติ');
@@ -680,16 +732,6 @@ function App() {
 
           {/* Horizontal Desktop Menu Bar */}
           <nav className="desktop-menu-bar" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '12px' }}>
-            {hasPermission('pos') && (
-              <button 
-                type="button"
-                className={`top-menu-item ${activeTab === 'pos' ? 'active' : ''}`}
-                onClick={() => setActiveTab('pos')}
-              >
-                <ShoppingCart size={15} />
-                <span>จุดขาย POS</span>
-              </button>
-            )}
             {hasPermission('dashboard') && (
               <button 
                 type="button"
@@ -697,7 +739,17 @@ function App() {
                 onClick={() => setActiveTab('dashboard')}
               >
                 <LayoutDashboard size={15} />
-                <span>Dashboard</span>
+                <span>Today Overview</span>
+              </button>
+            )}
+            {hasPermission('pos') && (
+              <button 
+                type="button"
+                className={`top-menu-item ${activeTab === 'pos' ? 'active' : ''}`}
+                onClick={() => setActiveTab('pos')}
+              >
+                <ShoppingCart size={15} />
+                <span>POS</span>
               </button>
             )}
             {hasPermission('pending') && (
@@ -707,7 +759,7 @@ function App() {
                 onClick={() => setActiveTab('pending')}
               >
                 <Clock size={15} />
-                <span>รายการจองห้อง</span>
+                <span>Booking Management</span>
               </button>
             )}
             {hasPermission('layout') && (
@@ -717,7 +769,7 @@ function App() {
                 onClick={() => setActiveTab('layout')}
               >
                 <Map size={15} />
-                <span>แผนผังห้อง</span>
+                <span>Rooms</span>
               </button>
             )}
             {hasPermission('history') && (
@@ -727,7 +779,7 @@ function App() {
                 onClick={() => setActiveTab('history')}
               >
                 <History size={15} />
-                <span>ประวัติย้อนหลัง</span>
+                <span>Booking History</span>
               </button>
             )}
 
@@ -738,7 +790,7 @@ function App() {
                 onClick={() => setActiveTab('quotations')}
               >
                 <FileText size={15} />
-                <span>ใบเสนอราคา</span>
+                <span>Quotations</span>
               </button>
             )}
             {hasPermission('pos') && (
@@ -748,7 +800,7 @@ function App() {
                 onClick={() => setActiveTab('hour-credits')}
               >
                 <Clock size={15} />
-                <span>{creditNavigationLabel}</span>
+                <span>Hour Credits</span>
               </button>
             )}
           </nav>
@@ -1218,20 +1270,20 @@ function App() {
           <div>
             <div className="menu-section-title">เมนูหลัก / Services</div>
             <div className="menu-grid">
-              {hasPermission('pos') && (
-                <div className={`menu-card ${activeTab === 'pos' ? 'active' : ''}`} onClick={() => setActiveTab('pos')}>
-                  <div className="menu-card-icon-wrapper">
-                    <ShoppingCart size={20} />
-                  </div>
-                  <span>จุดขาย POS</span>
-                </div>
-              )}
               {hasPermission('dashboard') && (
                 <div className={`menu-card ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
                   <div className="menu-card-icon-wrapper">
                     <LayoutDashboard size={20} />
                   </div>
-                  <span>Dashboard</span>
+                  <span>Today Overview</span>
+                </div>
+              )}
+              {hasPermission('pos') && (
+                <div className={`menu-card ${activeTab === 'pos' ? 'active' : ''}`} onClick={() => setActiveTab('pos')}>
+                  <div className="menu-card-icon-wrapper">
+                    <ShoppingCart size={20} />
+                  </div>
+                  <span>POS</span>
                 </div>
               )}
               {hasPermission('pending') && (
@@ -1239,7 +1291,7 @@ function App() {
                   <div className="menu-card-icon-wrapper">
                     <Clock size={20} />
                   </div>
-                  <span>รายการจองห้อง</span>
+                  <span>Booking Management</span>
                 </div>
               )}
               {hasPermission('layout') && (
@@ -1247,7 +1299,7 @@ function App() {
                   <div className="menu-card-icon-wrapper">
                     <Map size={20} />
                   </div>
-                  <span>แผนผังห้อง</span>
+                  <span>Rooms</span>
                 </div>
               )}
               {hasPermission('history') && (
@@ -1255,7 +1307,7 @@ function App() {
                   <div className="menu-card-icon-wrapper">
                     <History size={20} />
                   </div>
-                  <span>ประวัติย้อนหลัง</span>
+                  <span>Booking History</span>
                 </div>
               )}
               {hasPermission('quotations') && (
@@ -1263,7 +1315,7 @@ function App() {
                   <div className="menu-card-icon-wrapper">
                     <FileText size={20} />
                   </div>
-                  <span>ใบเสนอราคา</span>
+                  <span>Quotations</span>
                 </div>
               )}
               {hasPermission('pos') && (
@@ -1271,7 +1323,7 @@ function App() {
                   <div className="menu-card-icon-wrapper">
                     <Clock size={20} />
                   </div>
-                  <span>{creditNavigationLabel}</span>
+                  <span>Hour Credits</span>
                 </button>
               )}
             </div>
@@ -1314,10 +1366,41 @@ function App() {
         display: 'flex', 
         flexDirection: 'column' 
       }}>
-        {activeTab === 'pos' && <BookingPOS user={user} settings={settings} sysAlert={customAlert} preselectedRoom={preselectedRoom} clearPreselectedRoom={() => setPreselectedRoom(null)} onNavigate={setActiveTab} onExportToQuotation={handleExportToQuotation} showCartSidebar={showCartSidebar} setShowCartSidebar={setShowCartSidebar} onCartCountChange={setCartCount} />}
+        {activeTab === 'pos' && (
+          <BookingPOS
+            user={user}
+            settings={settings}
+            sysAlert={customAlert}
+            preselectedRoom={preselectedRoom}
+            clearPreselectedRoom={() => setPreselectedRoom(null)}
+            posTargetView={posTargetView}
+            clearPosTargetView={() => setPosTargetView(null)}
+            onNavigate={setActiveTab}
+            onExportToQuotation={handleExportToQuotation}
+            showCartSidebar={showCartSidebar}
+            setShowCartSidebar={setShowCartSidebar}
+            onCartCountChange={setCartCount}
+          />
+        )}
         {activeTab === 'layout' && <RoomLayout sysAlert={customAlert} onNavigateToBook={(room) => { setPreselectedRoom(room); setActiveTab('pos'); }} />}
-        {activeTab === 'pending' && <PendingBookings settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
-        {activeTab === 'dashboard' && <Dashboard />}
+        {activeTab === 'pending' && (
+          <PendingBookings
+            settings={settings}
+            sysAlert={customAlert}
+            sysConfirm={customConfirm}
+            targetBooking={pendingTargetBooking}
+            clearTargetBooking={() => setPendingTargetBooking(null)}
+          />
+        )}
+        {activeTab === 'dashboard' && hasPermission('dashboard') && (
+          <Dashboard
+            user={user}
+            hasPermission={hasPermission}
+            onNavigate={handleNavigateFromHome}
+            sysAlert={customAlert}
+            sysConfirm={customConfirm}
+          />
+        )}
         {activeTab === 'history' && <HistoryLog settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
         {activeTab === 'hour-credits' && hasPermission('pos') && <HourCredits sysConfirm={customConfirm}/>}
         {activeTab === 'quotations' && <Quotations user={user} settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} quotationCartData={quotationCartData} clearQuotationCartData={() => setQuotationCartData(null)} onNavigate={setActiveTab} />}

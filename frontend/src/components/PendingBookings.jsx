@@ -41,6 +41,7 @@ import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { API_BASE } from '../apiConfig';
 import { analyzeSlipInBrowser } from '../utils/browserSlipVerifier';
+import './PendingBookings.css';
 
 const DATE_TYPE_OPTIONS = [
   { value: 'usage_date', label: 'วันที่ใช้งาน' },
@@ -61,7 +62,8 @@ const TIME_SLOT_OPTIONS = [
   '16:00', '16:30', '17:00', '17:30', '18:00'
 ];
 
-function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
+function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, targetBooking, clearTargetBooking }) {
+  const [highlightedBookingId, setHighlightedBookingId] = useState(null);
   const [bookings, setBookings] = useState([]);
   const [roomsList, setRoomsList] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -98,6 +100,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
   const [ocrProgress, setOcrProgress] = useState(0);
   const [slipZoom, setSlipZoom] = useState(1);
   const [showReceiptModal, setShowReceiptModal] = useState(false);
+  const [showDetailModal, setShowDetailModal] = useState(false);
   const [showPayModal, setShowPayModal] = useState(false);
   const [payMethod, setPayMethod] = useState('transfer');
   const [isPayMethodOpen, setIsPayMethodOpen] = useState(false);
@@ -209,14 +212,13 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
     }
   };
 
-  // Balanced 7-column definitions across full page width
+  // 6-column operational table definitions
   const columns = [
-    { key: 'id', label: 'รหัส / วันที่สร้าง', width: '14%' },
+    { key: 'id', label: 'การจอง', width: '16%' },
     { key: 'customer_name', label: 'ผู้จอง', width: '18%' },
-    { key: 'room_info', label: 'ห้อง / เวลาใช้งาน', width: '24%' },
-    { key: 'total_amount', label: 'ยอดชำระ', width: '9%' },
-    { key: 'status', label: 'สถานะ', width: '11%' },
-    { key: 'pin_code', label: 'รหัสเข้าห้อง', width: '11%' },
+    { key: 'room_info', label: 'ห้อง & เวลาใช้งาน', width: '26%' },
+    { key: 'total_amount', label: 'ยอดชำระ', width: '12%' },
+    { key: 'status', label: 'สถานะ & รหัสเข้าห้อง', width: '15%' },
     { key: 'actions', label: 'การดำเนินการ', width: '13%' }
   ];
 
@@ -400,7 +402,23 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
     });
   };
 
-  const handleOpenReceipt = async (booking) => {
+  const handleOpenBookingDetail = async (booking) => {
+    if (!booking) return;
+    try {
+      const res = await fetch(`/api/bookings/${booking.id}`);
+      if (res.ok) {
+        const detailData = await res.json();
+        setSelectedBooking(detailData);
+      } else {
+        setSelectedBooking(booking);
+      }
+    } catch (err) {
+      setSelectedBooking(booking);
+    }
+    setShowDetailModal(true);
+  };
+
+  const handleOpenReceiptPrint = async (booking) => {
     if (!booking) return;
     try {
       const res = await fetch(`/api/bookings/${booking.id}`);
@@ -415,6 +433,82 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
     }
     setShowReceiptModal(true);
   };
+
+  // Backwards-compatible alias: opens the operational booking detail view
+  const handleOpenReceipt = handleOpenBookingDetail;
+
+  // Handle transient one-time handoff from Home / Dashboard
+  useEffect(() => {
+    if (!targetBooking || !targetBooking.id) return;
+    const targetId = targetBooking.id;
+    const action = targetBooking.action || 'view';
+
+    const handleHandoff = async () => {
+      let found = (bookings || []).find(b => String(b.id) === String(targetId) || String(b.booking_id) === String(targetId));
+      if (!found) {
+        try {
+          const res = await fetch(`/api/bookings/${targetId}`);
+          if (res.ok) {
+            found = await res.json();
+            setBookings(prev => [found, ...prev]);
+          }
+        } catch (e) {
+          console.warn('[PendingBookings] Handoff fetch error:', e);
+        }
+      }
+
+      if (found) {
+        if (found.payment_status === 'reviewing' || found.slip_image_url) {
+          setActiveStatusTab('reviewing');
+        } else if (found.payment_status === 'pending') {
+          setActiveStatusTab('pending');
+        } else if (found.payment_status === 'paid') {
+          setActiveStatusTab('paid');
+        } else {
+          setActiveStatusTab('all');
+        }
+
+        setSearchQuery('');
+        setStartDate('');
+        setEndDate('');
+        setCustomerTypeFilter('all');
+        setBookingChannelFilter('all');
+        setCurrentPage(1);
+
+        if (action === 'review') {
+          if (found.slip_image_url) {
+            setViewingSlipBooking(found);
+          } else {
+            handleOpenPayment(found);
+          }
+        } else {
+          handleOpenBookingDetail(found);
+        }
+
+        setHighlightedBookingId(found.id);
+        setTimeout(() => {
+          const el = document.getElementById(`booking-row-${found.id}`) || document.getElementById(`booking-card-${found.id}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 200);
+
+        setTimeout(() => {
+          setHighlightedBookingId(null);
+        }, 4500);
+      } else {
+        if (sysAlert) {
+          sysAlert(`ไม่พบข้อมูลการจอง #${targetId} ในระบบ`);
+        }
+      }
+
+      if (clearTargetBooking) {
+        clearTargetBooking();
+      }
+    };
+
+    handleHandoff();
+  }, [targetBooking, bookings]);
 
   // Dispatch PIN to customer's LINE OA or show PIN (Manual Staff Action)
   const sendDoorPin = async (bookingId) => {
@@ -873,6 +967,22 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
     return '-';
   };
 
+  const formatCreatedDateTime = (dateStr) => {
+    if (!dateStr) return '-';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      const day = d.getDate();
+      const month = monthNamesThai[d.getMonth()];
+      const thaiYear = d.getFullYear() + 543;
+      const hours = String(d.getHours()).padStart(2, '0');
+      const mins = String(d.getMinutes()).padStart(2, '0');
+      return `${day} ${month} ${thaiYear} ${hours}:${mins} น.`;
+    } catch (e) {
+      return String(dateStr);
+    }
+  };
+
   const getLocalDateString = (dateStr) => {
     if (!dateStr) return '';
     try {
@@ -1140,6 +1250,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
         type: 'review_slip',
         label: 'ตรวจสลิป',
         icon: Eye,
+        className: 'pb-primary-action-btn pb-btn-review',
         style: {
           backgroundColor: '#2563eb',
           borderColor: '#2563eb',
@@ -1166,6 +1277,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
         type: 'pay',
         label: 'รับชำระเงิน',
         icon: DollarSign,
+        className: 'pb-primary-action-btn pb-btn-pay',
         style: {
           backgroundColor: '#f59e0b',
           borderColor: '#f59e0b',
@@ -1186,12 +1298,13 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
       };
     }
 
-    // 3. paid -> ใบเสร็จ
+    // 3. paid / internal_free -> ดูการจอง
     if (isPaid && !isCancelled) {
       return {
         type: 'receipt',
-        label: 'ใบเสร็จ',
-        icon: Printer,
+        label: 'ดูการจอง',
+        icon: FileText,
+        className: 'pb-primary-action-btn pb-btn-view',
         style: {
           backgroundColor: 'rgba(16, 185, 129, 0.1)',
           borderColor: 'rgba(16, 185, 129, 0.3)',
@@ -1217,6 +1330,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
         type: 'details',
         label: 'ดูรายละเอียด',
         icon: FileText,
+        className: 'pb-primary-action-btn pb-btn-details',
         style: {
           backgroundColor: 'rgba(239, 68, 68, 0.08)',
           borderColor: 'rgba(239, 68, 68, 0.3)',
@@ -1241,6 +1355,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
       type: 'details',
       label: 'ดูรายละเอียด',
       icon: FileText,
+      className: 'pb-primary-action-btn pb-btn-details',
       style: {
         backgroundColor: 'var(--bg-hover)',
         borderColor: 'var(--border-color)',
@@ -1359,84 +1474,22 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
         }
       `}</style>
 
-      {/* 1. Header Panel */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-        <div>
-          <h1 style={{ fontSize: '1.45rem', fontWeight: 800, color: 'var(--text-main)', margin: 0, display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            <span>รายการจองห้อง</span>
-            {globalReviewingCount > 0 && (
-              <button
-                type="button"
-                onClick={handleQuickFilterReviewing}
-                style={{
-                  fontSize: '0.76rem',
-                  backgroundColor: activeStatusTab === 'reviewing' ? '#ef4444' : 'rgba(239, 68, 68, 0.12)',
-                  color: activeStatusTab === 'reviewing' ? '#ffffff' : '#ef4444',
-                  border: '1px solid rgba(239, 68, 68, 0.35)',
-                  padding: '4px 12px',
-                  borderRadius: '999px',
-                  fontWeight: 800,
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  transition: 'all 0.15s ease',
-                  boxShadow: '0 2px 8px rgba(239, 68, 68, 0.15)'
-                }}
-                title="คลิกเพื่อกรองเฉพาะรายการที่รอตรวจสอบสลิปทั้งหมดทันที"
-              >
-                <span style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: activeStatusTab === 'reviewing' ? '#ffffff' : '#ef4444' }} />
-                <span>รอตรวจสลิป {globalReviewingCount} รายการ</span>
-              </button>
-            )}
-            {globalPendingCount > 0 && (
-              <button
-                type="button"
-                onClick={handleQuickFilterPending}
-                style={{
-                  fontSize: '0.76rem',
-                  backgroundColor: activeStatusTab === 'pending' ? '#d97706' : 'rgba(245, 158, 11, 0.12)',
-                  color: activeStatusTab === 'pending' ? '#ffffff' : '#d97706',
-                  border: '1px solid rgba(245, 158, 11, 0.35)',
-                  padding: '4px 12px',
-                  borderRadius: '999px',
-                  fontWeight: 800,
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  transition: 'all 0.15s ease',
-                  boxShadow: '0 2px 8px rgba(245, 158, 11, 0.15)'
-                }}
-                title="คลิกเพื่อกรองเฉพาะรายการที่รอชำระเงินทั้งหมดทันที"
-              >
-                <span style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: activeStatusTab === 'pending' ? '#ffffff' : '#d97706' }} />
-                <span>รอชำระเงิน {globalPendingCount} รายการ</span>
-              </button>
-            )}
-          </h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', margin: '3px 0 0 0' }}>
-            จัดการรายการจองห้องประชุม ตรวจสอบการชำระเงิน และส่งรหัสผ่านเปิดห้อง
+      {/* 1. Header Panel (Typography-first, flat, minimal) */}
+      <div className="pb-console-header">
+        <div className="pb-header-left">
+          <h1 className="pb-header-title">Booking Management</h1>
+          <p className="pb-header-subtitle">
+            จัดการรายการจอง การชำระเงิน และการใช้งานห้องประชุม
           </p>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div className="pb-header-right">
           <button
             type="button"
-            className="btn btn-secondary"
+            className="pb-btn-action"
             onClick={() => fetchBookings(false)}
             disabled={loading || isRefreshing}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-              padding: '7px 12px',
-              borderRadius: '10px',
-              border: '1px solid var(--border-color)',
-              background: 'var(--bg-card)'
-            }}
+            title="รีเฟรชข้อมูลการจอง"
           >
             <RefreshCw size={13} style={{ animation: isRefreshing ? 'spin 1s linear infinite' : 'none' }} />
             <span>{isRefreshing ? 'กำลังโหลด...' : 'รีเฟรช'}</span>
@@ -1445,21 +1498,9 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
           {onNavigateToBook && (
             <button
               type="button"
-              className="btn btn-primary"
+              className="pb-btn-create"
               onClick={onNavigateToBook}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                fontSize: '0.82rem',
-                fontWeight: 700,
-                padding: '7px 14px',
-                borderRadius: '10px',
-                backgroundColor: '#2563eb',
-                borderColor: '#2563eb',
-                color: '#ffffff',
-                boxShadow: '0 3px 10px rgba(37, 99, 235, 0.25)'
-              }}
+              title="สร้างรายการจองห้องประชุมใหม่"
             >
               <Plus size={15} />
               <span>สร้างการจอง</span>
@@ -1468,26 +1509,15 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
         </div>
       </div>
 
-      {/* 2. Status Segmented Filter Bar (Replacing 3 large cards) */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '6px',
-        padding: '5px',
-        backgroundColor: 'var(--bg-card)',
-        borderRadius: '12px',
-        border: '1px solid var(--border-color)',
-        overflowX: 'auto',
-        WebkitOverflowScrolling: 'touch',
-        scrollbarWidth: 'none'
-      }}>
+      {/* 2. Status Segmented Tabs Strip (Flat, touch target >= 44px, no glowing badges) */}
+      <div className="pb-status-tabs-strip">
         {[
-          { key: 'all', label: 'ทั้งหมด', count: totalCount, badgeColor: 'var(--text-muted)' },
-          { key: 'reviewing', label: 'รอตรวจสลิป', count: reviewingCount, isAlert: reviewingCount > 0, badgeColor: '#ef4444' },
-          { key: 'pending', label: 'รอชำระเงิน', count: pendingCount, badgeColor: '#f59e0b' },
-          { key: 'paid', label: 'ชำระแล้ว', count: paidCount, badgeColor: '#10b981' },
-          { key: 'cancelled', label: 'ยกเลิก', count: cancelledCount, badgeColor: '#64748b' },
-          ...(taxInvoiceCount > 0 ? [{ key: 'tax_invoice', label: 'ขอใบกำกับภาษี', count: taxInvoiceCount, badgeColor: '#2563eb' }] : [])
+          { key: 'all', label: 'ทั้งหมด', count: totalCount },
+          { key: 'reviewing', label: 'รอตรวจสลิป', count: reviewingCount, isAlert: reviewingCount > 0 },
+          { key: 'pending', label: 'รอชำระเงิน', count: pendingCount },
+          { key: 'paid', label: 'ชำระแล้ว', count: paidCount },
+          { key: 'cancelled', label: 'ยกเลิก', count: cancelledCount },
+          ...(taxInvoiceCount > 0 ? [{ key: 'tax_invoice', label: 'ขอใบกำกับภาษี', count: taxInvoiceCount }] : [])
         ].map(tab => {
           const isActive = activeStatusTab === tab.key;
           return (
@@ -1498,32 +1528,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                 setActiveStatusTab(tab.key);
                 setCurrentPage(1);
               }}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '7px',
-                padding: '6px 14px',
-                borderRadius: '8px',
-                border: isActive ? '1px solid var(--primary-color)' : '1px solid transparent',
-                backgroundColor: isActive ? 'var(--primary-light)' : 'transparent',
-                color: isActive ? 'var(--primary-color)' : 'var(--text-muted)',
-                fontWeight: isActive ? 800 : 600,
-                fontSize: '0.82rem',
-                cursor: 'pointer',
-                transition: 'all 0.15s ease',
-                whiteSpace: 'nowrap'
-              }}
+              className={`pb-status-tab ${isActive ? 'active' : ''} ${tab.isAlert ? 'is-alert' : ''}`}
             >
               <span>{tab.label}</span>
-              <span style={{
-                fontSize: '0.7rem',
-                fontWeight: 800,
-                padding: '1px 7px',
-                borderRadius: '999px',
-                backgroundColor: isActive ? 'var(--primary-color)' : (tab.isAlert ? '#ef4444' : 'var(--bg-hover)'),
-                color: isActive ? '#ffffff' : (tab.isAlert ? '#ffffff' : 'var(--text-muted)'),
-                border: isActive ? 'none' : '1px solid var(--border-color)'
-              }}>
+              <span className="pb-status-tab-count">
                 {tab.count}
               </span>
             </button>
@@ -1531,84 +1539,50 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
         })}
       </div>
 
-      {/* 3. Operational Filter Controls Card */}
-      <div className="card" style={{
-        padding: '12px 14px',
-        borderRadius: '14px',
-        backgroundColor: 'var(--bg-card)',
-        border: '1px solid var(--border-color)',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.03)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: isAnyFilterActive ? '10px' : '0'
-      }}>
-        {/* Main Controls Row (Single unified row on desktop, wraps gracefully on smaller screens) */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          flexWrap: 'wrap',
-          width: '100%'
-        }}>
-          {/* 1. Search Input (Compact, secondary visual weight, auto-filter) */}
-          <div style={{ position: 'relative', width: '185px', flexShrink: 0 }}>
-            <Search size={13} style={{ position: 'absolute', left: '9px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', opacity: 0.75, pointerEvents: 'none' }} />
+      {/* 3. Filter Console Toolbar (One cohesive toolbar: Search, Date Type, Dates, Customer Type, Channel, Meta/Reset) */}
+      <div className="pb-filter-toolbar">
+        <div className="pb-filter-row">
+          {/* Search Input (Single search field across the page) */}
+          <div className="pb-search-container">
+            <Search size={14} className="pb-search-icon" />
             <input
               type="text"
-              className="form-control"
-              style={{
-                width: '100%',
-                paddingLeft: '28px',
-                paddingRight: searchQuery ? '24px' : '8px',
-                height: '34px',
-                borderRadius: '8px',
-                fontSize: '0.78rem',
-                border: '1px solid var(--border-color)',
-                background: 'var(--bg-hover)',
-                color: 'var(--text-main)',
-                boxSizing: 'border-box',
-                transition: 'border-color 0.15s ease, box-shadow 0.15s ease'
-              }}
+              className="pb-search-input"
               placeholder="ค้นหาชื่อ / เบอร์ / เลขที่จอง"
               value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
+              onChange={e => {
+                setSearchQuery(e.target.value);
+                setCurrentPage(1);
+              }}
             />
             {searchQuery && (
               <button
                 type="button"
-                onClick={() => setSearchQuery('')}
-                style={{
-                  position: 'absolute',
-                  right: '5px',
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--text-muted)',
-                  cursor: 'pointer',
-                  padding: '3px',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  lineHeight: 1
+                className="pb-search-clear"
+                onClick={() => {
+                  setSearchQuery('');
+                  setCurrentPage(1);
                 }}
                 title="ล้างคำค้นหา"
               >
-                <X size={12} />
+                <X size={13} />
               </button>
             )}
           </div>
 
-          {/* 2. Date Type Dropdown */}
+          {/* Date Type Select */}
           <div style={{ flexShrink: 0 }}>
             <CustomSelect
               value={dateFilterType}
-              onChange={setDateFilterType}
+              onChange={val => {
+                setDateFilterType(val);
+                setCurrentPage(1);
+              }}
               options={DATE_TYPE_OPTIONS}
               usePortal={true}
               noTruncate={true}
               triggerStyle={{
-                height: '36px',
+                height: '38px',
                 borderRadius: '8px',
                 fontSize: '0.8rem',
                 fontWeight: 600,
@@ -1623,15 +1597,17 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
             />
           </div>
 
-          {/* 3. Start Date & End Date (Date inputs side by side without standalone dash) */}
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+          {/* Start Date & End Date */}
+          <div className="pb-date-range-group">
             <CustomDatePicker
               value={startDate}
-              onChange={setStartDate}
+              onChange={val => {
+                setStartDate(val);
+                setCurrentPage(1);
+              }}
               placeholder="วันเริ่มต้น"
-              className="form-control"
               style={{
-                height: '36px',
+                height: '38px',
                 borderRadius: '8px',
                 fontSize: '0.8rem',
                 border: startDate ? '1px solid var(--primary-color)' : '1px solid var(--border-color)',
@@ -1644,11 +1620,13 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
             />
             <CustomDatePicker
               value={endDate}
-              onChange={setEndDate}
+              onChange={val => {
+                setEndDate(val);
+                setCurrentPage(1);
+              }}
               placeholder="วันสิ้นสุด"
-              className="form-control"
               style={{
-                height: '36px',
+                height: '38px',
                 borderRadius: '8px',
                 fontSize: '0.8rem',
                 border: endDate ? '1px solid var(--primary-color)' : '1px solid var(--border-color)',
@@ -1661,16 +1639,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
             />
           </div>
 
-          {/* 4. Customer Type Dropdown */}
+          {/* Customer Type Select */}
           <div style={{ flexShrink: 0 }}>
             <CustomSelect
               value={customerTypeFilter}
-              onChange={setCustomerTypeFilter}
+              onChange={val => {
+                setCustomerTypeFilter(val);
+                setCurrentPage(1);
+              }}
               options={CUSTOMER_TYPE_OPTIONS}
               usePortal={true}
               noTruncate={true}
               triggerStyle={{
-                height: '36px',
+                height: '38px',
                 borderRadius: '8px',
                 fontSize: '0.8rem',
                 fontWeight: 600,
@@ -1685,18 +1666,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
             />
           </div>
 
-          {/* 5. Booking Channel Segmented Control */}
-          <div style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            backgroundColor: 'var(--bg-hover)',
-            padding: '2px',
-            borderRadius: '8px',
-            border: '1px solid var(--border-color)',
-            height: '36px',
-            boxSizing: 'border-box',
-            flexShrink: 0
-          }}>
+          {/* Booking Channel Toggle */}
+          <div className="pb-channel-toggle">
             {[
               { key: 'all', label: 'ทั้งหมด' },
               { key: 'pos', label: 'POS' },
@@ -1707,22 +1678,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                 <button
                   key={ch.key}
                   type="button"
-                  onClick={() => setBookingChannelFilter(ch.key)}
-                  style={{
-                    padding: '0 10px',
-                    height: '100%',
-                    borderRadius: '6px',
-                    border: 'none',
-                    backgroundColor: isActive ? 'var(--primary-color)' : 'transparent',
-                    color: isActive ? '#ffffff' : 'var(--text-muted)',
-                    fontSize: '0.78rem',
-                    fontWeight: isActive ? 800 : 600,
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
-                    whiteSpace: 'nowrap',
-                    display: 'inline-flex',
-                    alignItems: 'center'
+                  onClick={() => {
+                    setBookingChannelFilter(ch.key);
+                    setCurrentPage(1);
                   }}
+                  className={`pb-channel-btn ${isActive ? 'active' : ''}`}
                 >
                   {ch.label}
                 </button>
@@ -1730,44 +1690,17 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
             })}
           </div>
 
-          {/* 6. Grouped Result Count & Clear Action (Right side of toolbar) */}
-          <div style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '8px',
-            marginLeft: 'auto',
-            flexShrink: 0
-          }}>
-            <span style={{
-              fontSize: '0.8rem',
-              color: 'var(--text-muted)',
-              fontWeight: 600,
-              whiteSpace: 'nowrap'
-            }}>
-              พบ <strong style={{ color: 'var(--primary-color)' }}>{totalRows}</strong> รายการ
+          {/* Result Count & Reset Filters Action */}
+          <div className="pb-filter-meta">
+            <span className="pb-filter-count">
+              พบ <strong>{totalRows}</strong> รายการ
             </span>
 
             <button
               type="button"
               onClick={handleResetFilters}
               disabled={!isAnyFilterActive}
-              style={{
-                padding: '0 12px',
-                borderRadius: '8px',
-                fontSize: '0.78rem',
-                fontWeight: 600,
-                height: '36px',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-                border: isAnyFilterActive ? '1px solid var(--primary-color)' : '1px solid var(--border-color)',
-                background: isAnyFilterActive ? 'rgba(37, 99, 235, 0.08)' : 'transparent',
-                color: isAnyFilterActive ? 'var(--primary-color)' : 'var(--text-muted)',
-                cursor: isAnyFilterActive ? 'pointer' : 'default',
-                opacity: isAnyFilterActive ? 1 : 0.45,
-                whiteSpace: 'nowrap',
-                transition: 'all 0.15s ease'
-              }}
+              className={`pb-reset-btn ${isAnyFilterActive ? 'active' : ''}`}
               title="ล้างตัวกรองทั้งหมด"
             >
               <RotateCcw size={13} />
@@ -1776,64 +1709,84 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
           </div>
         </div>
 
-        {/* Active Filter Summary (Shown ONLY when non-default filter is active) */}
+        {/* Active Filter Chips Strip (Shown ONLY when isAnyFilterActive is true) */}
         {isAnyFilterActive && (
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: '6px',
-            paddingTop: '8px',
-            borderTop: '1px dashed var(--border-color)',
-            fontSize: '0.78rem',
-            color: 'var(--text-muted)'
-          }}>
-            <span style={{ fontWeight: 600 }}>ตัวกรอง:</span>
+          <div className="pb-active-chips-strip">
+            <span className="pb-active-label">ตัวกรอง:</span>
             {/* Date Tag */}
             {(startDate || endDate) && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', color: 'var(--text-main)' }}>
+              <span className="pb-filter-chip">
                 <span>{startDate === endDate ? startDate : `${startDate || '...'} ถึง ${endDate || '...'}`}</span>
-                <X size={11} style={{ cursor: 'pointer' }} onClick={() => { setStartDate(''); setEndDate(''); }} />
+                <X
+                  size={12}
+                  className="pb-chip-remove"
+                  onClick={() => {
+                    setStartDate('');
+                    setEndDate('');
+                    setCurrentPage(1);
+                  }}
+                />
               </span>
             )}
 
             {/* Customer Type Tag */}
             {customerTypeFilter !== 'all' && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', color: 'var(--text-main)' }}>
+              <span className="pb-filter-chip">
                 <span>ประเภท: {customerTypeFilter === 'general' ? 'ทั่วไป' : customerTypeFilter === 'builtland' ? 'Builtland' : 'Basecamp'}</span>
-                <X size={11} style={{ cursor: 'pointer' }} onClick={() => setCustomerTypeFilter('all')} />
+                <X
+                  size={12}
+                  className="pb-chip-remove"
+                  onClick={() => {
+                    setCustomerTypeFilter('all');
+                    setCurrentPage(1);
+                  }}
+                />
               </span>
             )}
 
             {/* Booking Channel Tag */}
             {bookingChannelFilter !== 'all' && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', color: 'var(--text-main)' }}>
+              <span className="pb-filter-chip">
                 <span>ช่องทาง: {bookingChannelFilter === 'pos' ? 'POS' : 'LINE OA'}</span>
-                <X size={11} style={{ cursor: 'pointer' }} onClick={() => setBookingChannelFilter('all')} />
+                <X
+                  size={12}
+                  className="pb-chip-remove"
+                  onClick={() => {
+                    setBookingChannelFilter('all');
+                    setCurrentPage(1);
+                  }}
+                />
               </span>
             )}
 
-            {/* Status Tag */}
-            {activeStatusTab !== 'all' && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', color: 'var(--text-main)' }}>
-                <span>สถานะ: {activeStatusTab === 'reviewing' ? 'รอตรวจสลิป' : activeStatusTab === 'pending' ? 'รอชำระเงิน' : activeStatusTab === 'paid' ? 'ชำระแล้ว' : activeStatusTab === 'cancelled' ? 'ยกเลิก' : 'ขอใบกำกับภาษี'}</span>
-                <X size={11} style={{ cursor: 'pointer' }} onClick={() => setActiveStatusTab('all')} />
-              </span>
-            )}
 
             {/* Date Type Tag (if not default) */}
             {dateFilterType !== 'usage_date' && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', color: 'var(--text-main)' }}>
+              <span className="pb-filter-chip">
                 <span>วันที่ทำรายการ</span>
-                <X size={11} style={{ cursor: 'pointer' }} onClick={() => setDateFilterType('usage_date')} />
+                <X
+                  size={12}
+                  className="pb-chip-remove"
+                  onClick={() => {
+                    setDateFilterType('usage_date');
+                    setCurrentPage(1);
+                  }}
+                />
               </span>
             )}
 
             {/* Search Query Tag */}
             {searchQuery && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', color: 'var(--text-main)' }}>
+              <span className="pb-filter-chip">
                 <span>"{searchQuery}"</span>
-                <X size={11} style={{ cursor: 'pointer' }} onClick={() => setSearchQuery('')} />
+                <X
+                  size={12}
+                  className="pb-chip-remove"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setCurrentPage(1);
+                  }}
+                />
               </span>
             )}
           </div>
@@ -1843,55 +1796,41 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
       {/* 4. Bookings Display: Table (Desktop) & Cards (Mobile/Tablet) */}
       <div className="card" style={{ padding: 0, overflow: 'hidden', borderRadius: '14px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-card)', position: 'relative', zIndex: 1 }}>
 
-        {/* Desktop View: Balanced 7-Column Table */}
-        <div className="pos-booking-table-wrapper" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-          <table className="table" style={{ width: '100%', minWidth: '980px', tableLayout: 'fixed', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.82rem' }}>
+        {/* Desktop View: 6-Column Operational Table */}
+        <div className="pos-booking-table-wrapper pb-table-wrapper">
+          <table className="table pb-table">
             <colgroup>
-              <col style={{ width: '14%' }} />
+              <col style={{ width: '16%' }} />
               <col style={{ width: '18%' }} />
-              <col style={{ width: '24%' }} />
-              <col style={{ width: '9%' }} />
-              <col style={{ width: '11%' }} />
-              <col style={{ width: '11%' }} />
+              <col style={{ width: '26%' }} />
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '15%' }} />
               <col style={{ width: '13%' }} />
             </colgroup>
-            <thead>
-              <tr style={{ backgroundColor: 'rgba(255, 255, 255, 0.02)', borderBottom: '1px solid var(--border-color)' }}>
+            <thead className="pb-table-head">
+              <tr>
                 {columns.map(col => {
-                  const isSortable = col.key !== 'actions' && col.key !== 'room_info' && col.key !== 'status' && col.key !== 'pin_code';
+                  const isSortable = col.key === 'id' || col.key === 'customer_name' || col.key === 'room_info' || col.key === 'total_amount';
+                  const isCurrentSort = (col.key === 'room_info' && sortKey === 'usage_date') || sortKey === col.key;
                   let align = 'left';
                   if (col.key === 'total_amount') align = 'right';
-                  if (col.key === 'actions' || col.key === 'status' || col.key === 'pin_code') align = 'center';
+                  if (col.key === 'actions' || col.key === 'status') align = 'center';
 
                   return (
                     <th
                       key={col.key}
-                      onClick={() => isSortable && handleSort(col.key)}
+                      onClick={() => isSortable && handleSort(col.key === 'room_info' ? 'usage_date' : col.key)}
+                      className={`pb-th ${isSortable ? 'sortable' : ''}`}
                       style={{
-                        padding: '8px 10px',
-                        cursor: isSortable ? 'pointer' : 'default',
-                        userSelect: 'none',
-                        color: 'var(--text-muted)',
-                        fontSize: '0.76rem',
-                        fontWeight: 700,
                         textAlign: align,
-                        whiteSpace: 'nowrap',
-                        width: col.width || 'auto',
-                        minWidth: col.minWidth || 'auto',
-                        boxSizing: 'border-box'
+                        width: col.width || 'auto'
                       }}
                     >
-                      <div style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '5px',
-                        justifyContent: align === 'center' ? 'center' : (align === 'right' ? 'flex-end' : 'flex-start'),
-                        width: '100%'
-                      }}>
+                      <div className={`pb-th-content align-${align}`}>
                         <span>{col.label}</span>
                         {isSortable && (
-                          <span style={{ display: 'inline-flex', opacity: sortKey === col.key ? 1 : 0.3 }}>
-                            {sortKey === col.key ? (
+                          <span className={`pb-sort-indicator ${isCurrentSort ? 'active' : ''}`}>
+                            {isCurrentSort ? (
                               sortOrder === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />
                             ) : (
                               <ArrowUpDown size={12} />
@@ -1956,23 +1895,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                   const timeDisplay = formatUsageTime(b);
                   const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom' : 'Standard';
                   const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาวัน' : firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง';
-                  const bookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
+                  const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
+                  const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
 
-                  // Customer type badge styling
-                  let custBadge = { label: 'ทั่วไป', color: '#64748b', bg: 'rgba(100, 116, 139, 0.1)' };
-                  if (b.customer_type === 'builtland') {
-                    custBadge = { label: 'Builtland', color: '#ea580c', bg: 'rgba(234, 88, 12, 0.1)' };
-                  } else if (b.customer_type === 'basecamp') {
-                    custBadge = { label: 'Basecamp', color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.1)' };
-                  }
+                  const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
+                  const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
-                  // Booking channel badge
-                  const isOnlineChannel = b.booking_channel === 'line_oa' || b.booking_source === 'online';
-                  const channelBadge = isOnlineChannel
-                    ? { label: 'LINE OA', color: '#0ea5e9', bg: 'rgba(14, 165, 233, 0.1)' }
-                    : { label: 'POS', color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)' };
-
-                  // Door PIN resolution - Do NOT show full PIN openly in main list
                   let pinRaw = b.pin_code || firstItem.pin_code || '';
                   if (!pinRaw && roomObj) {
                     pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
@@ -1980,7 +1908,6 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                   const hasPin = Boolean(pinRaw && pinRaw !== '-');
                   const isBuiltland = b.customer_type === 'builtland';
 
-                  // Operational row tinting & visual hierarchy
                   let rowBg = 'transparent';
                   let rowBorderLeft = '3px solid transparent';
                   if (isReviewing) {
@@ -1997,315 +1924,188 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
                     rowBorderLeft = '3px solid transparent';
                   }
 
-                  // Primary Action
                   const primaryAction = getPrimaryAction(b);
 
                   return (
                     <tr
                       key={b.id}
+                      id={`booking-row-${b.id}`}
+                      className="pb-table-row"
                       style={{
                         borderBottom: '1px solid var(--border-color)',
-                        borderLeft: rowBorderLeft,
-                        backgroundColor: rowBg,
+                        borderLeft: highlightedBookingId === b.id ? '3px solid var(--primary-color)' : rowBorderLeft,
+                        backgroundColor: highlightedBookingId === b.id
+                          ? 'rgba(37, 99, 235, 0.15)'
+                          : rowBg,
+                        boxShadow: highlightedBookingId === b.id ? 'inset 0 0 0 2px var(--primary-color)' : 'none',
                         opacity: isCancelled ? 0.65 : 1,
-                        transition: 'background-color 0.15s ease'
+                        transition: 'background-color 0.3s ease, box-shadow 0.3s ease'
                       }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = isReviewing ? 'rgba(14, 165, 233, 0.08)' : (isRejected ? 'rgba(239, 68, 68, 0.07)' : (!isPaid && !isCancelled ? 'rgba(245, 158, 11, 0.06)' : 'rgba(255, 255, 255, 0.03)'))}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = rowBg}
+                      onMouseEnter={(e) => {
+                        if (highlightedBookingId !== b.id) {
+                          e.currentTarget.style.backgroundColor = isReviewing ? 'rgba(14, 165, 233, 0.08)' : (isRejected ? 'rgba(239, 68, 68, 0.07)' : (!isPaid && !isCancelled ? 'rgba(245, 158, 11, 0.06)' : 'rgba(255, 255, 255, 0.03)'));
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (highlightedBookingId !== b.id) {
+                          e.currentTarget.style.backgroundColor = rowBg;
+                        }
+                      }}
                     >
-                      {/* Column 1: รหัส / วันที่สร้าง */}
-                      <td style={{ padding: '6px 10px', verticalAlign: 'middle', boxSizing: 'border-box' }}>
-                        <div style={{ fontWeight: 800, color: 'var(--primary-color)', fontSize: '0.83rem', lineHeight: 1.2 }}>
-                          {bookingCode}
-                        </div>
-                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {formatDate(b.created_at)}
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px', flexWrap: 'wrap' }}>
-                          {/* Channel Badge */}
-                          <span style={{
-                            fontSize: '0.66rem',
-                            fontWeight: 700,
-                            padding: '1px 5px',
-                            borderRadius: '4px',
-                            backgroundColor: channelBadge.bg,
-                            color: channelBadge.color,
-                            border: `1px solid ${channelBadge.color}35`,
-                            whiteSpace: 'nowrap'
-                          }}>
-                            {channelBadge.label}
+                      {/* Column 1: Booking */}
+                      <td className="pb-td">
+                        <div className="pb-cell-booking">
+                          <span className="pb-booking-code" title={displayCode}>{displayCode}</span>
+                          <span className="pb-sub-text">{formatDate(b.created_at)}</span>
+                          <span className="pb-tertiary-text">
+                            {channelLabel} • {custLabel}
                           </span>
+                        </div>
+                      </td>
 
-                          {/* Tax Invoice Pill */}
+                      {/* Column 2: Customer */}
+                      <td className="pb-td">
+                        <div className="pb-cell-customer">
+                          <span className="pb-primary-text" title={b.customer_name || '-'}>{b.customer_name || '-'}</span>
+                          {b.contact ? (
+                            <span className="pb-sub-text pb-contact-line">
+                              <Phone size={11} style={{ opacity: 0.7, flexShrink: 0 }} />
+                              <span>{b.contact}</span>
+                            </span>
+                          ) : null}
                           {b.tax_invoice_required === 1 && (
-                            <span
+                            <button
+                              type="button"
+                              className="pb-tax-pill"
                               onClick={(e) => { e.stopPropagation(); setSelectedTaxBooking(b); }}
-                              style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '2px',
-                                padding: '1px 5px',
-                                borderRadius: '4px',
-                                fontSize: '0.66rem',
-                                fontWeight: 700,
-                                backgroundColor: 'rgba(59, 130, 246, 0.12)',
-                                color: '#2563eb',
-                                border: '1px solid rgba(59, 130, 246, 0.25)',
-                                cursor: 'pointer',
-                                whiteSpace: 'nowrap'
-                              }}
                               title="คลิกดูข้อมูลใบกำกับภาษี"
                             >
-                              <FileText size={9} />
-                              <span>ใบกำกับ</span>
-                            </span>
+                              <FileText size={10} />
+                              <span>ใบกำกับภาษี</span>
+                            </button>
                           )}
                         </div>
                       </td>
 
-                      {/* Column 2: ผู้จอง */}
-                      <td style={{ padding: '6px 10px', verticalAlign: 'middle', boxSizing: 'border-box', overflow: 'hidden' }}>
-                        <div
-                          style={{
-                            fontWeight: 700,
-                            color: 'var(--text-main)',
-                            fontSize: '0.83rem',
-                            lineHeight: 1.25,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap'
-                          }}
-                          title={b.customer_name || '-'}
-                        >
-                          {b.customer_name || '-'}
-                        </div>
-                        {b.contact ? (
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '3px', marginTop: '2px', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            <Phone size={10} style={{ opacity: 0.7, flexShrink: 0 }} />
-                            <span>{b.contact}</span>
-                          </div>
-                        ) : null}
-                        <div style={{ marginTop: '2px' }}>
-                          <span style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            padding: '1px 5px',
-                            borderRadius: '999px',
-                            fontSize: '0.66rem',
-                            fontWeight: 700,
-                            backgroundColor: custBadge.bg,
-                            color: custBadge.color,
-                            border: `1px solid ${custBadge.color}35`,
-                            whiteSpace: 'nowrap'
-                          }}>
-                            {custBadge.label}
+                      {/* Column 3: Room & Schedule */}
+                      <td className="pb-td">
+                        <div className="pb-cell-schedule">
+                          <span className="pb-primary-text pb-room-name" title={roomName}>{roomName}</span>
+                          <span className="pb-schedule-time">
+                            {usageDateStr} {timeDisplay && timeDisplay !== '-' ? `• ${timeDisplay}` : ''}
+                          </span>
+                          <span className="pb-tertiary-text">
+                            {layoutLabel} • {typeLabel}
                           </span>
                         </div>
                       </td>
 
-                      {/* Column 3: ห้อง / เวลาใช้งาน */}
-                      <td style={{ padding: '6px 10px', verticalAlign: 'middle', boxSizing: 'border-box', overflow: 'hidden' }}>
-                        <div
-                          style={{
-                            fontWeight: 800,
-                            color: 'var(--text-main)',
-                            fontSize: '0.86rem',
-                            lineHeight: 1.25,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap'
-                          }}
-                          title={roomName}
-                        >
-                          {roomName}
-                        </div>
-                        <div style={{ fontSize: '0.74rem', color: 'var(--text-main)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          <span>{usageDateStr}</span>
-                          {timeDisplay && (
-                            <span style={{ color: '#0284c7', display: 'inline-flex', alignItems: 'center', gap: '2px', fontWeight: 700 }}>
-                              <Clock size={10} />
-                              <span>{timeDisplay}</span>
+                      {/* Column 4: Payment */}
+                      <td className="pb-td" style={{ textAlign: 'right' }}>
+                        <div className="pb-cell-payment" style={{ alignItems: 'flex-end' }}>
+                          <span className="pb-payment-amount" style={{ color: isPaid ? '#10b981' : (isCancelled ? 'var(--text-muted)' : '#f59e0b') }}>
+                            ฿{Number(b.total_amount || 0).toLocaleString()}
+                          </span>
+                          <span className="pb-sub-text">
+                            {b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : (b.payment_method || '-'))}
+                          </span>
+                          {b.slip_image_url && (
+                            <span className="pb-slip-indicator">
+                              มีสลิปแนบ
                             </span>
                           )}
                         </div>
-                        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {`${layoutLabel} • ${typeLabel}`}
-                        </div>
                       </td>
 
-                      {/* Column 4: ยอดชำระ */}
-                      <td style={{ padding: '6px 10px', textAlign: 'right', verticalAlign: 'middle', boxSizing: 'border-box', whiteSpace: 'nowrap' }}>
-                        <div style={{ fontWeight: 800, fontSize: '0.88rem', color: isPaid ? '#10b981' : (isCancelled ? 'var(--text-muted)' : '#f59e0b'), lineHeight: 1.2 }}>
-                          ฿{Number(b.total_amount || 0).toLocaleString()}
-                        </div>
-                        {b.payment_method ? (
-                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px', lineHeight: 1.2 }}>
-                            {b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : b.payment_method)}
-                          </div>
-                        ) : null}
-                      </td>
-
-                      {/* Column 5: สถานะ (Booking/Payment Status Only) */}
-                      <td style={{ padding: '6px 8px', textAlign: 'center', verticalAlign: 'middle', boxSizing: 'border-box' }}>
-                        <div style={{ display: 'flex', justifyContent: 'center' }}>
+                      {/* Column 5: Status & Access (Combined Status + Door PIN) */}
+                      <td className="pb-td" style={{ textAlign: 'center' }}>
+                        <div className="pb-cell-status-access">
+                          {/* Status Badge */}
                           {isReviewing ? (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 800, backgroundColor: 'rgba(14, 165, 233, 0.14)', color: '#0284c7', border: '1px solid rgba(14, 165, 233, 0.35)', whiteSpace: 'nowrap' }}>
+                            <span className="pb-status-badge pb-status-reviewing">
                               <Eye size={11} />
                               <span>รอตรวจสลิป</span>
                             </span>
                           ) : isRejected ? (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 800, backgroundColor: 'rgba(239, 68, 68, 0.12)', color: '#dc2626', border: '1px solid rgba(239, 68, 68, 0.35)', whiteSpace: 'nowrap' }}>
+                            <span className="pb-status-badge pb-status-rejected">
                               <AlertCircle size={11} />
                               <span>สลิปไม่ผ่าน</span>
                             </span>
                           ) : !isPaid && !isCancelled ? (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 800, backgroundColor: 'rgba(245, 158, 11, 0.12)', color: '#d97706', border: '1px solid rgba(245, 158, 11, 0.35)', whiteSpace: 'nowrap' }}>
+                            <span className="pb-status-badge pb-status-pending">
                               <Clock size={11} />
                               <span>รอชำระเงิน</span>
                             </span>
                           ) : isPaid ? (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 700, backgroundColor: 'rgba(16, 185, 129, 0.12)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.3)', whiteSpace: 'nowrap' }}>
+                            <span className="pb-status-badge pb-status-paid">
                               <CheckCircle2 size={11} />
                               <span>ชำระแล้ว</span>
                             </span>
                           ) : (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 600, backgroundColor: 'rgba(100, 116, 139, 0.1)', color: 'var(--text-muted)', border: '1px solid rgba(100, 116, 139, 0.2)', whiteSpace: 'nowrap' }}>
+                            <span className="pb-status-badge pb-status-cancelled">
                               <Ban size={11} />
                               <span>ยกเลิก</span>
                             </span>
                           )}
-                        </div>
-                      </td>
 
-                      {/* Column 6: รหัสเข้าห้อง (Door PIN - masked by default, reveal & copy) */}
-                      <td style={{ padding: '6px 4px', textAlign: 'center', verticalAlign: 'middle', boxSizing: 'border-box' }}>
-                        {hasPin ? (
-                          <div style={{
-                            display: 'inline-flex',
-                            flexDirection: isBuiltland ? 'column' : 'row',
-                            alignItems: 'center',
-                            gap: isBuiltland ? '3px' : '5px',
-                            justifyContent: 'center'
-                          }}>
-                            {isBuiltland && (
-                              <span style={{
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '3px',
-                                padding: '1px 6px',
-                                borderRadius: '4px',
-                                fontSize: '0.65rem',
-                                fontWeight: 700,
-                                backgroundColor: 'rgba(234, 88, 12, 0.08)',
-                                color: '#c2410c',
-                                border: '1px solid rgba(234, 88, 12, 0.22)',
-                                whiteSpace: 'nowrap',
-                                lineHeight: 1.2
-                              }}>
-                                <Key size={9} style={{ opacity: 0.85 }} />
-                                <span>PIN บริษัท</span>
-                              </span>
-                            )}
-                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', justifyContent: 'center' }}>
+                          {/* Door PIN (only when available) */}
+                          {hasPin && (
+                            <div className="pb-pin-strip">
+                              {isBuiltland && (
+                                <span className="pb-pin-company-tag">
+                                  <Key size={9} />
+                                  <span>PIN บริษัท</span>
+                                </span>
+                              )}
                               <span
-                                style={{
-                                  fontFamily: 'monospace',
-                                  fontSize: revealedPins[b.id] ? '0.8rem' : '0.74rem',
-                                  fontWeight: 700,
-                                  letterSpacing: revealedPins[b.id] ? '0.5px' : '1.5px',
-                                  color: 'var(--text-main)',
-                                  minWidth: '42px',
-                                  textAlign: 'center',
-                                  userSelect: 'all'
-                                }}
-                                title={revealedPins[b.id] ? `รหัสเข้าห้อง: ${pinRaw}` : 'รหัสถูกซ่อนอยู่ คลิกแสดงรหัสเพื่อเปิดเผย'}
+                                className="pb-pin-code"
+                                title={revealedPins[b.id] ? `รหัสเข้าห้อง: ${pinRaw}` : 'รหัสถูกซ่อนอยู่ คลิกเพื่อเปิดเผย'}
                               >
                                 {revealedPins[b.id] ? pinRaw : '••••••'}
                               </span>
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); handleToggleRevealPin(b.id); }}
+                                className="pb-pin-btn"
                                 title={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
                                 aria-label={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
-                                style={{
-                                  width: '26px',
-                                  height: '26px',
-                                  padding: 0,
-                                  borderRadius: '5px',
-                                  border: '1px solid var(--border-color)',
-                                  background: 'var(--bg-hover)',
-                                  color: revealedPins[b.id] ? 'var(--primary-color)' : 'var(--text-muted)',
-                                  cursor: 'pointer',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  flexShrink: 0,
-                                  transition: 'all 0.15s ease'
-                                }}
                               >
-                                {revealedPins[b.id] ? <EyeOff size={12} /> : <Eye size={12} />}
+                                {revealedPins[b.id] ? <EyeOff size={11} /> : <Eye size={11} />}
                               </button>
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); handleCopyPin(b.id, pinRaw); }}
+                                className={`pb-pin-btn ${copiedPin === b.id ? 'copied' : ''}`}
                                 title={copiedPin === b.id ? 'คัดลอกเรียบร้อย' : 'คัดลอกรหัส'}
                                 aria-label="คัดลอกรหัส"
-                                style={{
-                                  width: '26px',
-                                  height: '26px',
-                                  padding: 0,
-                                  borderRadius: '5px',
-                                  border: copiedPin === b.id ? '1px solid #10b981' : '1px solid var(--border-color)',
-                                  background: copiedPin === b.id ? 'rgba(16, 185, 129, 0.1)' : 'var(--bg-hover)',
-                                  color: copiedPin === b.id ? '#10b981' : 'var(--text-muted)',
-                                  cursor: 'pointer',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  flexShrink: 0,
-                                  transition: 'all 0.15s ease'
-                                }}
                               >
-                                {copiedPin === b.id ? <Check size={12} /> : <Copy size={12} />}
+                                {copiedPin === b.id ? <Check size={11} /> : <Copy size={11} />}
                               </button>
                             </div>
-                          </div>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem', fontWeight: 600 }}>-</span>
-                        )}
+                          )}
+                        </div>
                       </td>
 
-                      {/* Column 7: การดำเนินการ (1 Primary + 1 More Menu) */}
-                      <td style={{ padding: '6px 8px', textAlign: 'center', verticalAlign: 'middle', boxSizing: 'border-box', whiteSpace: 'nowrap' }}>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', justifyContent: 'center' }}>
-                          {/* Exactly 1 Primary Action Button */}
+                      {/* Column 6: Actions (1 Primary Action + More ...) */}
+                      <td className="pb-td" style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        <div className="pb-actions-group">
                           <button
                             type="button"
                             onClick={primaryAction.onClick}
+                            className={primaryAction.className}
                             style={primaryAction.style}
+                            title={primaryAction.label}
                           >
                             <primaryAction.icon size={13} />
                             <span>{primaryAction.label}</span>
                           </button>
 
-                          {/* Secondary & Destructive Action Menu (...) */}
                           <button
                             type="button"
                             onClick={(e) => handleToggleActionMenu(e, b)}
-                            className="btn btn-secondary"
-                            style={{
-                              padding: '5px 7px',
-                              fontSize: '0.76rem',
-                              borderRadius: '8px',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              backgroundColor: activeActionMenuBooking?.id === b.id ? 'var(--primary-color)' : 'var(--bg-hover)',
-                              color: activeActionMenuBooking?.id === b.id ? '#ffffff' : 'var(--text-muted)',
-                              border: '1px solid var(--border-color)',
-                              cursor: 'pointer'
-                            }}
+                            className={`pb-more-btn ${activeActionMenuBooking?.id === b.id ? 'active' : ''}`}
                             title="เมนูเพิ่มเติม"
+                            aria-label="เมนูเพิ่มเติม"
                           >
                             <MoreHorizontal size={14} />
                           </button>
@@ -2320,7 +2120,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
         </div>
 
         {/* Mobile View: Compact Responsive Cards (<= 900px) */}
-        <div className="pos-booking-cards-wrapper" style={{ padding: '10px' }}>
+        <div className="pos-booking-cards-wrapper pb-mobile-cards-container">
           {loading && !bookings.length ? (
             <div style={{ textAlign: 'center', padding: '30px', color: 'var(--text-muted)' }}>
               กำลังโหลดรายการจองห้อง...
@@ -2350,125 +2150,181 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
               const roomName = firstItem.room_name || b.room_name || roomObj?.name || 'ห้องประชุม';
               const usageDateStr = formatUsageDate(b);
               const timeDisplay = formatUsageTime(b);
-              const bookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
+              const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom' : 'Standard';
+              const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาวัน' : firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง';
+              const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
+              const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
 
-              let custBadge = { label: 'ทั่วไป', color: '#64748b', bg: 'rgba(100, 116, 139, 0.1)' };
-              if (b.customer_type === 'builtland') custBadge = { label: 'Builtland', color: '#ea580c', bg: 'rgba(234, 88, 12, 0.1)' };
-              else if (b.customer_type === 'basecamp') custBadge = { label: 'Basecamp', color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.1)' };
-
-              const isOnlineChannel = b.booking_channel === 'line_oa' || b.booking_source === 'online';
-              const channelBadge = isOnlineChannel
-                ? { label: 'LINE OA', color: '#0ea5e9', bg: 'rgba(14, 165, 233, 0.1)' }
-                : { label: 'POS', color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)' };
+              const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
+              const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
               let pinRaw = b.pin_code || firstItem.pin_code || '';
               if (!pinRaw && roomObj) {
                 pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
               }
               const hasPin = Boolean(pinRaw && pinRaw !== '-');
+              const isBuiltland = b.customer_type === 'builtland';
+
               const primaryAction = getPrimaryAction(b);
 
               return (
                 <div
                   key={b.id}
-                  style={{
-                    borderRadius: '12px',
-                    border: isReviewing ? '1.5px solid #0ea5e9' : '1px solid var(--border-color)',
-                    backgroundColor: isReviewing ? 'rgba(14, 165, 233, 0.03)' : 'var(--bg-card)',
-                    padding: '12px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '8px'
-                  }}
+                  id={`booking-card-${b.id}`}
+                  className={`pb-mobile-card ${isReviewing ? 'is-reviewing' : ''} ${isCancelled ? 'is-cancelled' : ''} ${highlightedBookingId === b.id ? 'is-highlighted' : ''}`}
                 >
-                  {/* Card Header */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 800, color: 'var(--primary-color)', fontSize: '0.88rem' }}>{bookingCode}</span>
-                      <span style={{ fontSize: '0.68rem', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', backgroundColor: channelBadge.bg, color: channelBadge.color }}>
-                        {channelBadge.label}
-                      </span>
-                      <span style={{ fontSize: '0.68rem', fontWeight: 700, padding: '1px 6px', borderRadius: '4px', backgroundColor: custBadge.bg, color: custBadge.color }}>
-                        {custBadge.label}
+                  {/* 1. Top Row: Booking ID + Status Badge */}
+                  <div className="pb-mobile-card-header">
+                    <div className="pb-mobile-header-left">
+                      <span className="pb-mobile-booking-code">{displayCode}</span>
+                      <span className="pb-mobile-meta-subline">
+                        {channelLabel} • {custLabel}
                       </span>
                     </div>
+
                     <div>
                       {isReviewing ? (
-                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#0284c7', backgroundColor: 'rgba(14, 165, 233, 0.12)', padding: '2px 8px', borderRadius: '6px' }}>
-                          รอตรวจสลิป
+                        <span className="pb-status-badge pb-status-reviewing">
+                          <Eye size={11} />
+                          <span>รอตรวจสลิป</span>
                         </span>
                       ) : isRejected ? (
-                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#d97706', backgroundColor: 'rgba(245, 158, 11, 0.12)', padding: '2px 8px', borderRadius: '6px' }}>
-                          สลิปไม่ผ่าน
+                        <span className="pb-status-badge pb-status-rejected">
+                          <AlertCircle size={11} />
+                          <span>สลิปไม่ผ่าน</span>
+                        </span>
+                      ) : !isPaid && !isCancelled ? (
+                        <span className="pb-status-badge pb-status-pending">
+                          <Clock size={11} />
+                          <span>รอชำระเงิน</span>
                         </span>
                       ) : isPaid ? (
-                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.12)', padding: '2px 8px', borderRadius: '6px' }}>
-                          ชำระแล้ว
-                        </span>
-                      ) : isCancelled ? (
-                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', padding: '2px 8px', borderRadius: '6px' }}>
-                          ยกเลิก
+                        <span className="pb-status-badge pb-status-paid">
+                          <CheckCircle2 size={11} />
+                          <span>ชำระแล้ว</span>
                         </span>
                       ) : (
-                        <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#d97706', backgroundColor: 'rgba(245, 158, 11, 0.12)', padding: '2px 8px', borderRadius: '6px' }}>
-                          รอชำระเงิน
+                        <span className="pb-status-badge pb-status-cancelled">
+                          <Ban size={11} />
+                          <span>ยกเลิก</span>
                         </span>
                       )}
                     </div>
                   </div>
 
-                  {/* Customer & Room Info */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px' }}>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-main)' }}>{b.customer_name || '-'}</div>
-                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>{b.contact || '-'}</div>
+                  {/* 2. Room & Schedule (Visually Prominent) */}
+                  <div className="pb-mobile-card-schedule">
+                    <div className="pb-mobile-room-name">{roomName}</div>
+                    <div className="pb-mobile-usage-time">
+                      {usageDateStr} {timeDisplay && timeDisplay !== '-' ? `• ${timeDisplay}` : ''}
                     </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-main)' }}>{roomName}</div>
-                      <div style={{ fontSize: '0.74rem', color: '#0ea5e9' }}>{usageDateStr} ({timeDisplay})</div>
+                    <div className="pb-mobile-layout-type">
+                      {layoutLabel} • {typeLabel}
                     </div>
                   </div>
 
-                  {/* Card Footer: Price + PIN + Actions */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '8px', borderTop: '1px dashed var(--border-color)' }}>
-                    <div>
-                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>ยอดสุทธิ</div>
-                      <div style={{ fontWeight: 800, fontSize: '1rem', color: isPaid ? '#10b981' : (isCancelled ? 'var(--text-muted)' : '#f59e0b') }}>
+                  {/* 3. Customer Info */}
+                  <div className="pb-mobile-card-customer">
+                    <div className="pb-mobile-cust-info">
+                      <span className="pb-mobile-cust-name">{b.customer_name || '-'}</span>
+                      {b.contact ? (
+                        <span className="pb-mobile-cust-phone">
+                          <Phone size={10} style={{ opacity: 0.7 }} />
+                          <span>{b.contact}</span>
+                        </span>
+                      ) : null}
+                    </div>
+
+                    {b.tax_invoice_required === 1 && (
+                      <button
+                        type="button"
+                        className="pb-tax-pill"
+                        onClick={(e) => { e.stopPropagation(); setSelectedTaxBooking(b); }}
+                        title="คลิกดูข้อมูลใบกำกับภาษี"
+                      >
+                        <FileText size={10} />
+                        <span>ใบกำกับภาษี</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* 4. Payment & Access (Amount, Method, Slip, and Door PIN) */}
+                  <div className="pb-mobile-card-payment-access">
+                    <div className="pb-mobile-payment-block">
+                      <span
+                        className="pb-mobile-amount"
+                        style={{ color: isPaid ? '#10b981' : (isCancelled ? 'var(--text-muted)' : '#f59e0b') }}
+                      >
                         ฿{Number(b.total_amount || 0).toLocaleString()}
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      {hasPin && (
-                        <span style={{ fontSize: '0.68rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', backgroundColor: 'rgba(99, 102, 241, 0.1)', color: '#4f46e5' }}>
-                          มี PIN
-                        </span>
+                      </span>
+                      <span className="pb-mobile-method">
+                        {b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : (b.payment_method || '-'))}
+                      </span>
+                      {b.slip_image_url && (
+                        <span className="pb-slip-indicator">มีสลิปแนบ</span>
                       )}
-
-                      <button
-                        type="button"
-                        onClick={primaryAction.onClick}
-                        style={primaryAction.style}
-                      >
-                        <primaryAction.icon size={12} />
-                        <span>{primaryAction.label}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={(e) => handleToggleActionMenu(e, b)}
-                        className="btn btn-secondary"
-                        style={{
-                          padding: '5px 7px',
-                          borderRadius: '8px',
-                          border: '1px solid var(--border-color)',
-                          background: 'var(--bg-hover)',
-                          color: 'var(--text-muted)'
-                        }}
-                      >
-                        <MoreHorizontal size={14} />
-                      </button>
                     </div>
+
+                    {/* Door PIN (only when available) */}
+                    {hasPin && (
+                      <div className="pb-mobile-pin-block">
+                        <span className="pb-mobile-pin-label">PIN</span>
+                        {isBuiltland && (
+                          <span className="pb-pin-company-tag">
+                            <Key size={9} />
+                            <span>บริษัท</span>
+                          </span>
+                        )}
+                        <span
+                          className="pb-pin-code"
+                          title={revealedPins[b.id] ? `รหัสเข้าห้อง: ${pinRaw}` : 'รหัสถูกซ่อนอยู่ คลิกเพื่อเปิดเผย'}
+                        >
+                          {revealedPins[b.id] ? pinRaw : '••••••'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleToggleRevealPin(b.id); }}
+                          className="pb-pin-btn pb-pin-btn-mobile"
+                          title={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                          aria-label={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                        >
+                          {revealedPins[b.id] ? <EyeOff size={11} /> : <Eye size={11} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleCopyPin(b.id, pinRaw); }}
+                          className={`pb-pin-btn pb-pin-btn-mobile ${copiedPin === b.id ? 'copied' : ''}`}
+                          title={copiedPin === b.id ? 'คัดลอกเรียบร้อย' : 'คัดลอกรหัส'}
+                          aria-label="คัดลอกรหัส"
+                        >
+                          {copiedPin === b.id ? <Check size={11} /> : <Copy size={11} />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 5. Bottom Action Bar: [ Primary Action ] [ More ... ] */}
+                  <div className="pb-mobile-action-bar">
+                    <button
+                      type="button"
+                      onClick={primaryAction.onClick}
+                      className={`pb-primary-action-btn pb-mobile-action-primary ${primaryAction.className || ''}`}
+                      style={primaryAction.style}
+                      title={primaryAction.label}
+                    >
+                      <primaryAction.icon size={15} />
+                      <span>{primaryAction.label}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => handleToggleActionMenu(e, b)}
+                      className={`pb-more-btn pb-mobile-action-more ${activeActionMenuBooking?.id === b.id ? 'active' : ''}`}
+                      title="เมนูเพิ่มเติม"
+                      aria-label="เมนูเพิ่มเติม"
+                    >
+                      <MoreHorizontal size={18} />
+                    </button>
                   </div>
                 </div>
               );
@@ -2585,20 +2441,29 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
               </div>
             )}
 
-            {/* 2. View Receipt / Details (Show ONLY when NOT primary action: e.g. for reviewing or pending) */}
+            {/* 2. View Operational Booking Detail (when not already primary action) */}
             {activeActionMenuBooking.payment_status !== 'paid' &&
              activeActionMenuBooking.payment_status !== 'internal_free' &&
              activeActionMenuBooking.payment_status !== 'rejected' &&
              activeActionMenuBooking.payment_status !== 'cancelled' &&
              activeActionMenuBooking.slip_verify_status !== 'rejected' && (
               <div
-                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenReceipt(b); }}
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenBookingDetail(b); }}
                 className="action-menu-item"
               >
-                <Printer size={14} style={{ color: 'var(--text-muted)' }} />
-                <span>ดูใบเสร็จ / รายละเอียด</span>
+                <FileText size={14} style={{ color: 'var(--primary-color)' }} />
+                <span>ดูรายละเอียดการจอง</span>
               </div>
             )}
+
+            {/* 2.1 Direct Print Receipt Action */}
+            <div
+              onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenReceiptPrint(b); }}
+              className="action-menu-item"
+            >
+              <Printer size={14} style={{ color: 'var(--text-muted)' }} />
+              <span>พิมพ์ใบเสร็จ</span>
+            </div>
 
             {/* 3. View Slip Image (Show if slip exists AND primary is NOT already reviewing/ตรวจสลิป) */}
             {activeActionMenuBooking.slip_image_url &&
@@ -2818,6 +2683,468 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
       )}
 
       {/* ========================================================= */}
+      {/*  OPERATIONAL BOOKING DETAIL MODAL (Phase E)               */}
+      {/* ========================================================= */}
+      {showDetailModal && selectedBooking && (() => {
+        const b = selectedBooking;
+        const firstItem = b.items?.[0] || {};
+        const roomObj = roomsList?.find(r => r.id === (firstItem.room_id || b.room_id));
+        const roomName = firstItem.room_name || b.room_name || roomObj?.name || 'ห้องประชุม';
+        const usageDateStr = formatUsageDate(b);
+        const usageTimeStr = formatUsageTime(b);
+        const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
+        const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
+        const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
+        const isCancelled = b.payment_status === 'cancelled';
+        const isRejected = b.payment_status === 'rejected' || b.slip_verify_status === 'rejected';
+        const isReviewing = (b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected;
+        const isPending = !isPaid && !isCancelled && !isRejected && !isReviewing;
+
+        const customerName = b.customer_name || b.contact_name || '-';
+        const contactPhone = b.contact || b.phone || '-';
+        const custTypeLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
+        const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : (b.booking_source === 'pos' ? 'POS' : (b.booking_source || 'Walk-in'));
+        const paymentMethodLabel = b.payment_method === 'transfer' ? 'โอนเงินผ่านธนาคาร' : (b.payment_method === 'promptpay' ? 'พร้อมเพย์' : (b.payment_method || '-'));
+
+        const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom (จัดโต๊ะเรียน)' : 'Standard (ห้องประชุมมาตรฐาน)';
+        const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาทั้งวัน' : (firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง');
+
+        let pinRaw = b.pin_code || firstItem.pin_code || '';
+        if (!pinRaw && roomObj) {
+          pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
+        }
+        const hasPin = Boolean(pinRaw && pinRaw !== '-');
+        const isPinRevealed = revealedPins[b.id];
+        const isPinCopied = copiedPin === b.id;
+        const hasSlip = Boolean(b.slip_image_url && b.slip_image_url !== 'uploaded');
+
+        let statusText = 'รอชำระเงิน';
+        let statusBadgeClass = 'pb-status-badge--pending';
+        if (isPaid) {
+          statusText = b.payment_status === 'internal_free' ? 'ใช้งานภายใน (ฟรี)' : 'ชำระเงินแล้ว';
+          statusBadgeClass = 'pb-status-badge--paid';
+        } else if (isCancelled) {
+          statusText = 'ยกเลิกการจอง';
+          statusBadgeClass = 'pb-status-badge--cancelled';
+        } else if (isRejected) {
+          statusText = 'สลิปถูกปฏิเสธ';
+          statusBadgeClass = 'pb-status-badge--rejected';
+        } else if (isReviewing) {
+          statusText = 'รอตรวจสลิป';
+          statusBadgeClass = 'pb-status-badge--reviewing';
+        }
+
+        return (
+          <div className="pb-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pb-detail-modal-title">
+            <div className="pb-detail-modal">
+              {/* HEADER */}
+              <div className="pb-detail-modal-header">
+                <div className="pb-detail-header-left">
+                  <div className="pb-detail-title-row">
+                    <h3 id="pb-detail-modal-title" className="pb-detail-modal-title">
+                      {displayCode}
+                    </h3>
+                    <span className={`pb-status-badge ${statusBadgeClass}`}>
+                      {statusText}
+                    </span>
+                  </div>
+                  <div className="pb-detail-subtitle">
+                    <span>ช่องทาง: <strong style={{ color: 'var(--text-main)' }}>{channelLabel}</strong></span>
+                    <span className="pb-detail-sep">·</span>
+                    <span>สร้างเมื่อ: {formatCreatedDateTime(b.created_at)}</span>
+                  </div>
+                </div>
+
+                <div className="pb-detail-header-right">
+                  <button
+                    type="button"
+                    className="pb-slip-modal-close"
+                    onClick={() => setShowDetailModal(false)}
+                    aria-label="ปิดหน้าต่าง"
+                    title="ปิดหน้าต่าง"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+              </div>
+
+              {/* BODY: 2-COLUMN GRID */}
+              <div className="pb-detail-modal-body">
+                <div className="pb-detail-grid">
+                  {/* LEFT COLUMN */}
+                  <div className="pb-detail-col">
+                    {/* 1. ROOM & SERVICE (Strongest Section) */}
+                    <div className="pb-detail-card">
+                      <div className="pb-detail-card-header">
+                        <span className="pb-detail-card-title">ห้องและการใช้งาน</span>
+                      </div>
+                      <div className="pb-detail-content">
+                        <div className="pb-detail-field-group">
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">ห้องประชุม</span>
+                            <span className="pb-detail-val pb-detail-val--strong">{roomName}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">วันที่ใช้งาน</span>
+                            <span className="pb-detail-val pb-detail-val--strong">{usageDateStr}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">เวลาใช้งาน</span>
+                            <span className="pb-detail-val">{usageTimeStr}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">รูปแบบการจัดโต๊ะ</span>
+                            <span className="pb-detail-val">{layoutLabel}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">ประเภทแพ็กเกจ</span>
+                            <span className="pb-detail-val">{typeLabel}</span>
+                          </div>
+                        </div>
+
+                        {/* Additional items if multi-room/service */}
+                        {b.items && b.items.length > 1 && (
+                          <div className="pb-detail-sub-items">
+                            <span className="pb-detail-sub-items-title">รายการห้อง/บริการทั้งหมด ({b.items.length} รายการ):</span>
+                            {b.items.map((it, idx) => (
+                              <div key={idx} className="pb-detail-sub-item-row">
+                                <span>{it.room_name || it.service_name || `ห้อง #${it.room_id}`}</span>
+                                <span style={{ color: 'var(--text-muted)' }}>{formatUsageTime({ items: [it] })}</span>
+                                <span style={{ fontWeight: 600 }}>฿{Number(it.price || 0).toLocaleString()}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 2. CUSTOMER SECTION */}
+                    <div className="pb-detail-card">
+                      <div className="pb-detail-card-header">
+                        <span className="pb-detail-card-title">ข้อมูลผู้จอง</span>
+                      </div>
+                      <div className="pb-detail-content">
+                        <div className="pb-detail-field-group">
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">ชื่อผู้จอง / บริษัท</span>
+                            <span className="pb-detail-val pb-detail-val--strong">{customerName}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">เบอร์โทรติดต่อ</span>
+                            <span className="pb-detail-val">{contactPhone}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">ประเภทลูกค้า</span>
+                            <span className="pb-detail-val">{custTypeLabel}</span>
+                          </div>
+                          {(b.email || b.customer_email || b.tax_invoice_email) && (
+                            <div className="pb-detail-field">
+                              <span className="pb-detail-label">อีเมล</span>
+                              <span className="pb-detail-val">{b.email || b.customer_email || b.tax_invoice_email}</span>
+                            </div>
+                          )}
+                          {(b.notes || b.cancellation_reason) && (
+                            <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
+                              <span className="pb-detail-label">{isCancelled ? 'เหตุผลการยกเลิก' : 'หมายเหตุเพิ่มเติม'}</span>
+                              <span className="pb-detail-val" style={{ color: isCancelled ? '#dc2626' : 'var(--text-main)' }}>
+                                {b.cancellation_reason || b.notes}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 3. ACCESS / PIN SECTION */}
+                    <div className="pb-detail-card">
+                      <div className="pb-detail-card-header">
+                        <span className="pb-detail-card-title">การเข้าใช้งานห้อง (Door Access)</span>
+                      </div>
+                      <div className="pb-detail-content">
+                        {hasPin ? (
+                          <div className="pb-detail-pin-box">
+                            <div className="pb-detail-pin-row">
+                              <div>
+                                <span className="pb-detail-label">รหัส PIN ปลดล็อคประตู</span>
+                                <div className="pb-detail-pin-value">
+                                  {isPinRevealed ? pinRaw : '••••••'}
+                                </div>
+                              </div>
+                              <div className="pb-detail-pin-actions">
+                                <button
+                                  type="button"
+                                  className="pb-pin-btn"
+                                  onClick={() => handleToggleRevealPin(b.id)}
+                                  aria-label={isPinRevealed ? 'ซ่อนรหัส PIN' : 'แสดงรหัส PIN'}
+                                  title={isPinRevealed ? 'ซ่อนรหัส PIN' : 'แสดงรหัส PIN'}
+                                >
+                                  {isPinRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`pb-pin-btn ${isPinCopied ? 'copied' : ''}`}
+                                  onClick={() => handleCopyPin(b.id, pinRaw)}
+                                  aria-label="คัดลอกรหัส PIN"
+                                  title={isPinCopied ? 'คัดลอกแล้ว!' : 'คัดลอกรหัส PIN'}
+                                >
+                                  {isPinCopied ? <Check size={14} /> : <Copy size={14} />}
+                                </button>
+                              </div>
+                            </div>
+                            {!isCancelled && (
+                              <button
+                                type="button"
+                                className="pb-detail-btn-send-pin"
+                                onClick={() => handleSendPin(b.id)}
+                                aria-label="ส่งรหัส PIN ให้ลูกค้าผ่าน LINE OA"
+                              >
+                                <Send size={14} />
+                                <span>ส่งรหัส PIN ให้ลูกค้าผ่าน LINE OA</span>
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="pb-detail-empty-note">
+                            ไม่มีการกำหนดรหัส PIN สำหรับรายการนี้
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* RIGHT COLUMN */}
+                  <div className="pb-detail-col">
+                    {/* 4. PAYMENT SECTION */}
+                    <div className="pb-detail-card">
+                      <div className="pb-detail-card-header">
+                        <span className="pb-detail-card-title">ข้อมูลการชำระเงิน</span>
+                      </div>
+                      <div className="pb-detail-content">
+                        <div className="pb-detail-amount-hero">
+                          <span className="pb-detail-label">ยอดที่ต้องชำระตามบิล</span>
+                          <span className="pb-detail-amount-val" style={{ color: isPaid ? '#16a34a' : 'var(--text-main)' }}>
+                            ฿{Number(b.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+
+                        <div className="pb-detail-field-group" style={{ marginTop: '12px' }}>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">วิธีชำระเงิน</span>
+                            <span className="pb-detail-val">{paymentMethodLabel}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">สถานะการชำระ</span>
+                            <span className="pb-detail-val">{statusText}</span>
+                          </div>
+                          {b.paid_at && (
+                            <div className="pb-detail-field">
+                              <span className="pb-detail-label">เวลาที่ชำระ</span>
+                              <span className="pb-detail-val">{formatCreatedDateTime(b.paid_at)}</span>
+                            </div>
+                          )}
+                          {b.hour_credit_used && (
+                            <div className="pb-detail-field">
+                              <span className="pb-detail-label">เครดิตชั่วโมงที่ใช้</span>
+                              <span className="pb-detail-val">{b.hour_credit_used} ชม.</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Slip Review Action */}
+                        {hasSlip ? (
+                          <div className="pb-detail-slip-box">
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <FileText size={16} style={{ color: 'var(--primary-color)' }} />
+                              <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>มีสลิปโอนเงินแนบมา</span>
+                            </div>
+                            <button
+                              type="button"
+                              className="pb-detail-btn-view-slip"
+                              onClick={() => {
+                                setShowDetailModal(false);
+                                setViewingSlipBooking(b);
+                              }}
+                              aria-label="ดูสลิปโอนเงินและผลตรวจ OCR"
+                            >
+                              <Eye size={13} />
+                              <span>ตรวจสลิป / ดูผล OCR</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="pb-detail-empty-note" style={{ marginTop: '8px' }}>
+                            ไม่มีการแนบสลิปโอนเงิน
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 5. BOOKING & INTERNAL METADATA */}
+                    <div className="pb-detail-card">
+                      <div className="pb-detail-card-header">
+                        <span className="pb-detail-card-title">ข้อมูลการจองและระบบ</span>
+                      </div>
+                      <div className="pb-detail-content">
+                        <div className="pb-detail-field-group">
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">รหัสการจอง</span>
+                            <span className="pb-detail-val" style={{ fontFamily: 'monospace', fontWeight: 700 }}>{displayCode}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">ช่องทางการทำรายการ</span>
+                            <span className="pb-detail-val">{channelLabel}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">วันที่ทำรายการ</span>
+                            <span className="pb-detail-val">{formatCreatedDateTime(b.created_at)}</span>
+                          </div>
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">ต้นทาง</span>
+                            <span className="pb-detail-val">{b.booking_source === 'online' ? 'ระบบจองออนไลน์' : 'POS หน้าร้าน'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 6. TAX INVOICE SECTION (Conditional) */}
+                    {b.tax_invoice_required === 1 && (
+                      <div className="pb-detail-card">
+                        <div className="pb-detail-card-header">
+                          <span className="pb-detail-card-title">ข้อมูลใบกำกับภาษี</span>
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: '5px', backgroundColor: 'rgba(37, 99, 235, 0.1)', color: '#2563eb' }}>
+                            ขอกำกับภาษี
+                          </span>
+                        </div>
+                        <div className="pb-detail-content">
+                          <div className="pb-detail-field-group">
+                            <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
+                              <span className="pb-detail-label">ชื่อ / บริษัท</span>
+                              <span className="pb-detail-val pb-detail-val--strong">{b.tax_name || b.tax_invoice_name || '-'}</span>
+                            </div>
+                            <div className="pb-detail-field">
+                              <span className="pb-detail-label">เลขประจำตัวผู้เสียภาษี 13 หลัก</span>
+                              <span className="pb-detail-val" style={{ fontFamily: 'monospace' }}>{b.tax_id || b.tax_invoice_id || '-'}</span>
+                            </div>
+                            <div className="pb-detail-field">
+                              <span className="pb-detail-label">สาขา</span>
+                              <span className="pb-detail-val">{b.tax_branch || b.tax_invoice_branch || 'สำนักงานใหญ่'}</span>
+                            </div>
+                            <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
+                              <span className="pb-detail-label">ที่อยู่ออกใบกำกับภาษี</span>
+                              <span className="pb-detail-val">{b.tax_address || b.tax_invoice_address || '-'}</span>
+                            </div>
+                            <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
+                              <span className="pb-detail-label">ช่องทางจัดส่งเอกสาร</span>
+                              <span className="pb-detail-val">
+                                {b.tax_delivery_method === 'postal'
+                                  ? `จัดส่งทางไปรษณีย์ (${b.tax_postal_address || b.tax_address || '-'})`
+                                  : (b.tax_delivery_method === 'pickup' ? 'รับด้วยตนเองที่หน้าร้าน' : 'อีเมล / e-Tax')}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* FOOTER ACTIONS */}
+              <div className="pb-detail-modal-footer">
+                <div className="pb-detail-footer-left">
+                  {!isCancelled && (
+                    <button
+                      type="button"
+                      className="pb-detail-btn-danger"
+                      onClick={() => {
+                        setShowDetailModal(false);
+                        handleOpenCancelModal(b);
+                      }}
+                      aria-label="ยกเลิกการจอง"
+                    >
+                      <Ban size={14} />
+                      <span>ยกเลิกการจอง</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="pb-detail-footer-right">
+                  <button
+                    type="button"
+                    className="pb-detail-btn-secondary"
+                    onClick={() => setShowDetailModal(false)}
+                    aria-label="ปิดหน้าต่าง"
+                  >
+                    ปิดหน้าต่าง
+                  </button>
+
+                  {/* Operational contextual actions */}
+                  {!isCancelled && (
+                    <button
+                      type="button"
+                      className="pb-detail-btn-secondary"
+                      onClick={() => {
+                        setShowDetailModal(false);
+                        handleOpenReschedule(b);
+                      }}
+                      aria-label="แก้ไขวันหรือเวลาการจอง"
+                    >
+                      <Edit3 size={14} />
+                      <span>แก้ไขวัน/เวลา</span>
+                    </button>
+                  )}
+
+                  {isReviewing && hasSlip && (
+                    <button
+                      type="button"
+                      className="pb-detail-btn-primary"
+                      style={{ backgroundColor: '#0284c7', borderColor: '#0284c7' }}
+                      onClick={() => {
+                        setShowDetailModal(false);
+                        setViewingSlipBooking(b);
+                      }}
+                      aria-label="ตรวจสลิปโอนเงิน"
+                    >
+                      <Eye size={14} />
+                      <span>ตรวจสลิป</span>
+                    </button>
+                  )}
+
+                  {isPending && (
+                    <button
+                      type="button"
+                      className="pb-detail-btn-primary"
+                      style={{ backgroundColor: '#f59e0b', borderColor: '#f59e0b' }}
+                      onClick={() => {
+                        setShowDetailModal(false);
+                        handleOpenPayment(b);
+                      }}
+                      aria-label="รับชำระเงิน"
+                    >
+                      <DollarSign size={14} />
+                      <span>รับชำระเงิน</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    className="pb-detail-btn-primary"
+                    onClick={() => {
+                      setShowDetailModal(false);
+                      setShowReceiptModal(true);
+                    }}
+                    aria-label="พิมพ์ใบเสร็จ"
+                  >
+                    <Printer size={15} />
+                    <span>พิมพ์ใบเสร็จ</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ========================================================= */}
       {/*  PRINTABLE RECEIPT MODAL OVERLAY                        */}
       {/* ========================================================= */}
       {showReceiptModal && selectedBooking && (
@@ -2857,817 +3184,464 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook }) {
       {/* ========================================================= */}
       {/*  WIDE SLIP MODAL: ตรวจสอบสลิป (Enterprise Review Layout)  */}
       {/* ========================================================= */}
-      {viewingSlipBooking && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(15, 23, 42, 0.60)',
-          backdropFilter: 'blur(6px)',
-          WebkitBackdropFilter: 'blur(6px)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 12000,
-          padding: '16px'
-        }}>
-          <div style={{
-            width: '95vw',
-            maxWidth: '1160px',
-            maxHeight: '90vh',
-            borderRadius: '16px',
-            backgroundColor: '#FFFFFF',
-            color: '#0F172A',
-            border: '1px solid #E2E8F0',
-            boxShadow: '0 20px 45px -10px rgba(15, 23, 42, 0.18)',
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-            position: 'relative'
-          }}>
-            {/* Embedded Scoped Style for Responsive Grid & Slip Viewer */}
-            <style>{`
-              .slip-split-grid {
-                display: grid;
-                grid-template-columns: minmax(0, 58fr) minmax(0, 42fr);
-                gap: 18px;
-                align-items: stretch;
-              }
-              @media (max-width: 920px) {
-                .slip-split-grid {
-                  grid-template-columns: 1fr !important;
-                  gap: 14px !important;
-                }
-                .slip-viewer-viewport {
-                  height: 380px !important;
-                }
-              }
-              .slip-viewer-viewport::-webkit-scrollbar {
-                width: 6px;
-                height: 6px;
-              }
-              .slip-viewer-viewport::-webkit-scrollbar-track {
-                background: #F1F5F9;
-              }
-              .slip-viewer-viewport::-webkit-scrollbar-thumb {
-                background: #CBD5E1;
-                border-radius: 3px;
-              }
-              .slip-viewer-viewport::-webkit-scrollbar-thumb:hover {
-                background: #94A3B8;
-              }
-            `}</style>
+      {/* ========================================================= */}
+      {/*  WIDE SLIP MODAL: ตรวจสอบสลิป (Phase D Review Modal)      */}
+      {/* ========================================================= */}
+      {viewingSlipBooking && (() => {
+        const firstItem = viewingSlipBooking.items?.[0] || {};
+        const roomObj = roomsList?.find(r => r.id === (firstItem.room_id || viewingSlipBooking.room_id));
+        const roomName = firstItem.room_name || viewingSlipBooking.room_name || roomObj?.name || 'ห้องประชุม';
+        const usageDateStr = formatUsageDate(viewingSlipBooking);
+        const usageTimeStr = formatUsageTime(viewingSlipBooking);
+        const rawBookingCode = viewingSlipBooking.receipt_number || viewingSlipBooking.booking_code || (viewingSlipBooking.id ? `BK-${String(viewingSlipBooking.id).padStart(6, '0')}` : '-');
+        const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
+        const isPaid = viewingSlipBooking.payment_status === 'paid';
+        const channelLabel = (viewingSlipBooking.booking_channel === 'line_oa' || viewingSlipBooking.booking_source === 'online') ? 'LINE OA' : (viewingSlipBooking.booking_source === 'pos' ? 'POS' : (viewingSlipBooking.booking_source || 'Walk-in'));
+        const paymentMethodLabel = viewingSlipBooking.payment_method === 'transfer' ? 'โอนเงินผ่านธนาคาร' : (viewingSlipBooking.payment_method === 'promptpay' ? 'พร้อมเพย์' : (viewingSlipBooking.payment_method || 'โอนเงิน / สแกน QR'));
+        const customerName = viewingSlipBooking.customer_name || viewingSlipBooking.contact_name || '-';
+        const hasSlipImg = Boolean(viewingSlipBooking.slip_image_url && viewingSlipBooking.slip_image_url !== 'uploaded');
 
-            {/* 1. COMPACT MODAL HEADER */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '13px 20px',
-              borderBottom: '1px solid #E2E8F0',
-              backgroundColor: '#FFFFFF'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div style={{
-                  width: '34px',
-                  height: '34px',
-                  borderRadius: '10px',
-                  backgroundColor: '#F0F9FF',
-                  color: '#0284C7',
-                  border: '1px solid #E0F2FE',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0
-                }}>
-                  <Eye size={18} />
-                </div>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <h3 style={{ fontSize: '1.05rem', fontWeight: 700, margin: 0, color: '#0F172A', letterSpacing: '-0.01em' }}>
-                      ตรวจสอบสลิปการโอนเงิน
+        const isDuplicate = Boolean(
+          viewingSlipBooking.slip_verify_status === 'duplicate' ||
+          bookings.some(b =>
+            b.id !== viewingSlipBooking.id &&
+            b.slip_trans_ref &&
+            (b.slip_trans_ref === viewingSlipBooking.slip_trans_ref || (ocrResult?.qr?.transRef && b.slip_trans_ref === ocrResult.qr.transRef))
+          )
+        );
+
+        // Decision Summary Headline & Subtitle
+        let decisionTitle = '';
+        let decisionSubtitle = '';
+        let decisionType = 'info';
+
+        if (isDuplicate) {
+          decisionTitle = 'พบสลิปซ้ำในระบบ';
+          decisionSubtitle = 'สลิปนี้หรือรหัสอ้างอิงเคยถูกใช้งานแล้วในระบบ ควรปฏิเสธหรือสอบทานเพิ่มเติม';
+          decisionType = 'error';
+        } else if (isOcrRunning) {
+          decisionTitle = 'กำลังวิเคราะห์สลิป...';
+          decisionSubtitle = `ระบบกำลังประมวลผลข้อมูลและ QR code (${ocrProgress}%)`;
+          decisionType = 'info';
+        } else if (ocrResult?.messageType === 'success') {
+          decisionTitle = 'ผ่านเงื่อนไขหลัก';
+          decisionSubtitle = ocrResult.decisionSupportMessage || 'ข้อมูลที่ระบบอ่านสอดคล้องกับรายการจอง พร้อมสำหรับการอนุมัติ';
+          decisionType = 'success';
+        } else if (ocrResult?.messageType === 'error') {
+          decisionTitle = 'ข้อมูลไม่ตรงกัน';
+          decisionSubtitle = ocrResult.decisionSupportMessage || 'ระบบพบข้อผิดพลาดหรือไม่สามารถอ่านข้อมูลได้ ควรปฏิเสธหรือสอบทานเพิ่มเติม';
+          decisionType = 'error';
+        } else if (ocrResult?.messageType === 'warning') {
+          decisionTitle = 'พบข้อมูลที่ต้องตรวจสอบ';
+          decisionSubtitle = ocrResult.decisionSupportMessage || 'กรุณาตรวจสอบรายละเอียดก่อนอนุมัติ';
+          decisionType = 'warning';
+        } else if (ocrResult) {
+          decisionTitle = 'รอเจ้าหน้าที่ตรวจสอบ';
+          decisionSubtitle = ocrResult.decisionSupportMessage || 'กรุณาตรวจสอบรายละเอียดในสลิปด้วยตนเองก่อนดำเนินการ';
+          decisionType = 'info';
+        } else {
+          decisionTitle = 'รอตรวจสอบสลิป';
+          decisionSubtitle = 'กรุณาตรวจสอบรายละเอียดภาพสลิปด้วยตนเองก่อนดำเนินการ';
+          decisionType = 'info';
+        }
+
+        return (
+          <div className="pb-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pb-slip-modal-title">
+            <div className="pb-slip-modal">
+              {/* 1. Header */}
+              <div className="pb-slip-modal-header">
+                <div className="pb-slip-modal-header-left">
+                  <div className="pb-slip-modal-title-row">
+                    <h3 id="pb-slip-modal-title" className="pb-slip-modal-title">
+                      ตรวจสอบการชำระเงิน
                     </h3>
                   </div>
-                  <div style={{ fontSize: '0.80rem', color: '#64748B', marginTop: '2px', display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <span style={{ fontWeight: 600, color: '#334155' }}>ใบจอง #{viewingSlipBooking.id}</span>
-                    <span>·</span>
-                    <span>ผู้จอง: <strong style={{ fontWeight: 600, color: '#0F172A' }}>{viewingSlipBooking.customer_name || '-'}</strong></span>
-                    <span>·</span>
-                    <span>ห้อง: {viewingSlipBooking.room_name || '-'}</span>
-                    <span>·</span>
-                    <span>{viewingSlipBooking.booking_source === 'online' ? 'จองออนไลน์' : 'Walk-in'}</span>
+                  <div className="pb-slip-modal-sub">
+                    <span className="pb-slip-modal-code">{displayCode}</span>
+                    <span className="pb-slip-modal-sep">·</span>
+                    <span>ผู้จอง: <strong style={{ color: 'var(--text-main)', fontWeight: 600 }}>{customerName}</strong></span>
+                    <span className="pb-slip-modal-sep">·</span>
+                    <span>ห้อง: {roomName}</span>
                   </div>
                 </div>
-              </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{
-                  fontSize: '0.78rem',
-                  fontWeight: 600,
-                  padding: '3px 10px',
-                  borderRadius: '999px',
-                  backgroundColor: viewingSlipBooking.payment_status === 'paid' ? '#DCFCE7' : '#F0F9FF',
-                  color: viewingSlipBooking.payment_status === 'paid' ? '#166534' : '#0284C7',
-                  border: `1px solid ${viewingSlipBooking.payment_status === 'paid' ? '#86EFAC' : '#BAE6FD'}`
-                }}>
-                  {viewingSlipBooking.payment_status === 'paid' ? 'ชำระเงินแล้ว' : 'รอตรวจสลิป'}
-                </span>
-                <button
-                  type="button"
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: '#94A3B8',
-                    cursor: 'pointer',
-                    padding: '4px',
-                    borderRadius: '6px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    transition: 'color 0.15s ease'
-                  }}
-                  onClick={() => setViewingSlipBooking(null)}
-                  title="ปิดหน้าต่าง"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-            </div>
-
-            {/* 2. MODAL BODY: 2-COLUMN SPLIT (58% / 42%) */}
-            <div style={{
-              flex: 1,
-              overflowY: 'auto',
-              padding: '16px 20px',
-              backgroundColor: '#F8FAFC'
-            }}>
-              <div className="slip-split-grid">
-
-                {/* ──────────────────────────────────────────────────────── */}
-                {/* LEFT COLUMN: Slip Viewer (58% Width)                     */}
-                {/* ──────────────────────────────────────────────────────── */}
-                <div style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '8px'
-                }}>
-                  {/* Slip Viewer Toolbar */}
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '7px 12px',
-                    borderRadius: '10px',
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    boxShadow: '0 1px 2px rgba(0,0,0,0.02)'
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <FileText size={15} style={{ color: '#0284C7' }} />
-                      <span style={{ fontSize: '0.86rem', fontWeight: 600, color: '#1E293B' }}>
-                        รูปภาพสลิป
-                      </span>
-                    </div>
-
-                    {viewingSlipBooking.slip_image_url && viewingSlipBooking.slip_image_url !== 'uploaded' && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                        {/* Zoom Out Button */}
-                        <button
-                          type="button"
-                          onClick={handleZoomOut}
-                          disabled={slipZoom <= 0.75}
-                          style={{
-                            backgroundColor: '#FFFFFF',
-                            border: '1px solid #E2E8F0',
-                            color: slipZoom <= 0.75 ? '#CBD5E1' : '#475569',
-                            cursor: slipZoom <= 0.75 ? 'not-allowed' : 'pointer',
-                            padding: '3px 7px',
-                            borderRadius: '5px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            fontSize: '0.76rem'
-                          }}
-                          title="ย่อขนาดภาพ"
-                        >
-                          <ZoomOut size={13} />
-                        </button>
-
-                        {/* Reset Zoom Badge */}
-                        <button
-                          type="button"
-                          onClick={handleZoomReset}
-                          style={{
-                            backgroundColor: slipZoom === 1 ? '#F0F9FF' : '#FFFFFF',
-                            border: `1px solid ${slipZoom === 1 ? '#BAE6FD' : '#E2E8F0'}`,
-                            color: slipZoom === 1 ? '#0369A1' : '#475569',
-                            cursor: 'pointer',
-                            padding: '2px 8px',
-                            borderRadius: '5px',
-                            fontSize: '0.76rem',
-                            fontWeight: 600,
-                            minWidth: '48px',
-                            textAlign: 'center'
-                          }}
-                          title="คืนค่าขนาด 100%"
-                        >
-                          {Math.round(slipZoom * 100)}%
-                        </button>
-
-                        {/* Zoom In Button */}
-                        <button
-                          type="button"
-                          onClick={handleZoomIn}
-                          disabled={slipZoom >= 2.0}
-                          style={{
-                            backgroundColor: '#FFFFFF',
-                            border: '1px solid #E2E8F0',
-                            color: slipZoom >= 2.0 ? '#CBD5E1' : '#475569',
-                            cursor: slipZoom >= 2.0 ? 'not-allowed' : 'pointer',
-                            padding: '3px 7px',
-                            borderRadius: '5px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            fontSize: '0.76rem'
-                          }}
-                          title="ขยายขนาดภาพ"
-                        >
-                          <ZoomIn size={13} />
-                        </button>
-
-                        {/* Open Full Resolution Link */}
-                        <a
-                          href={viewingSlipBooking.slip_image_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '3px',
-                            fontSize: '0.76rem',
-                            fontWeight: 600,
-                            color: '#0284C7',
-                            textDecoration: 'none',
-                            padding: '3px 8px',
-                            borderRadius: '5px',
-                            backgroundColor: '#F0F9FF',
-                            border: '1px solid #BAE6FD',
-                            marginLeft: '2px'
-                          }}
-                          title="เปิดภาพขนาดเต็มในแท็บใหม่"
-                        >
-                          <ExternalLink size={12} />
-                          <span>Full Res</span>
-                        </a>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Scrollable Viewport for Slip Image */}
-                  <div
-                    className="slip-viewer-viewport"
-                    style={{
-                      height: '520px',
-                      backgroundColor: '#F1F5F9',
-                      borderRadius: '12px',
-                      border: '1px solid #E2E8F0',
-                      overflow: 'auto',
-                      display: 'flex',
-                      alignItems: slipZoom > 1 ? 'flex-start' : 'center',
-                      justifyContent: slipZoom > 1 ? 'flex-start' : 'center',
-                      padding: '14px',
-                      position: 'relative'
-                    }}
+                <div className="pb-slip-modal-header-right">
+                  <span className={`pb-slip-status-badge ${isPaid ? 'pb-slip-status-paid' : 'pb-slip-status-reviewing'}`}>
+                    {isPaid ? 'ชำระเงินแล้ว' : 'รอตรวจสลิป'}
+                  </span>
+                  <button
+                    type="button"
+                    className="pb-slip-modal-close"
+                    onClick={() => setViewingSlipBooking(null)}
+                    aria-label="ปิดหน้าต่าง"
+                    title="ปิดหน้าต่าง"
                   >
-                    {viewingSlipBooking.slip_image_url && viewingSlipBooking.slip_image_url !== 'uploaded' ? (
-                      <div style={{
-                        display: 'inline-block',
-                        margin: 'auto',
-                        textAlign: 'center'
-                      }}>
-                        <div style={{
-                          backgroundColor: '#FFFFFF',
-                          padding: '5px',
-                          borderRadius: '8px',
-                          border: '1px solid #CBD5E1',
-                          boxShadow: '0 4px 14px rgba(15, 23, 42, 0.06)',
-                          display: 'inline-block'
-                        }}>
-                          <img
-                            src={viewingSlipBooking.slip_image_url}
-                            alt="สลิปการชำระเงิน"
-                            style={{
-                              width: slipZoom === 1 ? 'auto' : `${Math.round(slipZoom * 100)}%`,
-                              maxWidth: slipZoom <= 1 ? '100%' : 'none',
-                              maxHeight: slipZoom <= 1 ? '480px' : 'none',
-                              borderRadius: '4px',
-                              objectFit: 'contain',
-                              display: 'block',
-                              transition: 'width 0.12s ease'
-                            }}
-                          />
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ padding: '30px', color: '#94A3B8', fontSize: '0.88rem', textAlign: 'center' }}>
-                        ไม่มีรูปภาพสลิปที่แนบมาในรายการนี้
-                      </div>
-                    )}
-                  </div>
+                    <X size={18} />
+                  </button>
                 </div>
+              </div>
 
-                {/* ──────────────────────────────────────────────────────── */}
-                {/* RIGHT COLUMN: Review Summary + Decision Support (42%)    */}
-                {/* ──────────────────────────────────────────────────────── */}
-                <div style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px'
-                }}>
-                  {/* 1. Compact Booking Summary Card */}
-                  <div style={{
-                    padding: '12px 16px',
-                    borderRadius: '12px',
-                    backgroundColor: '#FFFFFF',
-                    border: '1px solid #E2E8F0',
-                    boxShadow: '0 1px 2px rgba(0,0,0,0.02)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '12px'
-                  }}>
-                    <div>
-                      <div style={{ fontSize: '0.78rem', color: '#64748B', fontWeight: 500 }}>
-                        ยอดเงินที่ต้องชำระตามบิล:
+              {/* 2. Body: Split Grid */}
+              <div className="pb-slip-modal-body">
+                <div className="pb-slip-split-grid">
+                  {/* Left Column: Slip Viewer */}
+                  <div className="pb-slip-viewer-col">
+                    <div className="pb-slip-toolbar">
+                      <div className="pb-slip-toolbar-title">
+                        <FileText size={15} style={{ color: 'var(--primary-color)' }} />
+                        <span>รูปภาพสลิป</span>
                       </div>
-                      <div style={{ fontSize: '1.45rem', fontWeight: 800, color: viewingSlipBooking.payment_status === 'paid' ? '#166534' : '#0F172A', marginTop: '1px', letterSpacing: '-0.01em' }}>
-                        ฿{Number(viewingSlipBooking.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </div>
+
+                      {hasSlipImg && (
+                        <div className="pb-slip-zoom-controls">
+                          <button
+                            type="button"
+                            className="pb-slip-zoom-btn"
+                            onClick={handleZoomOut}
+                            disabled={slipZoom <= 0.75}
+                            aria-label="ย่อขนาดภาพ"
+                            title="ย่อขนาดภาพ"
+                          >
+                            <ZoomOut size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            className={`pb-slip-zoom-btn ${slipZoom === 1 ? 'active' : ''}`}
+                            onClick={handleZoomReset}
+                            aria-label="รีเซ็ตขนาด 100%"
+                            title="รีเซ็ตขนาด 100%"
+                          >
+                            {Math.round(slipZoom * 100)}%
+                          </button>
+                          <button
+                            type="button"
+                            className="pb-slip-zoom-btn"
+                            onClick={handleZoomIn}
+                            disabled={slipZoom >= 2.0}
+                            aria-label="ขยายขนาดภาพ"
+                            title="ขยายขนาดภาพ"
+                          >
+                            <ZoomIn size={13} />
+                          </button>
+                          <a
+                            href={viewingSlipBooking.slip_image_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="pb-slip-fullres-link"
+                            aria-label="เปิดภาพขนาดเต็มในแท็บใหม่"
+                            title="เปิดภาพขนาดเต็มในแท็บใหม่"
+                          >
+                            <ExternalLink size={12} />
+                            <span>Full Res</span>
+                          </a>
+                        </div>
+                      )}
                     </div>
-                    <div style={{ textAlign: 'right', fontSize: '0.78rem', color: '#64748B', lineHeight: '1.5' }}>
-                      <div>เบอร์โทร: <strong style={{ color: '#1E293B', fontWeight: 600 }}>{viewingSlipBooking.contact || '-'}</strong></div>
-                      <div>ช่องทาง: <span style={{ fontWeight: 600, color: '#1E293B' }}>{viewingSlipBooking.booking_source === 'online' ? 'จองออนไลน์' : 'Walk-in'}</span></div>
+
+                    {/* Viewport */}
+                    <div
+                      className="pb-slip-viewport"
+                      style={{
+                        alignItems: slipZoom > 1 ? 'flex-start' : 'center',
+                        justifyContent: slipZoom > 1 ? 'flex-start' : 'center'
+                      }}
+                    >
+                      {hasSlipImg ? (
+                        <div className="pb-slip-img-container">
+                          <div className="pb-slip-img-frame">
+                            <img
+                              src={viewingSlipBooking.slip_image_url}
+                              alt="สลิปการชำระเงิน"
+                              className="pb-slip-img"
+                              style={{
+                                width: slipZoom === 1 ? 'auto' : `${Math.round(slipZoom * 100)}%`,
+                                maxWidth: slipZoom <= 1 ? '100%' : 'none',
+                                maxHeight: slipZoom <= 1 ? '480px' : 'none'
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="pb-slip-empty">
+                          <FileText size={36} style={{ opacity: 0.4 }} />
+                          <span>ไม่มีรูปภาพสลิปที่แนบมาในรายการนี้</span>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  {/* 2. Decision Support Section */}
-                  {viewingSlipBooking.slip_image_url && viewingSlipBooking.slip_image_url !== 'uploaded' && (
-                    <div style={{
-                      padding: '14px 16px',
-                      borderRadius: '12px',
-                      backgroundColor: '#FFFFFF',
-                      border: '1px solid #E2E8F0',
-                      boxShadow: '0 1px 3px rgba(0, 0, 0, 0.02)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '12px'
-                    }}>
-                      {/* Section Header */}
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          <Sparkles size={16} style={{ color: '#0284C7' }} />
-                          <span style={{ fontSize: '0.94rem', color: '#0F172A', fontWeight: 700 }}>
-                            ผลตรวจสอบอัตโนมัติ (Decision Support)
+                  {/* Right Column: Review Details */}
+                  <div className="pb-slip-info-col">
+                    {/* 1. Booking Summary */}
+                    <div className="pb-slip-section-card">
+                      <div className="pb-slip-card-header">
+                        <span className="pb-slip-card-title">ข้อมูลการจอง</span>
+                      </div>
+                      <div className="pb-slip-summary-grid">
+                        <div className="pb-slip-summary-item">
+                          <span className="pb-slip-summary-label">ผู้จอง</span>
+                          <span className="pb-slip-summary-val" title={customerName}>{customerName}</span>
+                        </div>
+                        <div className="pb-slip-summary-item">
+                          <span className="pb-slip-summary-label">ห้องประชุม</span>
+                          <span className="pb-slip-summary-val" title={roomName}>{roomName}</span>
+                        </div>
+                        <div className="pb-slip-summary-item">
+                          <span className="pb-slip-summary-label">วันที่ใช้งาน</span>
+                          <span className="pb-slip-summary-val">{usageDateStr}</span>
+                        </div>
+                        <div className="pb-slip-summary-item">
+                          <span className="pb-slip-summary-label">เวลาใช้งาน</span>
+                          <span className="pb-slip-summary-val">{usageTimeStr}</span>
+                        </div>
+                        <div className="pb-slip-summary-item">
+                          <span className="pb-slip-summary-label">เบอร์ติดต่อ</span>
+                          <span className="pb-slip-summary-val">{viewingSlipBooking.contact || '-'}</span>
+                        </div>
+                        <div className="pb-slip-summary-item">
+                          <span className="pb-slip-summary-label">ช่องทาง / วิธีชำระ</span>
+                          <span className="pb-slip-summary-val">{channelLabel} · {paymentMethodLabel}</span>
+                        </div>
+                        <div className="pb-slip-summary-amount-box">
+                          <span className="pb-slip-summary-label" style={{ fontWeight: 600 }}>ยอดที่ต้องชำระตามบิล</span>
+                          <span className="pb-slip-amount-val" style={{ color: isPaid ? '#16a34a' : 'var(--text-main)' }}>
+                            ฿{Number(viewingSlipBooking.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
                         </div>
+                      </div>
+                    </div>
 
-                        {/* Status Chip */}
-                        <div>
-                          {isOcrRunning ? (
-                            <span style={{
-                              fontSize: '0.76rem',
-                              fontWeight: 600,
-                              padding: '2px 9px',
-                              borderRadius: '999px',
-                              backgroundColor: '#F0F9FF',
-                              color: '#0369A1',
-                              border: '1px solid #BAE6FD',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '4px'
-                            }}>
-                              <RefreshCw size={11} className="spin" />
-                              <span>กำลังตรวจสอบ {ocrProgress > 0 ? `(${ocrProgress}%)` : '...'}</span>
-                            </span>
-                          ) : (
-                            <span style={{
-                              fontSize: '0.76rem',
-                              fontWeight: 600,
-                              padding: '2px 9px',
-                              borderRadius: '999px',
-                              backgroundColor: ocrResult?.status === 'completed'
-                                ? '#DCFCE7'
-                                : (ocrResult?.status === 'error' ? '#FEE2E2' : '#FEF3C7'),
-                              color: ocrResult?.status === 'completed'
-                                ? '#166534'
-                                : (ocrResult?.status === 'error' ? '#B91C1C' : '#92400E'),
-                              border: `1px solid ${ocrResult?.status === 'completed'
-                                ? '#86EFAC'
-                                : (ocrResult?.status === 'error' ? '#FCA5A5' : '#FCD34D')}`
-                            }}>
-                              {ocrResult?.status === 'completed'
-                                ? 'ตรวจสอบเสร็จ'
-                                : (ocrResult?.status === 'error' ? 'เกิดข้อผิดพลาด' : (ocrResult?.status === 'incomplete' ? 'อ่านข้อมูลไม่ครบ' : 'พร้อมตรวจสอบ'))}
+                    {/* 2. Verification Results */}
+                    {hasSlipImg && (
+                      <div className="pb-slip-section-card">
+                        <div className="pb-slip-card-header">
+                          <span className="pb-slip-card-title">ผลตรวจสอบสลิป</span>
+                          {isOcrRunning && (
+                            <span style={{ fontSize: '0.74rem', color: '#0284c7', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}>
+                              <RefreshCw size={11} className="spin" /> กำลังตรวจสอบ ({ocrProgress}%)
                             </span>
                           )}
                         </div>
-                      </div>
 
-                      {/* 4 Decision Cards: 2x2 Grid (Balanced Pro Typography & Spacing) */}
-                      <div style={{
-                        display: 'grid',
-                        gridTemplateColumns: '1fr 1fr',
-                        gap: '10px'
-                      }}>
-                        {/* Box 1: ยอดเงิน (Amount) */}
-                        <div style={{
-                          padding: '11px 13px',
-                          borderRadius: '10px',
-                          backgroundColor: '#F8FAFC',
-                          border: '1px solid #E2E8F0',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          justifyContent: 'space-between',
-                          gap: '6px',
-                          minHeight: '94px'
-                        }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.84rem', fontWeight: 600, color: '#334155' }}>1. ยอดเงิน</span>
-                            <span style={{
-                              fontSize: '0.72rem',
-                              fontWeight: 700,
-                              padding: '2px 7px',
-                              borderRadius: '5px',
-                              backgroundColor: ocrResult?.amount?.matched === true
-                                ? '#DCFCE7'
-                                : (ocrResult?.amount?.matched === false ? '#FEE2E2' : '#F1F5F9'),
-                              color: ocrResult?.amount?.matched === true
-                                ? '#166534'
-                                : (ocrResult?.amount?.matched === false ? '#B91C1C' : '#64748B'),
-                              border: `1px solid ${ocrResult?.amount?.matched === true
-                                ? '#86EFAC'
-                                : (ocrResult?.amount?.matched === false ? '#FCA5A5' : '#CBD5E1')}`
-                            }}>
-                              {ocrResult ? (ocrResult.amount.statusText || 'ตรวจไม่ได้') : '-'}
-                            </span>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.74rem', color: '#64748B' }}>ยอดที่ต้องชำระ</div>
-                            <div style={{ fontSize: '0.90rem', color: '#1E293B', fontWeight: 600 }}>
-                              ฿{Number(viewingSlipBooking.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        <div className="pb-ocr-grid">
+                          {/* Box 1: Amount */}
+                          <div className="pb-ocr-box">
+                            <div className="pb-ocr-box-header">
+                              <span className="pb-ocr-box-title">1. ยอดเงิน</span>
+                              <span className={`pb-ocr-status-badge ${
+                                ocrResult?.amount?.matched === true
+                                  ? 'pb-ocr-status--pass'
+                                  : (ocrResult?.amount?.matched === false ? 'pb-ocr-status--fail' : 'pb-ocr-status--neutral')
+                              }`}>
+                                {ocrResult ? (ocrResult.amount.statusText || 'ตรวจไม่ได้') : '-'}
+                              </span>
                             </div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.74rem', color: '#64748B' }}>ยอดในสลิป</div>
-                            <div style={{
-                              fontSize: '1.05rem',
-                              fontWeight: 700,
-                              color: ocrResult?.amount?.matched === true
-                                ? '#166534'
-                                : (ocrResult?.amount?.matched === false ? '#DC2626' : '#1E293B')
-                            }}>
-                              {ocrResult?.amount?.detected !== null && ocrResult?.amount?.detected !== undefined
-                                ? `฿${Number(ocrResult.amount.detected).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                                : (isOcrRunning ? 'กำลังอ่าน...' : 'อ่านไม่ได้')}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Box 2: ผู้รับเงิน (Receiver) */}
-                        <div style={{
-                          padding: '11px 13px',
-                          borderRadius: '10px',
-                          backgroundColor: '#F8FAFC',
-                          border: '1px solid #E2E8F0',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          justifyContent: 'space-between',
-                          gap: '6px',
-                          minHeight: '94px'
-                        }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.84rem', fontWeight: 600, color: '#334155' }}>2. ผู้รับเงิน</span>
-                            <span style={{
-                              fontSize: '0.72rem',
-                              fontWeight: 700,
-                              padding: '2px 7px',
-                              borderRadius: '5px',
-                              backgroundColor: ocrResult?.receiver?.matched === true
-                                ? '#DCFCE7'
-                                : (ocrResult?.receiver?.matched === false ? '#FEF3C7' : '#F1F5F9'),
-                              color: ocrResult?.receiver?.matched === true
-                                ? '#166534'
-                                : (ocrResult?.receiver?.matched === false ? '#92400E' : '#64748B'),
-                              border: `1px solid ${ocrResult?.receiver?.matched === true
-                                ? '#86EFAC'
-                                : (ocrResult?.receiver?.matched === false ? '#FCD34D' : '#CBD5E1')}`
-                            }}>
-                              {ocrResult ? (ocrResult.receiver.statusText || 'ตรวจไม่ได้') : '-'}
-                            </span>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.74rem', color: '#64748B' }}>ชื่อผู้รับ</div>
-                            <div style={{ fontSize: '0.86rem', color: '#1E293B', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ocrResult?.receiver?.detectedName || '-'}>
-                              {ocrResult?.receiver?.detectedNameMasked || (isOcrRunning ? 'กำลังอ่าน...' : '-')}
-                            </div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.74rem', color: '#64748B' }}>บัญชีปลายทาง</div>
-                            <div style={{ fontSize: '0.86rem', color: '#1E293B', fontWeight: 600 }}>
-                              {ocrResult?.receiver?.detectedAccountMasked || '-'}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Box 3: Mini QR บนสลิป */}
-                        <div style={{
-                          padding: '11px 13px',
-                          borderRadius: '10px',
-                          backgroundColor: '#F8FAFC',
-                          border: '1px solid #E2E8F0',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          justifyContent: 'space-between',
-                          gap: '6px',
-                          minHeight: '94px'
-                        }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.84rem', fontWeight: 600, color: '#334155' }}>3. Mini QR</span>
-                            <span style={{
-                              fontSize: '0.72rem',
-                              fontWeight: 700,
-                              padding: '2px 7px',
-                              borderRadius: '5px',
-                              backgroundColor: ocrResult?.qr?.isValidSlipQR
-                                ? '#DCFCE7'
-                                : (ocrResult?.qr?.isPaymentQR ? '#FEE2E2' : '#F1F5F9'),
-                              color: ocrResult?.qr?.isValidSlipQR
-                                ? '#166534'
-                                : (ocrResult?.qr?.isPaymentQR ? '#B91C1C' : '#64748B'),
-                              border: `1px solid ${ocrResult?.qr?.isValidSlipQR
-                                ? '#86EFAC'
-                                : (ocrResult?.qr?.isPaymentQR ? '#FCA5A5' : '#CBD5E1')}`
-                            }}>
-                              {ocrResult?.qr?.isValidSlipQR ? 'ผ่าน' : (ocrResult?.qr?.isPaymentQR ? 'ไม่ใช่สลิป' : 'ไม่ผ่าน')}
-                            </span>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.74rem', color: '#64748B' }}>ธนาคาร</div>
-                            <div style={{ fontSize: '0.86rem', color: '#1E293B', fontWeight: 600 }}>
-                              {ocrResult?.qr?.bankName || (isOcrRunning ? 'กำลังตรวจ...' : '-')}
-                            </div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '0.74rem', color: '#64748B' }}>Ref อ้างอิง</div>
-                            <div style={{ fontSize: '0.80rem', color: '#1E293B', fontWeight: 600, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {ocrResult?.qr?.transRefMasked || (viewingSlipBooking.slip_trans_ref ? `${viewingSlipBooking.slip_trans_ref.slice(0, 6)}...` : '-')}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Box 4: ตรวจสอบสลิปซ้ำ (Duplicate) */}
-                        {(() => {
-                          const isDuplicate = Boolean(
-                            viewingSlipBooking.slip_verify_status === 'duplicate' ||
-                            bookings.some(b =>
-                              b.id !== viewingSlipBooking.id &&
-                              b.slip_trans_ref &&
-                              (b.slip_trans_ref === viewingSlipBooking.slip_trans_ref || (ocrResult?.qr?.transRef && b.slip_trans_ref === ocrResult.qr.transRef))
-                            )
-                          );
-                          return (
-                            <div style={{
-                              padding: '11px 13px',
-                              borderRadius: '10px',
-                              backgroundColor: isDuplicate ? '#FEF2F2' : '#F8FAFC',
-                              border: isDuplicate ? '1px solid #FECACA' : '1px solid #E2E8F0',
-                              display: 'flex',
-                              flexDirection: 'column',
-                              justifyContent: 'space-between',
-                              gap: '6px',
-                              minHeight: '94px'
-                            }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontSize: '0.84rem', fontWeight: 600, color: '#334155' }}>4. สลิปซ้ำ</span>
-                                <span style={{
-                                  fontSize: '0.72rem',
-                                  fontWeight: 700,
-                                  padding: '2px 7px',
-                                  borderRadius: '5px',
-                                  backgroundColor: isDuplicate ? '#FEE2E2' : '#DCFCE7',
-                                  color: isDuplicate ? '#B91C1C' : '#166534',
-                                  border: `1px solid ${isDuplicate ? '#FCA5A5' : '#86EFAC'}`
-                                }}>
-                                  {isDuplicate ? 'พบสลิปซ้ำ' : 'ไม่พบ'}
-                                </span>
-                              </div>
-                              <div>
-                                <div style={{ fontSize: '0.74rem', color: '#64748B' }}>ประวัติการใช้งาน</div>
-                                <div style={{ fontSize: '0.82rem', color: isDuplicate ? '#DC2626' : '#166534', fontWeight: 600, lineHeight: '1.4' }}>
-                                  {isDuplicate ? 'สลิปนี้มีประวัติใช้งานแล้วในระบบ' : 'ไม่มีประวัติสลิปซ้ำในระบบ'}
-                                </div>
+                            <div>
+                              <div className="pb-ocr-data-label">ยอดที่ต้องชำระ</div>
+                              <div className="pb-ocr-data-val">
+                                ฿{Number(viewingSlipBooking.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </div>
                             </div>
-                          );
-                        })()}
-                      </div>
-
-                      {/* Contextual Suggestion Banner (Clean & Well-spaced) */}
-                      {ocrResult?.decisionSupportMessage && (
-                        <div style={{
-                          padding: '10px 14px',
-                          borderRadius: '9px',
-                          fontSize: '0.82rem',
-                          display: 'flex',
-                          alignItems: 'flex-start',
-                          gap: '10px',
-                          backgroundColor: ocrResult.messageType === 'success'
-                            ? '#F0FDF4'
-                            : (ocrResult.messageType === 'warning'
-                                ? '#FFF7ED'
-                                : (ocrResult.messageType === 'error' ? '#FEF2F2' : '#F0F9FF')),
-                          border: `1px solid ${ocrResult.messageType === 'success'
-                            ? '#BBF7D0'
-                            : (ocrResult.messageType === 'warning'
-                                ? '#FED7AA'
-                                : (ocrResult.messageType === 'error' ? '#FECACA' : '#BAE6FD'))}`,
-                          color: ocrResult.messageType === 'success'
-                            ? '#15803D'
-                            : (ocrResult.messageType === 'warning'
-                                ? '#C2410C'
-                                : (ocrResult.messageType === 'error' ? '#B91C1C' : '#0369A1'))
-                        }}>
-                          <div style={{ marginTop: '1px' }}>
-                            {ocrResult.messageType === 'success' && <CheckCircle2 size={16} style={{ flexShrink: 0 }} />}
-                            {ocrResult.messageType === 'warning' && <AlertTriangle size={16} style={{ flexShrink: 0 }} />}
-                            {ocrResult.messageType === 'error' && <AlertCircle size={16} style={{ flexShrink: 0 }} />}
-                            {ocrResult.messageType === 'info' && <AlertCircle size={16} style={{ flexShrink: 0 }} />}
+                            <div>
+                              <div className="pb-ocr-data-label">ยอดในสลิป</div>
+                              <div
+                                className="pb-ocr-data-val pb-ocr-data-val-amt"
+                                style={{
+                                  color: ocrResult?.amount?.matched === true
+                                    ? '#16a34a'
+                                    : (ocrResult?.amount?.matched === false ? '#dc2626' : 'var(--text-main)')
+                                }}
+                              >
+                                {ocrResult?.amount?.detected !== null && ocrResult?.amount?.detected !== undefined
+                                  ? `฿${Number(ocrResult.amount.detected).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                  : (isOcrRunning ? 'กำลังอ่าน...' : 'อ่านไม่ได้')}
+                              </div>
+                            </div>
                           </div>
-                          <div style={{ fontWeight: 600, lineHeight: '1.5', whiteSpace: 'pre-line' }}>
-                            {ocrResult.decisionSupportMessage.replace(' กรุณา', '\nกรุณา')}
+
+                          {/* Box 2: Receiver */}
+                          <div className="pb-ocr-box">
+                            <div className="pb-ocr-box-header">
+                              <span className="pb-ocr-box-title">2. ผู้รับเงิน</span>
+                              <span className={`pb-ocr-status-badge ${
+                                ocrResult?.receiver?.matched === true
+                                  ? 'pb-ocr-status--pass'
+                                  : (ocrResult?.receiver?.matched === false ? 'pb-ocr-status--warning' : 'pb-ocr-status--neutral')
+                              }`}>
+                                {ocrResult ? (ocrResult.receiver.statusText || 'ตรวจไม่ได้') : '-'}
+                              </span>
+                            </div>
+                            <div>
+                              <div className="pb-ocr-data-label">ชื่อผู้รับ</div>
+                              <div className="pb-ocr-data-val" title={ocrResult?.receiver?.detectedName || '-'}>
+                                {ocrResult?.receiver?.detectedNameMasked || (isOcrRunning ? 'กำลังอ่าน...' : '-')}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="pb-ocr-data-label">บัญชีปลายทาง</div>
+                              <div className="pb-ocr-data-val">
+                                {ocrResult?.receiver?.detectedAccountMasked || '-'}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Box 3: Mini QR */}
+                          <div className="pb-ocr-box">
+                            <div className="pb-ocr-box-header">
+                              <span className="pb-ocr-box-title">3. QR / ธนาคาร</span>
+                              <span className={`pb-ocr-status-badge ${
+                                ocrResult?.qr?.isValidSlipQR
+                                  ? 'pb-ocr-status--pass'
+                                  : (ocrResult?.qr?.isPaymentQR ? 'pb-ocr-status--fail' : 'pb-ocr-status--neutral')
+                              }`}>
+                                {ocrResult?.qr?.isValidSlipQR ? 'ผ่าน' : (ocrResult?.qr?.isPaymentQR ? 'ไม่ใช่สลิป' : (ocrResult ? 'ไม่ผ่าน' : '-'))}
+                              </span>
+                            </div>
+                            <div>
+                              <div className="pb-ocr-data-label">ธนาคาร</div>
+                              <div className="pb-ocr-data-val">
+                                {ocrResult?.qr?.bankName || (isOcrRunning ? 'กำลังตรวจ...' : '-')}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="pb-ocr-data-label">Ref อ้างอิง</div>
+                              <div className="pb-ocr-data-val" style={{ fontFamily: 'monospace' }}>
+                                {ocrResult?.qr?.transRefMasked || (viewingSlipBooking.slip_trans_ref ? `${viewingSlipBooking.slip_trans_ref.slice(0, 6)}...` : '-')}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Box 4: Duplicate */}
+                          <div className="pb-ocr-box" style={{
+                            backgroundColor: isDuplicate ? 'rgba(220, 38, 38, 0.05)' : undefined,
+                            borderColor: isDuplicate ? 'rgba(220, 38, 38, 0.3)' : undefined
+                          }}>
+                            <div className="pb-ocr-box-header">
+                              <span className="pb-ocr-box-title">4. สลิปซ้ำ</span>
+                              <span className={`pb-ocr-status-badge ${isDuplicate ? 'pb-ocr-status--fail' : 'pb-ocr-status--pass'}`}>
+                                {isDuplicate ? 'พบสลิปซ้ำ' : 'ไม่พบ'}
+                              </span>
+                            </div>
+                            <div>
+                              <div className="pb-ocr-data-label">ประวัติการใช้งาน</div>
+                              <div
+                                className="pb-ocr-data-val"
+                                style={{
+                                  color: isDuplicate ? '#dc2626' : '#16a34a',
+                                  whiteSpace: 'normal',
+                                  lineHeight: 1.3
+                                }}
+                              >
+                                {isDuplicate ? 'พบสลิปนี้มีประวัติใช้งานแล้วในระบบ' : 'ไม่พบประวัติการใช้งานซ้ำในระบบ'}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="pb-ocr-data-label">รหัสอ้างอิงสลิป</div>
+                              <div className="pb-ocr-data-val" style={{ fontFamily: 'monospace' }}>
+                                {ocrResult?.qr?.transRef || viewingSlipBooking.slip_trans_ref || '-'}
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      )}
 
-                      {/* Neutral Disclaimer */}
-                      <div style={{
-                        fontSize: '0.75rem',
-                        color: '#64748B',
-                        lineHeight: '1.45',
-                        padding: '2px 4px'
-                      }}>
-                        * ผลการวิเคราะห์เป็นข้อมูลช่วยตัดสินใจสำหรับเจ้าหน้าที่เท่านั้น การอนุมัติหรือปฏิเสธขึ้นอยู่กับดุลยพินิจของเจ้าหน้าที่
+                        {/* Decision Summary */}
+                        <div className={`pb-decision-banner pb-decision-banner--${decisionType}`}>
+                          <div style={{ marginTop: '2px', flexShrink: 0 }}>
+                            {decisionType === 'success' && <CheckCircle2 size={16} />}
+                            {decisionType === 'warning' && <AlertTriangle size={16} />}
+                            {decisionType === 'error' && <AlertCircle size={16} />}
+                            {decisionType === 'info' && <AlertCircle size={16} />}
+                          </div>
+                          <div className="pb-decision-content">
+                            <span className="pb-decision-headline">{decisionTitle}</span>
+                            <span className="pb-decision-subtext">{decisionSubtitle}</span>
+                          </div>
+                        </div>
+
+                        {/* Staff Disclaimer */}
+                        <div className="pb-decision-disclaimer">
+                          * ข้อมูลช่วยตัดสินใจสำหรับเจ้าหน้าที่เท่านั้น การอนุมัติหรือปฏิเสธขึ้นอยู่กับดุลยพินิจของเจ้าหน้าที่
+                        </div>
                       </div>
-                    </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. Action Footer */}
+              <div className="pb-slip-modal-footer">
+                <div className="pb-slip-footer-left">
+                  <button
+                    type="button"
+                    className="pb-slip-btn-close"
+                    onClick={() => setViewingSlipBooking(null)}
+                    aria-label="ปิดหน้าต่าง"
+                  >
+                    ปิดหน้าต่าง
+                  </button>
+
+                  {hasSlipImg && (
+                    <button
+                      type="button"
+                      onClick={handleRerunOcr}
+                      disabled={isOcrRunning}
+                      className="pb-slip-btn-rerun"
+                      aria-label="ตรวจวิเคราะห์สลิปใหม่อีกครั้ง"
+                      title="ตรวจวิเคราะห์สลิปใหม่อีกครั้ง"
+                    >
+                      <RefreshCw size={13} className={isOcrRunning ? 'spin' : ''} />
+                      <span>{isOcrRunning ? 'กำลังตรวจ...' : 'ตรวจอีกครั้ง'}</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="pb-slip-footer-right">
+                  {isPaid ? (
+                    <button
+                      type="button"
+                      className="pb-slip-btn-revert"
+                      onClick={() => revertPayment(viewingSlipBooking)}
+                      aria-label="ยกเลิกการยืนยันชำระเงิน"
+                    >
+                      <RotateCcw size={14} />
+                      <span>ยกเลิกการยืนยันชำระเงิน</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="pb-slip-btn-danger"
+                        onClick={() => {
+                          const b = viewingSlipBooking;
+                          setViewingSlipBooking(null);
+                          handleOpenRejectSlipModal(b);
+                        }}
+                        aria-label="ปฏิเสธสลิป"
+                      >
+                        <Ban size={14} />
+                        <span>ปฏิเสธสลิป</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="pb-slip-btn-primary"
+                        onClick={() => {
+                          const b = viewingSlipBooking;
+                          setViewingSlipBooking(null);
+                          handleOpenPayment(b);
+                        }}
+                        aria-label="อนุมัติรับชำระเงิน"
+                      >
+                        <CheckCircle2 size={16} />
+                        <span>อนุมัติรับชำระเงิน</span>
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
             </div>
-
-            {/* 3. STICKY ACTION BAR (Balanced Proportionate Actions) */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '11px 20px',
-              borderTop: '1px solid #E2E8F0',
-              backgroundColor: '#FFFFFF',
-              gap: '10px',
-              flexWrap: 'wrap'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{
-                    borderRadius: '8px',
-                    height: '38px',
-                    padding: '0 16px',
-                    fontWeight: 600,
-                    fontSize: '0.84rem',
-                    backgroundColor: '#FFFFFF',
-                    color: '#475569',
-                    border: '1px solid #CBD5E1'
-                  }}
-                  onClick={() => setViewingSlipBooking(null)}
-                >
-                  ปิดหน้าต่าง
-                </button>
-
-                {viewingSlipBooking.slip_image_url && viewingSlipBooking.slip_image_url !== 'uploaded' && (
-                  <button
-                    type="button"
-                    onClick={handleRerunOcr}
-                    disabled={isOcrRunning}
-                    className="btn btn-secondary"
-                    style={{
-                      borderRadius: '8px',
-                      height: '38px',
-                      padding: '0 15px',
-                      fontWeight: 600,
-                      fontSize: '0.84rem',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '5px',
-                      backgroundColor: '#F0F9FF',
-                      color: isOcrRunning ? '#94A3B8' : '#0284C7',
-                      border: '1px solid #BAE6FD',
-                      cursor: isOcrRunning ? 'not-allowed' : 'pointer'
-                    }}
-                    title="ตรวจวิเคราะห์สลิปใหม่อีกครั้ง"
-                  >
-                    <RefreshCw size={13} className={isOcrRunning ? 'spin' : ''} />
-                    <span>ตรวจอีกครั้ง</span>
-                  </button>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {viewingSlipBooking.payment_status === 'paid' ? (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    style={{
-                      borderRadius: '8px',
-                      height: '38px',
-                      color: '#92400E',
-                      backgroundColor: '#FEF3C7',
-                      border: '1px solid #FCD34D',
-                      fontWeight: 600,
-                      fontSize: '0.84rem',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '5px',
-                      padding: '0 18px'
-                    }}
-                    onClick={() => revertPayment(viewingSlipBooking)}
-                  >
-                    <RotateCcw size={14} />
-                    <span>ยกเลิกการยืนยันชำระเงิน</span>
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      style={{
-                        borderRadius: '8px',
-                        height: '38px',
-                        color: '#DC2626',
-                        backgroundColor: '#FEF2F2',
-                        border: '1px solid #FECACA',
-                        fontWeight: 600,
-                        fontSize: '0.84rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '5px',
-                        padding: '0 16px',
-                        cursor: 'pointer'
-                      }}
-                      onClick={() => {
-                        const b = viewingSlipBooking;
-                        setViewingSlipBooking(null);
-                        handleOpenRejectSlipModal(b);
-                      }}
-                    >
-                      <Ban size={14} />
-                      <span>ปฏิเสธสลิป</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      style={{
-                        borderRadius: '8px',
-                        height: '38px',
-                        backgroundColor: '#16A34A',
-                        borderColor: '#16A34A',
-                        color: '#FFFFFF',
-                        fontWeight: 700,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        padding: '0 22px',
-                        fontSize: '0.88rem',
-                        boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)',
-                        cursor: 'pointer'
-                      }}
-                      onClick={() => {
-                        const b = viewingSlipBooking;
-                        setViewingSlipBooking(null);
-                        handleOpenPayment(b);
-                      }}
-                    >
-                      <CheckCircle2 size={16} />
-                      <span>อนุมัติรับชำระเงิน</span>
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
       {/* ========================================================= */}
       {/*  REJECT SLIP MODAL (ปฏิเสธสลิป & รอลูกค้าแนบใหม่)          */}
       {/* ========================================================= */}

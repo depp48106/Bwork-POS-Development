@@ -1,7 +1,7 @@
 import {toPng} from 'html-to-image';
 
 export const creditMenuLabel='จัดการเครดิตชั่วโมง';
-export const creditNavigationLabel='เครดิตชั่วโมง';
+export const creditNavigationLabel='Hour Credits';
 export const creditSubtitle='จัดการเครดิตชั่วโมงคงเหลือของลูกค้า ออกใบยืนยัน ใช้เครดิต และส่ง LINE';
 export const creditFilterChips=[
   {key:'all',label:'ทั้งหมด'},

@@ -357,6 +357,11 @@ body {
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+.menu-card span {
+  line-height: 1.25;
+  word-break: break-word;
+}
+
 .menu-card:hover {
   background: rgba(37, 99, 235, 0.08);
   border-color: rgba(37, 99, 235, 0.25);
@@ -2460,6 +2465,19 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   user-select: none;
   height: 38px;
+  white-space: nowrap;
+}
+
+@media (min-width: 1024px) and (max-width: 1366px) {
+  .top-menu-item {
+    padding: 6px 10px;
+    gap: 6px;
+    font-size: 0.8rem;
+  }
+  .desktop-menu-bar {
+    gap: 4px !important;
+    margin-left: 6px !important;
+  }
 }
 
 .top-menu-item:hover {

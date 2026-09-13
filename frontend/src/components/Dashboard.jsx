@@ -1,285 +1,930 @@
-import React, { useState, useEffect } from 'react';
-import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Calendar, DollarSign, FileText, CheckCircle, Clock, TrendingUp } from 'lucide-react';
-import CustomDatePicker from './CustomDatePicker';
-import { toLocalDateString } from '../dateUtils';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  Search,
+  RefreshCw,
+  Plus,
+  Calendar,
+  LayoutGrid,
+  AlertCircle,
+  ArrowRight,
+  ShieldAlert
+} from 'lucide-react';
+import './Dashboard.css';
 
-function Dashboard() {
-  const [dateRange, setDateRange] = useState({
-    startDate: '',
-    endDate: ''
-  });
-  const [kpis, setKpis] = useState({
-    revenue: 0,
-    bookingsCount: 0,
-    paidCount: 0,
-    pendingCount: 0,
-    trend: [],
-    popularRooms: [],
-    popularServices: []
-  });
-  const [loading, setLoading] = useState(false);
+// Dynamic sample data strictly for DEV mode visual preview
+const getDemoIso = (hours, minutes = 0) => {
+  const d = new Date();
+  d.setHours(hours, minutes, 0, 0);
+  return d.toISOString();
+};
 
-  // Initialize date range to current month
+const getDemoOperationalData = () => ({
+  reviewingCount: 2,
+  upcomingAlerts: [
+    {
+      booking_id: 'BK-2026-089',
+      room_name: 'Jupiter (300)',
+      customer_name: 'คุณวิภาดา อัครเดช',
+      start_time: getDemoIso(14, 0),
+      end_time: getDemoIso(16, 30),
+      payment_status: 'paid',
+      total_amount: 1200
+    }
+  ],
+  incomingBookings: [
+    {
+      booking_id: 'BK-2026-092',
+      room_name: 'Mars (301)',
+      customer_name: 'บริษัท ดิจิทัล โซลูชั่น จำกัด',
+      start_time: getDemoIso(16, 30),
+      end_time: getDemoIso(18, 0),
+      payment_status: 'reviewing',
+      total_amount: 800,
+      slip_image_url: '/demo-slip.jpg'
+    },
+    {
+      booking_id: 'BK-2026-094',
+      room_name: 'Saturn (303)',
+      customer_name: 'คุณธนพล เจริญทรัพย์',
+      start_time: getDemoIso(18, 30),
+      end_time: getDemoIso(20, 30),
+      payment_status: 'reviewing',
+      total_amount: 600,
+      slip_image_url: '/demo-slip.jpg'
+    }
+  ],
+  todayBookings: [
+    {
+      booking_id: 'BK-2026-085',
+      room_id: 4,
+      room_name: 'Mars (301)',
+      customer_name: 'คุณปิยะพงษ์ ยิ้มแย้ม',
+      start_time: getDemoIso(9, 0),
+      end_time: getDemoIso(11, 0),
+      payment_status: 'paid'
+    },
+    {
+      booking_id: 'BK-2026-089',
+      room_id: 10,
+      room_name: 'Jupiter (300)',
+      customer_name: 'คุณวิภาดา อัครเดช',
+      start_time: getDemoIso(14, 0),
+      end_time: getDemoIso(16, 30),
+      payment_status: 'paid'
+    },
+    {
+      booking_id: 'BK-2026-092',
+      room_id: 4,
+      room_name: 'Mars (301)',
+      customer_name: 'บริษัท ดิจิทัล โซลูชั่น จำกัด',
+      start_time: getDemoIso(16, 30),
+      end_time: getDemoIso(18, 0),
+      payment_status: 'reviewing'
+    },
+    {
+      booking_id: 'BK-2026-094',
+      room_id: 6,
+      room_name: 'Saturn (303)',
+      customer_name: 'คุณธนพล เจริญทรัพย์',
+      start_time: getDemoIso(18, 30),
+      end_time: getDemoIso(20, 30),
+      payment_status: 'reviewing'
+    }
+  ],
+  rooms: [
+    { id: 4, name: 'Mars (301)', capacity: 4, isOccupied: false, currentBooking: null },
+    { id: 5, name: 'Mercury (302)', capacity: 4, isOccupied: false, currentBooking: null },
+    { id: 6, name: 'Saturn (303)', capacity: 6, isOccupied: false, currentBooking: null },
+    { id: 7, name: 'Venus (304)', capacity: 6, isOccupied: false, currentBooking: null },
+    { id: 8, name: 'Uranus (305)', capacity: 8, isOccupied: false, currentBooking: null },
+    { id: 9, name: 'Neptune (306)', capacity: 8, isOccupied: false, currentBooking: null },
+    {
+      id: 10,
+      name: 'Jupiter (300)',
+      capacity: 10,
+      isOccupied: true,
+      currentBooking: {
+        booking_id: 'BK-2026-089',
+        customer_name: 'คุณวิภาดา อัครเดช',
+        start_time: getDemoIso(14, 0),
+        end_time: getDemoIso(16, 30)
+      }
+    },
+    { id: 11, name: 'Pluto (201)', capacity: 12, isOccupied: false, currentBooking: null },
+    { id: 12, name: 'Jupiter (300) & Co-Working', capacity: 25, isOccupied: false, currentBooking: null },
+    { id: 13, name: 'เหมาโซน Co-working', capacity: 40, isOccupied: false, currentBooking: null }
+  ]
+});
+
+function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
+  // Real Data States
+  const [upcomingAlerts, setUpcomingAlerts] = useState([]);
+  const [incomingBookings, setIncomingBookings] = useState([]);
+  const [todayBookings, setTodayBookings] = useState([]);
+  const [rooms, setRooms] = useState([]);
+  const [reviewingCount, setReviewingCount] = useState(0);
+
+  // Status & Control States
+  const [loading, setLoading] = useState(true);
+  const [isBackgroundRefreshing, setIsBackgroundRefreshing] = useState(false);
+  const [apiError, setApiError] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [lastUpdatedTime, setLastUpdatedTime] = useState('');
+  const [currentTimeText, setCurrentTimeText] = useState('');
+
+  // Dev-only explicit demo toggle
+  const isDev = import.meta.env.DEV === true;
+  const [isDemoMode, setIsDemoMode] = useState(false);
+
+  // Request guard to prevent overlapping calls
+  const isFetchingRef = useRef(false);
+
+  // Real-time Clock (updates once every 30 seconds)
   useEffect(() => {
-    setQuickRange('month');
+    const updateClock = () => {
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+      setCurrentTimeText(`${timeStr} น.`);
+    };
+    updateClock();
+    const clockTimer = setInterval(updateClock, 30000);
+    return () => clearInterval(clockTimer);
   }, []);
 
-  // Fetch dashboard summary when dateRange changes
-  useEffect(() => {
-    if (dateRange.startDate && dateRange.endDate) {
-      fetchSummary();
-    }
-  }, [dateRange]);
-
-  const fetchSummary = async () => {
-    setLoading(true);
+  // Format Thai Date string (e.g. "วันอาทิตย์ที่ 13 กันยายน 2569")
+  const thaiDateFormatted = useMemo(() => {
     try {
-      const res = await fetch(`/api/dashboard/summary?start_date=${dateRange.startDate}&end_date=${dateRange.endDate}`);
-      if (res.ok) {
-        const data = await res.json();
-        setKpis(data);
+      const now = new Date();
+      return new Intl.DateTimeFormat('th-TH', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      }).format(now);
+    } catch (e) {
+      return '';
+    }
+  }, []);
+
+  // Fetch real operational data from existing backend endpoints
+  const fetchOperationalData = async (isManual = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+
+    if (!isManual && !loading) {
+      setIsBackgroundRefreshing(true);
+    } else if (isManual) {
+      setIsBackgroundRefreshing(true);
+    }
+
+    try {
+      setApiError(null);
+      const now = new Date();
+      const isoLocal = now.toISOString();
+
+      // Parallel fetch for alerts and current room occupancy
+      const [alertsRes, occupancyRes] = await Promise.all([
+        fetch('/api/bookings/upcoming-alerts'),
+        fetch(`/api/rooms/occupancy?current_time=${encodeURIComponent(isoLocal)}`)
+      ]);
+
+      if (!alertsRes.ok || !occupancyRes.ok) {
+        throw new Error(`โหลดข้อมูลไม่สำเร็จ (สถานะ: ${alertsRes.status}/${occupancyRes.status})`);
       }
+
+      const alertsData = await alertsRes.json();
+      const occupancyData = await occupancyRes.json();
+
+      setUpcomingAlerts(Array.isArray(alertsData.upcoming) ? alertsData.upcoming : []);
+      setIncomingBookings(Array.isArray(alertsData.incomingBookings) ? alertsData.incomingBookings : []);
+      setTodayBookings(Array.isArray(alertsData.todayBookings) ? alertsData.todayBookings : []);
+      setReviewingCount(typeof alertsData.reviewingCount === 'number' ? alertsData.reviewingCount : 0);
+
+      setRooms(Array.isArray(occupancyData) ? occupancyData : []);
+
+      const updateTime = now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      setLastUpdatedTime(updateTime);
     } catch (err) {
-      console.error('Failed to load dashboard summary:', err);
+      console.error('[Dashboard] Error fetching operational data:', err);
+      if (loading || isManual) {
+        setApiError(err.message || 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+      }
     } finally {
       setLoading(false);
+      setIsBackgroundRefreshing(false);
+      isFetchingRef.current = false;
     }
   };
 
-  const setQuickRange = (type) => {
+  // Initial load and background polling interval (30 seconds)
+  useEffect(() => {
+    fetchOperationalData();
+
+    const interval = setInterval(() => {
+      fetchOperationalData(false);
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Compute active dataset (Real vs Dev Demo Mode)
+  const activeData = useMemo(() => {
+    if (isDev && isDemoMode) {
+      return getDemoOperationalData();
+    }
+    return {
+      reviewingCount,
+      upcomingAlerts,
+      incomingBookings,
+      todayBookings,
+      rooms
+    };
+  }, [isDev, isDemoMode, reviewingCount, upcomingAlerts, incomingBookings, todayBookings, rooms]);
+
+  // Compute Action Required items (Priority 1: reviewing slip, Priority 2: approaching time)
+  const actionItems = useMemo(() => {
+    const items = [];
+
+    // Priority 1: Reviewing Payment / Slips
+    (activeData.incomingBookings || []).forEach(b => {
+      if (b.payment_status === 'reviewing') {
+        items.push({
+          id: `review-${b.booking_id || b.id}`,
+          booking_id: b.booking_id || b.id,
+          priority: 'reviewing',
+          room_name: b.room_name || 'ห้องประชุม',
+          customer_name: b.customer_name || 'ลูกค้า',
+          start_time: b.start_time,
+          end_time: b.end_time,
+          statusLabel: 'รอตรวจสอบสลิป',
+          statusType: 'blue',
+          actionLabel: 'ตรวจสอบ',
+          actionType: 'primary',
+          actionTarget: 'pending'
+        });
+      }
+    });
+
+    // Priority 2: Upcoming bookings starting soon
+    (activeData.upcomingAlerts || []).forEach(b => {
+      const isAlreadyReviewing = items.some(it => String(it.booking_id) === String(b.booking_id || b.id));
+      if (!isAlreadyReviewing) {
+        items.push({
+          id: `upcoming-${b.booking_id || b.id}`,
+          booking_id: b.booking_id || b.id,
+          priority: 'upcoming',
+          room_name: b.room_name || 'ห้องประชุม',
+          customer_name: b.customer_name || 'ลูกค้า',
+          start_time: b.start_time,
+          end_time: b.end_time,
+          statusLabel: 'ใกล้ถึงเวลาใช้งาน',
+          statusType: 'amber',
+          actionLabel: 'ดูการจอง',
+          actionType: 'amber',
+          actionTarget: 'pending'
+        });
+      }
+    });
+
+    return items;
+  }, [activeData]);
+
+  // Filtered Action Items by Search
+  const filteredActionItems = useMemo(() => {
+    if (!searchQuery.trim()) return actionItems;
+    const q = searchQuery.toLowerCase().trim();
+    return actionItems.filter(item => {
+      const code = String(item.booking_id).toLowerCase();
+      const customer = String(item.customer_name || '').toLowerCase();
+      const room = String(item.room_name || '').toLowerCase();
+      return code.includes(q) || customer.includes(q) || room.includes(q);
+    });
+  }, [actionItems, searchQuery]);
+
+  // Chronological Today Schedule
+  const sortedTodayBookings = useMemo(() => {
+    return [...(activeData.todayBookings || [])].sort((a, b) => {
+      const tA = new Date(a.start_time).getTime();
+      const tB = new Date(b.start_time).getTime();
+      return tA - tB;
+    });
+  }, [activeData.todayBookings]);
+
+  // Filtered Schedule by Search
+  const filteredSchedule = useMemo(() => {
+    if (!searchQuery.trim()) return sortedTodayBookings;
+    const q = searchQuery.toLowerCase().trim();
+    return sortedTodayBookings.filter(b => {
+      const code = String(b.booking_id || b.id || '').toLowerCase();
+      const customer = String(b.customer_name || '').toLowerCase();
+      const room = String(b.room_name || '').toLowerCase();
+      return code.includes(q) || customer.includes(q) || room.includes(q);
+    });
+  }, [sortedTodayBookings, searchQuery]);
+
+  // Determine Room States dynamically
+  const roomStatusList = useMemo(() => {
     const now = new Date();
-    let start = '';
-    let end = '';
 
-    if (type === 'today') {
-      const todayStr = toLocalDateString(now);
-      start = todayStr;
-      end = todayStr;
-    } else if (type === 'month') {
-      // First day of current month
-      const y = now.getFullYear();
-      const m = now.getMonth();
-      start = toLocalDateString(new Date(y, m, 1));
-      end = toLocalDateString(new Date(y, m + 1, 0));
-    } else if (type === 'year') {
-      const y = now.getFullYear();
-      start = `${y}-01-01`;
-      end = `${y}-12-31`;
+    return (activeData.rooms || []).map(room => {
+      if (room.isOccupied && room.currentBooking) {
+        let endFormatted = '';
+        try {
+          endFormatted = new Date(room.currentBooking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+        } catch (e) {
+          endFormatted = '';
+        }
+
+        return {
+          ...room,
+          stateType: 'occupied',
+          stateLabel: 'กำลังใช้งาน',
+          formattedEnd: endFormatted,
+          detailText: endFormatted ? `ถึง ${endFormatted} น.` : 'กำลังใช้งาน',
+          customerName: room.currentBooking.customer_name
+        };
+      }
+
+      // Check if there is an upcoming booking today for this room
+      const upcomingToday = (activeData.todayBookings || [])
+        .filter(b => {
+          const matchesRoom = (b.room_id != null && Number(b.room_id) === Number(room.id)) ||
+            (b.room_name && room.name && b.room_name.trim().toLowerCase() === room.name.trim().toLowerCase());
+          const isFuture = new Date(b.start_time).getTime() > now.getTime();
+          const notCancelled = b.payment_status !== 'cancelled' && b.payment_status !== 'rejected';
+          return matchesRoom && isFuture && notCancelled;
+        })
+        .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+
+      if (upcomingToday.length > 0) {
+        const nextB = upcomingToday[0];
+        let startFormatted = '';
+        try {
+          startFormatted = new Date(nextB.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+        } catch (e) {
+          startFormatted = '';
+        }
+
+        return {
+          ...room,
+          stateType: 'upcoming',
+          stateLabel: 'ว่าง',
+          formattedStart: startFormatted,
+          detailText: startFormatted ? `จองถัดไป ${startFormatted} น.` : 'มีการจองถัดไป',
+          customerName: nextB.customer_name
+        };
+      }
+
+      return {
+        ...room,
+        stateType: 'available',
+        stateLabel: 'ว่าง',
+        formattedStart: null,
+        detailText: 'พร้อมใช้งาน',
+        customerName: null
+      };
+    });
+  }, [activeData]);
+
+  // Filtered Rooms by Search
+  const filteredRooms = useMemo(() => {
+    if (!searchQuery.trim()) return roomStatusList;
+    const q = searchQuery.toLowerCase().trim();
+    return roomStatusList.filter(room => {
+      const name = String(room.name || '').toLowerCase();
+      const customer = String(room.customerName || '').toLowerCase();
+      return name.includes(q) || customer.includes(q);
+    });
+  }, [roomStatusList, searchQuery]);
+
+  // Permission Destination Guard
+  const canAccess = (tabKey) => {
+    if (typeof hasPermission === 'function') {
+      return hasPermission(tabKey);
+    }
+    if (!user) return false;
+    if (user.username === 'admin') return true;
+    const permString = typeof user.permissions === 'string' ? user.permissions : '';
+    const perms = permString.split(',').map(p => p.trim()).filter(Boolean);
+    return perms.includes(tabKey);
+  };
+
+  const canAccessPos = canAccess('pos');
+  const canAccessPending = canAccess('pending');
+
+  // Handlers
+  const handleActionClick = (item) => {
+    const target = item.actionTarget || 'pending';
+    if (!canAccess(target)) return;
+
+    if (isDemoMode) {
+      if (sysAlert) {
+        sysAlert(`(โหมดตัวอย่าง) รายการ #${item.booking_id} จะนำทางไปยังหน้า "รายการจองห้อง" ในระบบจริง`);
+      }
+      return;
     }
 
-    setDateRange({ startDate: start, endDate: end });
+    if (onNavigate) {
+      onNavigate(target, {
+        bookingId: item.booking_id,
+        action: item.priority === 'reviewing' ? 'review' : 'view'
+      });
+    }
   };
 
-  const formatCurrency = (val) => {
-    return val.toLocaleString('th-TH', { style: 'currency', currency: 'THB', minimumFractionDigits: 0 });
+  const handleQuickAction = (targetTab, options = {}) => {
+    if (!canAccess(targetTab)) return;
+    if (onNavigate) {
+      onNavigate(targetTab, options);
+    }
   };
+
+  const formatTimeOnly = (isoStr) => {
+    try {
+      if (!isoStr) return '--:--';
+      return new Date(isoStr).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+    } catch (e) {
+      return '--:--';
+    }
+  };
+
+  const formatServiceTime = (startStr, endStr) => {
+    try {
+      if (!startStr) return '-';
+      const startT = formatTimeOnly(startStr);
+      const endT = endStr ? formatTimeOnly(endStr) : '';
+      return endT ? `${startT} - ${endT} น.` : `${startT} น.`;
+    } catch (e) {
+      return `${startStr} - ${endStr || ''}`;
+    }
+  };
+
+  const getTimelineState = (startStr, endStr) => {
+    try {
+      const now = new Date();
+      const startT = new Date(startStr);
+      const endT = new Date(endStr);
+
+      if (!isNaN(endT.getTime()) && now > endT) {
+        return 'past';
+      }
+      if (!isNaN(startT.getTime()) && !isNaN(endT.getTime()) && now >= startT && now <= endT) {
+        return 'current';
+      }
+      return 'future';
+    } catch (e) {
+      return 'future';
+    }
+  };
+
+  const occupiedRoomsCount = useMemo(() => {
+    return (activeData.rooms || []).filter(r => r.isOccupied).length;
+  }, [activeData.rooms]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {/* Header and Date Filter */}
-      <div className="tab-header">
-        <div>
-          <h1 className="tab-title">แดชบอร์ดสรุปผลการใช้งาน</h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>วิเคราะห์รายได้ ยอดจองห้องประชุม และบริการเสริม</p>
+    <div className="op-console">
+      {/* ===================================================
+          1. HEADER (Compact operational header)
+          =================================================== */}
+      <header className="op-console-header">
+        <div className="op-header-left">
+          <h1 className="op-console-title">Today Overview</h1>
+          <div className="op-console-subline">
+            <span>{thaiDateFormatted}</span>
+            {currentTimeText && (
+              <>
+                <span className="op-subline-dot">•</span>
+                <span className="op-subline-time">{currentTimeText}</span>
+              </>
+            )}
+            <span className="op-sync-badge">
+              <span className={`op-sync-dot ${isBackgroundRefreshing ? 'pulsing' : ''}`} />
+              <span>{isBackgroundRefreshing ? 'กำลังซิงค์...' : `อัปเดต ${lastUpdatedTime || '-'}`}</span>
+            </span>
+            {isDev && isDemoMode && (
+              <span className="op-demo-tag">โหมดตัวอย่าง (Demo)</span>
+            )}
+          </div>
         </div>
 
-        {/* Date Filters Control */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', gap: '6px' }}>
-            <button className="btn btn-secondary" style={{ padding: '8px 12px', fontSize: '0.85rem' }} onClick={() => setQuickRange('today')}>รายวัน (วันนี้)</button>
-            <button className="btn btn-secondary" style={{ padding: '8px 12px', fontSize: '0.85rem' }} onClick={() => setQuickRange('month')}>รายเดือน (เดือนนี้)</button>
-            <button className="btn btn-secondary" style={{ padding: '8px 12px', fontSize: '0.85rem' }} onClick={() => setQuickRange('year')}>รายปี (ปีนี้)</button>
+        <div className="op-header-right">
+          {/* Local Search Input */}
+          <div className="op-search-box">
+            <Search size={14} className="op-search-icon" />
+            <input
+              type="text"
+              className="op-search-input"
+              placeholder="ค้นหารายการ, ลูกค้า, หรือห้อง..."
+              aria-label="ค้นหารายการจอง, ลูกค้า, หรือห้องประชุม"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="op-search-clear"
+                onClick={() => setSearchQuery('')}
+                aria-label="ล้างการค้นหา"
+              >
+                ล้าง
+              </button>
+            )}
           </div>
 
-          <div style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '6px', 
-            border: '1px solid var(--border-color)', 
-            padding: '6px 14px', 
-            borderRadius: '99px', 
-            backgroundColor: 'var(--bg-card)' 
-          }}>
-            <Calendar size={14} style={{ color: 'var(--text-muted)' }} />
-            <CustomDatePicker 
-              value={dateRange.startDate}
-              onChange={val => setDateRange({ ...dateRange, startDate: val })}
-              placeholder="วันเริ่มต้น"
-            />
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', padding: '0 4px' }}>ถึง</span>
-            <CustomDatePicker 
-              value={dateRange.endDate}
-              onChange={val => setDateRange({ ...dateRange, endDate: val })}
-              placeholder="วันสิ้นสุด"
-            />
-          </div>
+          {/* + สร้างการจอง (Existing POS navigation contract - guarded by POS permission) */}
+          {canAccessPos && (
+            <button
+              type="button"
+              className="op-btn op-btn-primary"
+              onClick={() => handleQuickAction('pos')}
+              title="เปิดระบบจุดขาย POS เพื่อสร้างการจองใหม่"
+            >
+              <Plus size={15} />
+              <span>สร้างการจอง</span>
+            </button>
+          )}
 
-          <button 
-            type="button" 
-            className="btn btn-secondary" 
-            style={{ padding: '8px 16px', fontSize: '0.85rem', borderRadius: '99px' }}
-            onClick={() => setQuickRange('month')}
+          {/* Refresh Button */}
+          <button
+            type="button"
+            className="op-btn op-btn-icon"
+            onClick={() => fetchOperationalData(true)}
+            disabled={isBackgroundRefreshing}
+            aria-label="รีเฟรชข้อมูลประจำวัน"
+            title="รีเฟรชข้อมูลประจำวัน"
           >
-            ล้างตัวกรอง
+            <RefreshCw size={14} className={isBackgroundRefreshing ? 'animate-spin' : ''} />
+          </button>
+
+          {/* DEV-only Demo Mode Toggle */}
+          {isDev && (
+            <button
+              type="button"
+              className={`op-btn op-btn-demo ${isDemoMode ? 'active' : ''}`}
+              onClick={() => setIsDemoMode(!isDemoMode)}
+              title="เปิด/ปิดข้อมูลตัวอย่างสำหรับการตรวจรับสายตาในโหมดพัฒนา"
+            >
+              <ShieldAlert size={14} />
+              <span>{isDemoMode ? 'ปิดตัวอย่าง' : 'ข้อมูลตัวอย่าง'}</span>
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* API Error Alert Banner */}
+      {apiError && (
+        <div className="op-console-error">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertCircle size={16} />
+            <span>{apiError}</span>
+          </div>
+          <button
+            type="button"
+            className="op-btn op-btn-sm"
+            onClick={() => fetchOperationalData(true)}
+          >
+            ลองใหม่อีกครั้ง
           </button>
         </div>
-      </div>
+      )}
 
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: '60px' }}>
-          <span style={{ fontSize: '1.2rem', fontWeight: 500, color: 'var(--text-muted)' }}>กำลังคำนวณข้อมูลสถิติ...</span>
+      {/* ===================================================
+          2. FLAT OPERATIONAL SUMMARY (Directly below header)
+          =================================================== */}
+      <section className="op-console-summary" aria-label="สรุปข้อมูลการดำเนินงาน">
+        {/* รอตรวจสลิป */}
+        <div className="op-summary-item accent-blue">
+          <span className="op-summary-label">รอตรวจสลิป</span>
+          <span className="op-summary-val">{activeData.reviewingCount}</span>
         </div>
-      ) : (
-        <>
-          {/* KPI Cards Grid */}
-          <div className="grid-cols-4">
-            <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <div style={{ backgroundColor: 'rgba(2, 132, 199, 0.15)', color: 'var(--accent-color)', padding: '12px', borderRadius: '50%' }}>
-                <DollarSign size={24} />
-              </div>
-              <div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>รายได้สุทธิรวม</p>
-                <h3 style={{ fontSize: '1.4rem', fontWeight: 700 }}>{formatCurrency(kpis.revenue)}</h3>
-              </div>
-            </div>
 
-            <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <div style={{ backgroundColor: 'rgba(56, 189, 248, 0.15)', color: 'var(--primary-color)', padding: '12px', borderRadius: '50%' }}>
-                <FileText size={24} />
-              </div>
-              <div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>ยอดการจองบริการ</p>
-                <h3 style={{ fontSize: '1.4rem', fontWeight: 700 }}>{kpis.bookingsCount} รายการ</h3>
-              </div>
-            </div>
+        {/* ใกล้ถึงเวลา */}
+        <div className="op-summary-item accent-amber">
+          <span className="op-summary-label">ใกล้ถึงเวลา</span>
+          <span className="op-summary-val">{(activeData.upcomingAlerts || []).length}</span>
+        </div>
 
-            <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <div style={{ backgroundColor: 'var(--success-bg)', color: 'var(--success-color)', padding: '12px', borderRadius: '50%' }}>
-                <CheckCircle size={24} />
-              </div>
-              <div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>ชำระเงินเรียบร้อย</p>
-                <h3 style={{ fontSize: '1.4rem', fontWeight: 700 }} className="text-success">{kpis.paidCount} รายการ</h3>
-              </div>
-            </div>
+        {/* กำลังใช้งาน */}
+        <div className="op-summary-item accent-green">
+          <span className="op-summary-label">กำลังใช้งาน</span>
+          <span className="op-summary-val">
+            {occupiedRoomsCount}
+            <span className="op-summary-denom">/{(activeData.rooms || []).length || 0}</span>
+          </span>
+        </div>
 
-            <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <div style={{ backgroundColor: 'rgba(245, 158, 11, 0.15)', color: 'var(--warning-color)', padding: '12px', borderRadius: '50%' }}>
-                <Clock size={24} />
-              </div>
-              <div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>ค้างชำระเงิน (Pending)</p>
-                <h3 style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--warning-color)' }}>{kpis.pendingCount} รายการ</h3>
-              </div>
-            </div>
-          </div>
+        {/* การจองวันนี้ */}
+        <div className="op-summary-item accent-slate">
+          <span className="op-summary-label">การจองวันนี้</span>
+          <span className="op-summary-val">{(activeData.todayBookings || []).length}</span>
+        </div>
+      </section>
 
-          {/* Revenue Trend Area Chart */}
-          <div className="card" style={{ padding: '24px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
-              <TrendingUp size={20} style={{ color: 'var(--accent-color)' }} />
-              <h2 style={{ fontSize: '1.1rem', fontWeight: 700 }}>กราฟแนวโน้มรายได้การใช้บริการ (แยกรายวัน)</h2>
-            </div>
-            
-            <div style={{ width: '100%', height: '300px' }}>
-              {kpis.trend.length === 0 ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-                  ไม่มีข้อมูลแนวโน้มรายได้ในช่วงวันที่ระบุ
-                </div>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={kpis.trend} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="colorRevenue" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="var(--accent-color)" stopOpacity={0.4}/>
-                        <stop offset="95%" stopColor="var(--accent-color)" stopOpacity={0.0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border-color)" />
-                    <XAxis 
-                      dataKey="date" 
-                      tickFormatter={d => {
-                        const parts = d.split('-');
-                        return parts.length === 3 ? `${parts[2]}/${parts[1]}` : d;
-                      }}
-                      stroke="var(--text-muted)"
-                      style={{ fontSize: '0.75rem' }}
-                    />
-                    <YAxis stroke="var(--text-muted)" style={{ fontSize: '0.75rem' }} />
-                    <Tooltip 
-                      formatter={(value) => [formatCurrency(value), 'รายได้']}
-                      labelFormatter={(label) => `วันที่: ${label}`}
-                      contentStyle={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-color)', borderRadius: '8px', color: 'var(--text-main)' }}
-                    />
-                    <Area type="monotone" dataKey="revenue" stroke="var(--accent-color)" strokeWidth={2} fillOpacity={1} fill="url(#colorRevenue)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          </div>
-
-          {/* Breakdown Analysis Grid */}
-          <div className="grid-cols-2">
-            {/* Rooms Popularity Chart */}
-            <div className="card">
-              <h2 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '20px' }}>รายได้แยกตามห้องประชุม</h2>
-              
-              <div style={{ width: '100%', height: '240px' }}>
-                {kpis.popularRooms.length === 0 ? (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-                    ไม่มีข้อมูลห้องประชุมถูกจองในช่วงวันที่ระบุ
-                  </div>
-                ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={kpis.popularRooms} layout="vertical" margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="var(--border-color)" />
-                      <XAxis type="number" stroke="var(--text-muted)" style={{ fontSize: '0.7rem' }} />
-                      <YAxis dataKey="name" type="category" stroke="var(--text-main)" style={{ fontSize: '0.7rem' }} width={120} />
-                      <Tooltip formatter={(value) => [formatCurrency(value), 'รายได้ห้อง']} />
-                      <Bar dataKey="total_revenue" fill="var(--accent-color)" radius={[0, 4, 4, 0]} barSize={16} />
-                    </BarChart>
-                  </ResponsiveContainer>
+      {/* ===================================================
+          3. MAIN OPERATIONS GRID (60% / 40% Split)
+          Row 1: Today Schedule (60%)   | Rooms Now (40%)
+          Row 2: Action Required (60%)  | Booking Workspace (40%)
+          =================================================== */}
+      <div className="op-console-grid">
+        {/* LEFT COLUMN: 60% */}
+        <div className="op-grid-col op-col-main">
+          {/* PRIMARY LEFT: TODAY SCHEDULE */}
+          <section className="op-card-section op-schedule-section">
+            <div className="op-section-header">
+              <div className="op-section-title-wrap">
+                <h2 className="op-section-title">Today Schedule</h2>
+                <span className="op-section-sub">กำหนดการวันนี้</span>
+                {filteredSchedule.length > 0 && (
+                  <span className="op-badge-count">{filteredSchedule.length}</span>
                 )}
               </div>
+              <span className="op-section-hint">เรียงตามเวลาเริ่มต้น</span>
             </div>
 
-            {/* Popular Services Table/List */}
-            <div className="card">
-              <h2 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '16px' }}>สถิติการขายบริการเสริม</h2>
-              
-              {kpis.popularServices.length === 0 ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '160px', color: 'var(--text-muted)' }}>
-                  ไม่มีข้อมูลการขายบริการเสริมในช่วงวันที่ระบุ
-                </div>
-              ) : (
-                <div className="table-container">
-                  <table className="custom-table" style={{ fontSize: '0.85rem' }}>
-                    <thead>
-                      <tr>
-                        <th>ชื่อบริการเสริม</th>
-                        <th style={{ textAlign: 'center' }}>จำนวนที่สั่ง</th>
-                        <th style={{ textAlign: 'right' }}>รายได้รวม (บาท)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {kpis.popularServices.map((service, idx) => (
-                        <tr key={idx}>
-                          <td style={{ fontWeight: '500' }}>{service.name}</td>
-                          <td style={{ textAlign: 'center' }}>x{service.total_quantity}</td>
-                          <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--primary-color)' }}>
-                            {service.total_revenue.toLocaleString()}.-
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+            {loading && !activeData.todayBookings.length ? (
+              <div className="op-console-loading">
+                <RefreshCw size={18} className="animate-spin" style={{ color: 'var(--primary-color)' }} />
+                <span>กำลังโหลดกำหนดการวันนี้...</span>
+              </div>
+            ) : filteredSchedule.length === 0 ? (
+              <div className="op-console-empty-schedule">
+                <p className="op-empty-main-text">
+                  {searchQuery ? `ไม่พบกำหนดการที่ตรงกับ "${searchQuery}"` : 'ไม่มีกำหนดการจองสำหรับวันนี้'}
+                </p>
+                {searchQuery && (
+                  <button
+                    type="button"
+                    className="op-btn op-btn-sm"
+                    onClick={() => setSearchQuery('')}
+                  >
+                    ล้างการค้นหา
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="op-schedule-timeline">
+                {filteredSchedule.map((b) => {
+                  const timeState = getTimelineState(b.start_time, b.end_time);
+                  const isReviewing = b.payment_status === 'reviewing';
+                  const isApproaching = (activeData.upcomingAlerts || []).some(
+                    u => String(u.booking_id) === String(b.booking_id || b.id)
+                  );
+
+                  return (
+                    <div
+                      key={b.booking_id || b.id}
+                      className={`op-timeline-row state-${timeState}`}
+                    >
+                      {/* Time Rail */}
+                      <div className="op-time-rail">
+                        <span className="op-time-start">{formatTimeOnly(b.start_time)}</span>
+                        <span className="op-time-dash">-</span>
+                        <span className="op-time-end">{formatTimeOnly(b.end_time)}</span>
+                        <div className="op-time-rail-line" />
+                      </div>
+
+                      {/* Schedule Band Content */}
+                      <div className="op-schedule-content">
+                        <div className="op-schedule-primary">
+                          <div className="op-schedule-room-row">
+                            <span className="op-schedule-room">{b.room_name || 'ห้องประชุม'}</span>
+                            {timeState === 'current' && (
+                              <span className="op-schedule-current-badge">
+                                <span className="op-badge-pulse-dot" />
+                                กำลังใช้งาน
+                              </span>
+                            )}
+                          </div>
+                          <span className="op-schedule-customer">{b.customer_name || 'ลูกค้า'}</span>
+                        </div>
+
+                        <div className="op-schedule-actions">
+                          {/* Compact Payment / Booking Status Pill */}
+                          <span className={`op-status-pill ${
+                            b.payment_status === 'paid' ? 'op-pill-green' :
+                            b.payment_status === 'reviewing' ? 'op-pill-blue' :
+                            'op-pill-amber'
+                          }`}>
+                            {b.payment_status === 'paid' ? 'ชำระแล้ว' :
+                             b.payment_status === 'reviewing' ? 'รอตรวจสลิป' :
+                             b.payment_status === 'pending' ? 'รอชำระ' : b.payment_status}
+                          </span>
+
+                          {/* Contextual Action ONLY when useful and permitted */}
+                          {isReviewing && canAccessPending ? (
+                            <button
+                              type="button"
+                              className="op-action-btn op-btn-action-primary"
+                              onClick={() => handleActionClick({
+                                booking_id: b.booking_id || b.id,
+                                priority: 'reviewing',
+                                actionTarget: 'pending'
+                              })}
+                              title={`ตรวจสอบการชำระเงิน #${b.booking_id || b.id}`}
+                            >
+                              <span>ตรวจสอบ</span>
+                              <ArrowRight size={13} />
+                            </button>
+                          ) : isApproaching && canAccessPending ? (
+                            <button
+                              type="button"
+                              className="op-action-btn op-btn-action-amber"
+                              onClick={() => handleActionClick({
+                                booking_id: b.booking_id || b.id,
+                                priority: 'upcoming',
+                                actionTarget: 'pending'
+                              })}
+                              title={`ดูรายละเอียดการจอง #${b.booking_id || b.id}`}
+                            >
+                              <span>ดูการจอง</span>
+                              <ArrowRight size={13} />
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* SECONDARY LEFT: ACTION REQUIRED (ต้องดำเนินการ) */}
+          <section className="op-card-section op-action-section">
+            <div className="op-section-header">
+              <div className="op-section-title-wrap">
+                <h2 className="op-section-title">ต้องดำเนินการ</h2>
+                {filteredActionItems.length > 0 && (
+                  <span className="op-badge-count amber">{filteredActionItems.length}</span>
+                )}
+              </div>
+              <span className="op-section-hint">รายการเร่งด่วนที่ต้องจัดการ</span>
             </div>
-          </div>
-        </>
-      )}
+
+            {filteredActionItems.length === 0 ? (
+              <div className="op-action-empty-row">
+                {searchQuery ? (
+                  <span className="op-empty-lead">ไม่พบรายการเร่งด่วนที่ตรงกับคำค้นหา</span>
+                ) : (
+                  <>
+                    <span className="op-empty-pulse-dot" />
+                    <span className="op-empty-lead">ไม่มีรายการเร่งด่วน</span>
+                    <span className="op-empty-sep">•</span>
+                    <span className="op-empty-sub">ทุกอย่างเรียบร้อยแล้ว</span>
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="op-action-list">
+                {filteredActionItems.map((item) => (
+                  <div key={item.id} className={`op-action-row priority-${item.priority}`}>
+                    <div className="op-action-info">
+                      <div className="op-action-top">
+                        <span className="op-booking-tag">#{item.booking_id}</span>
+                        <span className="op-action-room">{item.room_name}</span>
+                        <span className={`op-status-pill op-pill-${item.statusType}`}>
+                          {item.statusLabel}
+                        </span>
+                      </div>
+                      <div className="op-action-meta">
+                        <span className="op-action-customer">{item.customer_name}</span>
+                        <span className="op-action-time">{formatServiceTime(item.start_time, item.end_time)}</span>
+                      </div>
+                    </div>
+
+                    {canAccessPending && (
+                      <button
+                        type="button"
+                        className={`op-action-btn ${
+                          item.priority === 'reviewing' ? 'op-btn-action-primary' : 'op-btn-action-amber'
+                        }`}
+                        onClick={() => handleActionClick(item)}
+                        title={`${item.actionLabel} รายการ #${item.booking_id}`}
+                      >
+                        <span>{item.actionLabel}</span>
+                        <ArrowRight size={13} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        {/* RIGHT COLUMN: 40% */}
+        <div className="op-grid-col op-col-side">
+          {/* PRIMARY RIGHT: ROOMS NOW (ห้องประชุมตอนนี้) */}
+          <section className="op-card-section op-rooms-section">
+            <div className="op-section-header">
+              <div className="op-section-title-wrap">
+                <h2 className="op-section-title">Rooms Now</h2>
+                <span className="op-section-sub">ห้องประชุมตอนนี้</span>
+                <span className="op-badge-count">{filteredRooms.length}</span>
+              </div>
+              <span className="op-section-hint">สถานะเรียลไทม์</span>
+            </div>
+
+            {loading && !filteredRooms.length ? (
+              <div className="op-console-loading">
+                <RefreshCw size={18} className="animate-spin" style={{ color: 'var(--primary-color)' }} />
+                <span>กำลังตรวจสอบสถานะห้อง...</span>
+              </div>
+            ) : filteredRooms.length === 0 ? (
+              <div className="op-console-empty-schedule">
+                <p className="op-empty-main-text">
+                  {searchQuery ? 'ไม่พบห้องที่ตรงกับการค้นหา' : 'ไม่มีข้อมูลห้องประชุม'}
+                </p>
+              </div>
+            ) : (
+              <div className="op-rooms-list">
+                {filteredRooms.map((room) => (
+                  <div
+                    key={room.id}
+                    className={`op-room-row status-${room.stateType}`}
+                  >
+                    <div className="op-room-main-info">
+                      <span className="op-room-title">{room.name}</span>
+                      {room.capacity ? (
+                        <span className="op-room-cap">{room.capacity} ที่นั่ง</span>
+                      ) : null}
+                    </div>
+
+                    <div className="op-room-status-info">
+                      <span className={`op-room-dot dot-${room.stateType}`} />
+                      <div className="op-room-status-texts">
+                        <span className="op-room-status-label">{room.stateLabel}</span>
+                        <span className="op-room-status-context">
+                          {room.stateType === 'occupied'
+                            ? `ถึง ${room.formattedEnd || ''} น.`
+                            : room.stateType === 'upcoming'
+                            ? `จองถัดไป ${room.formattedStart || ''} น.`
+                            : 'พร้อมใช้งาน'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* SECONDARY RIGHT: BOOKING WORKSPACE (Direct POS Shortcuts - guarded by POS permission) */}
+          {canAccessPos && (
+            <section className="op-card-section op-workspace-section">
+              <div className="op-section-header">
+                <div className="op-section-title-wrap">
+                  <h2 className="op-section-title">Booking Workspace</h2>
+                  <span className="op-section-sub">เครื่องมือจัดการการจอง</span>
+                </div>
+                <span className="op-section-hint">ทางลัดระบบ POS</span>
+              </div>
+
+              <div className="op-workspace-list">
+                {/* Shortcut 1: Calendar */}
+                <button
+                  type="button"
+                  className="op-workspace-item"
+                  onClick={() => handleQuickAction('pos', { view: 'calendar' })}
+                  title="เปิดปฏิทินรายเดือนในระบบ POS (Calendar View)"
+                >
+                  <div className="op-workspace-icon-wrap">
+                    <Calendar size={18} />
+                  </div>
+                  <div className="op-workspace-text">
+                    <div className="op-workspace-title-row">
+                      <span className="op-workspace-title">Calendar</span>
+                      <span className="op-workspace-badge">ปฏิทินเดือน</span>
+                    </div>
+                    <p className="op-workspace-desc">ดูตารางและปฏิทินการจองห้องประชุมรายเดือน</p>
+                  </div>
+                  <ArrowRight size={15} className="op-workspace-arrow" />
+                </button>
+
+                {/* Shortcut 2: Timeline Matrix */}
+                <button
+                  type="button"
+                  className="op-workspace-item"
+                  onClick={() => handleQuickAction('pos', { view: 'matrix' })}
+                  title="เปิดผังจองห้องประจำวันในระบบ POS (Timeline Matrix & Cards)"
+                >
+                  <div className="op-workspace-icon-wrap">
+                    <LayoutGrid size={18} />
+                  </div>
+                  <div className="op-workspace-text">
+                    <div className="op-workspace-title-row">
+                      <span className="op-workspace-title">Timeline Matrix</span>
+                      <span className="op-workspace-badge">ผังจองห้องประจำวัน</span>
+                    </div>
+                    <p className="op-workspace-desc">ดูผังเวลาและการใช้ห้องประชุมรายวันแบบเรียลไทม์</p>
+                  </div>
+                  <ArrowRight size={15} className="op-workspace-arrow" />
+                </button>
+              </div>
+            </section>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

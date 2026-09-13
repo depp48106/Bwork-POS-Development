@@ -45,7 +45,7 @@ const addDaysToDateStr = (dateStr, days) => {
   return formatDateToYYYYMMDD(d);
 };
 
-function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselectedRoom, onNavigate, onExportToQuotation, showCartSidebar, setShowCartSidebar, onCartCountChange }) {
+function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselectedRoom, posTargetView, clearPosTargetView, onNavigate, onExportToQuotation, showCartSidebar, setShowCartSidebar, onCartCountChange }) {
   const [rooms, setRooms] = useState([]);
   const [services, setServices] = useState([]);
   const [cart, setCart] = useState([]);
@@ -53,6 +53,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   
   // View Modes: 'matrix' (Unified Timeline Matrix & Rich Room Cards) | 'calendar' (Monthly Calendar Overview)
   const [mainViewMode, setMainViewMode] = useState('matrix');
+
+  // Handle transient view target handoff from Today Overview shortcuts
+  useEffect(() => {
+    if (posTargetView) {
+      if (posTargetView === 'calendar' || posTargetView === 'matrix') {
+        setMainViewMode(posTargetView);
+      }
+      if (typeof clearPosTargetView === 'function') {
+        clearPosTargetView();
+      }
+    }
+  }, [posTargetView, clearPosTargetView]);
+
   const [showBasecampQuotaModal, setShowBasecampQuotaModal] = useState(false);
   const [timelineCategory, setTimelineCategory] = useState('all');
   const [timelineDate, setTimelineDate] = useState(formatDateToYYYYMMDD(new Date()));
