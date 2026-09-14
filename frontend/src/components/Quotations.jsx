@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Plus, Minus, Trash2, Calendar, FileText, Check, X, Search, Printer, ArrowRight, 
   AlertCircle, Edit, Trash, RefreshCw, ChevronDown, Clock, Building, Download, Share2, Copy, Eye, UserCheck,
@@ -89,6 +89,18 @@ function thaiBahtText(num) {
 function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, clearQuotationCartData, onNavigate }) {
   const [quotations, setQuotations] = useState([]);
   const [loading, setLoading] = useState(false);
+  const isFetchingRef = useRef(false);
+  // Manual refresh visual feedback states: 'idle' | 'loading' | 'success'
+  const [manualRefreshState, setManualRefreshState] = useState('idle');
+  const successTimerRef = useRef(null);
+
+  // Cleanup feedback timer on unmount
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
 
@@ -274,19 +286,41 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
     return `QT-${yy}${mm}001`;
   };
 
-  const fetchQuotations = async () => {
-    setLoading(true);
+  const fetchQuotations = async (isManual = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    if (quotations.length === 0) setLoading(true);
+    if (isManual) {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+      setManualRefreshState('loading');
+    }
+    const startedAt = isManual ? performance.now() : 0;
     try {
       const res = await fetch('/api/quotations');
       if (res.ok) {
         const data = await res.json();
         setQuotations(data);
       }
+      if (isManual) {
+        const elapsed = performance.now() - startedAt;
+        const remaining = Math.max(0, 350 - elapsed);
+        if (remaining > 0) {
+          await new Promise(r => setTimeout(r, remaining));
+        }
+        setManualRefreshState('success');
+        successTimerRef.current = setTimeout(() => {
+          setManualRefreshState('idle');
+        }, 1000);
+      }
     } catch (err) {
       console.error(err);
+      if (isManual) {
+        setManualRefreshState('idle');
+      }
       sysAlert('ไม่สามารถเชื่อมต่อดึงข้อมูลใบเสนอราคาได้');
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
   };
 
@@ -2419,8 +2453,8 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <button
                 type="button"
-                onClick={fetchQuotations}
-                disabled={loading}
+                onClick={() => fetchQuotations(true)}
+                disabled={loading || manualRefreshState === 'loading'}
                 className="btn btn-secondary"
                 style={{
                   height: '44px',
@@ -2431,12 +2465,24 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
                   gap: '8px',
                   fontSize: '0.84rem',
                   fontWeight: 600,
-                  cursor: 'pointer'
+                  cursor: 'pointer',
+                  borderColor: manualRefreshState === 'success' ? 'rgba(16, 185, 129, 0.4)' : undefined,
+                  color: manualRefreshState === 'success' ? '#10b981' : undefined,
+                  backgroundColor: manualRefreshState === 'success' ? 'rgba(16, 185, 129, 0.06)' : undefined
                 }}
                 title="รีเฟรชข้อมูล"
               >
-                <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-                <span>รีเฟรช</span>
+                {manualRefreshState === 'success' ? (
+                  <>
+                    <Check size={16} style={{ color: '#10b981' }} />
+                    <span>อัปเดตแล้ว</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw size={16} className={manualRefreshState === 'loading' ? 'animate-spin' : ''} />
+                    <span>{manualRefreshState === 'loading' ? 'กำลังรีเฟรช...' : 'รีเฟรช'}</span>
+                  </>
+                )}
               </button>
 
               <button
@@ -2595,7 +2641,7 @@ function Quotations({ user, settings, sysAlert, sysConfirm, quotationCartData, c
                 </tr>
               </thead>
               <tbody>
-                {loading ? (
+                {loading && quotations.length === 0 ? (
                   <tr>
                     <td colSpan="7" style={{ textAlign: 'center', padding: '70px 20px', color: 'var(--text-muted)' }}>
                       <RefreshCw size={32} className="animate-spin" style={{ margin: '0 auto 14px auto', color: '#2563EB' }} />

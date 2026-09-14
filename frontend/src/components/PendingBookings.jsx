@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import {
   RefreshCw,
   Clock,
@@ -67,6 +67,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [bookings, setBookings] = useState([]);
   const [roomsList, setRoomsList] = useState([]);
   const [loading, setLoading] = useState(false);
+  const isFetchingRef = useRef(false);
   // Helper to get local YYYY-MM-DD string
   const getTodayStr = () => {
     const today = new Date();
@@ -188,6 +189,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [sortOrder, setSortOrder] = useState('desc'); // default: newest first
 
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // Manual refresh visual feedback states: 'idle' | 'loading' | 'success'
+  const [manualRefreshState, setManualRefreshState] = useState('idle');
+  const successTimerRef = useRef(null);
+
+  // Cleanup feedback timer on unmount
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
 
   // Door PIN reveal and copy states for table display
   const [revealedPins, setRevealedPins] = useState({}); // { [bookingId]: boolean }
@@ -295,9 +306,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
   const handleClearFilters = handleResetFilters;
 
-  const fetchBookings = async (isBackground = false) => {
+  const fetchBookings = async (isBackground = false, isManual = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
     if (!isBackground) setLoading(true);
-    setIsRefreshing(true);
+    if (isManual) {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+      setManualRefreshState('loading');
+      setIsRefreshing(true);
+    }
+    const startedAt = isManual ? performance.now() : 0;
     try {
       // Fetch all bookings so user can switch between Pending, Paid, Cancelled tabs instantly
       const res = await fetch('/api/bookings');
@@ -305,9 +323,24 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const data = await res.json();
         setBookings(data || []);
       }
+      if (isManual) {
+        const elapsed = performance.now() - startedAt;
+        const remaining = Math.max(0, 350 - elapsed);
+        if (remaining > 0) {
+          await new Promise(r => setTimeout(r, remaining));
+        }
+        setManualRefreshState('success');
+        successTimerRef.current = setTimeout(() => {
+          setManualRefreshState('idle');
+        }, 1000);
+      }
     } catch (err) {
       console.error('Failed to fetch bookings:', err);
+      if (isManual) {
+        setManualRefreshState('idle');
+      }
     } finally {
+      isFetchingRef.current = false;
       if (!isBackground) setLoading(false);
       setIsRefreshing(false);
     }
@@ -1413,8 +1446,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   // Pagination Calculations
   const totalRows = sortedBookings.length;
   const totalPages = Math.ceil(totalRows / rowsPerPage) || 1;
-  const indexOfLastRow = currentPage * rowsPerPage;
-  const indexOfFirstRow = indexOfLastRow - rowsPerPage;
+
+  // Clamp pagination safely if totalPages changes
+  useEffect(() => {
+    if (totalPages >= 1 && currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    } else if (totalPages === 0 && currentPage !== 1) {
+      setCurrentPage(1);
+    }
+  }, [currentPage, totalPages]);
+
+  const safeCurrentPage = totalPages >= 1 ? Math.min(currentPage, totalPages) : 1;
+  const indexOfLastRow = safeCurrentPage * rowsPerPage;
+  const indexOfFirstRow = Math.max(0, indexOfLastRow - rowsPerPage);
   const paginatedBookings = sortedBookings.slice(indexOfFirstRow, indexOfLastRow);
 
   return (
@@ -1486,13 +1530,22 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         <div className="pb-header-right">
           <button
             type="button"
-            className="pb-btn-action"
-            onClick={() => fetchBookings(false)}
-            disabled={loading || isRefreshing}
+            className={`pb-btn-action ${manualRefreshState === 'success' ? 'success' : ''}`}
+            onClick={() => fetchBookings(false, true)}
+            disabled={loading || manualRefreshState === 'loading'}
             title="รีเฟรชข้อมูลการจอง"
           >
-            <RefreshCw size={13} style={{ animation: isRefreshing ? 'spin 1s linear infinite' : 'none' }} />
-            <span>{isRefreshing ? 'กำลังโหลด...' : 'รีเฟรช'}</span>
+            {manualRefreshState === 'success' ? (
+              <>
+                <Check size={13} style={{ color: '#10b981' }} />
+                <span style={{ color: '#10b981' }}>อัปเดตแล้ว</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw size={13} className={manualRefreshState === 'loading' ? 'spin' : ''} />
+                <span>{manualRefreshState === 'loading' ? 'กำลังรีเฟรช...' : 'รีเฟรช'}</span>
+              </>
+            )}
           </button>
 
           {onNavigateToBook && (

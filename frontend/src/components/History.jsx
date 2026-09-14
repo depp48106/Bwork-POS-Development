@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import {
   Search,
   ChevronDown,
@@ -24,7 +24,8 @@ import {
   MoreHorizontal,
   Phone,
   User,
-  Copy
+  Copy,
+  Check
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import ReceiptPrint from './ReceiptPrint';
@@ -68,6 +69,17 @@ const STATUS_TABS = [
 function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [bookings, setBookings] = useState([]);
   const [loading, setLoading] = useState(false);
+  const isFetchingRef = useRef(false);
+  // Manual refresh visual feedback states: 'idle' | 'loading' | 'success'
+  const [manualRefreshState, setManualRefreshState] = useState('idle');
+  const successTimerRef = useRef(null);
+
+  // Cleanup feedback timer on unmount
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
 
   // Search & Filter State (Instant reactive filtering)
   const [searchQuery, setSearchQuery] = useState('');
@@ -157,18 +169,40 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     fetchBookings();
   }, []);
 
-  const fetchBookings = async () => {
-    setLoading(true);
+  const fetchBookings = async (isManual = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    if (bookings.length === 0) setLoading(true);
+    if (isManual) {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+      setManualRefreshState('loading');
+    }
+    const startedAt = isManual ? performance.now() : 0;
     try {
       const res = await fetch('/api/bookings');
       if (res.ok) {
         const data = await res.json();
         setBookings(data || []);
       }
+      if (isManual) {
+        const elapsed = performance.now() - startedAt;
+        const remaining = Math.max(0, 350 - elapsed);
+        if (remaining > 0) {
+          await new Promise(r => setTimeout(r, remaining));
+        }
+        setManualRefreshState('success');
+        successTimerRef.current = setTimeout(() => {
+          setManualRefreshState('idle');
+        }, 1000);
+      }
     } catch (err) {
       console.error('Failed to fetch bookings:', err);
+      if (isManual) {
+        setManualRefreshState('idle');
+      }
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
   };
 
@@ -593,8 +627,19 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   // Pagination Calculations
   const totalRows = sortedBookings.length;
   const totalPages = Math.ceil(totalRows / rowsPerPage) || 1;
-  const indexOfLastRow = currentPage * rowsPerPage;
-  const indexOfFirstRow = indexOfLastRow - rowsPerPage;
+
+  // Clamp pagination safely if totalPages changes
+  useEffect(() => {
+    if (totalPages >= 1 && currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    } else if (totalPages === 0 && currentPage !== 1) {
+      setCurrentPage(1);
+    }
+  }, [currentPage, totalPages]);
+
+  const safeCurrentPage = totalPages >= 1 ? Math.min(currentPage, totalPages) : 1;
+  const indexOfLastRow = safeCurrentPage * rowsPerPage;
+  const indexOfFirstRow = Math.max(0, indexOfLastRow - rowsPerPage);
   const paginatedBookings = sortedBookings.slice(indexOfFirstRow, indexOfLastRow);
 
   return (
@@ -679,8 +724,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={() => fetchBookings()}
-            disabled={loading}
+            onClick={() => fetchBookings(true)}
+            disabled={loading || manualRefreshState === 'loading'}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -690,12 +735,23 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
               padding: '7px 12px',
               borderRadius: '10px',
               border: '1px solid var(--border-color)',
-              background: 'var(--bg-card)'
+              background: manualRefreshState === 'success' ? 'rgba(16, 185, 129, 0.06)' : 'var(--bg-card)',
+              borderColor: manualRefreshState === 'success' ? 'rgba(16, 185, 129, 0.4)' : 'var(--border-color)',
+              color: manualRefreshState === 'success' ? '#10b981' : undefined
             }}
             title="โหลดข้อมูลล่าสุดจากเซิร์ฟเวอร์"
           >
-            <RefreshCw size={13} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-            <span>{loading ? 'กำลังโหลด...' : 'รีเฟรช'}</span>
+            {manualRefreshState === 'success' ? (
+              <>
+                <Check size={13} style={{ color: '#10b981' }} />
+                <span>อัปเดตแล้ว</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw size={13} className={manualRefreshState === 'loading' ? 'spin' : ''} />
+                <span>{manualRefreshState === 'loading' ? 'กำลังรีเฟรช...' : 'รีเฟรช'}</span>
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -976,7 +1032,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       </div>
 
       {/* 4. Bookings List Display */}
-      {loading ? (
+      {loading && bookings.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '60px' }}>
           <span style={{ fontSize: '1.1rem', color: 'var(--text-muted)' }}>กำลังโหลดประวัติ...</span>
         </div>

@@ -7,7 +7,8 @@ import {
   LayoutGrid,
   AlertCircle,
   ArrowRight,
-  ShieldAlert
+  ShieldAlert,
+  Check
 } from 'lucide-react';
 import './Dashboard.css';
 
@@ -136,6 +137,17 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
   const isDev = import.meta.env.DEV === true;
   const [isDemoMode, setIsDemoMode] = useState(false);
 
+  // Manual refresh visual feedback states: 'idle' | 'loading' | 'success'
+  const [manualRefreshState, setManualRefreshState] = useState('idle');
+  const successTimerRef = useRef(null);
+
+  // Cleanup feedback timer on unmount
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
+
   // Request guard to prevent overlapping calls
   const isFetchingRef = useRef(false);
 
@@ -171,11 +183,18 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
 
+    if (isManual) {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+      setManualRefreshState('loading');
+    }
+
     if (!isManual && !loading) {
       setIsBackgroundRefreshing(true);
     } else if (isManual) {
       setIsBackgroundRefreshing(true);
     }
+
+    const startedAt = isManual ? performance.now() : 0;
 
     try {
       setApiError(null);
@@ -195,6 +214,7 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
       const alertsData = await alertsRes.json();
       const occupancyData = await occupancyRes.json();
 
+      // Data is applied immediately
       setUpcomingAlerts(Array.isArray(alertsData.upcoming) ? alertsData.upcoming : []);
       setIncomingBookings(Array.isArray(alertsData.incomingBookings) ? alertsData.incomingBookings : []);
       setTodayBookings(Array.isArray(alertsData.todayBookings) ? alertsData.todayBookings : []);
@@ -204,8 +224,23 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
 
       const updateTime = now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       setLastUpdatedTime(updateTime);
+
+      if (isManual) {
+        const elapsed = performance.now() - startedAt;
+        const remaining = Math.max(0, 350 - elapsed);
+        if (remaining > 0) {
+          await new Promise(r => setTimeout(r, remaining));
+        }
+        setManualRefreshState('success');
+        successTimerRef.current = setTimeout(() => {
+          setManualRefreshState('idle');
+        }, 1000);
+      }
     } catch (err) {
       console.error('[Dashboard] Error fetching operational data:', err);
+      if (isManual) {
+        setManualRefreshState('idle');
+      }
       if (loading || isManual) {
         setApiError(err.message || 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
       }
@@ -419,7 +454,7 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
 
     if (isDemoMode) {
       if (sysAlert) {
-        sysAlert(`(โหมดตัวอย่าง) รายการ #${item.booking_id} จะนำทางไปยังหน้า "รายการจองห้อง" ในระบบจริง`);
+        sysAlert(`(Demo Mode) รายการ #${item.booking_id} จะนำทางไปยังหน้า "รายการจองห้อง" ในระบบจริง`);
       }
       return;
     }
@@ -497,13 +532,16 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
                 <span className="op-subline-time">{currentTimeText}</span>
               </>
             )}
-            <span className="op-sync-badge">
-              <span className={`op-sync-dot ${isBackgroundRefreshing ? 'pulsing' : ''}`} />
-              <span>{isBackgroundRefreshing ? 'กำลังซิงค์...' : `อัปเดต ${lastUpdatedTime || '-'}`}</span>
+            <span className={`op-sync-badge ${manualRefreshState === 'success' ? 'success' : ''}`}>
+              <span className={`op-sync-dot ${isBackgroundRefreshing || manualRefreshState === 'loading' ? 'pulsing' : manualRefreshState === 'success' ? 'success' : ''}`} />
+              <span>
+                {manualRefreshState === 'loading' || isBackgroundRefreshing
+                  ? 'กำลังซิงค์...'
+                  : manualRefreshState === 'success'
+                  ? 'อัปเดตแล้ว'
+                  : `อัปเดต ${lastUpdatedTime || '-'}`}
+              </span>
             </span>
-            {isDev && isDemoMode && (
-              <span className="op-demo-tag">โหมดตัวอย่าง (Demo)</span>
-            )}
           </div>
         </div>
 
@@ -547,25 +585,30 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
           {/* Refresh Button */}
           <button
             type="button"
-            className="op-btn op-btn-icon"
+            className={`op-btn op-btn-icon ${manualRefreshState === 'success' ? 'success' : ''}`}
             onClick={() => fetchOperationalData(true)}
-            disabled={isBackgroundRefreshing}
+            disabled={isBackgroundRefreshing || manualRefreshState === 'loading'}
             aria-label="รีเฟรชข้อมูลประจำวัน"
             title="รีเฟรชข้อมูลประจำวัน"
           >
-            <RefreshCw size={14} className={isBackgroundRefreshing ? 'animate-spin' : ''} />
+            {manualRefreshState === 'success' ? (
+              <Check size={14} style={{ color: '#10b981' }} />
+            ) : (
+              <RefreshCw size={14} className={manualRefreshState === 'loading' || isBackgroundRefreshing ? 'animate-spin' : ''} />
+            )}
           </button>
 
           {/* DEV-only Demo Mode Toggle */}
           {isDev && (
             <button
               type="button"
-              className={`op-btn op-btn-demo ${isDemoMode ? 'active' : ''}`}
+              className={`op-btn ${isDemoMode ? 'op-btn-demo active' : 'op-btn-icon op-btn-demo'}`}
               onClick={() => setIsDemoMode(!isDemoMode)}
-              title="เปิด/ปิดข้อมูลตัวอย่างสำหรับการตรวจรับสายตาในโหมดพัฒนา"
+              title={isDemoMode ? 'ปิดโหมดทดสอบ (DEV)' : 'เปิดโหมดทดสอบ (DEV)'}
+              aria-label={isDemoMode ? 'ปิดโหมดทดสอบ' : 'เปิดโหมดทดสอบ'}
             >
               <ShieldAlert size={14} />
-              <span>{isDemoMode ? 'ปิดตัวอย่าง' : 'ข้อมูลตัวอย่าง'}</span>
+              {isDemoMode && <span>Demo Mode</span>}
             </button>
           )}
         </div>
@@ -582,6 +625,7 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
             type="button"
             className="op-btn op-btn-sm"
             onClick={() => fetchOperationalData(true)}
+            disabled={loading || isBackgroundRefreshing}
           >
             ลองใหม่อีกครั้ง
           </button>

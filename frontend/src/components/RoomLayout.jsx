@@ -1,9 +1,21 @@
-import React, { useState, useEffect } from 'react';
-import { Clock, CheckCircle, AlertCircle, Users, DollarSign, Calendar, RefreshCw, X, Plus, ChevronLeft, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Clock, CheckCircle, AlertCircle, Users, DollarSign, Calendar, RefreshCw, X, Plus, ChevronLeft, ChevronRight, Check } from 'lucide-react';
 
 function RoomLayout({ sysAlert, onNavigateToBook }) {
   const [rooms, setRooms] = useState([]);
   const [loading, setLoading] = useState(false);
+  const isFetchingRef = useRef(false);
+  // Manual refresh visual feedback states: 'idle' | 'loading' | 'success'
+  const [manualRefreshState, setManualRefreshState] = useState('idle');
+  const successTimerRef = useRef(null);
+
+  // Cleanup feedback timer on unmount
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
+
   const [currentTime, setCurrentTime] = useState(new Date());
 
   // Modal for displaying occupied room details
@@ -39,19 +51,26 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
 
   // Fetch occupancy on load
   useEffect(() => {
-    fetchOccupancy();
+    fetchOccupancy(false);
   }, []);
 
   // Auto-fetch every 30 seconds
   useEffect(() => {
     const fetchTimer = setInterval(() => {
-      fetchOccupancy();
+      fetchOccupancy(false);
     }, 30000);
     return () => clearInterval(fetchTimer);
   }, []);
 
-  const fetchOccupancy = async () => {
-    setLoading(true);
+  const fetchOccupancy = async (isManual = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    if (rooms.length === 0) setLoading(true);
+    if (isManual) {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+      setManualRefreshState('loading');
+    }
+    const startedAt = isManual ? performance.now() : 0;
     try {
       const clientTimeStr = new Date().toISOString();
       const res = await fetch(`/api/rooms/occupancy?current_time=${clientTimeStr}`);
@@ -66,10 +85,25 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
           }
         }
       }
+      if (isManual) {
+        const elapsed = performance.now() - startedAt;
+        const remaining = Math.max(0, 350 - elapsed);
+        if (remaining > 0) {
+          await new Promise(r => setTimeout(r, remaining));
+        }
+        setManualRefreshState('success');
+        successTimerRef.current = setTimeout(() => {
+          setManualRefreshState('idle');
+        }, 1000);
+      }
     } catch (err) {
       console.error('Failed to load room occupancy:', err);
+      if (isManual) {
+        setManualRefreshState('idle');
+      }
     } finally {
       setLoading(false);
+      isFetchingRef.current = false;
     }
   };
 
@@ -895,14 +929,32 @@ function RoomLayout({ sysAlert, onNavigateToBook }) {
 
           {/* Refresh button */}
           <button
-            className="btn btn-secondary"
-            style={{ padding: '6px 12px', borderRadius: '12px', fontSize: '0.825rem', gap: '6px', height: '34px' }}
-            onClick={fetchOccupancy}
-            disabled={loading}
+            className={`btn btn-secondary ${manualRefreshState === 'success' ? 'success' : ''}`}
+            style={{
+              padding: '6px 12px',
+              borderRadius: '12px',
+              fontSize: '0.825rem',
+              gap: '6px',
+              height: '34px',
+              borderColor: manualRefreshState === 'success' ? 'rgba(16, 185, 129, 0.4)' : undefined,
+              color: manualRefreshState === 'success' ? '#10b981' : undefined,
+              backgroundColor: manualRefreshState === 'success' ? 'rgba(16, 185, 129, 0.06)' : undefined
+            }}
+            onClick={() => fetchOccupancy(true)}
+            disabled={loading || manualRefreshState === 'loading'}
             title="รีเฟรชข้อมูลสถานะห้อง"
           >
-            <RefreshCw size={13} className={loading ? 'spin-anim' : ''} />
-            <span>รีเฟรช</span>
+            {manualRefreshState === 'success' ? (
+              <>
+                <Check size={13} style={{ color: '#10b981' }} />
+                <span>อัปเดตแล้ว</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw size={13} className={manualRefreshState === 'loading' ? 'spin-anim' : ''} />
+                <span>{manualRefreshState === 'loading' ? 'กำลังรีเฟรช...' : 'รีเฟรช'}</span>
+              </>
+            )}
           </button>
         </div>
       </div>

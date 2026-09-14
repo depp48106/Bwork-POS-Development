@@ -2869,3 +2869,14 @@ select.form-control {
   border: 1px dashed rgba(245, 158, 11, 0.4);
 }
 
+/* Global Spin Animations for Refresh/Loading Controls */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin,
+.animate-spin,
+.spin-anim {
+  animation: spin 1s linear infinite;
+}

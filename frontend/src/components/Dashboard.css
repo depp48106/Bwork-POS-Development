@@ -78,6 +78,12 @@
   background: rgba(37, 99, 235, 0.08);
   color: var(--primary-color);
   font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.op-sync-badge.success {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
 }
 
 .op-sync-dot {
@@ -85,6 +91,11 @@
   height: 6px;
   border-radius: 50%;
   background-color: var(--primary-color);
+  transition: background-color 0.2s ease;
+}
+
+.op-sync-dot.success {
+  background-color: #10b981;
 }
 
 .op-sync-dot.pulsing {
@@ -95,21 +106,6 @@
   0% { transform: scale(0.9); opacity: 0.6; }
   50% { transform: scale(1.3); opacity: 1; }
   100% { transform: scale(0.9); opacity: 0.6; }
-}
-
-.op-demo-tag {
-  font-size: 0.7rem;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(245, 158, 11, 0.12);
-  color: #b45309;
-  border: 1px solid rgba(245, 158, 11, 0.25);
-}
-[data-theme="dark"] .op-demo-tag {
-  background: rgba(245, 158, 11, 0.18);
-  color: #fbbf24;
-  border-color: rgba(245, 158, 11, 0.35);
 }
 
 .op-header-right {
