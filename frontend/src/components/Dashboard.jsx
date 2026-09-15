@@ -7,115 +7,9 @@ import {
   LayoutGrid,
   AlertCircle,
   ArrowRight,
-  ShieldAlert,
   Check
 } from 'lucide-react';
 import './Dashboard.css';
-
-// Dynamic sample data strictly for DEV mode visual preview
-const getDemoIso = (hours, minutes = 0) => {
-  const d = new Date();
-  d.setHours(hours, minutes, 0, 0);
-  return d.toISOString();
-};
-
-const getDemoOperationalData = () => ({
-  reviewingCount: 2,
-  upcomingAlerts: [
-    {
-      booking_id: 'BK-2026-089',
-      room_name: 'Jupiter (300)',
-      customer_name: 'คุณวิภาดา อัครเดช',
-      start_time: getDemoIso(14, 0),
-      end_time: getDemoIso(16, 30),
-      payment_status: 'paid',
-      total_amount: 1200
-    }
-  ],
-  incomingBookings: [
-    {
-      booking_id: 'BK-2026-092',
-      room_name: 'Mars (301)',
-      customer_name: 'บริษัท ดิจิทัล โซลูชั่น จำกัด',
-      start_time: getDemoIso(16, 30),
-      end_time: getDemoIso(18, 0),
-      payment_status: 'reviewing',
-      total_amount: 800,
-      slip_image_url: '/demo-slip.jpg'
-    },
-    {
-      booking_id: 'BK-2026-094',
-      room_name: 'Saturn (303)',
-      customer_name: 'คุณธนพล เจริญทรัพย์',
-      start_time: getDemoIso(18, 30),
-      end_time: getDemoIso(20, 30),
-      payment_status: 'reviewing',
-      total_amount: 600,
-      slip_image_url: '/demo-slip.jpg'
-    }
-  ],
-  todayBookings: [
-    {
-      booking_id: 'BK-2026-085',
-      room_id: 4,
-      room_name: 'Mars (301)',
-      customer_name: 'คุณปิยะพงษ์ ยิ้มแย้ม',
-      start_time: getDemoIso(9, 0),
-      end_time: getDemoIso(11, 0),
-      payment_status: 'paid'
-    },
-    {
-      booking_id: 'BK-2026-089',
-      room_id: 10,
-      room_name: 'Jupiter (300)',
-      customer_name: 'คุณวิภาดา อัครเดช',
-      start_time: getDemoIso(14, 0),
-      end_time: getDemoIso(16, 30),
-      payment_status: 'paid'
-    },
-    {
-      booking_id: 'BK-2026-092',
-      room_id: 4,
-      room_name: 'Mars (301)',
-      customer_name: 'บริษัท ดิจิทัล โซลูชั่น จำกัด',
-      start_time: getDemoIso(16, 30),
-      end_time: getDemoIso(18, 0),
-      payment_status: 'reviewing'
-    },
-    {
-      booking_id: 'BK-2026-094',
-      room_id: 6,
-      room_name: 'Saturn (303)',
-      customer_name: 'คุณธนพล เจริญทรัพย์',
-      start_time: getDemoIso(18, 30),
-      end_time: getDemoIso(20, 30),
-      payment_status: 'reviewing'
-    }
-  ],
-  rooms: [
-    { id: 4, name: 'Mars (301)', capacity: 4, isOccupied: false, currentBooking: null },
-    { id: 5, name: 'Mercury (302)', capacity: 4, isOccupied: false, currentBooking: null },
-    { id: 6, name: 'Saturn (303)', capacity: 6, isOccupied: false, currentBooking: null },
-    { id: 7, name: 'Venus (304)', capacity: 6, isOccupied: false, currentBooking: null },
-    { id: 8, name: 'Uranus (305)', capacity: 8, isOccupied: false, currentBooking: null },
-    { id: 9, name: 'Neptune (306)', capacity: 8, isOccupied: false, currentBooking: null },
-    {
-      id: 10,
-      name: 'Jupiter (300)',
-      capacity: 10,
-      isOccupied: true,
-      currentBooking: {
-        booking_id: 'BK-2026-089',
-        customer_name: 'คุณวิภาดา อัครเดช',
-        start_time: getDemoIso(14, 0),
-        end_time: getDemoIso(16, 30)
-      }
-    },
-    { id: 11, name: 'Pluto (201)', capacity: 12, isOccupied: false, currentBooking: null },
-    { id: 12, name: 'Jupiter (300) & Co-Working', capacity: 25, isOccupied: false, currentBooking: null },
-    { id: 13, name: 'เหมาโซน Co-working', capacity: 40, isOccupied: false, currentBooking: null }
-  ]
-});
 
 function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
   // Real Data States
@@ -132,10 +26,6 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [lastUpdatedTime, setLastUpdatedTime] = useState('');
   const [currentTimeText, setCurrentTimeText] = useState('');
-
-  // Dev-only explicit demo toggle
-  const isDev = import.meta.env.DEV === true;
-  const [isDemoMode, setIsDemoMode] = useState(false);
 
   // Manual refresh visual feedback states: 'idle' | 'loading' | 'success'
   const [manualRefreshState, setManualRefreshState] = useState('idle');
@@ -262,19 +152,14 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
     return () => clearInterval(interval);
   }, []);
 
-  // Compute active dataset (Real vs Dev Demo Mode)
-  const activeData = useMemo(() => {
-    if (isDev && isDemoMode) {
-      return getDemoOperationalData();
-    }
-    return {
-      reviewingCount,
-      upcomingAlerts,
-      incomingBookings,
-      todayBookings,
-      rooms
-    };
-  }, [isDev, isDemoMode, reviewingCount, upcomingAlerts, incomingBookings, todayBookings, rooms]);
+  // Compute active dataset
+  const activeData = useMemo(() => ({
+    reviewingCount,
+    upcomingAlerts,
+    incomingBookings,
+    todayBookings,
+    rooms
+  }), [reviewingCount, upcomingAlerts, incomingBookings, todayBookings, rooms]);
 
   // Compute Action Required items (Priority 1: reviewing slip, Priority 2: approaching time)
   const actionItems = useMemo(() => {
@@ -452,13 +337,6 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
     const target = item.actionTarget || 'pending';
     if (!canAccess(target)) return;
 
-    if (isDemoMode) {
-      if (sysAlert) {
-        sysAlert(`(Demo Mode) รายการ #${item.booking_id} จะนำทางไปยังหน้า "รายการจองห้อง" ในระบบจริง`);
-      }
-      return;
-    }
-
     if (onNavigate) {
       onNavigate(target, {
         bookingId: item.booking_id,
@@ -597,20 +475,6 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
               <RefreshCw size={14} className={manualRefreshState === 'loading' || isBackgroundRefreshing ? 'animate-spin' : ''} />
             )}
           </button>
-
-          {/* DEV-only Demo Mode Toggle */}
-          {isDev && (
-            <button
-              type="button"
-              className={`op-btn ${isDemoMode ? 'op-btn-demo active' : 'op-btn-icon op-btn-demo'}`}
-              onClick={() => setIsDemoMode(!isDemoMode)}
-              title={isDemoMode ? 'ปิดโหมดทดสอบ (DEV)' : 'เปิดโหมดทดสอบ (DEV)'}
-              aria-label={isDemoMode ? 'ปิดโหมดทดสอบ' : 'เปิดโหมดทดสอบ'}
-            >
-              <ShieldAlert size={14} />
-              {isDemoMode && <span>Demo Mode</span>}
-            </button>
-          )}
         </div>
       </header>
 

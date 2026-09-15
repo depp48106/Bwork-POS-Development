@@ -220,25 +220,6 @@
   border-radius: 6px;
 }
 
-.op-btn-demo {
-  background: rgba(245, 158, 11, 0.08);
-  color: #b45309;
-  border-color: rgba(245, 158, 11, 0.25);
-  font-size: 0.76rem;
-}
-
-.op-btn-demo.active {
-  background: rgba(245, 158, 11, 0.18);
-  color: #b45309;
-  border-color: rgba(245, 158, 11, 0.4);
-}
-
-[data-theme="dark"] .op-btn-demo {
-  background: rgba(245, 158, 11, 0.12);
-  color: #fbbf24;
-  border-color: rgba(245, 158, 11, 0.3);
-}
-
 /* Error Banner */
 .op-console-error {
   display: flex;

@@ -68,6 +68,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [roomsList, setRoomsList] = useState([]);
   const [loading, setLoading] = useState(false);
   const isFetchingRef = useRef(false);
+  const handledTargetRef = useRef(null);
   // Helper to get local YYYY-MM-DD string
   const getTodayStr = () => {
     const today = new Date();
@@ -472,25 +473,40 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
   // Handle transient one-time handoff from Home / Dashboard
   useEffect(() => {
-    if (!targetBooking || !targetBooking.id) return;
+    if (!targetBooking || !targetBooking.id) {
+      handledTargetRef.current = null;
+      return;
+    }
     const targetId = targetBooking.id;
     const action = targetBooking.action || 'view';
+
+    if (handledTargetRef.current === targetId) return;
+
+    let cancelled = false;
 
     const handleHandoff = async () => {
       let found = (bookings || []).find(b => String(b.id) === String(targetId) || String(b.booking_id) === String(targetId));
       if (!found) {
         try {
           const res = await fetch(`/api/bookings/${targetId}`);
-          if (res.ok) {
+          if (res.ok && !cancelled) {
             found = await res.json();
-            setBookings(prev => [found, ...prev]);
+            setBookings(prev => {
+              const exists = prev.some(b => String(b.id) === String(found.id) || String(b.booking_id) === String(found.id));
+              if (exists) return prev;
+              return [found, ...prev];
+            });
           }
         } catch (e) {
           console.warn('[PendingBookings] Handoff fetch error:', e);
         }
       }
 
+      if (cancelled) return;
+
       if (found) {
+        handledTargetRef.current = targetId;
+
         if (found.payment_status === 'reviewing' || found.slip_image_url) {
           setActiveStatusTab('reviewing');
         } else if (found.payment_status === 'pending') {
@@ -541,6 +557,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     };
 
     handleHandoff();
+
+    return () => {
+      cancelled = true;
+    };
   }, [targetBooking, bookings]);
 
   // Dispatch PIN to customer's LINE OA or show PIN (Manual Staff Action)
