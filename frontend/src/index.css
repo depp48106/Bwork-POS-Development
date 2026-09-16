@@ -8,6 +8,7 @@
   
   --bg-color: #f0f4f8; /* Frosted ice blue gray */
   --bg-card: rgba(255, 255, 255, 0.85); /* Bright elegant white glass card */
+  --bg-card-solid: #ffffff; /* 100% opaque card surface for sticky headers and columns */
   --bg-glass-modal: rgba(255, 255, 255, 0.94);
   --border-color: rgba(37, 99, 235, 0.15); /* Subtle blue border */
   --glass-border: rgba(255, 255, 255, 0.7); /* Shiny glass edge */
@@ -51,6 +52,7 @@
   
   --bg-color: #121214; /* Elegant dark charcoal gray */
   --bg-card: rgba(30, 30, 34, 0.75); /* Soft premium charcoal card */
+  --bg-card-solid: #1e1e22; /* 100% opaque dark card surface for sticky headers and columns */
   --bg-glass-modal: rgba(22, 22, 26, 0.96);
   --border-color: rgba(255, 255, 255, 0.08);
   --glass-border: rgba(255, 255, 255, 0.03);
@@ -1203,17 +1205,29 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .calendar-cell.today {
-  background-color: rgba(14, 165, 233, 0.04);
+  background-color: rgba(37, 99, 235, 0.03);
 }
 
 .calendar-cell.selected {
-  background-color: rgba(14, 165, 233, 0.08) !important;
-  border: 2px solid var(--primary-color) !important;
+  background-color: rgba(37, 99, 235, 0.08) !important;
+  border: 2px solid var(--primary-color, #2563eb) !important;
+  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.2);
 }
 
 [data-theme="dark"] .calendar-cell.selected {
   background-color: rgba(56, 189, 248, 0.12) !important;
   border: 2px solid #38bdf8 !important;
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.2);
+}
+
+.calendar-cell.today.selected {
+  border: 2px solid var(--primary-color, #2563eb) !important;
+  background-color: rgba(37, 99, 235, 0.10) !important;
+}
+
+[data-theme="dark"] .calendar-cell.today.selected {
+  border: 2px solid #38bdf8 !important;
+  background-color: rgba(56, 189, 248, 0.16) !important;
 }
 
 .calendar-day-header {
@@ -1241,13 +1255,13 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .calendar-cell.today .calendar-day-number {
-  background: linear-gradient(135deg, var(--primary-color), #0284c7);
+  background-color: var(--primary-color, #2563eb);
   color: #ffffff;
-  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3);
+  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.35);
 }
 
 [data-theme="dark"] .calendar-cell.today .calendar-day-number {
-  background: linear-gradient(135deg, #38bdf8, #0284c7);
+  background-color: #38bdf8;
   color: #0f172a;
 }
 
@@ -1351,128 +1365,405 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   opacity: 0.92;
 }
 
-/* Status variants requested by user:
-   - Green: ยังไม่เริ่มใช้งาน (Upcoming)
-   - Orange: กำลังใช้งานอยู่ (Active / In-Use)
-   - Red: ใช้งานเสร็จแล้ว (Finished / Expired)
-*/
-.calendar-event-chip.upcoming {
-  background: linear-gradient(90deg, rgba(16, 185, 129, 0.18), rgba(16, 185, 129, 0.10));
-  color: #047857;
-  border-color: rgba(16, 185, 129, 0.4);
-  box-shadow: 0 1px 2px rgba(16, 185, 129, 0.08);
+/* Unified Payment Status Event Chips (POS Phase B & C - No Gradients) */
+.calendar-event-chip {
+  cursor: pointer;
+  border-radius: 6px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  line-height: 1.25;
 }
 
-[data-theme="dark"] .calendar-event-chip.upcoming {
-  background: linear-gradient(90deg, rgba(16, 185, 129, 0.28), rgba(16, 185, 129, 0.16));
-  color: #6ee7b7;
-  border-color: rgba(16, 185, 129, 0.5);
-}
-
-.calendar-event-chip.active {
-  background: linear-gradient(90deg, rgba(249, 115, 22, 0.22), rgba(249, 115, 22, 0.12));
-  color: #c2410c;
-  border-color: rgba(249, 115, 22, 0.5);
-  box-shadow: 0 0 8px rgba(249, 115, 22, 0.25);
-  animation: pulseActive 2s infinite ease-in-out;
-}
-
-[data-theme="dark"] .calendar-event-chip.active {
-  background: linear-gradient(90deg, rgba(249, 115, 22, 0.32), rgba(249, 115, 22, 0.18));
-  color: #fdba74;
-  border-color: rgba(249, 115, 22, 0.6);
+.calendar-event-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
 }
 
 .calendar-event-chip.paid {
-  background: linear-gradient(90deg, rgba(16, 185, 129, 0.16), rgba(16, 185, 129, 0.08));
+  background-color: rgba(16, 185, 129, 0.12);
   color: #065f46;
-  border-color: rgba(16, 185, 129, 0.38);
-  box-shadow: 0 1px 2px rgba(16, 185, 129, 0.06);
+  border: 1px solid rgba(16, 185, 129, 0.35);
 }
 
 [data-theme="dark"] .calendar-event-chip.paid {
-  background: linear-gradient(90deg, rgba(16, 185, 129, 0.26), rgba(16, 185, 129, 0.14));
+  background-color: rgba(16, 185, 129, 0.22);
   color: #6ee7b7;
-  border-color: rgba(16, 185, 129, 0.5);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.calendar-event-chip.reviewing {
+  background-color: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+  border: 1px solid rgba(37, 99, 235, 0.35);
+}
+
+[data-theme="dark"] .calendar-event-chip.reviewing {
+  background-color: rgba(56, 189, 248, 0.20);
+  color: #7dd3fc;
+  border-color: rgba(56, 189, 248, 0.45);
 }
 
 .calendar-event-chip.pending {
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.16), rgba(245, 158, 11, 0.08));
-  color: #92400e;
-  border-color: rgba(245, 158, 11, 0.4);
-  box-shadow: 0 1px 2px rgba(245, 158, 11, 0.06);
+  background-color: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  border: 1px solid rgba(245, 158, 11, 0.35);
 }
 
 [data-theme="dark"] .calendar-event-chip.pending {
-  background: linear-gradient(90deg, rgba(245, 158, 11, 0.26), rgba(245, 158, 11, 0.14));
+  background-color: rgba(245, 158, 11, 0.22);
   color: #fde68a;
-  border-color: rgba(245, 158, 11, 0.5);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  border-color: rgba(245, 158, 11, 0.45);
 }
 
-.calendar-event-chip.expired {
-  background: linear-gradient(90deg, rgba(239, 68, 68, 0.16), rgba(239, 68, 68, 0.08));
-  color: #dc2626;
-  border-color: rgba(239, 68, 68, 0.38);
-  box-shadow: 0 1px 2px rgba(239, 68, 68, 0.06);
+.calendar-event-chip.internal_free {
+  background-color: rgba(139, 92, 246, 0.12);
+  color: #6d28d9;
+  border: 1px solid rgba(139, 92, 246, 0.35);
 }
 
-[data-theme="dark"] .calendar-event-chip.expired {
-  background: linear-gradient(90deg, rgba(239, 68, 68, 0.26), rgba(239, 68, 68, 0.14));
+[data-theme="dark"] .calendar-event-chip.internal_free {
+  background-color: rgba(139, 92, 246, 0.22);
+  color: #c4b5fd;
+  border-color: rgba(139, 92, 246, 0.45);
+}
+
+.calendar-event-chip.rejected {
+  background-color: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+[data-theme="dark"] .calendar-event-chip.rejected {
+  background-color: rgba(239, 68, 68, 0.22);
   color: #fca5a5;
-  border-color: rgba(239, 68, 68, 0.5);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  border-color: rgba(239, 68, 68, 0.45);
 }
 
-@keyframes pulseActive {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 4px rgba(249, 115, 22, 0);
-  }
+.calendar-event-chip.cancelled {
+  background-color: rgba(148, 163, 184, 0.12);
+  color: #475569;
+  border: 1px solid rgba(148, 163, 184, 0.35);
 }
 
+[data-theme="dark"] .calendar-event-chip.cancelled {
+  background-color: rgba(148, 163, 184, 0.20);
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.40);
+}
 
-.calendar-more-label {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  height: 16px;
-  min-height: 16px;
-  font-size: 0.68rem;
-  font-weight: 700;
-  color: var(--primary-color);
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(56, 189, 248, 0.06));
+/* Actionable Calendar More Button (Phase C) */
+.calendar-more-btn {
+  background-color: rgba(37, 99, 235, 0.08);
+  color: var(--primary-color, #2563eb);
   border: 1px solid rgba(37, 99, 235, 0.25);
-  border-radius: 4px;
+  border-radius: 6px;
+  padding: 2px 4px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-align: center;
   cursor: pointer;
-  padding: 0 4px;
-  line-height: 1;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  width: 100%;
+  margin-top: 2px;
+  display: block;
+  transition: all 0.15s ease;
   box-sizing: border-box;
 }
 
-.calendar-more-label:hover {
-  background: linear-gradient(135deg, var(--primary-color), #0284c7);
+.calendar-more-btn:hover {
+  background-color: var(--primary-color, #2563eb);
   color: #ffffff;
-  border-color: var(--primary-color);
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
-  transform: translateY(-1px);
+  border-color: var(--primary-color, #2563eb);
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3);
 }
 
-[data-theme="dark"] .calendar-more-label {
-  background: linear-gradient(135deg, rgba(56, 189, 248, 0.14), rgba(37, 99, 235, 0.08));
+[data-theme="dark"] .calendar-more-btn {
+  background-color: rgba(56, 189, 248, 0.12);
   color: #38bdf8;
-  border-color: rgba(56, 189, 248, 0.3);
+  border-color: rgba(56, 189, 248, 0.28);
 }
 
-[data-theme="dark"] .calendar-more-label:hover {
-  background: linear-gradient(135deg, #38bdf8, #0284c7);
+[data-theme="dark"] .calendar-more-btn:hover {
+  background-color: #38bdf8;
   color: #0f172a;
   border-color: #38bdf8;
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.35);
+}
+
+/* POS Calendar Single-Pane Layout (Phase C) */
+.pos-calendar-layout {
+  display: grid;
+  grid-template-columns: 1fr 310px;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pos-calendar-layout.cart-open {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr 220px;
+}
+
+@media (max-width: 1024px) {
+  .pos-calendar-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 240px;
+  }
+}
+
+/* ==========================================================================
+   POS PHASE E — RESPONSIVE & DARK MODE POLISH
+   ========================================================================== */
+
+/* Responsive Room Column Width (Matrix) */
+:root {
+  --matrix-room-col-width: 260px;
+}
+
+@media (max-width: 1280px) {
+  :root {
+    --matrix-room-col-width: 235px;
+  }
+}
+
+@media (max-width: 1024px) {
+  :root {
+    --matrix-room-col-width: 215px;
+  }
+}
+
+@media (max-width: 768px) {
+  :root {
+    --matrix-room-col-width: 185px;
+  }
+}
+
+/* POS View Switcher Buttons */
+.pos-view-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-height: 36px;
+}
+
+.pos-view-btn.active {
+  background-color: var(--primary-color);
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.3);
+}
+
+[data-theme="dark"] .pos-view-btn.active {
+  background-color: var(--primary-color);
+  color: #0f172a;
+  box-shadow: 0 1px 4px rgba(56, 189, 248, 0.35);
+}
+
+.pos-view-btn:not(.active) {
+  background-color: transparent;
+  color: var(--text-muted);
+}
+
+.pos-view-btn:not(.active):hover {
+  background-color: rgba(37, 99, 235, 0.06);
+  color: var(--text-main);
+}
+
+[data-theme="dark"] .pos-view-btn:not(.active):hover {
+  background-color: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+/* POS Day Navigation Buttons & Touch Target */
+.pos-day-nav-btn {
+  background: transparent;
+  border: none;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 6px;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  transition: all 0.15s ease;
+}
+
+.pos-day-nav-btn:hover {
+  background-color: rgba(37, 99, 235, 0.08);
+  color: var(--primary-color);
+}
+
+[data-theme="dark"] .pos-day-nav-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--primary-color);
+}
+
+.pos-day-today-btn {
+  background: transparent;
+  border: none;
+  height: 32px;
+  padding: 0 10px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--primary-color);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  transition: all 0.15s ease;
+}
+
+.pos-day-today-btn:hover {
+  background-color: rgba(37, 99, 235, 0.08);
+}
+
+[data-theme="dark"] .pos-day-today-btn:hover {
+  background-color: rgba(56, 189, 248, 0.12);
+}
+
+/* POS Category Filter Pills */
+.pos-cat-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-height: 32px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pos-cat-pill.active {
+  border: 1px solid var(--primary-color);
+  background-color: rgba(37, 99, 235, 0.1);
+  color: var(--primary-color);
+  font-weight: 700;
+}
+
+[data-theme="dark"] .pos-cat-pill.active {
+  border-color: var(--primary-color);
+  background-color: rgba(56, 189, 248, 0.15);
+  color: var(--primary-color);
+}
+
+.pos-cat-pill:not(.active) {
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-color);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.pos-cat-pill:not(.active):hover {
+  border-color: var(--primary-color);
+  color: var(--text-main);
+}
+
+/* POS Responsive Workspace Grid & Slide-Over Cart */
+.pos-workspace-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  transition: grid-template-columns 0.3s ease;
+}
+
+.pos-workspace-grid.cart-open {
+  grid-template-columns: 1fr 340px;
+}
+
+@media (max-width: 900px) {
+  .pos-workspace-grid.cart-open {
+    grid-template-columns: 1fr;
+  }
+  .pos-cart-sidebar-panel {
+    position: fixed !important;
+    top: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 340px !important;
+    max-width: 88vw !important;
+    height: 100vh !important;
+    z-index: 1050 !important;
+    border-radius: 0 !important;
+    border-left: 1px solid var(--border-color) !important;
+    box-shadow: -10px 0 40px rgba(0, 0, 0, 0.35) !important;
+    animation: slideInRight 0.2s ease-out;
+  }
+  .pos-cart-mobile-backdrop {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(15, 23, 42, 0.45);
+    z-index: 1040;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    animation: fadeIn 0.15s ease-out;
+  }
+}
+
+.pos-cart-mobile-backdrop {
+  display: none;
+}
+
+/* POS Drawer Responsive Sizing */
+.pos-drawer-content {
+  width: 100%;
+  max-width: 500px;
+  height: 100%;
+  background-color: var(--bg-card);
+  box-shadow: -12px 0 45px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-color);
+  animation: slideInRight 0.25s ease-out;
+}
+
+@media (max-width: 540px) {
+  .pos-drawer-content {
+    max-width: 100% !important;
+  }
+  .pos-drawer-body {
+    padding: 14px 14px !important;
+  }
+}
+
+/* Responsive Text Toggles for Narrow Screens */
+@media (max-width: 768px) {
+  .pos-legend-container {
+    overflow-x: auto;
+    white-space: nowrap;
+    padding-bottom: 2px;
+    max-width: 100%;
+  }
+  .pos-btn-text-full {
+    display: none !important;
+  }
+  .pos-btn-text-short {
+    display: inline !important;
+  }
+}
+
+@media (min-width: 769px) {
+  .pos-btn-text-short {
+    display: none !important;
+  }
 }
 
 /* POS Layout Grid */
@@ -2867,6 +3158,17 @@ select.form-control {
     rgba(245, 158, 11, 0.05) 12px
   );
   border: 1px dashed rgba(245, 158, 11, 0.4);
+}
+
+[data-theme="dark"] .timeline-buffer-stripe {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(245, 158, 11, 0.22),
+    rgba(245, 158, 11, 0.22) 6px,
+    rgba(245, 158, 11, 0.08) 6px,
+    rgba(245, 158, 11, 0.08) 12px
+  );
+  border: 1px dashed rgba(245, 158, 11, 0.5);
 }
 
 /* Global Spin Animations for Refresh/Loading Controls */

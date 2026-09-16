@@ -1375,7 +1375,7 @@ function App() {
             clearPreselectedRoom={() => setPreselectedRoom(null)}
             posTargetView={posTargetView}
             clearPosTargetView={() => setPosTargetView(null)}
-            onNavigate={setActiveTab}
+            onNavigate={handleNavigateFromHome}
             onExportToQuotation={handleExportToQuotation}
             showCartSidebar={showCartSidebar}
             setShowCartSidebar={setShowCartSidebar}
