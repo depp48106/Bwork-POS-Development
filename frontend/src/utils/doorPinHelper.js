@@ -2,39 +2,44 @@
  * Centralized Door PIN Capability Compatibility Module
  *
  * Business Rule:
- * Jupiter (300) and Jupiter (300) & Co-Working do NOT possess a physical
- * door keypad or PIN lock mechanism. All other meeting rooms (Mars, Mercury,
- * Saturn, Venus, Uranus, Neptune, Pluto) are PIN-enabled.
+ * Physical rooms without a door keypad / PIN lock mechanism:
+ * - ID 10: Jupiter (300)
+ * - ID 12: Jupiter (300) & Co-Working
+ * - ID 13: เหมาโซน Co-working
  *
- * Primary Rule: Stable room IDs (10, 12).
+ * All other meeting rooms (Mars, Mercury, Saturn, Venus, Uranus, Neptune, Pluto)
+ * are PIN-enabled with physical keypads.
+ *
+ * Primary Rule: Stable room IDs (10, 12, 13).
  * Defensive Fallback: Room name matching /jupiter/i.
- * (Global 'coworking' matching is explicitly disallowed).
+ * (Global 'coworking' / 'co-working' substring matching is explicitly disallowed).
  */
 
-export const JUPITER_ROOM_IDS = [10, 12];
+export const NO_PIN_ROOM_IDS = [10, 12, 13];
+export const JUPITER_ROOM_IDS = NO_PIN_ROOM_IDS;
 
 /**
  * Returns whether a room physically uses/requires a door lock PIN.
  *
  * @param {Object|number|string} roomOrId - Room object, booking item with room info, or roomId
- * @returns {boolean} true if room uses a door PIN, false if room is Jupiter
+ * @returns {boolean} true if room uses a door PIN, false if room is no-PIN (10, 12, 13)
  */
 export function roomUsesDoorPin(roomOrId) {
   if (!roomOrId) return false;
 
   // 1. Direct numeric/string ID check
   if (typeof roomOrId === 'number') {
-    return !JUPITER_ROOM_IDS.includes(roomOrId);
+    return !NO_PIN_ROOM_IDS.includes(roomOrId);
   }
   if (typeof roomOrId === 'string' && /^\d+$/.test(roomOrId.trim())) {
     const parsedId = parseInt(roomOrId.trim(), 10);
-    return !JUPITER_ROOM_IDS.includes(parsedId);
+    return !NO_PIN_ROOM_IDS.includes(parsedId);
   }
 
   // 2. Room object check
   if (typeof roomOrId === 'object') {
-    const rId = Number(roomOrId.id || roomOrId.room_id);
-    if (rId && JUPITER_ROOM_IDS.includes(rId)) {
+    const rId = Number(roomOrId.room_id || roomOrId.id);
+    if (rId && NO_PIN_ROOM_IDS.includes(rId)) {
       return false;
     }
 

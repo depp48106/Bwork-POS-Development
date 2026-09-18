@@ -329,27 +329,28 @@ async function generateUniquePinCode(env) {
   return pin;
 }
 
-// Stable Jupiter room IDs (ID 10: Jupiter (300), ID 12: Jupiter (300) & Co-Working)
-const JUPITER_ROOM_IDS = [10, 12];
+// Stable no-PIN room IDs (ID 10: Jupiter (300), ID 12: Jupiter (300) & Co-Working, ID 13: เหมาโซน Co-working)
+const NO_PIN_ROOM_IDS = [10, 12, 13];
+const JUPITER_ROOM_IDS = NO_PIN_ROOM_IDS;
 
 /**
  * Returns whether a room physically uses/requires a door lock PIN.
- * Jupiter (300) does NOT have a door keypad or PIN lock mechanism.
- * Primary rule: Check stable Jupiter room IDs (10, 12).
+ * Rooms 10, 12, and 13 do NOT have a door keypad or PIN lock mechanism.
+ * Primary rule: Check stable no-PIN room IDs (10, 12, 13).
  * Defensive fallback: Check if room name includes 'jupiter' (case-insensitive).
  */
 function roomUsesDoorPin(roomOrId) {
   if (!roomOrId) return false;
   if (typeof roomOrId === 'number') {
-    return !JUPITER_ROOM_IDS.includes(roomOrId);
+    return !NO_PIN_ROOM_IDS.includes(roomOrId);
   }
   if (typeof roomOrId === 'string' && /^\d+$/.test(roomOrId.trim())) {
     const parsedId = parseInt(roomOrId.trim(), 10);
-    return !JUPITER_ROOM_IDS.includes(parsedId);
+    return !NO_PIN_ROOM_IDS.includes(parsedId);
   }
   if (typeof roomOrId === 'object') {
-    const rId = Number(roomOrId.id || roomOrId.room_id);
-    if (rId && JUPITER_ROOM_IDS.includes(rId)) {
+    const rId = Number(roomOrId.room_id || roomOrId.id);
+    if (rId && NO_PIN_ROOM_IDS.includes(rId)) {
       return false;
     }
     const name = String(roomOrId.name || roomOrId.room_name || '').trim();
