@@ -503,6 +503,44 @@ async function generateUniquePinCode(query = dbQuery) {
   }
   return pin;
 }
+
+// Stable Jupiter room IDs (ID 10: Jupiter (300), ID 12: Jupiter (300) & Co-Working)
+const JUPITER_ROOM_IDS = [10, 12];
+
+/**
+ * Returns whether a room physically uses/requires a door lock PIN.
+ * Jupiter (300) does NOT have a door keypad or PIN lock mechanism.
+ * Primary rule: Check stable Jupiter room IDs (10, 12).
+ * Defensive fallback: Check if room name includes 'jupiter' (case-insensitive).
+ */
+function roomUsesDoorPin(roomOrId) {
+  if (!roomOrId) return false;
+  if (typeof roomOrId === 'number') {
+    return !JUPITER_ROOM_IDS.includes(roomOrId);
+  }
+  if (typeof roomOrId === 'string' && /^\d+$/.test(roomOrId.trim())) {
+    const parsedId = parseInt(roomOrId.trim(), 10);
+    return !JUPITER_ROOM_IDS.includes(parsedId);
+  }
+  if (typeof roomOrId === 'object') {
+    const rId = Number(roomOrId.id || roomOrId.room_id);
+    if (rId && JUPITER_ROOM_IDS.includes(rId)) {
+      return false;
+    }
+    const name = String(roomOrId.name || roomOrId.room_name || '').trim();
+    if (name && /jupiter/i.test(name)) {
+      return false;
+    }
+    if (roomOrId.pin_code && String(roomOrId.pin_code).trim() && String(roomOrId.pin_code).trim() !== '-') {
+      return true;
+    }
+    if (roomOrId.builtland_pin_code && String(roomOrId.builtland_pin_code).trim()) {
+      return true;
+    }
+  }
+  return true;
+}
+
 // Helper: Get Bangkok Local ISO string (YYYY-MM-DDTHH:mm:ss)
 function getBangkokLocalISO(d = new Date()) {
   const now = (d instanceof Date) ? d : new Date(d);
@@ -810,8 +848,10 @@ app.post('/api/bookings', async (req, res) => {
       let pinCode = null;
 
       if (roomItem) {
-        const roomDb = await dbQuery.get('SELECT pin_code, builtland_pin_code FROM rooms WHERE id = ?', [roomItem.room_id]);
-        if (customer_type === 'builtland') {
+        const roomDb = await dbQuery.get('SELECT id, name, pin_code, builtland_pin_code FROM rooms WHERE id = ?', [roomItem.room_id]);
+        if (!roomUsesDoorPin(roomDb || roomItem.room_id)) {
+          pinCode = null;
+        } else if (customer_type === 'builtland') {
           if (roomDb && roomDb.builtland_pin_code && roomDb.builtland_pin_code.trim()) {
             pinCode = roomDb.builtland_pin_code.trim();
           } else if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
@@ -877,8 +917,10 @@ app.post('/api/bookings', async (req, res) => {
 
         let itemPin = pinCode;
         if (item.room_id && item.room_id !== roomItem?.room_id) {
-          const thisRoom = await dbQuery.get('SELECT pin_code, builtland_pin_code FROM rooms WHERE id = ?', [item.room_id]);
-          if (customer_type === 'builtland') {
+          const thisRoom = await dbQuery.get('SELECT id, name, pin_code, builtland_pin_code FROM rooms WHERE id = ?', [item.room_id]);
+          if (!roomUsesDoorPin(thisRoom || item.room_id)) {
+            itemPin = null;
+          } else if (customer_type === 'builtland') {
             itemPin = (thisRoom?.builtland_pin_code?.trim()) || (thisRoom?.pin_code?.trim()) || (await generateUniquePinCode());
           } else {
             itemPin = (thisRoom?.pin_code?.trim()) || (await generateUniquePinCode());
@@ -1794,15 +1836,18 @@ async function sendLineNotification(bookingId) {
     const room = item ? await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [item.room_id]) : null;
 
     // Always ensure PIN matches the assigned room if the room has a PIN configured
-    let pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : booking.pin_code;
-    if (!pinCode || !pinCode.trim()) {
-      pinCode = await generateUniquePinCode();
+    let pinCode = null;
+    if (roomUsesDoorPin(room || item?.room_id)) {
+      pinCode = (room && room.pin_code && room.pin_code.trim()) ? room.pin_code.trim() : booking.pin_code;
+      if (!pinCode || !pinCode.trim()) {
+        pinCode = await generateUniquePinCode();
+      }
+      await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [pinCode, bookingId]);
+      if (item) {
+        await dbQuery.run('UPDATE booking_items SET pin_code = ? WHERE id = ?', [pinCode, item.id]);
+      }
+      booking.pin_code = pinCode;
     }
-    await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [pinCode, bookingId]);
-    if (item) {
-      await dbQuery.run('UPDATE booking_items SET pin_code = ? WHERE id = ?', [pinCode, item.id]);
-    }
-    booking.pin_code = pinCode;
 
     const flexCard = buildLineConfirmationFlex(booking, item, room);
 
@@ -2071,8 +2116,10 @@ const handleReschedule = async (req, res) => {
     const oldEnd = currentItem.end_time;
 
     // Synchronize PIN code with the target room based on customer_type
-    let newPinCode = '';
-    if (booking.customer_type === 'builtland') {
+    let newPinCode = null;
+    if (!roomUsesDoorPin(targetRoomObj || targetRoomId)) {
+      newPinCode = null;
+    } else if (booking.customer_type === 'builtland') {
       if (targetRoomObj && targetRoomObj.builtland_pin_code && targetRoomObj.builtland_pin_code.trim()) {
         newPinCode = targetRoomObj.builtland_pin_code.trim();
       } else if (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim()) {
@@ -3796,7 +3843,9 @@ app.post('/api/public/bookings', async (req, res) => {
       const accessToken = generateBookingAccessToken();
 
       let pinCode = null;
-      if (room.pin_code && room.pin_code.trim()) {
+      if (!roomUsesDoorPin(room || room_id)) {
+        pinCode = null;
+      } else if (room.pin_code && room.pin_code.trim()) {
         pinCode = room.pin_code.trim();
       } else {
         pinCode = await generateUniquePinCode();
@@ -3947,6 +3996,12 @@ app.post('/api/public/bookings/:id/request-pin', async (req, res) => {
 
     if (booking.payment_status !== 'paid') {
       return res.status(400).json({ error: 'รายการจองนี้ยังไม่ได้รับการยืนยันชำระเงิน กรุณาติดต่อพนักงาน' });
+    }
+
+    const item = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1', [booking.id]);
+    const room = item?.room_id ? await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [item.room_id]) : null;
+    if (!roomUsesDoorPin(room || item?.room_id)) {
+      return res.status(400).json({ error: 'ห้องนี้ไม่ใช้รหัสผ่านประตู' });
     }
 
     res.json({ success: true, pin_code: booking.pin_code, message: `รหัสผ่านเปิดประตูคือ ${booking.pin_code}` });
@@ -4467,6 +4522,10 @@ app.post('/api/bookings/:id/send-pin', async (req, res) => {
 
     const item = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1', [id]);
     const room = item?.room_id ? await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [item.room_id]) : null;
+
+    if (!roomUsesDoorPin(room || item?.room_id)) {
+      return res.status(400).json({ error: 'ห้องนี้ไม่ใช้รหัสผ่านประตู' });
+    }
 
     let pinCode = '';
     if (booking.customer_type === 'builtland') {

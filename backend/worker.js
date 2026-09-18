@@ -329,6 +329,43 @@ async function generateUniquePinCode(env) {
   return pin;
 }
 
+// Stable Jupiter room IDs (ID 10: Jupiter (300), ID 12: Jupiter (300) & Co-Working)
+const JUPITER_ROOM_IDS = [10, 12];
+
+/**
+ * Returns whether a room physically uses/requires a door lock PIN.
+ * Jupiter (300) does NOT have a door keypad or PIN lock mechanism.
+ * Primary rule: Check stable Jupiter room IDs (10, 12).
+ * Defensive fallback: Check if room name includes 'jupiter' (case-insensitive).
+ */
+function roomUsesDoorPin(roomOrId) {
+  if (!roomOrId) return false;
+  if (typeof roomOrId === 'number') {
+    return !JUPITER_ROOM_IDS.includes(roomOrId);
+  }
+  if (typeof roomOrId === 'string' && /^\d+$/.test(roomOrId.trim())) {
+    const parsedId = parseInt(roomOrId.trim(), 10);
+    return !JUPITER_ROOM_IDS.includes(parsedId);
+  }
+  if (typeof roomOrId === 'object') {
+    const rId = Number(roomOrId.id || roomOrId.room_id);
+    if (rId && JUPITER_ROOM_IDS.includes(rId)) {
+      return false;
+    }
+    const name = String(roomOrId.name || roomOrId.room_name || '').trim();
+    if (name && /jupiter/i.test(name)) {
+      return false;
+    }
+    if (roomOrId.pin_code && String(roomOrId.pin_code).trim() && String(roomOrId.pin_code).trim() !== '-') {
+      return true;
+    }
+    if (roomOrId.builtland_pin_code && String(roomOrId.builtland_pin_code).trim()) {
+      return true;
+    }
+  }
+  return true;
+}
+
 // ==========================================
 // 3.5 ROOM HOUR CREDIT HELPERS
 // ==========================================
@@ -1095,6 +1132,8 @@ async function sendLineDoorPin(env, bookingId) {
 
     const item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
     const room = item?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first() : null;
+
+    if (!roomUsesDoorPin(room || item?.room_id)) return null;
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value;
@@ -2424,8 +2463,10 @@ export default {
         let pinCode = null;
 
         if (roomItem) {
-          const roomDb = await env.DB.prepare('SELECT pin_code FROM rooms WHERE id = ?').bind(roomItem.room_id).first();
-          if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
+          const roomDb = await env.DB.prepare('SELECT id, name, pin_code FROM rooms WHERE id = ?').bind(roomItem.room_id).first();
+          if (!roomUsesDoorPin(roomDb || roomItem.room_id)) {
+            pinCode = null;
+          } else if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
             pinCode = roomDb.pin_code.trim();
           } else {
             pinCode = await generateUniquePinCode(env);
@@ -2561,6 +2602,12 @@ export default {
           return new Response(JSON.stringify({
             error: 'ไม่สามารถส่ง PIN ได้ เนื่องจากรายการจองนี้ถูกยกเลิกหรือปฏิเสธแล้ว'
           }), { status: 400, headers: corsHeaders });
+        }
+
+        const bItem = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1').bind(bookingId).first();
+        const room = bItem?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(bItem.room_id).first() : null;
+        if (!roomUsesDoorPin(room || bItem?.room_id)) {
+          return new Response(JSON.stringify({ error: 'ห้องนี้ไม่ใช้รหัสผ่านประตู' }), { status: 400, headers: corsHeaders });
         }
 
         let pinCode = booking.pin_code;
@@ -2723,8 +2770,11 @@ export default {
           if (!receiptNumber) {
             receiptNumber = await generateReceiptNumber(env);
           }
+          const bItem = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1').bind(bookingId).first();
           let pinCode = booking.pin_code;
-          if (!pinCode) {
+          if (!roomUsesDoorPin(bItem?.room_id)) {
+            pinCode = null;
+          } else if (!pinCode) {
             pinCode = await generateUniquePinCode(env);
           }
 
@@ -2890,9 +2940,14 @@ export default {
         const oldEnd = currentItem.end_time;
 
         // Synchronize PIN code with the target room
-        let newPinCode = (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim())
-          ? targetRoomObj.pin_code.trim()
-          : (booking.pin_code || await generateUniquePinCode(env));
+        let newPinCode = null;
+        if (!roomUsesDoorPin(targetRoomObj || targetRoomId)) {
+          newPinCode = null;
+        } else {
+          newPinCode = (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim())
+            ? targetRoomObj.pin_code.trim()
+            : (booking.pin_code || await generateUniquePinCode(env));
+        }
 
         // Update booking_items
         await env.DB.prepare(
@@ -3194,7 +3249,7 @@ export default {
         }
 
         const receiptNumber = await generateReceiptNumber(env);
-        const pinCode = room.pin_code?.trim() || await generateUniquePinCode(env);
+        const pinCode = !roomUsesDoorPin(room || selectedRoomId) ? null : (room.pin_code?.trim() || await generateUniquePinCode(env));
         const created = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 19);
 
         let bookingId = null;
@@ -3658,6 +3713,12 @@ export default {
           return new Response(JSON.stringify({ error: 'รายการจองนี้ยังไม่ได้รับการยืนยันชำระเงิน กรุณาติดต่อพนักงาน' }), { status: 400, headers: corsHeaders });
         }
 
+        const bItem = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1').bind(booking.id).first();
+        const room = bItem?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(bItem.room_id).first() : null;
+        if (!roomUsesDoorPin(room || bItem?.room_id)) {
+          return new Response(JSON.stringify({ error: 'ห้องนี้ไม่ใช้รหัสผ่านประตู' }), { status: 400, headers: corsHeaders });
+        }
+
         const res = await sendLineDoorPin(env, booking.id);
         if (res && res.success) {
           return new Response(JSON.stringify({ success: true, message: 'ส่งรหัสผ่านเข้าห้องไปยัง LINE เรียบร้อยแล้ว' }), { headers: corsHeaders });
@@ -3845,7 +3906,7 @@ export default {
 
         const subtotal = total_amount || Math.round(price * quantity * 100) / 100;
         const receiptNumber = await generateReceiptNumber(env);
-        const pinCode = room.pin_code?.trim() || await generateUniquePinCode(env);
+        const pinCode = !roomUsesDoorPin(room || room_id) ? null : (room.pin_code?.trim() || await generateUniquePinCode(env));
 
         const nowIso = new Date().toISOString();
         let insBooking;

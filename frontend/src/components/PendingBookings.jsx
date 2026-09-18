@@ -41,6 +41,7 @@ import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { API_BASE } from '../apiConfig';
 import { analyzeSlipInBrowser } from '../utils/browserSlipVerifier';
+import { roomUsesDoorPin } from '../utils/doorPinHelper';
 import './PendingBookings.css';
 
 const DATE_TYPE_OPTIONS = [
@@ -1974,11 +1975,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
                   const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
-                  let pinRaw = b.pin_code || firstItem.pin_code || '';
-                  if (!pinRaw && roomObj) {
+                  const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
+                  let pinRaw = usesDoorPin ? (b.pin_code || firstItem.pin_code || '') : '';
+                  if (usesDoorPin && !pinRaw && roomObj) {
                     pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
                   }
-                  const hasPin = Boolean(pinRaw && pinRaw !== '-');
+                  const hasPin = Boolean(usesDoorPin && pinRaw && pinRaw !== '-');
                   const isBuiltland = b.customer_type === 'builtland';
 
                   let rowBg = 'transparent';
@@ -2231,11 +2233,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
               const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
-              let pinRaw = b.pin_code || firstItem.pin_code || '';
-              if (!pinRaw && roomObj) {
+              const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
+              let pinRaw = usesDoorPin ? (b.pin_code || firstItem.pin_code || '') : '';
+              if (usesDoorPin && !pinRaw && roomObj) {
                 pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
               }
-              const hasPin = Boolean(pinRaw && pinRaw !== '-');
+              const hasPin = Boolean(usesDoorPin && pinRaw && pinRaw !== '-');
               const isBuiltland = b.customer_type === 'builtland';
 
               const primaryAction = getPrimaryAction(b);
@@ -2550,16 +2553,25 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               </div>
             )}
 
-            {/* 4. Send Door PIN via LINE (active bookings) */}
-            {activeActionMenuBooking.payment_status !== 'cancelled' && (
-              <div
-                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleSendPin(b.id); }}
-                className="action-menu-item"
-              >
-                <Send size={14} style={{ color: '#2563eb' }} />
-                <span>ส่งรหัส PIN เข้า LINE OA</span>
-              </div>
-            )}
+            {/* 4. Send Door PIN via LINE (active bookings for PIN-enabled rooms only) */}
+            {(() => {
+              const b = activeActionMenuBooking;
+              if (b.payment_status === 'cancelled') return null;
+              const bItem = b.items && b.items.length > 0 ? b.items[0] : null;
+              const rId = bItem?.room_id || b.room_id;
+              const roomObj = rooms.find(r => r.id === rId);
+              if (!roomUsesDoorPin(roomObj || bItem || rId || b)) return null;
+
+              return (
+                <div
+                  onClick={() => { setActiveActionMenuBooking(null); setActionMenuPos(null); handleSendPin(b.id); }}
+                  className="action-menu-item"
+                >
+                  <Send size={14} style={{ color: '#2563eb' }} />
+                  <span>ส่งรหัส PIN เข้า LINE OA</span>
+                </div>
+              );
+            })()}
 
             {/* 5. Tax Invoice Info */}
             {activeActionMenuBooking.tax_invoice_required === 1 && (
@@ -2782,11 +2794,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom (จัดโต๊ะเรียน)' : 'Standard (ห้องประชุมมาตรฐาน)';
         const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาทั้งวัน' : (firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง');
 
-        let pinRaw = b.pin_code || firstItem.pin_code || '';
-        if (!pinRaw && roomObj) {
+        const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
+        let pinRaw = usesDoorPin ? (b.pin_code || firstItem.pin_code || '') : '';
+        if (usesDoorPin && !pinRaw && roomObj) {
           pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
         }
-        const hasPin = Boolean(pinRaw && pinRaw !== '-');
+        const hasPin = Boolean(usesDoorPin && pinRaw && pinRaw !== '-');
         const isPinRevealed = revealedPins[b.id];
         const isPinCopied = copiedPin === b.id;
         const hasSlip = Boolean(b.slip_image_url && b.slip_image_url !== 'uploaded');
@@ -2934,7 +2947,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                         <span className="pb-detail-card-title">การเข้าใช้งานห้อง (Door Access)</span>
                       </div>
                       <div className="pb-detail-content">
-                        {hasPin ? (
+                        {!usesDoorPin ? (
+                          <div className="pb-detail-empty-note">
+                            <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>ไม่มีรหัสเข้าห้อง</div>
+                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>ห้องนี้ไม่ใช้รหัสผ่าน</div>
+                          </div>
+                        ) : hasPin ? (
                           <div className="pb-detail-pin-box">
                             <div className="pb-detail-pin-row">
                               <div>

@@ -676,6 +676,16 @@
 /* ===================================================
    5. PRIMARY RIGHT: ROOMS NOW (Compact Status Rows)
    =================================================== */
+.op-rooms-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+}
+
+[data-theme="dark"] .op-rooms-section {
+  background: var(--bg-card);
+  border-color: var(--border-color);
+}
+
 .op-rooms-list {
   display: flex;
   flex-direction: column;
@@ -692,6 +702,14 @@
   transition: background-color 0.15s;
 }
 
+.op-room-row:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="dark"] .op-room-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .op-room-row:last-child {
   border-bottom: none;
 }
@@ -704,15 +722,37 @@
 [data-theme="dark"] .op-room-row.status-occupied {
   background: rgba(16, 185, 129, 0.08);
 }
+[data-theme="dark"] .op-room-row.status-occupied:hover {
+  background: rgba(16, 185, 129, 0.12);
+}
 
 /* Upcoming gets subtle amber cue */
 .op-room-row.status-upcoming {
   border-left: 3px solid #f59e0b;
 }
+[data-theme="dark"] .op-room-row.status-upcoming {
+  background: rgba(245, 158, 11, 0.04);
+}
+[data-theme="dark"] .op-room-row.status-upcoming:hover {
+  background: rgba(245, 158, 11, 0.08);
+}
 
 /* Available remains visually quiet */
 .op-room-row.status-available {
   border-left: 3px solid transparent;
+}
+
+/* Defensive fallback in case room thumbnails or cards are introduced */
+.op-room-thumb {
+  background-color: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+[data-theme="dark"] .op-room-thumb {
+  background-color: var(--bg-card);
+  border-color: var(--border-color);
 }
 
 .op-room-main-info {
