@@ -197,13 +197,16 @@ function App() {
     setReadAlertKeys(prev => {
       const next = new Set(prev);
       (upcomingList || []).forEach(item => {
-        next.add(`${item.booking_id}-${item.start_time}`);
-        next.add(`b-${item.booking_id}`);
+        if (item && item.booking_id) {
+          next.add(`${item.booking_id}-${item.start_time}`);
+        }
       });
       (incomingList || []).forEach(item => {
-        next.add(`incoming-${item.booking_id}-${item.payment_status}`);
-        next.add(`incoming-${item.booking_id}`);
-        next.add(`b-${item.booking_id}`);
+        if (item && item.booking_id) {
+          const isSlip = item.payment_status === 'reviewing' || Boolean(item.slip_image_url);
+          next.add(`incoming-${item.booking_id}-${item.payment_status}-${isSlip ? 'slip' : 'noslip'}`);
+          next.add(`incoming-${item.booking_id}-${item.payment_status}`);
+        }
       });
       try {
         localStorage.setItem('bwork_read_alerts', JSON.stringify(Array.from(next)));
@@ -214,15 +217,27 @@ function App() {
 
   // Count unread alerts (upcoming + incoming) for badge display
   const unreadAlerts = useMemo(() => {
-    const unreadUpcoming = upcomingAlerts.filter(item => 
-      !readAlertKeys.has(`${item.booking_id}-${item.start_time}`) &&
-      !readAlertKeys.has(`b-${item.booking_id}`)
-    );
-    const unreadIncoming = incomingBookings.filter(item => 
-      !readAlertKeys.has(`incoming-${item.booking_id}-${item.payment_status}`) &&
-      !readAlertKeys.has(`incoming-${item.booking_id}`) &&
-      !readAlertKeys.has(`b-${item.booking_id}`)
-    );
+    const seenUpcomingKeys = new Set();
+    const unreadUpcoming = upcomingAlerts.filter(item => {
+      if (!item || !item.booking_id) return false;
+      const key = `${item.booking_id}-${item.start_time}`;
+      if (seenUpcomingKeys.has(key)) return false;
+      const isUnread = !readAlertKeys.has(key);
+      if (isUnread) seenUpcomingKeys.add(key);
+      return isUnread;
+    });
+
+    const seenIncomingIds = new Set();
+    const unreadIncoming = incomingBookings.filter(item => {
+      if (!item || !item.booking_id || seenIncomingIds.has(item.booking_id)) return false;
+      const isSlip = item.payment_status === 'reviewing' || Boolean(item.slip_image_url);
+      const stateKey = `incoming-${item.booking_id}-${item.payment_status}-${isSlip ? 'slip' : 'noslip'}`;
+      const statusKey = `incoming-${item.booking_id}-${item.payment_status}`;
+      const isUnread = !readAlertKeys.has(stateKey) && !readAlertKeys.has(statusKey);
+      if (isUnread) seenIncomingIds.add(item.booking_id);
+      return isUnread;
+    });
+
     return [...unreadUpcoming, ...unreadIncoming];
   }, [upcomingAlerts, incomingBookings, readAlertKeys]);
 
@@ -757,9 +772,24 @@ function App() {
                 type="button"
                 className={`top-menu-item ${activeTab === 'pending' ? 'active' : ''}`}
                 onClick={() => setActiveTab('pending')}
+                style={{ position: 'relative' }}
               >
                 <Clock size={15} />
                 <span>Booking Management</span>
+                {pendingCount > 0 && (
+                  <span style={{
+                    backgroundColor: reviewingCount > 0 ? '#ef4444' : '#f59e0b',
+                    color: '#ffffff',
+                    fontSize: '0.68rem',
+                    fontWeight: 800,
+                    padding: '1px 6px',
+                    borderRadius: '999px',
+                    marginLeft: '4px',
+                    boxShadow: '0 2px 6px rgba(0,0,0,0.2)'
+                  }}>
+                    {pendingCount}
+                  </span>
+                )}
               </button>
             )}
             {hasPermission('layout') && (
@@ -931,9 +961,10 @@ function App() {
                   color: '#ffffff',
                   fontSize: '0.6rem',
                   fontWeight: 'bold',
-                  borderRadius: '50%',
-                  width: '16px',
+                  borderRadius: '999px',
+                  minWidth: '16px',
                   height: '16px',
+                  padding: unreadAlerts.length > 9 ? '0 5px' : '0',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -1287,11 +1318,31 @@ function App() {
                 </div>
               )}
               {hasPermission('pending') && (
-                <div className={`menu-card ${activeTab === 'pending' ? 'active' : ''}`} onClick={() => setActiveTab('pending')}>
+                <div
+                  className={`menu-card ${activeTab === 'pending' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('pending')}
+                  style={{ position: 'relative' }}
+                >
                   <div className="menu-card-icon-wrapper">
                     <Clock size={20} />
                   </div>
                   <span>Booking Management</span>
+                  {pendingCount > 0 && (
+                    <span style={{
+                      position: 'absolute',
+                      top: '12px',
+                      right: '12px',
+                      backgroundColor: reviewingCount > 0 ? '#ef4444' : '#f59e0b',
+                      color: '#ffffff',
+                      fontSize: '0.72rem',
+                      fontWeight: 800,
+                      padding: '2px 7px',
+                      borderRadius: '999px',
+                      boxShadow: '0 2px 6px rgba(0,0,0,0.2)'
+                    }}>
+                      {pendingCount}
+                    </span>
+                  )}
                 </div>
               )}
               {hasPermission('layout') && (

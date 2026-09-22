@@ -2559,7 +2559,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               if (b.payment_status === 'cancelled') return null;
               const bItem = b.items && b.items.length > 0 ? b.items[0] : null;
               const rId = bItem?.room_id || b.room_id;
-              const roomObj = rooms.find(r => r.id === rId);
+              const roomObj = (roomsList || []).find(r => r.id === rId);
               if (!roomUsesDoorPin(roomObj || bItem || rId || b)) return null;
 
               return (
