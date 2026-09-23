@@ -465,3 +465,70 @@ test('13. Backwards compatibility fallback when booking.items is empty', () => {
   const totals = getReceiptTotals(legacyBooking, receipt.normalizedItems);
   assert.equal(totals.grandTotal, 3000);
 });
+
+test('14. Service item with SQLite room defaults remains a service', () => {
+  const { normalizeReceiptItem, normalizeBookingReceipt } = receiptUtils;
+
+  // Pure service item with SQLite defaults (layout='standard', booking_type='hourly')
+  const serviceItem = {
+    id: 101,
+    service_id: 1,
+    service_name: 'กาแฟ & ชา ของว่าง (Catering Box)',
+    service_category: 'catering',
+    room_id: null,
+    room_name: null,
+    quantity: 10,
+    price: 50,
+    subtotal: 500,
+    booking_type: 'hourly',
+    layout: 'standard'
+  };
+
+  const normalizedService = normalizeReceiptItem(serviceItem, {});
+  assert.equal(normalizedService.isRoom, false);
+  assert.equal(normalizedService.displayName, 'กาแฟ & ชา ของว่าง (Catering Box)');
+  assert.equal(normalizedService.typeLabel, 'บริการเสริม');
+  assert.equal(normalizedService.durationLabel, 'x10');
+  assert.notEqual(normalizedService.durationLabel, '10 ชม.');
+  assert.equal(normalizedService.timePeriod, '');
+
+  // Normal room item with schema defaults
+  const roomItem = {
+    id: 102,
+    room_id: 4,
+    room_name: 'Mars (301)',
+    service_id: null,
+    quantity: 3,
+    price: 500,
+    subtotal: 1500,
+    start_time: '2026-11-01T09:00:00',
+    end_time: '2026-11-01T12:00:00',
+    booking_type: 'hourly',
+    layout: 'standard'
+  };
+
+  const normalizedRoom = normalizeReceiptItem(roomItem, {});
+  assert.equal(normalizedRoom.isRoom, true);
+  assert.equal(normalizedRoom.displayName, 'Mars (301)');
+  assert.equal(normalizedRoom.typeLabel, 'รายชั่วโมง (Hourly)');
+  assert.equal(normalizedRoom.durationLabel, '3 ชม.');
+  assert.equal(normalizedRoom.timePeriod, '09:00 - 12:00 น.');
+
+  // Mixed booking containing both items
+  const mixedBooking = {
+    id: 200,
+    total_amount: 2000,
+    items: [roomItem, serviceItem]
+  };
+
+  const mixedReceipt = normalizeBookingReceipt(mixedBooking);
+  assert.equal(mixedReceipt.normalizedItems.length, 2);
+  const foundRoom = mixedReceipt.normalizedItems.find(it => it.isRoom);
+  const foundService = mixedReceipt.normalizedItems.find(it => !it.isRoom);
+  assert.ok(foundRoom);
+  assert.ok(foundService);
+  assert.equal(foundRoom.displayName, 'Mars (301)');
+  assert.equal(foundService.displayName, 'กาแฟ & ชา ของว่าง (Catering Box)');
+  assert.equal(foundService.typeLabel, 'บริการเสริม');
+  assert.equal(foundService.durationLabel, 'x10');
+});

@@ -135,7 +135,22 @@ export function calculateHourDuration(startTime, endTime) {
  * Normalizes a single booking item into a structured receipt item.
  */
 export function normalizeReceiptItem(item = {}, booking = {}, index = 0) {
-  const isRoom = Boolean(item.room_id || item.start_time || item.booking_type || item.layout);
+  // Classification: service identity takes precedence over generic SQLite schema defaults (layout='standard', booking_type='hourly')
+  const hasServiceIdentity = Boolean(item.service_id || item.service_name);
+  const hasRoomIdentity = Boolean(item.room_id || item.room_name);
+
+  let isRoom = false;
+  if (hasServiceIdentity && !item.room_id) {
+    // Pure service or explicit service item
+    isRoom = false;
+  } else if (hasRoomIdentity) {
+    // Explicit room item
+    isRoom = true;
+  } else if (!hasServiceIdentity && (item.start_time || booking.room_id || booking.room_name || booking.room?.name)) {
+    // Legacy fallback: no service identity, but start_time or booking-level room metadata present
+    isRoom = true;
+  }
+
   const rId = item.room_id || booking.room_id || booking.room?.id;
   const fallbackRoomName = ROOM_NAME_MAP[rId] || ROOM_NAME_MAP[Number(rId)] || 'ห้องประชุม';
 
@@ -144,7 +159,7 @@ export function normalizeReceiptItem(item = {}, booking = {}, index = 0) {
 
   // Layout & Classroom detection
   const layout = item.layout || booking.layout || 'standard';
-  const isClassroom = layout === 'classroom';
+  const isClassroom = isRoom && layout === 'classroom';
   if (isRoom && isClassroom && !rawRoomName.toLowerCase().includes('classroom')) {
     rawRoomName = `${rawRoomName} (Classroom)`;
   }
@@ -154,12 +169,14 @@ export function normalizeReceiptItem(item = {}, booking = {}, index = 0) {
   // Avoid fragile heuristics: only default to hourly if missing on a room item
   if (isRoom && !['hourly', 'halfday', 'daily'].includes(bookingType)) {
     bookingType = 'hourly';
+  } else if (!isRoom) {
+    bookingType = 'service';
   }
 
   // Timestamps
-  const startTime = item.start_time || (booking.booking_date ? `${booking.booking_date}T${booking.startTime || '08:00'}:00` : null);
-  const endTime = item.end_time || (booking.booking_date ? `${booking.booking_date}T${booking.endTime || '17:00'}:00` : null);
-  const dateKey = extractDateKey(startTime || item.booking_date || booking.booking_date || booking.created_at);
+  const startTime = item.start_time || (isRoom && booking.booking_date ? `${booking.booking_date}T${booking.startTime || '08:00'}:00` : null);
+  const endTime = item.end_time || (isRoom && booking.booking_date ? `${booking.booking_date}T${booking.endTime || '17:00'}:00` : null);
+  const dateKey = extractDateKey(startTime || (isRoom ? (item.booking_date || booking.booking_date || booking.created_at) : (item.booking_date || null)));
   const timePeriod = isRoom && startTime ? formatReceiptPeriod(startTime, endTime) : '';
 
   // Quantity & Duration
