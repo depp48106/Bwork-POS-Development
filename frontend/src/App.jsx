@@ -12,6 +12,9 @@ import BasecampQuotaModal from './components/BasecampQuotaModal';
 import HourCredits from './components/HourCredits';
 import { creditNavigationLabel } from './utils/hourCreditUI';
 import LinePreview from './components/LinePreview';
+import { useLiveNotifications } from './hooks/useLiveNotifications';
+import NotificationCenter from './components/NotificationCenter';
+import LiveToastContainer from './components/LiveToastContainer';
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -175,84 +178,24 @@ function App() {
     }
   }, [activeTab]);
 
-  // Upcoming Room Booking Notifications & Alerts
-  const [upcomingAlerts, setUpcomingAlerts] = useState([]);
-  const [todayBookings, setTodayBookings] = useState([]);
-  const [incomingBookings, setIncomingBookings] = useState([]);
+  // Live Notifications System (Phase 1)
+  const {
+    notifications,
+    unreadCount,
+    activeToasts,
+    dismissToast,
+    markAsRead,
+    markAllAsRead,
+    soundEnabled,
+    toggleSound,
+    audioStatus,
+    processAlertData,
+    handleNotificationClick
+  } = useLiveNotifications({ onNavigate: handleNavigateFromHome });
+
+  // Operational badges for Booking Management
   const [pendingCount, setPendingCount] = useState(0);
   const [reviewingCount, setReviewingCount] = useState(0);
-  const [toasts, setToasts] = useState([]);
-  const [isBellOpen, setIsBellOpen] = useState(false);
-  const [bellTab, setBellTab] = useState('incoming');
-  const [readAlertKeys, setReadAlertKeys] = useState(() => {
-    try {
-      const saved = localStorage.getItem('bwork_read_alerts');
-      return saved ? new Set(JSON.parse(saved)) : new Set();
-    } catch (e) {
-      return new Set();
-    }
-  });
-
-  const markAllAsRead = (upcomingList = upcomingAlerts, incomingList = incomingBookings) => {
-    setReadAlertKeys(prev => {
-      const next = new Set(prev);
-      (upcomingList || []).forEach(item => {
-        if (item && item.booking_id) {
-          next.add(`${item.booking_id}-${item.start_time}`);
-        }
-      });
-      (incomingList || []).forEach(item => {
-        if (item && item.booking_id) {
-          const isSlip = item.payment_status === 'reviewing' || Boolean(item.slip_image_url);
-          next.add(`incoming-${item.booking_id}-${item.payment_status}-${isSlip ? 'slip' : 'noslip'}`);
-          next.add(`incoming-${item.booking_id}-${item.payment_status}`);
-        }
-      });
-      try {
-        localStorage.setItem('bwork_read_alerts', JSON.stringify(Array.from(next)));
-      } catch (e) {}
-      return next;
-    });
-  };
-
-  // Count unread alerts (upcoming + incoming) for badge display
-  const unreadAlerts = useMemo(() => {
-    const seenUpcomingKeys = new Set();
-    const unreadUpcoming = upcomingAlerts.filter(item => {
-      if (!item || !item.booking_id) return false;
-      const key = `${item.booking_id}-${item.start_time}`;
-      if (seenUpcomingKeys.has(key)) return false;
-      const isUnread = !readAlertKeys.has(key);
-      if (isUnread) seenUpcomingKeys.add(key);
-      return isUnread;
-    });
-
-    const seenIncomingIds = new Set();
-    const unreadIncoming = incomingBookings.filter(item => {
-      if (!item || !item.booking_id || seenIncomingIds.has(item.booking_id)) return false;
-      const isSlip = item.payment_status === 'reviewing' || Boolean(item.slip_image_url);
-      const stateKey = `incoming-${item.booking_id}-${item.payment_status}-${isSlip ? 'slip' : 'noslip'}`;
-      const statusKey = `incoming-${item.booking_id}-${item.payment_status}`;
-      const isUnread = !readAlertKeys.has(stateKey) && !readAlertKeys.has(statusKey);
-      if (isUnread) seenIncomingIds.add(item.booking_id);
-      return isUnread;
-    });
-
-    return [...unreadUpcoming, ...unreadIncoming];
-  }, [upcomingAlerts, incomingBookings, readAlertKeys]);
-
-  const handleToggleBell = () => {
-    if (!isBellOpen) {
-      markAllAsRead(upcomingAlerts, incomingBookings);
-      setIsBellOpen(true);
-    } else {
-      setIsBellOpen(false);
-    }
-  };
-
-  const removeToast = (id) => {
-    setToasts(prev => prev.filter(t => t.id !== id));
-  };
 
   useEffect(() => {
     if (!user) return;
@@ -263,88 +206,11 @@ function App() {
         if (!res.ok) return;
         const data = await res.json();
         
-        const upcomingList = Array.isArray(data) ? data : (data.upcoming || []);
-        const todayList = data.todayBookings || [];
-        const incomingList = data.incomingBookings || [];
-
-        setUpcomingAlerts(upcomingList);
-        setTodayBookings(todayList);
-        setIncomingBookings(incomingList);
         setPendingCount(data.pendingCount || 0);
         setReviewingCount(data.reviewingCount || 0);
 
-        // Get persistent notified toasts from localStorage
-        let notifiedSet = new Set();
-        try {
-          const savedNotified = localStorage.getItem('bwork_notified_toasts');
-          if (savedNotified) {
-            notifiedSet = new Set(JSON.parse(savedNotified));
-          }
-        } catch (e) {}
-
-        let updatedNotified = false;
-
-        // 1. Pop up toast for incoming LINE / Online bookings & slips
-        incomingList.forEach(item => {
-          const incomingKey = `toast-incoming-${item.booking_id}-${item.payment_status}-${item.slip_image_url ? 'slip' : 'noslip'}`;
-          if (!notifiedSet.has(incomingKey)) {
-            notifiedSet.add(incomingKey);
-            updatedNotified = true;
-
-            const isSlip = item.payment_status === 'reviewing' || !!item.slip_image_url;
-            const toastId = Date.now() + Math.random().toString(36).substr(2, 9);
-            const newToast = {
-              id: toastId,
-              type: 'incoming',
-              isSlip,
-              booking_id: item.booking_id,
-              room_name: item.room_name || 'ห้องประชุม',
-              customer_name: item.customer_name || 'ลูกค้า LINE OA',
-              total_amount: item.total_amount,
-              booking_source: item.booking_source
-            };
-
-            setToasts(prev => [newToast, ...prev]);
-
-            setTimeout(() => {
-              setToasts(prev => prev.filter(t => t.id !== toastId));
-            }, 15000);
-          }
-        });
-
-        // 2. Pop up toast for upcoming bookings nearing start time (<= 15 minutes)
-        upcomingList.forEach(item => {
-          const alertKey = `toast-upcoming-${item.booking_id}-${item.start_time}`;
-          if (!notifiedSet.has(alertKey)) {
-            notifiedSet.add(alertKey);
-            updatedNotified = true;
-
-            const startT = new Date(item.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-            const endT = new Date(item.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-
-            const toastId = Date.now() + Math.random().toString(36).substr(2, 9);
-            const newToast = {
-              id: toastId,
-              type: 'upcoming',
-              room_name: item.room_name,
-              customer_name: item.customer_name,
-              start_time_formatted: startT,
-              end_time_formatted: endT
-            };
-
-            setToasts(prev => [newToast, ...prev]);
-
-            setTimeout(() => {
-              setToasts(prev => prev.filter(t => t.id !== toastId));
-            }, 12000);
-          }
-        });
-
-        if (updatedNotified) {
-          try {
-            localStorage.setItem('bwork_notified_toasts', JSON.stringify(Array.from(notifiedSet)));
-          } catch (e) {}
-        }
+        // Process live notification events (toasts, sound, bell center)
+        processAlertData(data);
       } catch (err) {
         console.error('Failed to fetch upcoming booking alerts:', err);
       }
@@ -354,7 +220,7 @@ function App() {
 
     const interval = setInterval(checkUpcomingAlerts, 15000);
     return () => clearInterval(interval);
-  }, [user]);
+  }, [user, processAlertData]);
 
   const handleChangePassword = async (e) => {
     e.preventDefault();
@@ -935,344 +801,16 @@ function App() {
             </button>
           )}
 
-          {/* Upcoming Meeting Alert Notification Bell */}
-          <div style={{ position: 'relative' }}>
-            <button 
-              onClick={handleToggleBell}
-              type="button"
-              className="hamburger-btn"
-              style={{
-                position: 'relative',
-                background: isBellOpen ? 'var(--primary-color)' : 'transparent',
-                color: isBellOpen ? '#ffffff' : (unreadAlerts.length > 0 ? '#ef4444' : 'var(--text-main)'),
-                width: '38px',
-                height: '38px',
-                borderRadius: '10px'
-              }}
-              title="การแจ้งเตือนห้องประชุม"
-            >
-              <Bell size={18} />
-              {unreadAlerts.length > 0 && (
-                <span style={{
-                  position: 'absolute',
-                  top: '-4px',
-                  right: '-4px',
-                  backgroundColor: '#ef4444',
-                  color: '#ffffff',
-                  fontSize: '0.6rem',
-                  fontWeight: 'bold',
-                  borderRadius: '999px',
-                  minWidth: '16px',
-                  height: '16px',
-                  padding: unreadAlerts.length > 9 ? '0 5px' : '0',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  boxShadow: '0 0 8px rgba(239,68,68,0.7)'
-                }}>
-                  {unreadAlerts.length}
-                </span>
-              )}
-            </button>
-
-            {/* Notification Dropdown Box (Top-Right) */}
-            {isBellOpen && (
-              <>
-                <div 
-                  style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }}
-                  onClick={() => setIsBellOpen(false)} 
-                />
-                <div 
-                  style={{
-                    position: 'absolute',
-                    top: 'calc(100% + 8px)',
-                    right: 0,
-                    width: '380px',
-                    maxWidth: '92vw',
-                    backgroundColor: 'var(--bg-glass-modal, #ffffff)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '18px',
-                    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.35), 0 0 1px rgba(0,0,0,0.1)',
-                    padding: '14px',
-                    zIndex: 2000,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px',
-                    animation: 'fadeIn 0.15s ease-out'
-                  }}
-                >
-                  {/* Header */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <div style={{ width: '28px', height: '28px', borderRadius: '8px', backgroundColor: 'rgba(37, 99, 235, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary-color)' }}>
-                        <Bell size={15} />
-                      </div>
-                      <span style={{ fontWeight: 800, fontSize: '0.92rem', color: 'var(--text-main)', letterSpacing: '0.01em' }}>
-                        การแจ้งเตือน
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      {unreadAlerts.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => markAllAsRead()}
-                          style={{
-                            background: 'rgba(37, 99, 235, 0.08)',
-                            border: '1px solid rgba(37, 99, 235, 0.2)',
-                            color: 'var(--primary-color)',
-                            fontSize: '0.72rem',
-                            fontWeight: 700,
-                            cursor: 'pointer',
-                            padding: '3px 8px',
-                            borderRadius: '6px',
-                            transition: 'all 0.15s ease'
-                          }}
-                        >
-                          ✓ อ่านทั้งหมด
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setIsBellOpen(false)}
-                        style={{
-                          background: 'transparent',
-                          border: 'none',
-                          color: 'var(--text-muted)',
-                          cursor: 'pointer',
-                          padding: '4px',
-                          borderRadius: '6px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          transition: 'all 0.15s ease'
-                        }}
-                        onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.06)'; e.currentTarget.style.color = 'var(--text-main)'; }}
-                        onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
-                      >
-                        <X size={16} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Modern Full-Width Segmented Control */}
-                  <div style={{ 
-                    display: 'flex', 
-                    gap: '4px', 
-                    background: 'var(--bg-color)', 
-                    padding: '3px', 
-                    borderRadius: '12px', 
-                    border: '1px solid var(--border-color)' 
-                  }}>
-                    {[
-                      { key: 'incoming', label: 'จองใหม่', count: incomingBookings.length },
-                      { key: 'upcoming', label: 'ใกล้เริ่ม', count: upcomingAlerts.length },
-                      { key: 'today', label: 'วันนี้', count: todayBookings.length }
-                    ].map(tab => {
-                      const isSel = bellTab === tab.key;
-                      return (
-                        <button
-                          key={tab.key}
-                          type="button"
-                          onClick={() => setBellTab(tab.key)}
-                          style={{
-                            flex: 1,
-                            border: 'none',
-                            background: isSel ? 'var(--primary-color)' : 'transparent',
-                            color: isSel ? '#ffffff' : 'var(--text-muted)',
-                            fontSize: '0.74rem',
-                            fontWeight: isSel ? 800 : 600,
-                            padding: '6px 4px',
-                            borderRadius: '9px',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '5px',
-                            boxShadow: isSel ? '0 2px 8px rgba(37, 99, 235, 0.3)' : 'none',
-                            transition: 'all 0.15s ease'
-                          }}
-                        >
-                          <span>{tab.label}</span>
-                          <span style={{
-                            fontSize: '0.66rem',
-                            fontWeight: 800,
-                            padding: '1px 5px',
-                            borderRadius: '8px',
-                            backgroundColor: isSel ? 'rgba(255, 255, 255, 0.25)' : (tab.count > 0 ? 'rgba(37, 99, 235, 0.12)' : 'transparent'),
-                            color: isSel ? '#ffffff' : (tab.count > 0 ? 'var(--primary-color)' : 'var(--text-muted)')
-                          }}>
-                            {tab.count}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Body Content */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '340px', overflowY: 'auto' }} className="scrollbar-thin">
-                    {bellTab === 'incoming' ? (
-                      incomingBookings.length === 0 ? (
-                        <div style={{ textAlign: 'center', padding: '28px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                          <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: 'rgba(16, 185, 129, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#10b981' }}>
-                            <CheckCircle2 size={22} />
-                          </div>
-                          <div style={{ fontWeight: 800, fontSize: '0.86rem', color: 'var(--text-main)', marginTop: '4px' }}>
-                            ไม่มีรายการจองใหม่ค้างตรวจสอบ
-                          </div>
-                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                            ทุกรายการได้รับการตรวจสอบและบันทึกเรียบร้อยแล้ว
-                          </div>
-                        </div>
-                      ) : (
-                        incomingBookings.map((b, idx) => {
-                          const isSlip = b.payment_status === 'reviewing' || !!b.slip_image_url;
-                          return (
-                            <div 
-                              key={idx}
-                              onClick={() => {
-                                setIsBellOpen(false);
-                                setActiveTab('pending');
-                              }}
-                              style={{
-                                padding: '10px 12px',
-                                borderRadius: '12px',
-                                backgroundColor: isSlip ? 'rgba(14, 165, 233, 0.08)' : 'rgba(245, 158, 11, 0.08)',
-                                border: `1px solid ${isSlip ? 'rgba(14, 165, 233, 0.25)' : 'rgba(245, 158, 11, 0.25)'}`,
-                                borderLeft: `4px solid ${isSlip ? '#0ea5e9' : '#f59e0b'}`,
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '3px',
-                                textAlign: 'left',
-                                cursor: 'pointer',
-                                transition: 'transform 0.15s ease'
-                              }}
-                              onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-1px)'}
-                              onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
-                            >
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--text-main)' }}>
-                                  #{b.booking_id} · {b.room_name || 'ห้องประชุม'}
-                                </span>
-                                <span style={{ 
-                                  fontSize: '0.68rem', 
-                                  fontWeight: 800, 
-                                  color: isSlip ? '#0ea5e9' : '#f59e0b', 
-                                  backgroundColor: isSlip ? 'rgba(14,165,233,0.15)' : 'rgba(245,158,11,0.15)', 
-                                  padding: '2px 6px', 
-                                  borderRadius: '6px' 
-                                }}>
-                                  {isSlip ? '📎 แนบสลิปแล้ว' : '⚠️ รอชำระเงิน'}
-                                </span>
-                              </div>
-                              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                                ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{b.customer_name || 'ลูกค้า LINE OA'}</strong> · ยอด <strong style={{ color: 'var(--primary-color)' }}>฿{Number(b.total_amount || 0).toLocaleString()}</strong>
-                              </div>
-                              <div style={{ fontSize: '0.7rem', color: 'var(--primary-color)', marginTop: '2px', fontWeight: 700 }}>
-                                👉 คลิกเพื่อตรวจสลิป / รับชำระ
-                              </div>
-                            </div>
-                          );
-                        })
-                      )
-                    ) : bellTab === 'upcoming' ? (
-                      upcomingAlerts.length === 0 ? (
-                        <div style={{ textAlign: 'center', padding: '28px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                          <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: 'rgba(249, 115, 22, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f97316' }}>
-                            <Clock size={22} />
-                          </div>
-                          <div style={{ fontWeight: 800, fontSize: '0.86rem', color: 'var(--text-main)', marginTop: '4px' }}>
-                            ขณะนี้ไม่มีห้องที่ใกล้ถึงเวลาใช้งาน
-                          </div>
-                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                            ระบบจะแจ้งเตือนเมื่อมีคิวที่ใกล้ถึงเวลาใน 15 นาที
-                          </div>
-                        </div>
-                      ) : (
-                        upcomingAlerts.map((alert, idx) => {
-                          const startT = new Date(alert.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                          const endT = new Date(alert.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                          return (
-                            <div 
-                              key={idx}
-                              style={{
-                                padding: '10px 12px',
-                                borderRadius: '12px',
-                                backgroundColor: 'rgba(239, 68, 68, 0.08)',
-                                border: '1px solid rgba(239, 68, 68, 0.25)',
-                                borderLeft: '4px solid #ef4444',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '3px',
-                                textAlign: 'left'
-                              }}
-                            >
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--text-main)' }}>{alert.room_name}</span>
-                                <span style={{ fontSize: '0.68rem', fontWeight: 800, color: '#ef4444', backgroundColor: 'rgba(239,68,68,0.15)', padding: '2px 6px', borderRadius: '6px' }}>
-                                  ใกล้เริ่มใช้งาน
-                                </span>
-                              </div>
-                              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                                เวลา: <strong style={{ color: 'var(--text-main)' }}>{startT} - {endT} น.</strong>
-                              </div>
-                              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                                ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{alert.customer_name || 'ลูกค้า'}</strong>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )
-                    ) : (
-                      todayBookings.length === 0 ? (
-                        <div style={{ textAlign: 'center', padding: '28px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
-                          <div style={{ width: '42px', height: '42px', borderRadius: '50%', backgroundColor: 'rgba(37, 99, 235, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary-color)' }}>
-                            <Calendar size={22} />
-                          </div>
-                          <div style={{ fontWeight: 800, fontSize: '0.86rem', color: 'var(--text-main)', marginTop: '4px' }}>
-                            วันนี้ยังไม่มีรายการจองห้อง
-                          </div>
-                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                            สามารถทำการจองคิวใหม่ได้ที่หน้าแผนผังจองห้อง
-                          </div>
-                        </div>
-                      ) : (
-                        todayBookings.map((item, idx) => {
-                          const startT = new Date(item.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                          const endT = new Date(item.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-                          const isExpired = new Date() > new Date(item.end_time);
-                          return (
-                            <div 
-                              key={idx}
-                              style={{
-                                padding: '10px 12px',
-                                borderRadius: '12px',
-                                backgroundColor: 'var(--bg-color)',
-                                border: '1px solid var(--border-color)',
-                                borderLeft: `4px solid ${isExpired ? '#94a3b8' : (item.payment_status === 'paid' ? '#10b981' : '#f59e0b')}`,
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '3px',
-                                textAlign: 'left',
-                                opacity: isExpired ? 0.65 : 1
-                              }}
-                            >
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--text-main)' }}>{item.room_name}</span>
-                                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--primary-color)' }}>{startT} - {endT} น.</span>
-                              </div>
-                              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                                ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{item.customer_name || 'ลูกค้า'}</strong> · {isExpired ? 'ใช้งานเสร็จแล้ว' : (item.payment_status === 'paid' ? 'ชำระแล้ว' : 'รอชำระ')}
-                              </div>
-                            </div>
-                          );
-                        })
-                      )
-                    )}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
+          {/* Upcoming Meeting Alert & Live Notification Center */}
+          <NotificationCenter
+            notifications={notifications}
+            unreadCount={unreadCount}
+            onNotificationClick={handleNotificationClick}
+            onMarkAllRead={markAllAsRead}
+            soundEnabled={soundEnabled}
+            onToggleSound={toggleSound}
+            audioStatus={audioStatus}
+          />
 
           {/* Theme display switcher */}
           <button 
@@ -1812,132 +1350,12 @@ function App() {
         </div>
       )}
 
-      {/* Toast Notification Container (Pops up at screen edge only when booking is <= 15 mins before start) */}
-      {toasts.length > 0 && (
-        <div style={{
-          position: 'fixed',
-          bottom: '24px',
-          right: '24px',
-          zIndex: 11000,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '12px',
-          maxWidth: '380px',
-          width: 'calc(100% - 48px)',
-          pointerEvents: 'none'
-        }}>
-          {toasts.map(toast => {
-            const isIncoming = toast.type === 'incoming';
-            const borderColor = isIncoming ? (toast.isSlip ? '#0ea5e9' : '#f59e0b') : '#ef4444';
-            const iconBg = isIncoming ? (toast.isSlip ? 'rgba(14, 165, 233, 0.15)' : 'rgba(245, 158, 11, 0.15)') : 'rgba(239, 68, 68, 0.15)';
-            const iconColor = isIncoming ? (toast.isSlip ? '#0ea5e9' : '#f59e0b') : '#ef4444';
-
-            return (
-              <div 
-                key={toast.id}
-                onClick={() => {
-                  if (isIncoming) {
-                    setActiveTab('pending');
-                    removeToast(toast.id);
-                  }
-                }}
-                style={{
-                  pointerEvents: 'auto',
-                  background: 'var(--bg-card)',
-                  borderLeft: `5px solid ${borderColor}`,
-                  borderTop: '1px solid var(--border-color)',
-                  borderRight: '1px solid var(--border-color)',
-                  borderBottom: '1px solid var(--border-color)',
-                  borderRadius: '14px',
-                  padding: '14px 16px',
-                  boxShadow: '0 14px 45px rgba(0, 0, 0, 0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
-                  position: 'relative',
-                  animation: 'slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards',
-                  backdropFilter: 'blur(25px)',
-                  WebkitBackdropFilter: 'blur(25px)',
-                  cursor: isIncoming ? 'pointer' : 'default'
-                }}
-              >
-                {/* Icon */}
-                <div style={{
-                  width: '40px',
-                  height: '40px',
-                  borderRadius: '50%',
-                  backgroundColor: iconBg,
-                  border: `1px solid ${borderColor}40`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0
-                }}>
-                  {isIncoming ? (
-                    <Bell size={20} style={{ color: iconColor }} />
-                  ) : (
-                    <AlertCircle size={20} style={{ color: iconColor }} />
-                  )}
-                </div>
-
-                {/* Text */}
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '3px', textAlign: 'left', minWidth: 0 }}>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 800, color: iconColor, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    {isIncoming ? (
-                      toast.isSlip ? (
-                        <span>📎 สลิปโอนเงินใหม่จาก LINE OA!</span>
-                      ) : (
-                        <span>📥 การจองใหม่จาก LINE OA!</span>
-                      )
-                    ) : (
-                      <span>⚠️ ห้องประชุมใกล้เริ่ม (อีก 15 นาที)</span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-main)', fontWeight: 700 }}>
-                    {isIncoming ? (
-                      `#${toast.booking_id} · ${toast.room_name}`
-                    ) : (
-                      toast.room_name
-                    )}
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    {isIncoming ? (
-                      `คุณ ${toast.customer_name} · ยอด ฿${Number(toast.total_amount || 0).toLocaleString()} (คลิกเพื่อตรวจสลิป)`
-                    ) : (
-                      `คุณ ${toast.customer_name} (${toast.start_time_formatted} - ${toast.end_time_formatted} น.)`
-                    )}
-                  </div>
-                </div>
-
-                {/* Close button */}
-                <button 
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeToast(toast.id);
-                  }}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    cursor: 'pointer',
-                    color: 'var(--text-muted)',
-                    padding: '4px',
-                    borderRadius: '6px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    alignSelf: 'flex-start',
-                    marginTop: '-4px',
-                    marginRight: '-6px'
-                  }}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {/* Live Toast Notification Container */}
+      <LiveToastContainer
+        toasts={activeToasts}
+        onDismiss={dismissToast}
+        onToastClick={handleNotificationClick}
+      />
     </div>
   );
 }
