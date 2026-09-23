@@ -1,5 +1,10 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { formatTransactionDateTime } from '../dateUtils';
+import {
+  normalizeBookingReceipt,
+  getReceiptTotals,
+  getReceiptPaymentDetails
+} from '../utils/receiptUtils';
 
 function ReceiptPrint({ booking, settings }) {
   if (!booking) return null;
@@ -10,73 +15,20 @@ function ReceiptPrint({ booking, settings }) {
   const companyTaxId = safeSettings.company_tax_id || safeSettings.quotation_company_tax_id || '0125554000401';
   const companyPhone = safeSettings.company_phone || safeSettings.phone || '';
 
-  const monthNamesThai = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
-
-  // Safe Local Date Parser for room usage periods (wall-clock slots)
-  const parseLocalDate = (dateStr) => {
-    if (!dateStr) return null;
-    const str = String(dateStr).trim().replace(' ', 'T');
-    const match = str.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/);
-    if (match) {
-      const year = parseInt(match[1], 10);
-      const month = parseInt(match[2], 10) - 1;
-      const day = parseInt(match[3], 10);
-      const hour = match[4] !== undefined ? parseInt(match[4], 10) : 0;
-      const minute = match[5] !== undefined ? parseInt(match[5], 10) : 0;
-      const second = match[6] !== undefined ? parseInt(match[6], 10) : 0;
-      return new Date(year, month, day, hour, minute, second);
-    }
-    const d = new Date(str);
-    return isNaN(d.getTime()) ? null : d;
-  };
-
   // Format Created At Date (Point-in-time timestamp in Asia/Bangkok)
   const formatDateTime = (dateString) => formatTransactionDateTime(dateString);
 
-  // Format Booking Item Period (e.g. 20 ส.ค. 2569 (08:00 - 17:00))
-  const formatPeriod = (start, end) => {
-    if (!start || !end) return '';
-    try {
-      const s = parseLocalDate(start);
-      const e = parseLocalDate(end);
-      if (!s || !e) return `${start} - ${end}`;
-      const thaiYear = s.getFullYear() + 543;
-      const datePart = `${s.getDate()} ${monthNamesThai[s.getMonth()]} ${thaiYear}`;
-      const sHours = String(s.getHours()).padStart(2, '0');
-      const sMins = String(s.getMinutes()).padStart(2, '0');
-      const eHours = String(e.getHours()).padStart(2, '0');
-      const eMins = String(e.getMinutes()).padStart(2, '0');
-      return `${datePart} (${sHours}:${sMins} - ${eHours}:${eMins})`;
-    } catch (err) {
-      return `${start} - ${end}`;
-    }
-  };
-
-  const safeItems = Array.isArray(booking.items) ? booking.items : [];
-  const safeTotal = Number(booking.total_amount || booking.totalAmount) || 0;
-
-  // Fallback if safeItems is empty but booking root has room info
-  let renderItems = [...safeItems];
-  if (renderItems.length === 0 && (booking.room_id || booking.room_name || booking.room)) {
-    renderItems = [{
-      room_id: booking.room_id || booking.room?.id,
-      room_name: booking.room_name || booking.room?.name || 'ห้องประชุม',
-      room_description: booking.room_description || booking.room?.description || '',
-      price: safeTotal,
-      quantity: 1,
-      subtotal: safeTotal,
-      start_time: booking.start_time || (booking.booking_date ? `${booking.booking_date}T${booking.startTime || '08:00'}:00` : null),
-      end_time: booking.end_time || (booking.booking_date ? `${booking.booking_date}T${booking.endTime || '17:00'}:00` : null),
-      layout: booking.layout || 'standard',
-      booking_type: booking.booking_type || 'hourly'
-    }];
-  }
+  // Normalize, sort and group items
+  const receiptData = useMemo(() => normalizeBookingReceipt(booking), [booking]);
+  const totals = useMemo(() => getReceiptTotals(booking, receiptData.normalizedItems), [booking, receiptData]);
+  const payment = useMemo(() => getReceiptPaymentDetails(booking), [booking]);
+  const { isMultiDate, groups, normalizedItems } = receiptData;
 
   return (
-    <div 
-      id="print-receipt-area" 
+    <div
+      id="print-receipt-area"
       className="receipt-wrapper"
-      style={{ 
+      style={{
         width: '72mm',
         maxWidth: '72mm',
         margin: '0 auto',
@@ -93,16 +45,16 @@ function ReceiptPrint({ booking, settings }) {
       <div className="receipt-header" style={{ textAlign: 'center', marginBottom: '8px' }}>
         {safeSettings.logo_image && (
           <div style={{ textAlign: 'center', marginBottom: '8px' }}>
-            <img 
-              src={safeSettings.logo_image} 
-              alt="Logo" 
+            <img
+              src={safeSettings.logo_image}
+              alt="Logo"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
                 if (e.currentTarget.parentElement) {
                   e.currentTarget.parentElement.style.display = 'none';
                 }
               }}
-              style={{ maxWidth: '120px', maxHeight: '55px', objectFit: 'contain' }} 
+              style={{ maxWidth: '120px', maxHeight: '55px', objectFit: 'contain' }}
             />
           </div>
         )}
@@ -158,10 +110,10 @@ function ReceiptPrint({ booking, settings }) {
             <span style={{ fontWeight: 700, textAlign: 'right' }}>{booking.contact}</span>
           </div>
         )}
-        {(booking.guest_count || renderItems[0]?.guest_count) && (
+        {(booking.guest_count || normalizedItems[0]?.guestCount) && (
           <div className="receipt-info-row" style={{ fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', color: '#000000' }}>
             <span style={{ flexShrink: 0, fontWeight: 700 }}>จำนวนผู้เข้าใช้:</span>
-            <span style={{ fontWeight: 700, textAlign: 'right' }}>{booking.guest_count || renderItems[0]?.guest_count} ท่าน</span>
+            <span style={{ fontWeight: 700, textAlign: 'right' }}>{booking.guest_count || normalizedItems[0]?.guestCount} ท่าน</span>
           </div>
         )}
       </div>
@@ -180,94 +132,65 @@ function ReceiptPrint({ booking, settings }) {
             </tr>
           </thead>
           <tbody>
-            {renderItems.map((item, idx) => {
-              const isRoom = !!(item.room_id || item.booking_type || item.layout || item.start_time);
-              const itemPrice = Number(item.price) || 0;
-              const isDaily = isRoom && item.quantity === 1 && itemPrice >= 1000;
-              
-              const roomMap = {
-                4: 'Mars (301)',
-                5: 'Mercury (302)',
-                6: 'Saturn (303)',
-                7: 'Venus (304)',
-                8: 'Uranus (305)',
-                9: 'Neptune (306)',
-                10: 'Jupiter (300)',
-                11: 'Pluto (201)',
-                12: 'Jupiter (300) & Co-Working',
-                13: 'เหมาโซน Co-working'
-              };
+            {groups.map((grp, grpIdx) => (
+              <React.Fragment key={grp.dateKey || `group-${grpIdx}`}>
+                {isMultiDate && grp.thaiDate && (
+                  <tr>
+                    <td
+                      colSpan={3}
+                      style={{
+                        padding: grpIdx > 0 ? '7px 0 3px 0' : '3px 0 3px 0',
+                        borderBottom: '1px solid #000000',
+                        textAlign: 'left'
+                      }}
+                    >
+                      <div style={{ fontSize: '0.80rem', fontWeight: 900, color: '#000000' }}>
+                        {grp.thaiFullDate || grp.thaiDate}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {grp.items.map((item, idx) => (
+                  <tr key={item.id || `${grpIdx}-${idx}`} style={{ borderBottom: '1px dashed #000000' }}>
+                    <td style={{ padding: '5px 0', verticalAlign: 'top', color: '#000000', textAlign: 'left' }}>
+                      <div style={{ fontSize: '0.86rem', fontWeight: 800, color: '#000000', lineHeight: 1.25 }}>
+                        {item.displayName}
+                      </div>
 
-              const rId = item.room_id || booking.room_id || booking.room?.id;
-              let roomName = item.room_name || item.name || item.room_title || item.room?.name || booking.room_name || booking.room?.name || roomMap[rId] || roomMap[Number(rId)] || '';
-
-              if (isRoom) {
-                if (!roomName) roomName = roomMap[rId] || roomMap[Number(rId)] || 'ห้องประชุม';
-                if (item.layout === 'classroom' && !roomName.toLowerCase().includes('classroom')) {
-                  roomName += ' (Classroom)';
-                }
-              }
-              const displayName = isRoom ? roomName : (item.service_name || item.name || 'รายการสินค้า');
-
-              let cleanName = displayName;
-              let detailText = isRoom 
-                ? (item.room_description || item.description || booking.room_description || '') 
-                : (item.service_description || item.description || item.detail || item.notes || (item.service_category || item.category ? `หมวดหมู่: ${item.service_category || item.category}` : ''));
-
-              if (displayName.includes(' (ส่วนลด')) {
-                const parts = displayName.split(' (ส่วนลด');
-                cleanName = parts[0];
-                if (!detailText) {
-                  detailText = '(ส่วนลด' + parts[1];
-                }
-              } else if (displayName.includes('(ส่วนลด')) {
-                const parts = displayName.split('(ส่วนลด');
-                cleanName = parts[0].trim();
-                if (!detailText) {
-                  detailText = '(ส่วนลด' + parts[1];
-                }
-              }
-
-              const layoutLabel = item.layout === 'classroom' ? 'Classroom (จัดโต๊ะเรียน)' : 'Standard (จัดปกติ)';
-              const typeLabel = item.booking_type === 'daily' ? 'เหมาวัน' : item.booking_type === 'halfday' ? 'เหมาครึ่งวัน' : 'รายชั่วโมง';
-              const periodText = item.start_time ? formatPeriod(item.start_time, item.end_time) : '';
-              const itemSubtotal = Number(item.subtotal) || 0;
-
-              return (
-                <tr key={idx} style={{ borderBottom: '1px dashed #000000' }}>
-                  <td style={{ padding: '5px 0', verticalAlign: 'top', color: '#000000', textAlign: 'left' }}>
-                    <div style={{ fontSize: '0.86rem', fontWeight: 800, color: '#000000', lineHeight: 1.25 }}>
-                      {cleanName}
-                    </div>
-                    
-                    {/* Item Details Hierarchy (Compact & Clean) */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', marginTop: '2px' }}>
-                      {isRoom && periodText && (
-                        <div style={{ fontSize: '0.68rem', color: '#000000', fontWeight: 600, lineHeight: 1.25 }}>
-                          {`${periodText} (${typeLabel})`}
-                        </div>
-                      )}
-                      {isRoom && (
-                        <div style={{ fontSize: '0.66rem', color: '#000000', fontWeight: 600, lineHeight: 1.25 }}>
-                          {`รูปแบบ: ${layoutLabel}`}
-                        </div>
-                      )}
-                      {detailText && (
-                        <div style={{ fontSize: '0.66rem', color: '#000000', fontWeight: 600, lineHeight: 1.25 }}>
-                          {detailText.startsWith('(') ? detailText : `(${detailText})`}
-                        </div>
-                      )}
-                    </div>
-                  </td>
-                  <td style={{ padding: '5px 0', verticalAlign: 'top', color: '#000000', textAlign: 'center', fontSize: '0.80rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                    {isRoom ? (isDaily ? `${item.quantity || 1} วัน` : `${item.quantity || 1} ชม.`) : `x${item.quantity || 1}`}
-                  </td>
-                  <td style={{ padding: '5px 0', verticalAlign: 'top', color: '#000000', textAlign: 'right', fontSize: '0.86rem', fontWeight: 800, whiteSpace: 'nowrap' }}>
-                    {itemSubtotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </td>
-                </tr>
-              );
-            })}
+                      {/* Item Details Hierarchy (Compact & Clean) */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', marginTop: '2px' }}>
+                        {item.isRoom && item.timePeriod && (
+                          <div style={{ fontSize: '0.70rem', color: '#000000', fontWeight: 700, lineHeight: 1.25 }}>
+                            {!isMultiDate && grp.thaiDate ? `${grp.thaiDate} ` : ''}{item.timePeriod} ({item.typeLabel})
+                          </div>
+                        )}
+                        {item.isRoom && (
+                          <div style={{ fontSize: '0.66rem', color: '#000000', fontWeight: 600, lineHeight: 1.25 }}>
+                            รูปแบบ: {item.isClassroom ? 'Classroom (จัดโต๊ะเรียน)' : 'Standard (จัดปกติ)'}
+                          </div>
+                        )}
+                        {item.unitPrice > 0 && item.quantity > 1 && (
+                          <div style={{ fontSize: '0.66rem', color: '#000000', fontWeight: 600, lineHeight: 1.25 }}>
+                            @ {item.unitPrice.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท / {item.bookingType === 'daily' ? 'วัน' : (item.bookingType === 'halfday' ? 'ครึ่งวัน' : (item.isRoom ? 'ชม.' : 'ชิ้น'))}
+                          </div>
+                        )}
+                        {item.detailText && (
+                          <div style={{ fontSize: '0.66rem', color: '#000000', fontWeight: 600, lineHeight: 1.25 }}>
+                            {item.detailText.startsWith('(') ? item.detailText : `(${item.detailText})`}
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td style={{ padding: '5px 0', verticalAlign: 'top', color: '#000000', textAlign: 'center', fontSize: '0.80rem', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                      {item.durationLabel}
+                    </td>
+                    <td style={{ padding: '5px 0', verticalAlign: 'top', color: '#000000', textAlign: 'right', fontSize: '0.86rem', fontWeight: 800, whiteSpace: 'nowrap' }}>
+                      {item.subtotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                ))}
+              </React.Fragment>
+            ))}
           </tbody>
         </table>
       </div>
@@ -277,17 +200,50 @@ function ReceiptPrint({ booking, settings }) {
 
       {/* 4. Total & Payment Section */}
       <div className="receipt-total-section" style={{ color: '#000000', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+        {totals.hasAdjustment && (
+          <>
+            <div className="receipt-info-row" style={{ fontSize: '0.84rem', fontWeight: 700, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>รวมมูลค่ารายการ:</span>
+              <span>{totals.itemsSubtotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
+            </div>
+            <div className="receipt-info-row" style={{ fontSize: '0.84rem', fontWeight: 700, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{totals.adjustmentLabel}:</span>
+              <span>
+                {totals.adjustmentAmount < 0 ? '-' : '+'}
+                {Math.abs(totals.adjustmentAmount).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
+              </span>
+            </div>
+          </>
+        )}
         <div className="receipt-info-row" style={{ fontSize: '1.05rem', fontWeight: 900, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>ยอดรวมสุทธิ:</span>
-          <span>{safeTotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
+          <span>{totals.grandTotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
         </div>
         <div className="receipt-info-row" style={{ fontSize: '0.85rem', fontWeight: 700, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>การชำระเงิน:</span>
           <span>
-            {booking.payment_status === 'paid' ? 'ชำระเงินแล้ว' : 'ค้างชำระ (Pending)'} 
-            {booking.payment_method && ` (${booking.payment_method === 'cash' ? 'เงินสด' : 'โอนเงิน'})`}
+            {payment.statusLabel}
+            {payment.methodLabel && !payment.isFree ? ` (${payment.methodLabel})` : ''}
           </span>
         </div>
+        {payment.isFree && (
+          <div className="receipt-info-row" style={{ fontSize: '0.78rem', fontWeight: 600, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>ช่องทาง:</span>
+            <span>{payment.methodLabel}</span>
+          </div>
+        )}
+        {payment.transRef && (
+          <div className="receipt-info-row" style={{ fontSize: '0.75rem', fontWeight: 600, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>เลขอ้างอิงสลิป:</span>
+            <span>{payment.transRef}</span>
+          </div>
+        )}
+        {payment.note && (
+          <div className="receipt-info-row" style={{ fontSize: '0.75rem', fontWeight: 600, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>สิทธิ์ / รายละเอียด:</span>
+            <span>{payment.note}</span>
+          </div>
+        )}
         {(booking.note || booking.notes) && (
           <div className="receipt-info-row" style={{ fontSize: '0.80rem', marginTop: '3px', color: '#000000', display: 'flex', gap: '4px' }}>
             <span style={{ fontWeight: 700, flexShrink: 0 }}>หมายเหตุ:</span>
