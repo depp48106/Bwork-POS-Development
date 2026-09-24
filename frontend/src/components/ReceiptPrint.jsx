@@ -31,6 +31,10 @@ function ReceiptPrint({ booking, settings }) {
       style={{
         width: '72mm',
         maxWidth: '72mm',
+        height: 'auto',
+        minHeight: 0,
+        maxHeight: 'none',
+        overflow: 'visible',
         margin: '0 auto',
         padding: '3mm 4mm',
         fontSize: '13px',
@@ -40,6 +44,7 @@ function ReceiptPrint({ booking, settings }) {
         fontFamily: "'Sarabun', 'Prompt', 'Noto Sans Thai', 'Segoe UI', Tahoma, sans-serif",
         boxSizing: 'border-box'
       }}
+
     >
       {/* 1. Header & Company Section */}
       <div className="receipt-header" style={{ textAlign: 'center', marginBottom: '8px' }}>

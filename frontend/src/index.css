@@ -2124,6 +2124,10 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     width: 72mm !important;
     max-width: 72mm !important;
     box-sizing: border-box !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
     background: #ffffff !important;
     color: #000000 !important;
     font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important;
@@ -2160,7 +2164,6 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
   
   @page {
-    size: auto;
     margin: 0;
   }
 }
@@ -2169,6 +2172,11 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 .receipt-wrapper {
   width: 72mm !important;
   max-width: 72mm !important;
+  box-sizing: border-box !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: visible !important;
   margin: 0 auto;
   background-color: #ffffff !important;
   color: #000000 !important;
@@ -2184,6 +2192,7 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   -moz-osx-font-smoothing: grayscale !important;
   text-rendering: geometricPrecision !important;
 }
+
 
 /* Force 100% Solid Pure Black on every child for crisp thermal transfer */
 .receipt-wrapper * {

@@ -60,6 +60,42 @@ test('6. index.css collapses modal containers into static unpadded flow in print
   assert.match(indexCss, /\.history-receipt-column\s*\{[^}]*display:\s*block\s*!important;/);
 });
 
+const receiptPrintJsx = fs.readFileSync(path.join(__dirname, '../src/components/ReceiptPrint.jsx'), 'utf-8');
+
 test('7. BookingPOS.jsx receipt modal includes print-modal-overlay class for consistent print isolation', () => {
   assert.match(bookingPosJsx, /className="print-modal-overlay"/);
+});
+
+test('8. index.css locks receipt width to 72mm and enforces continuous height', () => {
+  // #print-receipt-area width and continuous height
+  assert.match(indexCss, /#print-receipt-area\s*\{[^}]*width:\s*72mm\s*!important;/);
+  assert.match(indexCss, /#print-receipt-area\s*\{[^}]*max-width:\s*72mm\s*!important;/);
+  assert.match(indexCss, /#print-receipt-area\s*\{[^}]*height:\s*auto\s*!important;/);
+  assert.match(indexCss, /#print-receipt-area\s*\{[^}]*min-height:\s*0\s*!important;/);
+  assert.match(indexCss, /#print-receipt-area\s*\{[^}]*max-height:\s*none\s*!important;/);
+
+  // .receipt-wrapper width and continuous height
+  assert.match(indexCss, /\.receipt-wrapper\s*\{[^}]*width:\s*72mm\s*!important;/);
+  assert.match(indexCss, /\.receipt-wrapper\s*\{[^}]*max-width:\s*72mm\s*!important;/);
+  assert.match(indexCss, /\.receipt-wrapper\s*\{[^}]*height:\s*auto\s*!important;/);
+});
+
+test('9. @page defines margin: 0 without forcing fixed height', () => {
+  assert.match(indexCss, /@page\s*\{[^}]*margin:\s*0;/);
+  const hasFixed200mm = /@page\s*\{[^}]*200mm/i.test(indexCss);
+  assert.equal(hasFixed200mm, false, '@page must not specify 200mm height');
+});
+
+test('10. ReceiptPrint.jsx has 72mm width, continuous height, no fixed 200mm, and no auto-scale', () => {
+  assert.match(receiptPrintJsx, /width:\s*'72mm'/);
+  assert.match(receiptPrintJsx, /maxWidth:\s*'72mm'/);
+  assert.match(receiptPrintJsx, /height:\s*'auto'/);
+  assert.match(receiptPrintJsx, /minHeight:\s*0/);
+  assert.match(receiptPrintJsx, /maxHeight:\s*'none'/);
+
+  // No 200mm fixed height anywhere in ReceiptPrint.jsx
+  assert.equal(/200mm/i.test(receiptPrintJsx), false, 'ReceiptPrint must not contain 200mm');
+
+  // No transform scale anywhere in ReceiptPrint.jsx
+  assert.equal(/transform:\s*['"`]?scale/i.test(receiptPrintJsx), false, 'ReceiptPrint must not scale content');
 });
