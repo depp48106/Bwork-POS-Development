@@ -2011,22 +2011,38 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     margin: 0 !important;
     padding: 0 !important;
     height: auto !important;
+    min-height: 0 !important;
     overflow: visible !important;
     width: 100% !important;
-    display: flex !important;
-    justify-content: center !important;
-    align-items: flex-start !important;
+    display: block !important;
   }
 
   body:not(.printing-quotation) * {
+    visibility: hidden !important;
     background: transparent !important;
-    color: #000000 !important;
     box-shadow: none !important;
     text-shadow: none !important;
-    -webkit-print-color-adjust: exact !important;
-    print-color-adjust: exact !important;
   }
 
+  /* Reset layout constraints of all parents to shrink height to match the receipt content */
+  body:not(.printing-quotation) #root,
+  body:not(.printing-quotation) .app-container,
+  body:not(.printing-quotation) .main-content,
+  body:not(.printing-quotation) .pos-container,
+  body:not(.printing-quotation) .pb-console-container {
+    display: block !important;
+    position: static !important;
+    height: auto !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+  }
+
+  /* Remove all navigation, headers, tables, sidebars, and panels from print layout */
   body:not(.printing-quotation) .sidebar,
   body:not(.printing-quotation) .brand,
   body:not(.printing-quotation) .nav-links,
@@ -2038,33 +2054,34 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   body:not(.printing-quotation) .bg-glow-orb-1,
   body:not(.printing-quotation) .bg-glow-orb-2,
   body:not(.printing-quotation) .top-navbar,
-  body:not(.printing-quotation) .no-print {
+  body:not(.printing-quotation) .no-print,
+  body:not(.printing-quotation) .pb-console-header,
+  body:not(.printing-quotation) .pb-status-tabs-strip,
+  body:not(.printing-quotation) .pb-filters-panel,
+  body:not(.printing-quotation) .pb-table-wrap,
+  body:not(.printing-quotation) .pb-pagination,
+  body:not(.printing-quotation) .pb-empty-container,
+  body:not(.printing-quotation) .pb-loading-container,
+  body:not(.printing-quotation) .pb-batch-actions-bar,
+  body:not(.printing-quotation) .history-filter-card,
+  body:not(.printing-quotation) .history-stats-grid,
+  body:not(.printing-quotation) .history-table-section,
+  body:not(.printing-quotation) .history-pagination {
     display: none !important;
   }
 
-  /* Reset layout constraints of all parents to shrink height to match the receipt content */
-  body:not(.printing-quotation) #root,
-  body:not(.printing-quotation) .app-container,
-  body:not(.printing-quotation) .main-content,
-  body:not(.printing-quotation) .pos-container {
-    display: block !important;
-    position: relative !important;
-    height: auto !important;
-    min-height: 0 !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    background: transparent !important;
-    box-shadow: none !important;
-    border: none !important;
-    overflow: visible !important;
+  /* Robust container exclusion: hide any direct layout child that does not contain the receipt */
+  body:has(#print-receipt-area):not(.printing-quotation) .main-content > *:not(:has(#print-receipt-area)),
+  body:has(#print-receipt-area):not(.printing-quotation) .pb-console-container > *:not(:has(#print-receipt-area)),
+  body:has(#print-receipt-area):not(.printing-quotation) .history-content > *:not(:has(#print-receipt-area)) {
+    display: none !important;
   }
 
+  /* Collapse modal overlays into clean static flow */
   .print-modal-overlay {
-    display: flex !important;
-    justify-content: center !important;
-    align-items: flex-start !important;
+    display: block !important;
+    position: static !important;
     width: 100% !important;
-    position: relative !important;
     margin: 0 !important;
     padding: 0 !important;
     background: transparent !important;
@@ -2078,7 +2095,7 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     border: none !important;
     box-shadow: none !important;
     background: transparent !important;
-    width: auto !important;
+    width: 100% !important;
     max-width: none !important;
     margin: 0 !important;
     padding: 0 !important;
@@ -2087,7 +2104,7 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
 
   .history-receipt-column {
-    width: auto !important;
+    width: 100% !important;
     padding: 0 !important;
     border: none !important;
     background: transparent !important;
@@ -2095,32 +2112,32 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
 
   /* Print area styling - 100% Parity with PDF Export */
+  body:not(.printing-quotation) #print-receipt-area,
+  body:not(.printing-quotation) #print-receipt-area * {
+    visibility: visible !important;
+  }
+
   #print-receipt-area {
+    display: block !important;
     position: relative !important;
     margin: 0 auto !important;
     width: 72mm !important;
+    max-width: 72mm !important;
     box-sizing: border-box !important;
     background: #ffffff !important;
     color: #000000 !important;
     font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important;
-    page-break-inside: avoid !important;
-    break-inside: avoid !important;
+    page-break-inside: auto !important;
+    break-inside: auto !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
   
   #print-receipt-area * {
-    visibility: visible !important;
     color: #000000 !important;
     font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
-  }
-
-  /* Match PDF Export crisp, clean typography exactly */
-  #print-receipt-area,
-  #print-receipt-area * {
-    color: #000000 !important;
     font-weight: 600 !important;
     line-height: 1.4 !important;
     -webkit-font-smoothing: antialiased !important;

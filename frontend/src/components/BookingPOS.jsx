@@ -3543,6 +3543,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
             zIndex: 9999,
             padding: '20px'
           }}
+          className="print-modal-overlay"
         >
           <div
             onClick={e => e.stopPropagation()}

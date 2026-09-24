@@ -739,7 +739,17 @@
 
 /* Available remains visually quiet */
 .op-room-row.status-available {
+  background: transparent;
   border-left: 3px solid transparent;
+}
+
+[data-theme="dark"] .op-room-row.status-available {
+  background: rgba(16, 185, 129, 0.02);
+  border-left: 3px solid transparent;
+}
+
+[data-theme="dark"] .op-room-row.status-available:hover {
+  background: rgba(16, 185, 129, 0.05);
 }
 
 /* Defensive fallback in case room thumbnails or cards are introduced */
@@ -803,7 +813,7 @@
 }
 
 .op-room-dot.dot-available {
-  background-color: #94a3b8;
+  background-color: #10b981;
 }
 
 .op-room-status-texts {
@@ -822,6 +832,10 @@
   font-size: 0.72rem;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+[data-theme="dark"] .op-room-row.status-available .op-room-status-context {
+  color: #34d399;
 }
 
 /* ===================================================
