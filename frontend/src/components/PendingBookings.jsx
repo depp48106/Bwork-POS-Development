@@ -37,6 +37,7 @@ import {
   Check
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
+import { printReceipt } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { API_BASE } from '../apiConfig';
@@ -3257,7 +3258,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         }} className="print-modal-overlay">
           <div style={{ backgroundColor: 'var(--bg-card)', padding: '16px', borderRadius: 'var(--border-radius)', marginBottom: '16px', display: 'flex', gap: '8px', width: '100%', maxWidth: '380px', flexWrap: 'wrap' }} className="no-print">
             <button className="btn btn-secondary" style={{ flex: '1 1 100px', fontSize: '0.85rem', padding: '10px 12px' }} onClick={() => setShowReceiptModal(false)}>ปิดหน้าต่าง</button>
-            <button className="btn btn-primary" style={{ flex: '2 1 140px', fontSize: '0.85rem', padding: '10px 12px', gap: '6px' }} onClick={() => window.print()}>
+            <button className="btn btn-primary" style={{ flex: '2 1 140px', fontSize: '0.85rem', padding: '10px 12px', gap: '6px' }} onClick={() => printReceipt('print-receipt-area')}>
               <Printer size={16} /> พิมพ์ใบเสร็จ
             </button>
             <button

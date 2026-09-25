@@ -2006,12 +2006,14 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 
 /* Printing styling - Optimized to strictly print 1 page on thermal roll paper */
 @media print {
+  html,
   body:not(.printing-quotation) {
     background: #ffffff !important;
     margin: 0 !important;
     padding: 0 !important;
     height: auto !important;
     min-height: 0 !important;
+    max-height: none !important;
     overflow: visible !important;
     width: 100% !important;
     display: block !important;
@@ -2029,17 +2031,30 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   body:not(.printing-quotation) .app-container,
   body:not(.printing-quotation) .main-content,
   body:not(.printing-quotation) .pos-container,
-  body:not(.printing-quotation) .pb-console-container {
+  body:not(.printing-quotation) .pb-console-container,
+  body:not(.printing-quotation) .history-content,
+  .print-modal-overlay,
+  .print-modal-overlay > div,
+  .print-modal-overlay > div > div,
+  .history-modal-container,
+  .history-receipt-column,
+  .history-receipt-column > div {
     display: block !important;
     position: static !important;
     height: auto !important;
     min-height: 0 !important;
+    max-height: none !important;
     margin: 0 !important;
     padding: 0 !important;
     background: transparent !important;
     box-shadow: none !important;
     border: none !important;
     overflow: visible !important;
+    transform: none !important;
+    align-items: normal !important;
+    justify-content: normal !important;
+    place-items: normal !important;
+    place-content: normal !important;
   }
 
   /* Remove all navigation, headers, tables, sidebars, and panels from print layout */
@@ -2131,8 +2146,8 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     background: #ffffff !important;
     color: #000000 !important;
     font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important;
-    page-break-inside: auto !important;
-    break-inside: auto !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }

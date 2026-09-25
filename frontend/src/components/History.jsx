@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import ReceiptPrint from './ReceiptPrint';
+import { printReceipt } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { formatTransactionDateTime } from '../dateUtils';
@@ -241,7 +242,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   };
 
   const triggerPrint = () => {
-    window.print();
+    printReceipt('print-receipt-area');
   };
 
   const handleDownloadPDF = () => {

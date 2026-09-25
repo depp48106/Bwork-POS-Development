@@ -8,6 +8,7 @@ import {
   Banknote, Smartphone, ExternalLink
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
+import { printReceipt } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 
@@ -3572,7 +3573,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 <button type="button" onClick={handleDownloadReceiptPDF} className="btn btn-secondary" style={{ height: '34px', padding: '0 10px', borderRadius: '10px', fontSize: '0.76rem', fontWeight: 700 }}>
                   <FileText size={14} /> PDF
                 </button>
-                <button type="button" onClick={() => window.print()} className="btn btn-primary" style={{ height: '34px', padding: '0 12px', borderRadius: '10px', fontSize: '0.76rem', fontWeight: 800 }}>
+                <button type="button" onClick={() => printReceipt('print-receipt-area')} className="btn btn-primary" style={{ height: '34px', padding: '0 12px', borderRadius: '10px', fontSize: '0.76rem', fontWeight: 800 }}>
                   <Printer size={14} /> พิมพ์ใบเสร็จ
                 </button>
                 <button type="button" onClick={handleCloseReceiptModal} style={{ width: '34px', height: '34px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'rgba(239, 68, 68, 0.1)', color: 'var(--danger-color)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
