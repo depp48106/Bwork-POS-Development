@@ -214,3 +214,39 @@ test('7. All print entry points (BookingPOS, History, PendingBookings) use print
   assert.match(pendingContent, /import\s*\{\s*printReceipt\s*\}\s*from\s*['"]\.\.\/utils\/printReceiptHelper['"]/, 'PendingBookings must import printReceipt');
   assert.match(pendingContent, /printReceipt\(['"]print-receipt-area['"]\)/, 'PendingBookings must invoke printReceipt');
 });
+
+test('8. Booking Management print suppression explicitly removes .pb-filter-toolbar from layout and preserves static flow', () => {
+  const css = fs.readFileSync(INDEX_CSS_PATH, 'utf-8');
+
+  // Verify .pb-filter-toolbar is explicitly hidden with display: none !important
+  assert.match(
+    css,
+    /body:not\(\.printing-quotation\)\s*[\s\S]*?\.pb-filter-toolbar[\s\S]*?\{[^}]*display:\s*none\s*!important;/s,
+    '.pb-filter-toolbar must be explicitly display: none !important in @media print'
+  );
+
+  // Verify other Booking Management operational UI siblings are display: none !important
+  assert.match(css, /\.pb-console-header[\s\S]*?\{[^}]*display:\s*none\s*!important;/s);
+  assert.match(css, /\.pb-status-tabs-strip[\s\S]*?\{[^}]*display:\s*none\s*!important;/s);
+  assert.match(css, /\.pb-active-chips-strip[\s\S]*?\{[^}]*display:\s*none\s*!important;/s);
+  assert.match(css, /\.pb-table-wrap[\s\S]*?\{[^}]*display:\s*none\s*!important;/s);
+
+  // Verify container exclusion rule for main-content children
+  assert.match(
+    css,
+    /\.main-content\s*>\s*div\s*>\s*\*:not\(:has\(#print-receipt-area\)\)[\s\S]*?\{[^}]*display:\s*none\s*!important;/s,
+    'All non-receipt siblings of receipt modal inside main-content must be display: none !important'
+  );
+
+  // Verify modal overlay remains strictly in static document flow (NOT absolute or fixed)
+  assert.match(
+    css,
+    /\.print-modal-overlay\s*\{[^}]*display:\s*block\s*!important;[^}]*position:\s*static\s*!important;/s,
+    '.print-modal-overlay must remain position: static !important in print'
+  );
+  assert.doesNotMatch(
+    css,
+    /\.print-modal-overlay\s*\{[^}]*position:\s*(?:absolute|fixed)\s*!important;/s,
+    '.print-modal-overlay must NOT use position: absolute or fixed'
+  );
+});
