@@ -2035,11 +2035,11 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   body:not(.printing-quotation) .pb-console-container,
   body:not(.printing-quotation) .history-content,
   .print-modal-overlay,
-  .print-modal-overlay > div,
-  .print-modal-overlay > div > div,
+  .print-modal-overlay > div:not(#print-receipt-area):has(#print-receipt-area),
+  .print-modal-overlay > div > div:not(#print-receipt-area):has(#print-receipt-area),
   .history-modal-container,
   .history-receipt-column,
-  .history-receipt-column > div {
+  .history-receipt-column > div:not(#print-receipt-area):has(#print-receipt-area) {
     display: block !important;
     position: static !important;
     height: auto !important;
@@ -2156,7 +2156,10 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     overflow: visible !important;
     background: #ffffff !important;
     color: #000000 !important;
-    font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important;
+    padding: 3mm 4mm !important;
+    font-size: 13px !important;
+    line-height: 1.35 !important;
+    font-family: 'Sarabun', 'Prompt', 'Noto Sans Thai', 'Segoe UI', Tahoma, sans-serif !important;
     page-break-inside: avoid !important;
     break-inside: avoid !important;
     -webkit-print-color-adjust: exact !important;
@@ -2165,28 +2168,11 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   
   #print-receipt-area * {
     color: #000000 !important;
-    font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
-    font-weight: 600 !important;
-    line-height: 1.4 !important;
     -webkit-font-smoothing: antialiased !important;
     -moz-osx-font-smoothing: grayscale !important;
     text-rendering: optimizeLegibility !important;
-  }
-
-  #print-receipt-area .receipt-title,
-  #print-receipt-area .receipt-total-section *,
-  #print-receipt-area strong {
-    font-weight: 900 !important; /* Thick ultra-bold for titles/totals */
-  }
-
-  #print-receipt-area .receipt-divider {
-    border-top: 2px dashed #000000 !important;
-  }
-
-  #print-receipt-area .receipt-items > div {
-    border-bottom: 1px dashed #000000 !important;
   }
   
   @page {

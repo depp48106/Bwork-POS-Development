@@ -250,3 +250,59 @@ test('8. Booking Management print suppression explicitly removes .pb-filter-tool
     '.print-modal-overlay must NOT use position: absolute or fixed'
   );
 });
+
+test('9. Print parent reset rules scope ancestors and strictly exclude #print-receipt-area from being clobbered', () => {
+  const css = fs.readFileSync(INDEX_CSS_PATH, 'utf-8');
+
+  // Must scope parent resets with :has(#print-receipt-area) and :not(#print-receipt-area)
+  assert.match(
+    css,
+    /\.print-modal-overlay\s*>\s*div:not\(#print-receipt-area\):has\(#print-receipt-area\)/,
+    'print-modal-overlay child resets must explicitly exclude #print-receipt-area'
+  );
+  assert.match(
+    css,
+    /\.history-receipt-column\s*>\s*div:not\(#print-receipt-area\):has\(#print-receipt-area\)/,
+    'history-receipt-column child resets must explicitly exclude #print-receipt-area'
+  );
+
+  // #print-receipt-area must define explicit padding and font stack matching Flow B on-screen preview
+  assert.match(
+    css,
+    /#print-receipt-area\s*\{[^}]*padding:\s*3mm\s+4mm\s*!important;/s,
+    '#print-receipt-area must explicitly enforce 3mm 4mm padding in @media print'
+  );
+  assert.match(
+    css,
+    /#print-receipt-area\s*\{[^}]*font-family:[^}]*Prompt[^}]*!important;/s,
+    '#print-receipt-area must include Prompt in font-family stack in @media print'
+  );
+});
+
+test('10. Print rules eliminate blanket typography/divider overrides to guarantee Flow A / Flow B visual parity', () => {
+  const css = fs.readFileSync(INDEX_CSS_PATH, 'utf-8');
+
+  // Must NOT force blanket font-weight: 600 or line-height: 1.4 on all elements
+  assert.doesNotMatch(
+    css,
+    /#print-receipt-area\s*\*\s*\{[^}]*font-weight:\s*600\s*!important;/s,
+    '#print-receipt-area * must not force blanket font-weight: 600'
+  );
+  assert.doesNotMatch(
+    css,
+    /#print-receipt-area\s*\*\s*\{[^}]*line-height:\s*1\.4\s*!important;/s,
+    '#print-receipt-area * must not force blanket line-height: 1.4'
+  );
+
+  // Must NOT force blanket 900 on entire totals section or 2px dashed on dividers
+  assert.doesNotMatch(
+    css,
+    /#print-receipt-area\s+\.receipt-total-section\s*\*\s*\{[^}]*font-weight:\s*900/s,
+    'Must not force 900 font-weight indiscriminately across all total section spans'
+  );
+  assert.doesNotMatch(
+    css,
+    /#print-receipt-area\s+\.receipt-divider\s*\{[^}]*border-top:\s*2px/s,
+    'Must not override receipt dividers to harsh 2px dashed border'
+  );
+});
