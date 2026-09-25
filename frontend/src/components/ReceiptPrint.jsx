@@ -14,6 +14,7 @@ function ReceiptPrint({ booking, settings }) {
   const companyAddress = safeSettings.company_address || safeSettings.quotation_company_address || '98 หมู่ 2 อาคารบีเวิร์ค ยูนิต 602 ซอยแจ้งวัฒนะ-ปากเกร็ด 35 ตำบลคลองเกลือ อำเภอปากเกร็ด จ.นนทบุรี 11120';
   const companyTaxId = safeSettings.company_tax_id || safeSettings.quotation_company_tax_id || '0125554000401';
   const companyPhone = safeSettings.company_phone || safeSettings.phone || '';
+  const receiptLogo = safeSettings.logo_image || '/BWORK-LOGO.png';
 
   // Format Created At Date (Point-in-time timestamp in Asia/Bangkok)
   const formatDateTime = (dateString) => formatTransactionDateTime(dateString);
@@ -48,15 +49,17 @@ function ReceiptPrint({ booking, settings }) {
     >
       {/* 1. Header & Company Section */}
       <div className="receipt-header" style={{ textAlign: 'center', marginBottom: '8px' }}>
-        {safeSettings.logo_image && (
+        {receiptLogo && (
           <div style={{ textAlign: 'center', marginBottom: '8px' }}>
             <img
-              src={safeSettings.logo_image}
+              src={receiptLogo}
               alt="Logo"
               onError={(e) => {
-                e.currentTarget.style.display = 'none';
-                if (e.currentTarget.parentElement) {
-                  e.currentTarget.parentElement.style.display = 'none';
+                if (!e.currentTarget.dataset.fallbackTried && !e.currentTarget.src.endsWith('/BWORK-LOGO.png')) {
+                  e.currentTarget.dataset.fallbackTried = 'true';
+                  e.currentTarget.src = '/BWORK-LOGO.png';
+                } else {
+                  e.currentTarget.onerror = null;
                 }
               }}
               style={{ maxWidth: '120px', maxHeight: '55px', objectFit: 'contain' }}

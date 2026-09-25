@@ -15,6 +15,7 @@ import LinePreview from './components/LinePreview';
 import { useLiveNotifications } from './hooks/useLiveNotifications';
 import NotificationCenter from './components/NotificationCenter';
 import LiveToastContainer from './components/LiveToastContainer';
+import { authManager } from './authManager';
 
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -256,7 +257,8 @@ function App() {
   const [settings, setSettings] = useState({
     company_name: 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)',
     receipt_header: 'ใบเสร็จรับเงิน / ใบรับจองบริการ',
-    receipt_footer: 'ขอบคุณที่ใช้บริการห้องประชุมของเรา'
+    receipt_footer: 'ขอบคุณที่ใช้บริการห้องประชุมของเรา',
+    logo_image: '/BWORK-LOGO.png'
   });
 
   // Verify session with backend /api/auth/me on initial load
@@ -309,7 +311,10 @@ function App() {
   // Fetch settings from API
   const fetchSettings = async () => {
     try {
-      const res = await fetch('/api/settings');
+      const token = authManager.getToken() || localStorage.getItem('pos_token') || localStorage.getItem('token');
+      const res = await fetch('/api/settings', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         const data = await res.json();
         setSettings(data);
@@ -358,7 +363,9 @@ function App() {
         if (data.token) {
           localStorage.setItem('pos_token', data.token);
           localStorage.setItem('token', data.token);
+          authManager.setAuth(data.token, data.user);
         }
+        fetchSettings();
         triggerTransition();
       } else {
         setLoginError(data.error || 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
