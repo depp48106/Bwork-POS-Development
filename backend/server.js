@@ -307,29 +307,150 @@ app.post('/api/rooms', requireAnyPermission('manage'), async (req, res) => {
 });
 
 app.put('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
+  const roomId = req.params.id;
   const {
     name, capacity, hourly_rate, daily_rate, half_day_rate,
     has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
     description, status, image_url,
     has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code
   } = req.body;
+
   try {
-    await dbQuery.run(
-      `UPDATE rooms
-       SET name = ?, capacity = ?, hourly_rate = ?, daily_rate = ?, half_day_rate = ?,
-           has_classroom = ?, classroom_hourly_rate = ?, classroom_daily_rate = ?, classroom_capacity = ?, classroom_image_url = ?,
-           description = ?, status = ?, image_url = ?,
-           has_hourly = ?, has_halfday = ?, has_daily = ?, pin_code = ?, builtland_pin_code = ?
-       WHERE id = ?`,
-      [
-        name, capacity, hourly_rate, daily_rate || 0, half_day_rate || 0,
-        has_classroom || 0, classroom_hourly_rate || 0, classroom_daily_rate || 0, classroom_capacity || 0, classroom_image_url || null,
-        description, status, image_url,
-        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null, builtland_pin_code || null,
-        req.params.id
-      ]
-    );
-    res.json({ message: 'แก้ไขข้อมูลห้องประชุมสำเร็จ' });
+    const existingRoom = await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [roomId]);
+    if (!existingRoom) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลห้องประชุม' });
+    }
+
+    const isPinCapable = roomUsesDoorPin(existingRoom);
+    const cleanPin = isPinCapable ? (pin_code && String(pin_code).trim() ? String(pin_code).trim() : null) : null;
+    const cleanBuiltlandPin = isPinCapable ? (builtland_pin_code && String(builtland_pin_code).trim() ? String(builtland_pin_code).trim() : null) : null;
+
+    let syncedBookingsCount = 0;
+
+    await dbQuery.transaction(async () => {
+      // 1. Update room record
+      await dbQuery.run(
+        `UPDATE rooms
+         SET name = ?, capacity = ?, hourly_rate = ?, daily_rate = ?, half_day_rate = ?,
+             has_classroom = ?, classroom_hourly_rate = ?, classroom_daily_rate = ?, classroom_capacity = ?, classroom_image_url = ?,
+             description = ?, status = ?, image_url = ?,
+             has_hourly = ?, has_halfday = ?, has_daily = ?, pin_code = ?, builtland_pin_code = ?
+         WHERE id = ?`,
+        [
+          name, capacity, hourly_rate, daily_rate || 0, half_day_rate || 0,
+          has_classroom || 0, classroom_hourly_rate || 0, classroom_daily_rate || 0, classroom_capacity || 0, classroom_image_url || null,
+          description, status !== undefined ? status : existingRoom.status, image_url,
+          has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, cleanPin, cleanBuiltlandPin,
+          roomId
+        ]
+      );
+
+      // 2. If room uses door PIN and pin_code/builtland_pin_code is modified/provided, sync to current & future eligible bookings
+      if (isPinCapable && (pin_code !== undefined || builtland_pin_code !== undefined)) {
+        const currentBkkIso = getBangkokLocalISO(new Date());
+
+        // Find eligible distinct booking IDs for this room
+        const eligibleBookings = await dbQuery.all(
+          `SELECT DISTINCT b.id, b.customer_type
+           FROM bookings b
+           JOIN booking_items bi ON bi.booking_id = b.id
+           WHERE bi.room_id = ?
+             AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed'))
+             AND (b.checkin_status IS NULL OR b.checkin_status != 'cancelled')
+             AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+             AND REPLACE(bi.end_time, ' ', 'T') >= ?`,
+          [roomId, currentBkkIso]
+        );
+
+        syncedBookingsCount = eligibleBookings.length;
+
+        if (syncedBookingsCount > 0) {
+          // Sync General / Walk-in / Basecamp bookings
+          const generalPin = cleanPin;
+          await dbQuery.run(
+            `UPDATE booking_items
+             SET pin_code = ?
+             WHERE room_id = ?
+               AND REPLACE(end_time, ' ', 'T') >= ?
+               AND (checkin_status IS NULL OR checkin_status != 'cancelled')
+               AND booking_id IN (
+                 SELECT id FROM bookings
+                 WHERE (payment_status IS NULL OR payment_status NOT IN ('cancelled', 'failed'))
+                   AND (checkin_status IS NULL OR checkin_status != 'cancelled')
+                   AND (customer_type != 'builtland' OR customer_type IS NULL)
+               )`,
+            [generalPin, roomId, currentBkkIso]
+          );
+
+          await dbQuery.run(
+            `UPDATE bookings
+             SET pin_code = ?
+             WHERE (payment_status IS NULL OR payment_status NOT IN ('cancelled', 'failed'))
+               AND (checkin_status IS NULL OR checkin_status != 'cancelled')
+               AND (customer_type != 'builtland' OR customer_type IS NULL)
+               AND id IN (
+                 SELECT bi1.booking_id
+                 FROM booking_items bi1
+                 WHERE bi1.room_id = ?
+                   AND bi1.id = (
+                     SELECT MIN(bi2.id)
+                     FROM booking_items bi2
+                     WHERE bi2.booking_id = bi1.booking_id
+                       AND bi2.room_id IS NOT NULL
+                   )
+                   AND REPLACE(bi1.end_time, ' ', 'T') >= ?
+                   AND (bi1.checkin_status IS NULL OR bi1.checkin_status != 'cancelled')
+               )`,
+            [generalPin, roomId, currentBkkIso]
+          );
+
+          // Sync Builtland bookings
+          const builtlandEffectivePin = cleanBuiltlandPin || cleanPin;
+          await dbQuery.run(
+            `UPDATE booking_items
+             SET pin_code = ?
+             WHERE room_id = ?
+               AND REPLACE(end_time, ' ', 'T') >= ?
+               AND (checkin_status IS NULL OR checkin_status != 'cancelled')
+               AND booking_id IN (
+                 SELECT id FROM bookings
+                 WHERE (payment_status IS NULL OR payment_status NOT IN ('cancelled', 'failed'))
+                   AND (checkin_status IS NULL OR checkin_status != 'cancelled')
+                   AND customer_type = 'builtland'
+               )`,
+            [builtlandEffectivePin, roomId, currentBkkIso]
+          );
+
+          await dbQuery.run(
+            `UPDATE bookings
+             SET pin_code = ?
+             WHERE (payment_status IS NULL OR payment_status NOT IN ('cancelled', 'failed'))
+               AND (checkin_status IS NULL OR checkin_status != 'cancelled')
+               AND customer_type = 'builtland'
+               AND id IN (
+                 SELECT bi1.booking_id
+                 FROM booking_items bi1
+                 WHERE bi1.room_id = ?
+                   AND bi1.id = (
+                     SELECT MIN(bi2.id)
+                     FROM booking_items bi2
+                     WHERE bi2.booking_id = bi1.booking_id
+                       AND bi2.room_id IS NOT NULL
+                   )
+                   AND REPLACE(bi1.end_time, ' ', 'T') >= ?
+                   AND (bi1.checkin_status IS NULL OR bi1.checkin_status != 'cancelled')
+               )`,
+            [builtlandEffectivePin, roomId, currentBkkIso]
+          );
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      message: 'แก้ไขข้อมูลห้องประชุมสำเร็จ',
+      synced_bookings_count: syncedBookingsCount
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

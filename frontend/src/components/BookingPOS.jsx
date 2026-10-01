@@ -11,6 +11,7 @@ import ReceiptPrint from './ReceiptPrint';
 import { printReceipt } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
+import { roomUsesDoorPin } from '../utils/doorPinHelper';
 
 const TIMELINE_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 const TIMELINE_START = 8;
@@ -1511,6 +1512,11 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                           );
                         }
 
+                        const usesDoorPin = roomUsesDoorPin(room);
+                        const roomPinText = usesDoorPin
+                          ? (room.pin_code && String(room.pin_code).trim() ? `รหัสห้อง: ${String(room.pin_code).trim()}` : 'รหัสห้อง: ไม่ได้ตั้งค่า')
+                          : 'รหัสห้อง: ไม่ใช้รหัส';
+
                         return (
                           <div
                             key={room.id}
@@ -1542,7 +1548,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               }}
                               onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--bg-hover, rgba(37, 99, 235, 0.04))'}
                               onMouseLeave={e => e.currentTarget.style.backgroundColor = 'var(--bg-card-solid, var(--bg-card))'}
-                              title="คลิกเพื่อเปิดฟอร์มจองห้องนี้"
+                              title={`${room.name} (${room.capacity} ที่นั่ง) · ${roomPinText} · คลิกเพื่อเปิดฟอร์มจองห้องนี้`}
                             >
                               {room.image_url ? (
                                 <img src={room.image_url} alt={room.name} style={{ width: '40px', height: '40px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0, border: '1px solid var(--border-color)' }} />
@@ -1575,6 +1581,11 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                   <span>{room.capacity} ที่นั่ง</span>
                                   <span>·</span>
                                   <span>{room.category || 'ห้องประชุม'}</span>
+                                </div>
+
+                                <div style={{ fontSize: '0.68rem', color: usesDoorPin && room.pin_code ? 'var(--text-main)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '1px' }}>
+                                  <Key size={10} style={{ flexShrink: 0, opacity: 0.7 }} />
+                                  <span style={{ fontWeight: 600 }}>{roomPinText}</span>
                                 </div>
 
                                 <div style={{ marginTop: '1px' }}>
@@ -2450,12 +2461,17 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', margin: 0, lineHeight: 1.2 }}>
                     จองพื้นที่: {selectedRoom.name}
                   </h3>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginTop: '3px', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
                     <span>{selectedRoom.category || 'ห้องประชุม'}</span>
                     <span>•</span>
                     <span>ความจุ {layoutType === 'classroom' ? (selectedRoom.classroom_capacity || selectedRoom.capacity) : selectedRoom.capacity} ที่นั่ง</span>
                     <span>•</span>
                     <strong style={{ color: 'var(--primary-color)' }}>฿{selectedRoom.hourly_rate}/ชม.</strong>
+                    <span>•</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', fontWeight: 600, color: 'var(--text-main)' }}>
+                      <Key size={12} style={{ opacity: 0.8 }} />
+                      {roomUsesDoorPin(selectedRoom) ? (selectedRoom.pin_code && String(selectedRoom.pin_code).trim() ? `รหัสห้อง: ${String(selectedRoom.pin_code).trim()}` : 'รหัสห้อง: ไม่ได้ตั้งค่า') : 'รหัสห้อง: ไม่ใช้รหัส'}
+                    </span>
                   </div>
                 </div>
               </div>

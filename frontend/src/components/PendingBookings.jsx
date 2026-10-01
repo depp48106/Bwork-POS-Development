@@ -2107,7 +2107,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
                   const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
-                  let pinRaw = usesDoorPin ? (b.pin_code || firstItem.pin_code || '') : '';
+                  let pinRaw = usesDoorPin ? (firstItem.pin_code || b.pin_code || '') : '';
                   if (usesDoorPin && !pinRaw && roomObj) {
                     pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
                   }
@@ -2365,7 +2365,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
               const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
-              let pinRaw = usesDoorPin ? (b.pin_code || firstItem.pin_code || '') : '';
+              let pinRaw = usesDoorPin ? (firstItem.pin_code || b.pin_code || '') : '';
               if (usesDoorPin && !pinRaw && roomObj) {
                 pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
               }
@@ -2937,7 +2937,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาทั้งวัน' : (firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง');
 
         const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
-        let pinRaw = usesDoorPin ? (b.pin_code || firstItem.pin_code || '') : '';
+        let pinRaw = usesDoorPin ? (firstItem.pin_code || b.pin_code || '') : '';
         if (usesDoorPin && !pinRaw && roomObj) {
           pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
         }
