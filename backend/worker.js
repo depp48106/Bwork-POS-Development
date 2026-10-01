@@ -2124,6 +2124,8 @@ export default {
           params.push(`${date}%`);
         }
 
+        const { results: bookings } = await env.DB.prepare(query).bind(...params).all();
+
         const scheduleMap = (rooms || []).map(room => {
           const safeRoom = { ...room };
           delete safeRoom.pin_code;
