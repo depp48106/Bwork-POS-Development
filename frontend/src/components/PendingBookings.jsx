@@ -182,12 +182,15 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [isReschedEndOpen, setIsReschedEndOpen] = useState(false);
   const [isReschedDailyOpen, setIsReschedDailyOpen] = useState(false);
   const [isReschedHalfdayOpen, setIsReschedHalfdayOpen] = useState(false);
+  const [rescheduleDetails, setRescheduleDetails] = useState('');
+  const [returnToDetailAfterReschedule, setReturnToDetailAfterReschedule] = useState(false);
 
   // Edit Booking Details Modal state
   const [showEditDetailsModal, setShowEditDetailsModal] = useState(false);
   const [editDetailsTarget, setEditDetailsTarget] = useState(null);
   const [editDetailsText, setEditDetailsText] = useState('');
   const [editDetailsLoading, setEditDetailsLoading] = useState(false);
+  const [returnToDetailAfterEditDetails, setReturnToDetailAfterEditDetails] = useState(false);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -315,8 +318,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
   const handleClearFilters = handleResetFilters;
 
-  const fetchBookings = async (isBackground = false, isManual = false) => {
-    if (isFetchingRef.current) return;
+  const fetchBookings = async (isBackground = false, isManual = false, force = false) => {
+    if (isFetchingRef.current && !force) return;
     isFetchingRef.current = true;
     if (!isBackground) setLoading(true);
     if (isManual) {
@@ -763,11 +766,23 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   };
 
   // Edit Booking Details handlers
-  const handleOpenEditDetails = (booking) => {
+  const handleOpenEditDetails = (booking, fromDetail = false) => {
     if (!booking) return;
+    setReturnToDetailAfterEditDetails(!!fromDetail);
     setEditDetailsTarget(booking);
     setEditDetailsText(typeof booking.booking_details === 'string' ? booking.booking_details : '');
     setShowEditDetailsModal(true);
+  };
+
+  const handleCloseEditDetailsModal = () => {
+    if (editDetailsLoading) return;
+    setShowEditDetailsModal(false);
+    setEditDetailsTarget(null);
+    setEditDetailsText('');
+    if (returnToDetailAfterEditDetails) {
+      setShowDetailModal(true);
+      setReturnToDetailAfterEditDetails(false);
+    }
   };
 
   const handleSaveBookingDetails = async () => {
@@ -787,12 +802,23 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const data = await res.json();
         const updatedVal = data.booking_details;
         setBookings(prev => prev.map(item => item.id === editDetailsTarget.id ? { ...item, booking_details: updatedVal } : item));
+        let freshBooking = null;
         if (selectedBooking && selectedBooking.id === editDetailsTarget.id) {
-          setSelectedBooking(prev => ({ ...prev, booking_details: updatedVal }));
+          freshBooking = { ...selectedBooking, booking_details: updatedVal };
+          setSelectedBooking(freshBooking);
         }
         setShowEditDetailsModal(false);
         setEditDetailsTarget(null);
+        setEditDetailsText('');
+        if (returnToDetailAfterEditDetails) {
+          if (freshBooking) {
+            setSelectedBooking(freshBooking);
+          }
+          setShowDetailModal(true);
+          setReturnToDetailAfterEditDetails(false);
+        }
         await sysAlert('บันทึกรายละเอียดเพิ่มเติมเรียบร้อยแล้ว');
+        fetchBookings(true, false, true);
       } else {
         const errData = await res.json().catch(() => ({}));
         await sysAlert(errData.error || 'เกิดข้อผิดพลาดในการบันทึกรายละเอียด');
@@ -806,13 +832,15 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   };
 
   // 3. Reschedule Booking (แก้ไขวัน/เวลาการจอง)
-  const handleOpenReschedule = async (booking) => {
+  const handleOpenReschedule = async (booking, fromDetail = false) => {
     if (!booking) return;
+    setReturnToDetailAfterReschedule(!!fromDetail);
     try {
       // Fetch full details to ensure item structure
       const res = await fetch(`/api/bookings/${booking.id}`);
       const fullBooking = res.ok ? await res.json() : booking;
       setRescheduleTarget(fullBooking);
+      setRescheduleDetails(typeof fullBooking.booking_details === 'string' ? fullBooking.booking_details : (typeof booking.booking_details === 'string' ? booking.booking_details : ''));
 
       const item = fullBooking.items?.[0] || fullBooking;
       let initDate = new Date().toISOString().split('T')[0];
@@ -865,7 +893,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       setShowRescheduleModal(true);
     } catch (err) {
       console.error('Error opening reschedule modal:', err);
+      if (fromDetail) setShowDetailModal(true);
       sysAlert('ไม่สามารถโหลดข้อมูลการจองได้');
+    }
+  };
+
+  const handleCloseRescheduleModal = () => {
+    if (rescheduleLoading) return;
+    setShowRescheduleModal(false);
+    setRescheduleTarget(null);
+    setRescheduleDetails('');
+    if (returnToDetailAfterReschedule) {
+      setShowDetailModal(true);
+      setReturnToDetailAfterReschedule(false);
     }
   };
 
@@ -968,6 +1008,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   // Submit Reschedule
   const submitRescheduleBooking = async () => {
     if (!rescheduleTarget || !reschedulePriceCalc.isValid || rescheduleOverlapInfo.isOverlap) return;
+    if (rescheduleDetails && rescheduleDetails.length > 1000) {
+      await sysAlert('รายละเอียดเพิ่มเติมต้องมีความยาวไม่เกิน 1,000 ตัวอักษร');
+      return;
+    }
     setRescheduleLoading(true);
 
     let start_time = `${String(rescheduleStartHour).padStart(2, '0')}:${String(rescheduleStartMinute).padStart(2, '0')}`;
@@ -992,16 +1036,53 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           layout: rescheduleLayout,
           total_amount: reschedulePriceCalc.newTotal,
           reason: rescheduleReason,
-          send_line: rescheduleSendLine
+          send_line: rescheduleSendLine,
+          booking_details: rescheduleDetails
         })
       });
 
       const data = await res.json();
       if (res.ok && data.success) {
+        const targetId = rescheduleTarget.id;
+        const freshBooking = data.booking || {
+          ...rescheduleTarget,
+          booking_details: rescheduleDetails.trim() || null,
+          booking_date: rescheduleDate,
+          start_time: `${rescheduleDate} ${start_time}:00`,
+          end_time: `${rescheduleDate} ${end_time}:00`,
+          items: [{
+            ...(rescheduleTarget.items?.[0] || {}),
+            room_id: Number(rescheduleRoomId),
+            booking_date: rescheduleDate,
+            start_time: `${rescheduleDate} ${start_time}:00`,
+            end_time: `${rescheduleDate} ${end_time}:00`,
+            booking_type: rescheduleBookingType,
+            layout: rescheduleLayout
+          }],
+          total_amount: reschedulePriceCalc.newTotal
+        };
+
+        // Immediately update bookings array in local state
+        setBookings(prev => prev.map(item => item.id === targetId ? { ...item, ...freshBooking } : item));
+
+        // Immediately update selectedBooking if it matches
+        if (selectedBooking && selectedBooking.id === targetId) {
+          setSelectedBooking(freshBooking);
+        }
+
         setShowRescheduleModal(false);
         setRescheduleTarget(null);
+        setRescheduleDetails('');
+
+        // If opened from detail modal, restore detail modal with freshBooking
+        if (returnToDetailAfterReschedule) {
+          setSelectedBooking(freshBooking);
+          setShowDetailModal(true);
+          setReturnToDetailAfterReschedule(false);
+        }
+
         await sysAlert(data.message || 'เปลี่ยนแปลงวันและเวลาการจองสำเร็จแล้ว');
-        fetchBookings();
+        fetchBookings(true, false, true);
       } else {
         await sysAlert('' + (data.error || 'ไม่สามารถแก้ไขวัน/เวลาการจองได้'));
       }
@@ -3005,7 +3086,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                 {!isCancelled && (
                                   <button
                                     type="button"
-                                    onClick={() => handleOpenEditDetails(b)}
+                                    onClick={() => {
+                                      setShowDetailModal(false);
+                                      handleOpenEditDetails(b, true);
+                                    }}
                                     style={{
                                       background: 'none',
                                       border: 'none',
@@ -3277,7 +3361,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       className="pb-detail-btn-secondary"
                       onClick={() => {
                         setShowDetailModal(false);
-                        handleOpenReschedule(b);
+                        handleOpenReschedule(b, true);
                       }}
                       aria-label="แก้ไขวันหรือเวลาการจอง"
                     >
@@ -3291,7 +3375,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       type="button"
                       className="pb-detail-btn-secondary"
                       onClick={() => {
-                        handleOpenEditDetails(b);
+                        setShowDetailModal(false);
+                        handleOpenEditDetails(b, true);
                       }}
                       aria-label="แก้ไขรายละเอียดเพิ่มเติม"
                     >
@@ -4494,7 +4579,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          zIndex: 9999,
+          zIndex: 14000,
           padding: '20px'
         }}>
           <div className="card" style={{
@@ -4512,7 +4597,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           }}>
             <button
               style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
-              onClick={() => { if (!editDetailsLoading) setShowEditDetailsModal(false); }}
+              onClick={handleCloseEditDetailsModal}
               aria-label="ปิดหน้าต่าง"
             >
               <X size={20} />
@@ -4572,7 +4657,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 type="button"
                 className="btn btn-secondary"
                 disabled={editDetailsLoading}
-                onClick={() => setShowEditDetailsModal(false)}
+                onClick={handleCloseEditDetailsModal}
                 style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
               >
                 ยกเลิก
@@ -4623,7 +4708,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            zIndex: 9999,
+            zIndex: 14000,
             padding: '16px'
           }}>
             <div className="card" style={{
@@ -4644,7 +4729,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               {/* Close Button */}
               <button
                 style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
-                onClick={() => { if (!rescheduleLoading) setShowRescheduleModal(false); }}
+                onClick={handleCloseRescheduleModal}
               >
                 <X size={20} />
               </button>
@@ -5149,6 +5234,42 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 </div>
               </div>
 
+              {/* รายละเอียดเพิ่มเติม (Booking Details) */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
+                    รายละเอียดเพิ่มเติม (ไม่บังคับ)
+                  </label>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 600, color: rescheduleDetails.length > 950 ? '#ef4444' : 'var(--text-muted)' }}>
+                    {rescheduleDetails.length}/1000
+                  </span>
+                </div>
+                <textarea
+                  rows={3}
+                  maxLength={1000}
+                  placeholder="เช่น รายละเอียดบริการเพิ่มเติม, ความต้องการของลูกค้า, หมายเหตุการจอง"
+                  value={rescheduleDetails}
+                  onChange={(e) => setRescheduleDetails(e.target.value)}
+                  style={{
+                    width: '100%',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)',
+                    backgroundColor: 'var(--bg-main)',
+                    padding: '8px 12px',
+                    fontSize: '0.85rem',
+                    color: 'var(--text-main)',
+                    outline: 'none',
+                    resize: 'vertical',
+                    boxSizing: 'border-box',
+                    fontFamily: 'inherit',
+                    lineHeight: 1.5
+                  }}
+                />
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                  * ข้อมูลนี้จะปรากฏบนใบเสร็จและบันทึกลงระบบพร้อมวัน/เวลา (ลบข้อความออกทั้งหมดหากต้องการลบ)
+                </span>
+              </div>
+
               {/* Reason */}
               <div>
                 <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
@@ -5192,7 +5313,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     border: '1px solid var(--border-color)',
                     color: 'var(--text-main)'
                   }}
-                  onClick={() => setShowRescheduleModal(false)}
+                  onClick={handleCloseRescheduleModal}
                   disabled={rescheduleLoading}
                 >
                   ยกเลิก

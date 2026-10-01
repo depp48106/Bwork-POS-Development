@@ -2971,10 +2971,21 @@ export default {
         const parts = pathname.split('/');
         const bookingId = parts[3];
         const body = await request.json();
-        const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id } = body;
+        const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id, booking_details } = body;
 
         if (!date || !start_time || !end_time) {
           return new Response(JSON.stringify({ error: 'กรุณาระบุ วันที่, เวลาเริ่มต้น และเวลาสิ้นสุด ให้ครบถ้วน' }), { status: 400, headers: corsHeaders });
+        }
+
+        let updateDetails = false;
+        let normalizedDetailsValue = null;
+        if (booking_details !== undefined) {
+          const norm = normalizeBookingDetails(booking_details);
+          if (norm.error) {
+            return new Response(JSON.stringify({ error: norm.error }), { status: 400, headers: corsHeaders });
+          }
+          updateDetails = true;
+          normalizedDetailsValue = norm.value;
         }
 
         const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
@@ -3011,28 +3022,49 @@ export default {
             : (booking.pin_code || await generateUniquePinCode(env));
         }
 
-        // Update booking_items
-        await env.DB.prepare(
-          `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`
-        ).bind(
-          targetRoomId,
-          newStartISO,
-          newEndISO,
-          total_amount !== undefined ? total_amount : currentItem.subtotal,
-          total_amount !== undefined ? total_amount : currentItem.price,
-          booking_type || currentItem.booking_type || 'hourly',
-          layout || currentItem.layout || 'standard',
-          newPinCode,
-          currentItem.id
-        ).run();
+        const statements = [
+          env.DB.prepare(
+            `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`
+          ).bind(
+            targetRoomId,
+            newStartISO,
+            newEndISO,
+            total_amount !== undefined ? total_amount : currentItem.subtotal,
+            total_amount !== undefined ? total_amount : currentItem.price,
+            booking_type || currentItem.booking_type || 'hourly',
+            layout || currentItem.layout || 'standard',
+            newPinCode,
+            currentItem.id
+          )
+        ];
 
-        // Update bookings total_amount & pin_code
-        if (total_amount !== undefined) {
-          await env.DB.prepare('UPDATE bookings SET pin_code = ?, total_amount = ? WHERE id = ?').bind(newPinCode, total_amount, bookingId).run();
+        if (updateDetails) {
+          if (total_amount !== undefined) {
+            statements.push(env.DB.prepare('UPDATE bookings SET pin_code = ?, total_amount = ?, booking_details = ? WHERE id = ?').bind(newPinCode, total_amount, normalizedDetailsValue, bookingId));
+          } else {
+            statements.push(env.DB.prepare('UPDATE bookings SET pin_code = ?, booking_details = ? WHERE id = ?').bind(newPinCode, normalizedDetailsValue, bookingId));
+          }
         } else {
-          await env.DB.prepare('UPDATE bookings SET pin_code = ? WHERE id = ?').bind(newPinCode, bookingId).run();
+          if (total_amount !== undefined) {
+            statements.push(env.DB.prepare('UPDATE bookings SET pin_code = ?, total_amount = ? WHERE id = ?').bind(newPinCode, total_amount, bookingId));
+          } else {
+            statements.push(env.DB.prepare('UPDATE bookings SET pin_code = ? WHERE id = ?').bind(newPinCode, bookingId));
+          }
         }
-        booking.pin_code = newPinCode;
+
+        await env.DB.batch(statements);
+
+        const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        const { results: updatedItems } = await env.DB.prepare(`
+          SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.category as service_category
+          FROM booking_items bi
+          LEFT JOIN rooms r ON bi.room_id = r.id
+          LEFT JOIN services s ON bi.service_id = s.id
+          WHERE bi.booking_id = ?
+        `).bind(bookingId).all();
+        if (updatedBooking) {
+          updatedBooking.items = updatedItems || [];
+        }
 
         let lineData = null;
         if (send_line !== false && booking.line_user_id) {
@@ -3042,7 +3074,9 @@ export default {
         return new Response(JSON.stringify({
           success: true,
           message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
-          line_sent: lineData?.success || false
+          line_sent: lineData?.success || false,
+          pin_code: newPinCode,
+          booking: updatedBooking
         }), { headers: corsHeaders });
       }
 

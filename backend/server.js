@@ -2144,10 +2144,21 @@ async function sendLineBookingRescheduleServer(bookingId, oldStartTime, oldEndTi
 const handleReschedule = async (req, res) => {
   try {
     const bookingId = req.params.id;
-    const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id } = req.body;
+    const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id, booking_details } = req.body;
 
     if (!date || !start_time || !end_time) {
       return res.status(400).json({ error: 'กรุณาระบุ วันที่, เวลาเริ่มต้น และเวลาสิ้นสุด ให้ครบถ้วน' });
+    }
+
+    let updateDetails = false;
+    let normalizedDetailsValue = null;
+    if (booking_details !== undefined) {
+      const norm = normalizeBookingDetails(booking_details);
+      if (norm.error) {
+        return res.status(400).json({ error: norm.error });
+      }
+      updateDetails = true;
+      normalizedDetailsValue = norm.value;
     }
 
     const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
@@ -2194,27 +2205,50 @@ const handleReschedule = async (req, res) => {
       }
     }
 
-    await dbQuery.run(
-      `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`,
-      [
-        targetRoomId,
-        newStartISO,
-        newEndISO,
-        total_amount !== undefined ? total_amount : currentItem.subtotal,
-        total_amount !== undefined ? total_amount : currentItem.price,
-        booking_type || currentItem.booking_type || 'hourly',
-        layout || currentItem.layout || 'standard',
-        newPinCode,
-        currentItem.id
-      ]
-    );
+    let updatedBooking = null;
+    await dbQuery.transaction(async () => {
+      await dbQuery.run(
+        `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`,
+        [
+          targetRoomId,
+          newStartISO,
+          newEndISO,
+          total_amount !== undefined ? total_amount : currentItem.subtotal,
+          total_amount !== undefined ? total_amount : currentItem.price,
+          booking_type || currentItem.booking_type || 'hourly',
+          layout || currentItem.layout || 'standard',
+          newPinCode,
+          currentItem.id
+        ]
+      );
 
-    if (total_amount !== undefined) {
-      await dbQuery.run('UPDATE bookings SET pin_code = ?, total_amount = ? WHERE id = ?', [newPinCode, total_amount, bookingId]);
-    } else {
-      await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [newPinCode, bookingId]);
-    }
-    booking.pin_code = newPinCode;
+      if (updateDetails) {
+        if (total_amount !== undefined) {
+          await dbQuery.run('UPDATE bookings SET pin_code = ?, total_amount = ?, booking_details = ? WHERE id = ?', [newPinCode, total_amount, normalizedDetailsValue, bookingId]);
+        } else {
+          await dbQuery.run('UPDATE bookings SET pin_code = ?, booking_details = ? WHERE id = ?', [newPinCode, normalizedDetailsValue, bookingId]);
+        }
+      } else {
+        if (total_amount !== undefined) {
+          await dbQuery.run('UPDATE bookings SET pin_code = ?, total_amount = ? WHERE id = ?', [newPinCode, total_amount, bookingId]);
+        } else {
+          await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [newPinCode, bookingId]);
+        }
+      }
+
+      updatedBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+      const updatedItems = await dbQuery.all(
+        `SELECT bi.*, r.name as room_name, r.description as room_description, r.capacity as room_capacity, s.name as service_name, s.category as service_category
+         FROM booking_items bi
+         LEFT JOIN rooms r ON bi.room_id = r.id
+         LEFT JOIN services s ON bi.service_id = s.id
+         WHERE bi.booking_id = ?`,
+        [bookingId]
+      );
+      if (updatedBooking) {
+        updatedBooking.items = updatedItems || [];
+      }
+    });
 
     let lineData = null;
     if (send_line !== false && booking.line_user_id) {
@@ -2225,7 +2259,8 @@ const handleReschedule = async (req, res) => {
       success: true,
       message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
       line_sent: lineData?.success || false,
-      pin_code: newPinCode
+      pin_code: newPinCode,
+      booking: updatedBooking
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
