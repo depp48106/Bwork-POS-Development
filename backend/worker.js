@@ -1876,13 +1876,14 @@ export default {
           const imageUrl = await saveUploadedFile(env, body.image_url, 'rooms');
           const classroomImageUrl = await saveUploadedFile(env, body.classroom_image_url, 'rooms');
 
+
           const ins = await env.DB.prepare(
-            `INSERT INTO rooms (name, capacity, hourly_rate, daily_rate, half_day_rate, has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url, description, image_url, category, pin_code, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
+            `INSERT INTO rooms (name, capacity, hourly_rate, daily_rate, half_day_rate, has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url, description, image_url, category, pin_code, builtland_pin_code, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
           ).bind(
             body.name, body.capacity || 0, body.hourly_rate || 0, body.daily_rate || 0, body.half_day_rate || 0,
             body.has_classroom || 0, body.classroom_hourly_rate || 0, body.classroom_daily_rate || 0, body.classroom_capacity || 0,
-            classroomImageUrl || null, body.description || '', imageUrl || null, body.category || 'Meeting Room', body.pin_code || null
+            classroomImageUrl || null, body.description || '', imageUrl || null, body.category || 'Meeting Room', body.pin_code || null, body.builtland_pin_code || null
           ).run();
           return new Response(JSON.stringify({ success: true, id: ins.meta.last_row_id, message: 'บันทึกห้องสำเร็จ' }), { status: 201, headers: corsHeaders });
         }
@@ -1906,125 +1907,182 @@ export default {
           }
 
           const isPinCapable = roomUsesDoorPin(existingRoom);
-          const cleanPin = isPinCapable ? (body.pin_code && String(body.pin_code).trim() ? String(body.pin_code).trim() : null) : null;
-          const cleanBuiltlandPin = isPinCapable ? (body.builtland_pin_code && String(body.builtland_pin_code).trim() ? String(body.builtland_pin_code).trim() : null) : null;
 
-          const hasBuiltlandCol = 'builtland_pin_code' in existingRoom;
-          let updateRoomStmt;
-          if (hasBuiltlandCol) {
-            updateRoomStmt = env.DB.prepare(
-              `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=?, builtland_pin_code=?, status=? WHERE id=?`
-            ).bind(
-              body.name, body.capacity || 0, body.hourly_rate || 0, body.daily_rate || 0, body.half_day_rate || 0,
-              body.has_classroom || 0, body.classroom_hourly_rate || 0, body.classroom_daily_rate || 0, body.classroom_capacity || 0,
-              classroomImageUrl || null, body.description || '', imageUrl || null, body.category || 'Meeting Room', cleanPin, cleanBuiltlandPin, body.status || 'active', roomId
-            );
+          // Rule 7: Preservation of omitted values, explicit clear on empty string/null
+          let cleanPin;
+          if (!isPinCapable) {
+            cleanPin = null;
+          } else if (body.pin_code === undefined) {
+            cleanPin = existingRoom.pin_code !== undefined ? existingRoom.pin_code : null;
+          } else if (body.pin_code === null || String(body.pin_code).trim() === '') {
+            cleanPin = null;
           } else {
-            updateRoomStmt = env.DB.prepare(
-              `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=?, status=? WHERE id=?`
-            ).bind(
-              body.name, body.capacity || 0, body.hourly_rate || 0, body.daily_rate || 0, body.half_day_rate || 0,
-              body.has_classroom || 0, body.classroom_hourly_rate || 0, body.classroom_daily_rate || 0, body.classroom_capacity || 0,
-              classroomImageUrl || null, body.description || '', imageUrl || null, body.category || 'Meeting Room', cleanPin, body.status || 'active', roomId
-            );
+            cleanPin = String(body.pin_code).trim();
           }
 
-          let syncedBookingsCount = 0;
+          let cleanBuiltlandPin;
+          if (!isPinCapable) {
+            cleanBuiltlandPin = null;
+          } else if (body.builtland_pin_code === undefined) {
+            cleanBuiltlandPin = existingRoom.builtland_pin_code !== undefined ? existingRoom.builtland_pin_code : null;
+          } else if (body.builtland_pin_code === null || String(body.builtland_pin_code).trim() === '') {
+            cleanBuiltlandPin = null;
+          } else {
+            cleanBuiltlandPin = String(body.builtland_pin_code).trim();
+          }
+
+          const prevPin = existingRoom.pin_code || null;
+          const prevBuiltlandPin = existingRoom.builtland_pin_code || null;
+          const generalPinChanged = isPinCapable && (cleanPin !== prevPin);
+          const builtlandPinChanged = isPinCapable && (cleanBuiltlandPin !== prevBuiltlandPin);
+
+          const effectiveBuiltlandPin = cleanBuiltlandPin || cleanPin;
+          const prevEffectiveBuiltlandPin = prevBuiltlandPin || prevPin;
+          const builtlandEffectiveChanged = isPinCapable && (effectiveBuiltlandPin !== prevEffectiveBuiltlandPin);
+
+          const updateRoomStmt = env.DB.prepare(
+            `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=?, builtland_pin_code=?, status=? WHERE id=?`
+          ).bind(
+            body.name !== undefined ? body.name : existingRoom.name,
+            body.capacity !== undefined ? (body.capacity || 0) : existingRoom.capacity,
+            body.hourly_rate !== undefined ? (body.hourly_rate || 0) : existingRoom.hourly_rate,
+            body.daily_rate !== undefined ? (body.daily_rate || 0) : (existingRoom.daily_rate || 0),
+            body.half_day_rate !== undefined ? (body.half_day_rate || 0) : (existingRoom.half_day_rate || 0),
+            body.has_classroom !== undefined ? (body.has_classroom || 0) : (existingRoom.has_classroom || 0),
+            body.classroom_hourly_rate !== undefined ? (body.classroom_hourly_rate || 0) : (existingRoom.classroom_hourly_rate || 0),
+            body.classroom_daily_rate !== undefined ? (body.classroom_daily_rate || 0) : (existingRoom.classroom_daily_rate || 0),
+            body.classroom_capacity !== undefined ? (body.classroom_capacity || 0) : (existingRoom.classroom_capacity || 0),
+            classroomImageUrl !== undefined ? classroomImageUrl : existingRoom.classroom_image_url,
+            body.description !== undefined ? body.description : existingRoom.description,
+            imageUrl !== undefined ? imageUrl : existingRoom.image_url,
+            body.category || existingRoom.category || 'Meeting Room',
+            cleanPin,
+            cleanBuiltlandPin,
+            body.status || existingRoom.status || 'active',
+            roomId
+          );
+
+          let syncedGeneralCount = 0;
+          let syncedBuiltlandCount = 0;
           const batchStatements = [updateRoomStmt];
 
-          if (isPinCapable && (body.pin_code !== undefined || body.builtland_pin_code !== undefined)) {
+          if (isPinCapable && (generalPinChanged || builtlandEffectiveChanged)) {
             const bkkMs = Date.now() + 7 * 60 * 60 * 1000;
             const bkk = new Date(bkkMs);
             const currentBkkIso = `${bkk.getUTCFullYear()}-${String(bkk.getUTCMonth() + 1).padStart(2, '0')}-${String(bkk.getUTCDate()).padStart(2, '0')}T${String(bkk.getUTCHours()).padStart(2, '0')}:${String(bkk.getUTCMinutes()).padStart(2, '0')}:${String(bkk.getUTCSeconds()).padStart(2, '0')}`;
 
-            const { results: eligibleBookings } = await env.DB.prepare(
-              `SELECT DISTINCT b.id, b.customer_type
-               FROM bookings b
-               JOIN booking_items bi ON bi.booking_id = b.id
-               WHERE bi.room_id = ?
-                 AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed'))
-                 AND (b.checkin_status IS NULL OR b.checkin_status != 'cancelled')
-                 AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
-                 AND REPLACE(bi.end_time, ' ', 'T') >= ?`
-            ).bind(roomId, currentBkkIso).all();
+            if (generalPinChanged) {
+              const { results: eligibleGeneral } = await env.DB.prepare(
+                `SELECT DISTINCT b.id
+                 FROM bookings b
+                 JOIN booking_items bi ON bi.booking_id = b.id
+                 WHERE bi.room_id = ?
+                   AND COALESCE(b.payment_status, '') NOT IN ('cancelled', 'failed')
+                   AND COALESCE(b.checkin_status, '') != 'cancelled'
+                   AND COALESCE(bi.checkin_status, '') != 'cancelled'
+                   AND (CASE WHEN length(bi.end_time) = 16 THEN REPLACE(bi.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi.end_time, ' ', 'T') END) >= ?
+                   AND (b.customer_type != 'builtland' OR b.customer_type IS NULL)`
+              ).bind(roomId, currentBkkIso).all();
 
-            syncedBookingsCount = eligibleBookings ? eligibleBookings.length : 0;
+              syncedGeneralCount = eligibleGeneral ? eligibleGeneral.length : 0;
 
-            if (syncedBookingsCount > 0) {
-              const generalPin = cleanPin;
-              const builtlandEffectivePin = cleanBuiltlandPin || cleanPin;
+              if (syncedGeneralCount > 0) {
+                batchStatements.push(
+                  env.DB.prepare(
+                    `UPDATE booking_items
+                     SET pin_code = ?
+                     WHERE room_id = ?
+                       AND (CASE WHEN length(end_time) = 16 THEN REPLACE(end_time, ' ', 'T') || ':00' ELSE REPLACE(end_time, ' ', 'T') END) >= ?
+                       AND COALESCE(checkin_status, '') != 'cancelled'
+                       AND booking_id IN (
+                         SELECT id FROM bookings
+                         WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
+                           AND COALESCE(checkin_status, '') != 'cancelled'
+                           AND (customer_type != 'builtland' OR customer_type IS NULL)
+                       )`
+                  ).bind(cleanPin, roomId, currentBkkIso),
 
-              batchStatements.push(
-                env.DB.prepare(
-                  `UPDATE booking_items
-                   SET pin_code = ?
-                   WHERE room_id = ?
-                     AND REPLACE(end_time, ' ', 'T') >= ?
-                     AND (checkin_status IS NULL OR checkin_status != 'cancelled')
-                     AND booking_id IN (
-                       SELECT id FROM bookings
-                       WHERE (payment_status IS NULL OR payment_status NOT IN ('cancelled', 'failed'))
-                         AND (checkin_status IS NULL OR checkin_status != 'cancelled')
-                         AND (customer_type != 'builtland' OR customer_type IS NULL)
-                     )`
-                ).bind(generalPin, roomId, currentBkkIso),
+                  env.DB.prepare(
+                    `UPDATE bookings
+                     SET pin_code = ?
+                     WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
+                       AND COALESCE(checkin_status, '') != 'cancelled'
+                       AND (customer_type != 'builtland' OR customer_type IS NULL)
+                       AND id IN (
+                         SELECT bi1.booking_id
+                         FROM booking_items bi1
+                         WHERE bi1.room_id = ?
+                           AND bi1.id = (
+                             SELECT MIN(bi2.id)
+                             FROM booking_items bi2
+                             WHERE bi2.booking_id = bi1.booking_id
+                               AND bi2.room_id IS NOT NULL
+                               AND (CASE WHEN length(bi2.end_time) = 16 THEN REPLACE(bi2.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi2.end_time, ' ', 'T') END) >= ?
+                               AND COALESCE(bi2.checkin_status, '') != 'cancelled'
+                           )
+                           AND (CASE WHEN length(bi1.end_time) = 16 THEN REPLACE(bi1.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi1.end_time, ' ', 'T') END) >= ?
+                           AND COALESCE(bi1.checkin_status, '') != 'cancelled'
+                       )`
+                  ).bind(cleanPin, roomId, currentBkkIso, currentBkkIso)
+                );
+              }
+            }
 
-                env.DB.prepare(
-                  `UPDATE bookings
-                   SET pin_code = ?
-                   WHERE (payment_status IS NULL OR payment_status NOT IN ('cancelled', 'failed'))
-                     AND (checkin_status IS NULL OR checkin_status != 'cancelled')
-                     AND (customer_type != 'builtland' OR customer_type IS NULL)
-                     AND id IN (
-                       SELECT bi1.booking_id
-                       FROM booking_items bi1
-                       WHERE bi1.room_id = ?
-                         AND bi1.id = (
-                           SELECT MIN(bi2.id)
-                           FROM booking_items bi2
-                           WHERE bi2.booking_id = bi1.booking_id
-                             AND bi2.room_id IS NOT NULL
-                         )
-                         AND REPLACE(bi1.end_time, ' ', 'T') >= ?
-                         AND (bi1.checkin_status IS NULL OR bi1.checkin_status != 'cancelled')
-                     )`
-                ).bind(generalPin, roomId, currentBkkIso),
+            if (builtlandEffectiveChanged) {
+              const { results: eligibleBuiltland } = await env.DB.prepare(
+                `SELECT DISTINCT b.id
+                 FROM bookings b
+                 JOIN booking_items bi ON bi.booking_id = b.id
+                 WHERE bi.room_id = ?
+                   AND COALESCE(b.payment_status, '') NOT IN ('cancelled', 'failed')
+                   AND COALESCE(b.checkin_status, '') != 'cancelled'
+                   AND COALESCE(bi.checkin_status, '') != 'cancelled'
+                   AND (CASE WHEN length(bi.end_time) = 16 THEN REPLACE(bi.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi.end_time, ' ', 'T') END) >= ?
+                   AND b.customer_type = 'builtland'`
+              ).bind(roomId, currentBkkIso).all();
 
-                env.DB.prepare(
-                  `UPDATE booking_items
-                   SET pin_code = ?
-                   WHERE room_id = ?
-                     AND REPLACE(end_time, ' ', 'T') >= ?
-                     AND (checkin_status IS NULL OR checkin_status != 'cancelled')
-                     AND booking_id IN (
-                       SELECT id FROM bookings
-                       WHERE (payment_status IS NULL OR payment_status NOT IN ('cancelled', 'failed'))
-                         AND (checkin_status IS NULL OR checkin_status != 'cancelled')
-                         AND customer_type = 'builtland'
-                     )`
-                ).bind(builtlandEffectivePin, roomId, currentBkkIso),
+              syncedBuiltlandCount = eligibleBuiltland ? eligibleBuiltland.length : 0;
 
-                env.DB.prepare(
-                  `UPDATE bookings
-                   SET pin_code = ?
-                   WHERE (payment_status IS NULL OR payment_status NOT IN ('cancelled', 'failed'))
-                     AND (checkin_status IS NULL OR checkin_status != 'cancelled')
-                     AND customer_type = 'builtland'
-                     AND id IN (
-                       SELECT bi1.booking_id
-                       FROM booking_items bi1
-                       WHERE bi1.room_id = ?
-                         AND bi1.id = (
-                           SELECT MIN(bi2.id)
-                           FROM booking_items bi2
-                           WHERE bi2.booking_id = bi1.booking_id
-                             AND bi2.room_id IS NOT NULL
-                         )
-                         AND REPLACE(bi1.end_time, ' ', 'T') >= ?
-                         AND (bi1.checkin_status IS NULL OR bi1.checkin_status != 'cancelled')
-                     )`
-                ).bind(builtlandEffectivePin, roomId, currentBkkIso)
-              );
+              if (syncedBuiltlandCount > 0) {
+                batchStatements.push(
+                  env.DB.prepare(
+                    `UPDATE booking_items
+                     SET pin_code = ?
+                     WHERE room_id = ?
+                       AND (CASE WHEN length(end_time) = 16 THEN REPLACE(end_time, ' ', 'T') || ':00' ELSE REPLACE(end_time, ' ', 'T') END) >= ?
+                       AND COALESCE(checkin_status, '') != 'cancelled'
+                       AND booking_id IN (
+                         SELECT id FROM bookings
+                         WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
+                           AND COALESCE(checkin_status, '') != 'cancelled'
+                           AND customer_type = 'builtland'
+                       )`
+                  ).bind(effectiveBuiltlandPin, roomId, currentBkkIso),
+
+                  env.DB.prepare(
+                    `UPDATE bookings
+                     SET pin_code = ?
+                     WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
+                       AND COALESCE(checkin_status, '') != 'cancelled'
+                       AND customer_type = 'builtland'
+                       AND id IN (
+                         SELECT bi1.booking_id
+                         FROM booking_items bi1
+                         WHERE bi1.room_id = ?
+                           AND bi1.id = (
+                             SELECT MIN(bi2.id)
+                             FROM booking_items bi2
+                             WHERE bi2.booking_id = bi1.booking_id
+                               AND bi2.room_id IS NOT NULL
+                               AND (CASE WHEN length(bi2.end_time) = 16 THEN REPLACE(bi2.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi2.end_time, ' ', 'T') END) >= ?
+                               AND COALESCE(bi2.checkin_status, '') != 'cancelled'
+                           )
+                           AND (CASE WHEN length(bi1.end_time) = 16 THEN REPLACE(bi1.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi1.end_time, ' ', 'T') END) >= ?
+                           AND COALESCE(bi1.checkin_status, '') != 'cancelled'
+                       )`
+                  ).bind(effectiveBuiltlandPin, roomId, currentBkkIso, currentBkkIso)
+                );
+              }
             }
           }
 
@@ -2033,7 +2091,15 @@ export default {
           return new Response(JSON.stringify({
             success: true,
             message: 'แก้ไขข้อมูลห้องสำเร็จ',
-            synced_bookings_count: syncedBookingsCount
+            synced_bookings_count: syncedGeneralCount + syncedBuiltlandCount,
+            synced_general_bookings_count: syncedGeneralCount,
+            synced_builtland_bookings_count: syncedBuiltlandCount,
+            room: {
+              id: Number(roomId),
+              name: body.name !== undefined ? body.name : existingRoom.name,
+              pin_code: cleanPin,
+              builtland_pin_code: cleanBuiltlandPin
+            }
           }), { headers: corsHeaders });
         }
 

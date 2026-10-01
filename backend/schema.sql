@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   has_daily INTEGER DEFAULT 0,
   category TEXT DEFAULT 'Meeting Room',
   pin_code TEXT,
+  builtland_pin_code TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

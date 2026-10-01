@@ -125,3 +125,26 @@ test('4. Functional formatting rules for all room categories', async () => {
     assert.notStrictEqual(text, 'รหัสห้อง: -', `Must not be lone dash for ${JSON.stringify(r)}`);
   }
 });
+
+test('5. Management.jsx binds and sends both pin_code and builtland_pin_code independently', () => {
+  const code = fs.readFileSync(path.join(ROOT_DIR, 'src/components/Management.jsx'), 'utf8');
+
+  // Input bindings
+  assert.ok(code.includes('value={itemForm.pin_code || \'\'}'), 'Must bind pin_code input to itemForm.pin_code');
+  assert.ok(code.includes('value={itemForm.builtland_pin_code || \'\'}'), 'Must bind builtland_pin_code input to itemForm.builtland_pin_code');
+
+  // Save payload
+  assert.ok(code.includes('pin_code: currentItemForm.pin_code || null'), 'Must include pin_code in save payload');
+  assert.ok(code.includes('builtland_pin_code: currentItemForm.builtland_pin_code || null'), 'Must include builtland_pin_code in save payload');
+
+  // handleEdit population
+  assert.ok(code.includes('pin_code: item.pin_code || \'\''), 'handleEdit must initialize pin_code');
+  assert.ok(code.includes('builtland_pin_code: item.builtland_pin_code || \'\''), 'handleEdit must initialize builtland_pin_code');
+});
+
+test('6. Management.jsx renders badges for both normal PIN and Builtland PIN in catalog table', () => {
+  const code = fs.readFileSync(path.join(ROOT_DIR, 'src/components/Management.jsx'), 'utf8');
+
+  assert.ok(code.includes('🔑 {item.pin_code}'), 'Table must display customer PIN with key emoji');
+  assert.ok(code.includes('🏢 {item.builtland_pin_code}'), 'Table must display Builtland PIN with building emoji');
+});
