@@ -25,6 +25,11 @@ function ReceiptPrint({ booking, settings }) {
   const payment = useMemo(() => getReceiptPaymentDetails(booking), [booking]);
   const { isMultiDate, groups, normalizedItems } = receiptData;
 
+  const bookingDetails =
+    typeof booking?.booking_details === 'string'
+      ? booking.booking_details.trim()
+      : '';
+
   return (
     <div
       id="print-receipt-area"
@@ -122,6 +127,14 @@ function ReceiptPrint({ booking, settings }) {
           <div className="receipt-info-row" style={{ fontSize: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', color: '#000000' }}>
             <span style={{ flexShrink: 0, fontWeight: 700 }}>จำนวนผู้เข้าใช้:</span>
             <span style={{ fontWeight: 700, textAlign: 'right' }}>{booking.guest_count || normalizedItems[0]?.guestCount} ท่าน</span>
+          </div>
+        )}
+        {bookingDetails && (
+          <div className="receipt-info-row" style={{ fontSize: '0.80rem', marginTop: '2px', color: '#000000', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            <span style={{ fontWeight: 700 }}>รายละเอียด:</span>
+            <div style={{ fontWeight: 600, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'break-word', lineHeight: 1.35 }}>
+              {bookingDetails}
+            </div>
           </div>
         )}
       </div>
@@ -250,12 +263,6 @@ function ReceiptPrint({ booking, settings }) {
           <div className="receipt-info-row" style={{ fontSize: '0.75rem', fontWeight: 600, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>สิทธิ์ / รายละเอียด:</span>
             <span>{payment.note}</span>
-          </div>
-        )}
-        {(booking.note || booking.notes) && (
-          <div className="receipt-info-row" style={{ fontSize: '0.80rem', marginTop: '3px', color: '#000000', display: 'flex', gap: '4px' }}>
-            <span style={{ fontWeight: 700, flexShrink: 0 }}>หมายเหตุ:</span>
-            <span style={{ fontWeight: 600 }}>{booking.note || booking.notes}</span>
           </div>
         )}
       </div>

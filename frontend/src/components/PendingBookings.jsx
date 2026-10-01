@@ -183,6 +183,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [isReschedDailyOpen, setIsReschedDailyOpen] = useState(false);
   const [isReschedHalfdayOpen, setIsReschedHalfdayOpen] = useState(false);
 
+  // Edit Booking Details Modal state
+  const [showEditDetailsModal, setShowEditDetailsModal] = useState(false);
+  const [editDetailsTarget, setEditDetailsTarget] = useState(null);
+  const [editDetailsText, setEditDetailsText] = useState('');
+  const [editDetailsLoading, setEditDetailsLoading] = useState(false);
+
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 15;
@@ -753,6 +759,49 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
     } finally {
       setRejectLoading(false);
+    }
+  };
+
+  // Edit Booking Details handlers
+  const handleOpenEditDetails = (booking) => {
+    if (!booking) return;
+    setEditDetailsTarget(booking);
+    setEditDetailsText(typeof booking.booking_details === 'string' ? booking.booking_details : '');
+    setShowEditDetailsModal(true);
+  };
+
+  const handleSaveBookingDetails = async () => {
+    if (!editDetailsTarget) return;
+    if (editDetailsText.length > 1000) {
+      await sysAlert('รายละเอียดเพิ่มเติมต้องมีความยาวไม่เกิน 1,000 ตัวอักษร');
+      return;
+    }
+    setEditDetailsLoading(true);
+    try {
+      const res = await fetch(`/api/bookings/${editDetailsTarget.id}/details`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ booking_details: editDetailsText })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const updatedVal = data.booking_details;
+        setBookings(prev => prev.map(item => item.id === editDetailsTarget.id ? { ...item, booking_details: updatedVal } : item));
+        if (selectedBooking && selectedBooking.id === editDetailsTarget.id) {
+          setSelectedBooking(prev => ({ ...prev, booking_details: updatedVal }));
+        }
+        setShowEditDetailsModal(false);
+        setEditDetailsTarget(null);
+        await sysAlert('บันทึกรายละเอียดเพิ่มเติมเรียบร้อยแล้ว');
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        await sysAlert(errData.error || 'เกิดข้อผิดพลาดในการบันทึกรายละเอียด');
+      }
+    } catch (err) {
+      console.error('Failed to update booking details:', err);
+      await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setEditDetailsLoading(false);
     }
   };
 
@@ -2518,6 +2567,17 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               </div>
             )}
 
+            {/* 1.1 Edit Booking Details (active bookings only) */}
+            {activeActionMenuBooking.payment_status !== 'cancelled' && (
+              <div
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenEditDetails(b); }}
+                className="action-menu-item"
+              >
+                <FileText size={14} style={{ color: '#0284c7' }} />
+                <span>แก้ไขรายละเอียดเพิ่มเติม</span>
+              </div>
+            )}
+
             {/* 2. View Operational Booking Detail (when not already primary action) */}
             {activeActionMenuBooking.payment_status !== 'paid' &&
              activeActionMenuBooking.payment_status !== 'internal_free' &&
@@ -2938,6 +2998,47 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               </span>
                             </div>
                           )}
+                          {b.booking_details && (
+                            <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <span className="pb-detail-label">รายละเอียดเพิ่มเติม:</span>
+                                {!isCancelled && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditDetails(b)}
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      color: 'var(--primary-color)',
+                                      cursor: 'pointer',
+                                      fontSize: '0.72rem',
+                                      fontWeight: 700,
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '3px',
+                                      padding: 0
+                                    }}
+                                  >
+                                    <Edit3 size={11} />
+                                    <span>แก้ไข</span>
+                                  </button>
+                                )}
+                              </div>
+                              <span
+                                className="pb-detail-val"
+                                style={{
+                                  whiteSpace: 'pre-wrap',
+                                  overflowWrap: 'break-word',
+                                  wordBreak: 'break-word',
+                                  display: 'block',
+                                  marginTop: '3px',
+                                  lineHeight: 1.45
+                                }}
+                              >
+                                {b.booking_details}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -3182,6 +3283,20 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     >
                       <Edit3 size={14} />
                       <span>แก้ไขวัน/เวลา</span>
+                    </button>
+                  )}
+
+                  {!isCancelled && (
+                    <button
+                      type="button"
+                      className="pb-detail-btn-secondary"
+                      onClick={() => {
+                        handleOpenEditDetails(b);
+                      }}
+                      aria-label="แก้ไขรายละเอียดเพิ่มเติม"
+                    >
+                      <FileText size={14} />
+                      <span>{b.booking_details ? 'แก้ไขรายละเอียด' : '+ เพิ่มรายละเอียด'}</span>
                     </button>
                   )}
 
@@ -4358,6 +4473,118 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               >
                 <Ban size={16} />
                 <span>{cancelLoading ? 'กำลังยกเลิก...' : 'ยืนยันการยกเลิก'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/*  EDIT BOOKING DETAILS MODAL (แก้ไขรายละเอียดเพิ่มเติม)     */}
+      {/* ========================================================= */}
+      {showEditDetailsModal && editDetailsTarget && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.85)',
+          backdropFilter: 'blur(10px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '20px'
+        }}>
+          <div className="card" style={{
+            width: '100%',
+            maxWidth: '520px',
+            padding: '24px',
+            borderRadius: '20px',
+            backgroundColor: 'var(--bg-card)',
+            border: '1px solid rgba(2, 132, 199, 0.3)',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.4)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px',
+            position: 'relative'
+          }}>
+            <button
+              style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+              onClick={() => { if (!editDetailsLoading) setShowEditDetailsModal(false); }}
+              aria-label="ปิดหน้าต่าง"
+            >
+              <X size={20} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'rgba(2, 132, 199, 0.15)', color: '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Edit3 size={22} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                  แก้ไขรายละเอียดเพิ่มเติม
+                </h3>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  ใบจอง #{editDetailsTarget.id} · ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{editDetailsTarget.customer_name || '-'}</strong>
+                </span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
+                  รายละเอียดเพิ่มเติม (สูงสุด 1,000 ตัวอักษร)
+                </label>
+                <span style={{ fontSize: '0.72rem', fontWeight: 600, color: editDetailsText.length > 950 ? '#ef4444' : 'var(--text-muted)' }}>
+                  {editDetailsText.length}/1000
+                </span>
+              </div>
+              <textarea
+                rows={5}
+                maxLength={1000}
+                placeholder="เช่น รายละเอียดบริการเพิ่มเติม, ความต้องการของลูกค้า, หมายเหตุการจอง"
+                value={editDetailsText}
+                onChange={e => setEditDetailsText(e.target.value)}
+                style={{
+                  width: '100%',
+                  borderRadius: '12px',
+                  border: '1px solid var(--border-color)',
+                  backgroundColor: 'var(--bg-main)',
+                  padding: '10px 14px',
+                  fontSize: '0.86rem',
+                  color: 'var(--text-main)',
+                  outline: 'none',
+                  resize: 'vertical',
+                  boxSizing: 'border-box',
+                  fontFamily: 'inherit',
+                  lineHeight: 1.5
+                }}
+              />
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                * ลบข้อความทั้งหมดออกแล้วกดบันทึกเพื่อลบรายละเอียดออกจากใบเสร็จและระบบ
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '6px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={editDetailsLoading}
+                onClick={() => setShowEditDetailsModal(false)}
+                style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={editDetailsLoading}
+                onClick={handleSaveBookingDetails}
+                style={{ padding: '8px 20px', borderRadius: '10px', fontSize: '0.85rem', fontWeight: 700 }}
+              >
+                {editDetailsLoading ? 'กำลังบันทึก...' : 'บันทึกข้อมูล'}
               </button>
             </div>
           </div>

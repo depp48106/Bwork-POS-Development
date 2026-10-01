@@ -149,6 +149,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     billing_option: 'paid' // 'paid', 'tenant_bill', 'quota'
   });
 
+  const [bookingDetails, setBookingDetails] = useState('');
+
   const [basecampQuota, setBasecampQuota] = useState({ max_quota: 4, used_quota: 0, remaining_quota: 4 });
 
   const BASECAMP_OFFICE_UNITS = ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'];
@@ -774,6 +776,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
   const closeRoomModal = () => {
     setSelectedRoom(null);
+    setBookingDetails('');
   };
 
   // Handle transient preselectedRoom handoff from RoomLayout
@@ -957,6 +960,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         customer_name: customer.name,
         department: customer.department || '',
         contact: customer.contact || '',
+        booking_details: bookingDetails.trim() || null,
         customer_type: customer.customer_type || 'walkin',
         basecamp_sub_type: isBasecamp ? (customer.basecamp_sub_type || 'office') : null,
         basecamp_unit: isBasecamp ? (customer.basecamp_unit || (customer.basecamp_sub_type === 'office' ? '401' : '419')) : null,
@@ -991,6 +995,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         setPrintBooking(fullBooking);
         setShowReceiptModal(true);
         closeRoomModal();
+        setBookingDetails('');
         setCustomer({
           name: '',
           department: '',
@@ -1066,6 +1071,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         customer_name: customer.name,
         department: customer.department || '',
         contact: customer.contact || '',
+        booking_details: bookingDetails.trim() || null,
         customer_type: customer.customer_type || 'walkin',
         basecamp_sub_type: isBasecamp ? (customer.basecamp_sub_type || 'office') : null,
         basecamp_unit: isBasecamp ? (customer.basecamp_unit || (customer.basecamp_sub_type === 'office' ? '401' : '419')) : null,
@@ -1101,6 +1107,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         setShowReceiptModal(true);
         setCart([]);
         setCartPaymentMethod('cash');
+        setBookingDetails('');
         setCustomer({
           name: '',
           department: '',
@@ -3245,6 +3252,47 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     </div>
                   </div>
                 )}
+
+                {/* รายละเอียดเพิ่มเติม (Optional Booking Details) */}
+                <div style={{
+                  backgroundColor: 'var(--bg-main)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '14px',
+                  padding: '12px 14px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+                      รายละเอียดเพิ่มเติม
+                    </label>
+                    <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                      {bookingDetails.length}/1000
+                    </span>
+                  </div>
+                  <textarea
+                    rows={3}
+                    maxLength={1000}
+                    placeholder="เช่น รายละเอียดบริการเพิ่มเติม, ความต้องการของลูกค้า, หมายเหตุการจอง"
+                    value={bookingDetails}
+                    onChange={e => setBookingDetails(e.target.value)}
+                    style={{
+                      width: '100%',
+                      borderRadius: '10px',
+                      border: '1px solid var(--border-color)',
+                      backgroundColor: 'var(--bg-card)',
+                      padding: '8px 12px',
+                      fontSize: '0.84rem',
+                      color: 'var(--text-main)',
+                      outline: 'none',
+                      resize: 'vertical',
+                      boxSizing: 'border-box',
+                      fontFamily: 'inherit',
+                      lineHeight: 1.4
+                    }}
+                  />
+                </div>
               </div>
 
               {/* Section 4: การชำระเงิน (Payment) */}

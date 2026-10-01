@@ -704,6 +704,21 @@ function formatOverlapErrorMessage(roomName, overlapResult) {
   return `${nameLabel} ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: ${customer} ช่วงเวลา ${sTime} - ${eTime} น.)`;
 }
 
+function normalizeBookingDetails(input) {
+  if (input === undefined || input === null) return { value: null };
+  if (typeof input !== 'string') {
+    input = String(input);
+  }
+  const cleaned = input.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
+  if (!cleaned) {
+    return { value: null };
+  }
+  if (cleaned.length > 1000) {
+    return { error: 'รายละเอียดเพิ่มเติมต้องมีความยาวไม่เกิน 1,000 ตัวอักษร' };
+  }
+  return { value: cleaned };
+}
+
 app.post('/api/bookings', async (req, res) => {
   const {
     customer_name, department, contact, total_amount, payment_status, payment_method,
@@ -712,11 +727,17 @@ app.post('/api/bookings', async (req, res) => {
     basecamp_sub_type = null,
     basecamp_unit = null,
     internal_department = null,
-    billing_option = 'paid'
+    billing_option = 'paid',
+    booking_details = null
   } = req.body;
 
   if (!customer_name || !items || !items.length) {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลผู้จองและเลือกรายการอย่างน้อย 1 รายการ' });
+  }
+
+  const normalizedDetails = normalizeBookingDetails(booking_details);
+  if (normalizedDetails.error) {
+    return res.status(400).json({ error: normalizedDetails.error });
   }
 
   try {
@@ -880,11 +901,11 @@ app.post('/api/bookings', async (req, res) => {
         ? 'internal_free'
         : (verifiedTotal === 0 ? 'paid' : (payment_status || 'pending'));
 
-      // Insert master booking (with optional customer categorization fields and quota_hours_used)
+      // Insert master booking (with optional customer categorization fields, quota_hours_used, and booking_details)
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings
-         (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, booking_source, booking_channel, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, booking_source, booking_channel, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, booking_details, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customer_name,
           department || internal_department || '',
@@ -905,6 +926,7 @@ app.post('/api/bookings', async (req, res) => {
           internal_department || null,
           effectiveBillingOption,
           quotaHoursUsed,
+          normalizedDetails.value,
           getBangkokLocalISO(new Date())
         ]
       );
@@ -1914,6 +1936,41 @@ app.patch('/api/bookings/:id/payment', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Update booking details (notes) endpoint
+const handleUpdateBookingDetails = async (req, res) => {
+  const { id } = req.params;
+  if (!id || isNaN(Number(id))) {
+    return res.status(400).json({ error: 'รหัสการจองไม่ถูกต้อง' });
+  }
+
+  try {
+    const existing = await dbQuery.get('SELECT id, booking_details FROM bookings WHERE id = ?', [id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'ไม่พบรายการจอง' });
+    }
+
+    const { booking_details } = req.body || {};
+    const normalized = normalizeBookingDetails(booking_details);
+    if (normalized.error) {
+      return res.status(400).json({ error: normalized.error });
+    }
+
+    await dbQuery.run('UPDATE bookings SET booking_details = ? WHERE id = ?', [normalized.value, id]);
+
+    res.json({
+      success: true,
+      message: 'บันทึกรายละเอียดเพิ่มเติมเรียบร้อยแล้ว',
+      id: Number(id),
+      booking_details: normalized.value
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+app.patch('/api/bookings/:id/details', handleUpdateBookingDetails);
+app.put('/api/bookings/:id/details', handleUpdateBookingDetails);
 
 // LINE OA Webhook endpoint
 app.post('/api/line/webhook', async (req, res) => {

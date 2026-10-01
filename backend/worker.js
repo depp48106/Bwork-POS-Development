@@ -1507,6 +1507,21 @@ async function sendLineBookingReschedule(env, bookingId, oldStartTime, oldEndTim
   }
 }
 
+function normalizeBookingDetails(input) {
+  if (input === undefined || input === null) return { value: null };
+  if (typeof input !== 'string') {
+    input = String(input);
+  }
+  const cleaned = input.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
+  if (!cleaned) {
+    return { value: null };
+  }
+  if (cleaned.length > 1000) {
+    return { error: 'รายละเอียดเพิ่มเติมต้องมีความยาวไม่เกิน 1,000 ตัวอักษร' };
+  }
+  return { value: cleaned };
+}
+
 let schemaInitialized = false;
 async function ensureD1Schema(env) {
   if (schemaInitialized || !env || !env.DB) return;
@@ -1521,6 +1536,7 @@ async function ensureD1Schema(env) {
     "ALTER TABLE bookings ADD COLUMN guest_count INTEGER",
     "ALTER TABLE bookings ADD COLUMN booking_source TEXT DEFAULT 'online'",
     "ALTER TABLE bookings ADD COLUMN customer_email TEXT",
+    "ALTER TABLE bookings ADD COLUMN booking_details TEXT",
     "ALTER TABLE bookings ADD COLUMN slip_image_url TEXT",
     "ALTER TABLE bookings ADD COLUMN line_user_id TEXT",
     "ALTER TABLE bookings ADD COLUMN pin_code TEXT",
@@ -2347,11 +2363,17 @@ export default {
           basecamp_sub_type = null,
           basecamp_unit = null,
           internal_department = null,
-          billing_option = 'paid'
+          billing_option = 'paid',
+          booking_details = null
         } = body;
 
         if (!customer_name || !items || !items.length) {
           return new Response(JSON.stringify({ error: 'กรุณากรอกข้อมูลผู้จองและเลือกรายการอย่างน้อย 1 รายการ' }), { status: 400, headers: corsHeaders });
+        }
+
+        const normalizedDetails = normalizeBookingDetails(booking_details);
+        if (normalizedDetails.error) {
+          return new Response(JSON.stringify({ error: normalizedDetails.error }), { status: 400, headers: corsHeaders });
         }
 
         // 1. Verify Overlap for all room items
@@ -2487,8 +2509,8 @@ export default {
         let insBooking;
         try {
           insBooking = await env.DB.prepare(
-            `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`
+            `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, booking_details, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name,
             department || internal_department || '',
@@ -2507,6 +2529,7 @@ export default {
             internal_department || null,
             effectiveBillingOption,
             quotaHoursUsed,
+            normalizedDetails.value,
             nowIso
           ).run();
         } catch (dbErr) {
@@ -2745,6 +2768,44 @@ export default {
           payment_status: 'rejected',
           slip_verify_status: 'rejected',
           rejection_reason: displayReason
+        }), { headers: corsHeaders });
+      }
+
+      // Booking details update endpoint
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/details') && (method === 'PATCH' || method === 'PUT')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = parts[3];
+        if (!bookingId || isNaN(Number(bookingId))) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const existingBooking = await env.DB.prepare('SELECT id, booking_details FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!existingBooking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบรายการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        let body = {};
+        try {
+          body = await request.json();
+        } catch (e) {
+          return new Response(JSON.stringify({ error: 'รูปแบบข้อมูลไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const normalized = normalizeBookingDetails(body.booking_details);
+        if (normalized.error) {
+          return new Response(JSON.stringify({ error: normalized.error }), { status: 400, headers: corsHeaders });
+        }
+
+        await env.DB.prepare('UPDATE bookings SET booking_details = ? WHERE id = ?').bind(normalized.value, bookingId).run();
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'บันทึกรายละเอียดเพิ่มเติมเรียบร้อยแล้ว',
+          id: Number(bookingId),
+          booking_details: normalized.value
         }), { headers: corsHeaders });
       }
 

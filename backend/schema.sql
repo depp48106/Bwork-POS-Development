@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   line_user_id TEXT,
   booking_source TEXT DEFAULT 'online',
   customer_email TEXT,
+  booking_details TEXT,
   slip_image_url TEXT,
   checkin_status TEXT DEFAULT 'pending',
   checkin_at DATETIME,
