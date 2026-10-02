@@ -96,9 +96,8 @@ async function putRoom(db, roomId, body, nowIso) {
     ]
   );
 
-  if (isPinCapable && (generalPinChanged || builtlandEffectiveChanged)) {
-    if (generalPinChanged) {
-      const eligibleGeneral = await allQuery(
+  if (isPinCapable) {
+    const eligibleGeneral = await allQuery(
         db,
         `SELECT DISTINCT b.id
          FROM bookings b
@@ -155,10 +154,8 @@ async function putRoom(db, roomId, body, nowIso) {
           [cleanPin, roomId, nowIso, nowIso]
         );
       }
-    }
 
-    if (builtlandEffectiveChanged) {
-      const eligibleBuiltland = await allQuery(
+    const eligibleBuiltland = await allQuery(
         db,
         `SELECT DISTINCT b.id
          FROM bookings b
@@ -215,7 +212,6 @@ async function putRoom(db, roomId, body, nowIso) {
           [effectiveBuiltlandPin, roomId, nowIso, nowIso]
         );
       }
-    }
   }
 
   return {

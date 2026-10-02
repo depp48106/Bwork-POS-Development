@@ -346,14 +346,7 @@ app.put('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
       cleanBuiltlandPin = String(builtland_pin_code).trim();
     }
 
-    const prevPin = existingRoom.pin_code || null;
-    const prevBuiltlandPin = existingRoom.builtland_pin_code || null;
-    const generalPinChanged = isPinCapable && (cleanPin !== prevPin);
-    const builtlandPinChanged = isPinCapable && (cleanBuiltlandPin !== prevBuiltlandPin);
-
     const effectiveBuiltlandPin = cleanBuiltlandPin || cleanPin;
-    const prevEffectiveBuiltlandPin = prevBuiltlandPin || prevPin;
-    const builtlandEffectiveChanged = isPinCapable && (effectiveBuiltlandPin !== prevEffectiveBuiltlandPin);
 
     let syncedGeneralCount = 0;
     let syncedBuiltlandCount = 0;
@@ -390,124 +383,120 @@ app.put('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
         ]
       );
 
-      // 2. If room uses door PIN, sync to current & future eligible bookings
-      if (isPinCapable && (generalPinChanged || builtlandEffectiveChanged)) {
+      // 2. If room uses door PIN, idempotently sync to current & future eligible bookings
+      if (isPinCapable) {
         const currentBkkIso = getBangkokLocalISO(new Date());
 
-        // Sync General / Walk-in / Basecamp bookings when generalPin changed
-        if (generalPinChanged) {
-          const eligibleGeneral = await dbQuery.all(
-            `SELECT DISTINCT b.id
-             FROM bookings b
-             JOIN booking_items bi ON bi.booking_id = b.id
-             WHERE bi.room_id = ?
-               AND COALESCE(b.payment_status, '') NOT IN ('cancelled', 'failed')
-               AND COALESCE(b.checkin_status, '') != 'cancelled'
-               AND COALESCE(bi.checkin_status, '') != 'cancelled'
-               AND (CASE WHEN length(bi.end_time) = 16 THEN REPLACE(bi.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi.end_time, ' ', 'T') END) >= ?
-               AND (b.customer_type != 'builtland' OR b.customer_type IS NULL)`,
-            [roomId, currentBkkIso]
+        // 2a. Sync General / Walk-in / Basecamp bookings to current cleanPin
+        const eligibleGeneral = await dbQuery.all(
+          `SELECT DISTINCT b.id
+           FROM bookings b
+           JOIN booking_items bi ON bi.booking_id = b.id
+           WHERE bi.room_id = ?
+             AND COALESCE(b.payment_status, '') NOT IN ('cancelled', 'failed')
+             AND COALESCE(b.checkin_status, '') != 'cancelled'
+             AND COALESCE(bi.checkin_status, '') != 'cancelled'
+             AND (CASE WHEN length(bi.end_time) = 16 THEN REPLACE(bi.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi.end_time, ' ', 'T') END) >= ?
+             AND (b.customer_type != 'builtland' OR b.customer_type IS NULL)`,
+          [roomId, currentBkkIso]
+        );
+        syncedGeneralCount = eligibleGeneral ? eligibleGeneral.length : 0;
+
+        if (syncedGeneralCount > 0) {
+          await dbQuery.run(
+            `UPDATE booking_items
+             SET pin_code = ?
+             WHERE room_id = ?
+               AND (CASE WHEN length(end_time) = 16 THEN REPLACE(end_time, ' ', 'T') || ':00' ELSE REPLACE(end_time, ' ', 'T') END) >= ?
+               AND COALESCE(checkin_status, '') != 'cancelled'
+               AND booking_id IN (
+                 SELECT id FROM bookings
+                 WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
+                   AND COALESCE(checkin_status, '') != 'cancelled'
+                   AND (customer_type != 'builtland' OR customer_type IS NULL)
+               )`,
+            [cleanPin, roomId, currentBkkIso]
           );
-          syncedGeneralCount = eligibleGeneral ? eligibleGeneral.length : 0;
 
-          if (syncedGeneralCount > 0) {
-            await dbQuery.run(
-              `UPDATE booking_items
-               SET pin_code = ?
-               WHERE room_id = ?
-                 AND (CASE WHEN length(end_time) = 16 THEN REPLACE(end_time, ' ', 'T') || ':00' ELSE REPLACE(end_time, ' ', 'T') END) >= ?
-                 AND COALESCE(checkin_status, '') != 'cancelled'
-                 AND booking_id IN (
-                   SELECT id FROM bookings
-                   WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
-                     AND COALESCE(checkin_status, '') != 'cancelled'
-                     AND (customer_type != 'builtland' OR customer_type IS NULL)
-                 )`,
-              [cleanPin, roomId, currentBkkIso]
-            );
-
-            await dbQuery.run(
-              `UPDATE bookings
-               SET pin_code = ?
-               WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
-                 AND COALESCE(checkin_status, '') != 'cancelled'
-                 AND (customer_type != 'builtland' OR customer_type IS NULL)
-                 AND id IN (
-                   SELECT bi1.booking_id
-                   FROM booking_items bi1
-                   WHERE bi1.room_id = ?
-                     AND bi1.id = (
-                       SELECT MIN(bi2.id)
-                       FROM booking_items bi2
-                       WHERE bi2.booking_id = bi1.booking_id
-                         AND bi2.room_id IS NOT NULL
-                         AND (CASE WHEN length(bi2.end_time) = 16 THEN REPLACE(bi2.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi2.end_time, ' ', 'T') END) >= ?
-                         AND COALESCE(bi2.checkin_status, '') != 'cancelled'
-                     )
-                     AND (CASE WHEN length(bi1.end_time) = 16 THEN REPLACE(bi1.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi1.end_time, ' ', 'T') END) >= ?
-                     AND COALESCE(bi1.checkin_status, '') != 'cancelled'
-                 )`,
-              [cleanPin, roomId, currentBkkIso, currentBkkIso]
-            );
-          }
+          await dbQuery.run(
+            `UPDATE bookings
+             SET pin_code = ?
+             WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
+               AND COALESCE(checkin_status, '') != 'cancelled'
+               AND (customer_type != 'builtland' OR customer_type IS NULL)
+               AND id IN (
+                 SELECT bi1.booking_id
+                 FROM booking_items bi1
+                 WHERE bi1.room_id = ?
+                   AND bi1.id = (
+                     SELECT MIN(bi2.id)
+                     FROM booking_items bi2
+                     WHERE bi2.booking_id = bi1.booking_id
+                       AND bi2.room_id IS NOT NULL
+                       AND (CASE WHEN length(bi2.end_time) = 16 THEN REPLACE(bi2.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi2.end_time, ' ', 'T') END) >= ?
+                       AND COALESCE(bi2.checkin_status, '') != 'cancelled'
+                   )
+                   AND (CASE WHEN length(bi1.end_time) = 16 THEN REPLACE(bi1.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi1.end_time, ' ', 'T') END) >= ?
+                   AND COALESCE(bi1.checkin_status, '') != 'cancelled'
+               )`,
+            [cleanPin, roomId, currentBkkIso, currentBkkIso]
+          );
         }
 
-        // Sync Builtland bookings when effectiveBuiltlandPin changed
-        if (builtlandEffectiveChanged) {
-          const eligibleBuiltland = await dbQuery.all(
-            `SELECT DISTINCT b.id
-             FROM bookings b
-             JOIN booking_items bi ON bi.booking_id = b.id
-             WHERE bi.room_id = ?
-               AND COALESCE(b.payment_status, '') NOT IN ('cancelled', 'failed')
-               AND COALESCE(b.checkin_status, '') != 'cancelled'
-               AND COALESCE(bi.checkin_status, '') != 'cancelled'
-               AND (CASE WHEN length(bi.end_time) = 16 THEN REPLACE(bi.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi.end_time, ' ', 'T') END) >= ?
-               AND b.customer_type = 'builtland'`,
-            [roomId, currentBkkIso]
+        // 2b. Sync Builtland bookings to current effectiveBuiltlandPin
+        const eligibleBuiltland = await dbQuery.all(
+          `SELECT DISTINCT b.id
+           FROM bookings b
+           JOIN booking_items bi ON bi.booking_id = b.id
+           WHERE bi.room_id = ?
+             AND COALESCE(b.payment_status, '') NOT IN ('cancelled', 'failed')
+             AND COALESCE(b.checkin_status, '') != 'cancelled'
+             AND COALESCE(bi.checkin_status, '') != 'cancelled'
+             AND (CASE WHEN length(bi.end_time) = 16 THEN REPLACE(bi.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi.end_time, ' ', 'T') END) >= ?
+             AND b.customer_type = 'builtland'`,
+          [roomId, currentBkkIso]
+        );
+        syncedBuiltlandCount = eligibleBuiltland ? eligibleBuiltland.length : 0;
+
+        if (syncedBuiltlandCount > 0) {
+          await dbQuery.run(
+            `UPDATE booking_items
+             SET pin_code = ?
+             WHERE room_id = ?
+               AND (CASE WHEN length(end_time) = 16 THEN REPLACE(end_time, ' ', 'T') || ':00' ELSE REPLACE(end_time, ' ', 'T') END) >= ?
+               AND COALESCE(checkin_status, '') != 'cancelled'
+               AND booking_id IN (
+                 SELECT id FROM bookings
+                 WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
+                   AND COALESCE(checkin_status, '') != 'cancelled'
+                   AND customer_type = 'builtland'
+               )`,
+            [effectiveBuiltlandPin, roomId, currentBkkIso]
           );
-          syncedBuiltlandCount = eligibleBuiltland ? eligibleBuiltland.length : 0;
 
-          if (syncedBuiltlandCount > 0) {
-            await dbQuery.run(
-              `UPDATE booking_items
-               SET pin_code = ?
-               WHERE room_id = ?
-                 AND (CASE WHEN length(end_time) = 16 THEN REPLACE(end_time, ' ', 'T') || ':00' ELSE REPLACE(end_time, ' ', 'T') END) >= ?
-                 AND COALESCE(checkin_status, '') != 'cancelled'
-                 AND booking_id IN (
-                   SELECT id FROM bookings
-                   WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
-                     AND COALESCE(checkin_status, '') != 'cancelled'
-                     AND customer_type = 'builtland'
-                 )`,
-              [effectiveBuiltlandPin, roomId, currentBkkIso]
-            );
-
-            await dbQuery.run(
-              `UPDATE bookings
-               SET pin_code = ?
-               WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
-                 AND COALESCE(checkin_status, '') != 'cancelled'
-                 AND customer_type = 'builtland'
-                 AND id IN (
-                   SELECT bi1.booking_id
-                   FROM booking_items bi1
-                   WHERE bi1.room_id = ?
-                     AND bi1.id = (
-                       SELECT MIN(bi2.id)
-                       FROM booking_items bi2
-                       WHERE bi2.booking_id = bi1.booking_id
-                         AND bi2.room_id IS NOT NULL
-                         AND (CASE WHEN length(bi2.end_time) = 16 THEN REPLACE(bi2.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi2.end_time, ' ', 'T') END) >= ?
-                         AND COALESCE(bi2.checkin_status, '') != 'cancelled'
-                     )
-                     AND (CASE WHEN length(bi1.end_time) = 16 THEN REPLACE(bi1.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi1.end_time, ' ', 'T') END) >= ?
-                     AND COALESCE(bi1.checkin_status, '') != 'cancelled'
-                 )`,
-              [effectiveBuiltlandPin, roomId, currentBkkIso, currentBkkIso]
-            );
-          }
+          await dbQuery.run(
+            `UPDATE bookings
+             SET pin_code = ?
+             WHERE COALESCE(payment_status, '') NOT IN ('cancelled', 'failed')
+               AND COALESCE(checkin_status, '') != 'cancelled'
+               AND customer_type = 'builtland'
+               AND id IN (
+                 SELECT bi1.booking_id
+                 FROM booking_items bi1
+                 WHERE bi1.room_id = ?
+                   AND bi1.id = (
+                     SELECT MIN(bi2.id)
+                     FROM booking_items bi2
+                     WHERE bi2.booking_id = bi1.booking_id
+                       AND bi2.room_id IS NOT NULL
+                       AND (CASE WHEN length(bi2.end_time) = 16 THEN REPLACE(bi2.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi2.end_time, ' ', 'T') END) >= ?
+                       AND COALESCE(bi2.checkin_status, '') != 'cancelled'
+                   )
+                   AND (CASE WHEN length(bi1.end_time) = 16 THEN REPLACE(bi1.end_time, ' ', 'T') || ':00' ELSE REPLACE(bi1.end_time, ' ', 'T') END) >= ?
+                   AND COALESCE(bi1.checkin_status, '') != 'cancelled'
+               )`,
+            [effectiveBuiltlandPin, roomId, currentBkkIso, currentBkkIso]
+          );
         }
       }
     });
