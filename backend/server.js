@@ -13,6 +13,12 @@ const {
   refreshOneDriveAccessToken,
   uploadSqlToOneDrive
 } = require('./onedrive');
+const {
+  roundMoney,
+  calculateDiscount,
+  calculateBookingFinancials,
+  calculateRescheduleFinancials
+} = require('./financialHelper');
 const crypto = require('crypto');
 
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
@@ -912,7 +918,11 @@ app.post('/api/bookings', async (req, res) => {
     basecamp_unit = null,
     internal_department = null,
     billing_option = 'paid',
-    booking_details = null
+    booking_details = null,
+    discount_type = 'none',
+    discount_value = 0,
+    payment_mode = null,
+    deposit_amount = 0
   } = req.body;
 
   if (!customer_name || !items || !items.length) {
@@ -994,7 +1004,7 @@ app.post('/api/bookings', async (req, res) => {
         }
       }
 
-      let verifiedTotal = Math.round(serverTotal * 100) / 100;
+      let grossSubtotal = Math.round(serverTotal * 100) / 100;
       let quotaHoursUsed = 0;
       let effectiveBillingOption = billing_option || 'paid';
 
@@ -1031,23 +1041,38 @@ app.post('/api/bookings', async (req, res) => {
         const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
 
         if (totalBookingHours > 0) {
-          verifiedTotal = Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100;
+          grossSubtotal = Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100;
         } else {
-          verifiedTotal = 0;
+          grossSubtotal = 0;
         }
 
-        if (quotaHoursUsed > 0 && verifiedTotal === 0) {
+        if (quotaHoursUsed > 0 && grossSubtotal === 0) {
           effectiveBillingOption = 'quota';
-        } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
+        } else if (quotaHoursUsed > 0 && grossSubtotal > 0) {
           effectiveBillingOption = 'quota_partial';
         } else {
           effectiveBillingOption = 'standard';
         }
       } else if (customer_type === 'builtland') {
-        verifiedTotal = 0;
+        grossSubtotal = 0;
         quotaHoursUsed = 0;
         effectiveBillingOption = 'internal_free';
       }
+
+      // Financial Calculation Engine
+      const effectivePaymentMode = payment_mode
+        ? payment_mode
+        : (payment_status === 'pending' ? 'unpaid' : 'full');
+
+      const fin = calculateBookingFinancials({
+        subtotal: grossSubtotal,
+        discount_type,
+        discount_value,
+        payment_mode: effectivePaymentMode,
+        deposit_amount,
+        customer_type,
+        billing_option: effectiveBillingOption
+      });
 
       const receiptNumber = await generateReceiptNumber();
       const roomItem = items.find(it => !!it.room_id);
@@ -1080,23 +1105,28 @@ app.post('/api/bookings', async (req, res) => {
         ? parseInt(guest_count, 10)
         : (items.find(it => it.guest_count)?.guest_count ? parseInt(items.find(it => it.guest_count).guest_count, 10) : null);
 
-      // Determine effective payment status
-      const effectivePaymentStatus = customer_type === 'builtland'
-        ? 'internal_free'
-        : (verifiedTotal === 0 ? 'paid' : (payment_status || 'pending'));
-
-      // Insert master booking (with optional customer categorization fields, quota_hours_used, and booking_details)
+      // Insert master booking (with discount, deposit & financial snapshots)
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings
-         (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, line_user_id, guest_count, checkin_status, booking_source, booking_channel, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, booking_details, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (customer_name, department, contact,
+          subtotal_amount, discount_type, discount_value, discount_amount,
+          total_amount, paid_amount, balance_amount, payment_status, payment_method,
+          receipt_number, pin_code, line_user_id, guest_count, checkin_status, booking_source, booking_channel,
+          customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, booking_details, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customer_name,
           department || internal_department || '',
           contact || '',
-          verifiedTotal,
-          effectivePaymentStatus,
-          payment_method || 'cash',
+          fin.subtotal_amount,
+          fin.discount_type,
+          fin.discount_value,
+          fin.discount_amount,
+          fin.total_amount,
+          fin.paid_amount,
+          fin.balance_amount,
+          fin.payment_status,
+          customer_type === 'builtland' ? '' : (payment_method || 'cash'),
           receiptNumber,
           pinCode,
           line_user_id || null,
@@ -1115,6 +1145,22 @@ app.post('/api/bookings', async (req, res) => {
         ]
       );
       const bookingId = bookingResult.id;
+
+      // Insert initial payment ledger transaction if funds were collected
+      if (fin.transaction_needed) {
+        await dbQuery.run(
+          `INSERT INTO payment_transactions
+           (booking_id, amount, payment_method, transaction_type, status, created_at)
+           VALUES (?, ?, ?, ?, 'completed', ?)`,
+          [
+            bookingId,
+            fin.transaction_amount,
+            customer_type === 'builtland' ? '' : (payment_method || 'cash'),
+            fin.transaction_type,
+            getBangkokLocalISO(new Date())
+          ]
+        );
+      }
 
       // Insert booking items with normalized timestamps & guest_count
       for (const item of items) {
@@ -2121,6 +2167,107 @@ app.patch('/api/bookings/:id/payment', async (req, res) => {
   }
 });
 
+// Read payment ledger events for a booking
+app.get('/api/bookings/:id/payments', authenticateToken, async (req, res) => {
+  try {
+    const bookingId = req.params.id;
+    const payments = await dbQuery.all(
+      `SELECT * FROM payment_transactions WHERE booking_id = ? ORDER BY created_at ASC, id ASC`,
+      [bookingId]
+    );
+    res.json({
+      success: true,
+      booking_id: Number(bookingId),
+      payments: payments || []
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pay remaining balance endpoint
+app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) => {
+  try {
+    const bookingId = req.params.id;
+    const { amount, payment_method } = req.body;
+
+    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    if (booking.payment_status === 'cancelled' || booking.payment_status === 'failed') {
+      return res.status(400).json({ error: 'ไม่สามารถรับชำระเงินสำหรับรายการที่ถูกยกเลิกแล้ว' });
+    }
+
+    if (booking.customer_type === 'builtland' || booking.payment_status === 'internal_free' || booking.billing_option === 'internal_free') {
+      return res.status(400).json({ error: 'รายการใช้งานภายใน (Builtland) ไม่มีการเรียกเก็บเงิน' });
+    }
+
+    const currentBalance = roundMoney(booking.balance_amount);
+    if (currentBalance <= 0) {
+      return res.status(400).json({ error: 'รายการนี้ชำระเงินครบถ้วนแล้ว ไม่มีเงินคงค้าง' });
+    }
+
+    const payAmount = roundMoney(amount);
+    if (payAmount <= 0) {
+      return res.status(400).json({ error: 'ยอดเงินชำระต้องมากกว่า 0 บาท' });
+    }
+
+    if (payAmount > currentBalance) {
+      return res.status(400).json({
+        error: `ยอดเงินที่ชำระ (฿${payAmount}) เกินกว่ายอดคงเหลือที่ต้องชำระ (฿${currentBalance})`
+      });
+    }
+
+    const newPaid = roundMoney((booking.paid_amount || 0) + payAmount);
+    const newBalance = roundMoney(booking.total_amount - newPaid);
+    const newStatus = newBalance <= 0 ? 'paid' : 'deposit';
+    const method = payment_method || 'cash';
+    const nowIso = getBangkokLocalISO(new Date());
+
+    let receiptNumber = booking.receipt_number;
+    if (newStatus === 'paid' && !receiptNumber) {
+      receiptNumber = await generateReceiptNumber();
+    }
+
+    await dbQuery.transaction(async () => {
+      // Concurrency check: enforce balance_amount >= payAmount in UPDATE condition
+      const updateRes = await dbQuery.run(
+        `UPDATE bookings
+         SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?, receipt_number = COALESCE(receipt_number, ?)
+         WHERE id = ? AND balance_amount >= ?`,
+        [newPaid, newBalance, newStatus, method, receiptNumber, booking.id, payAmount]
+      );
+      if (updateRes.changes === 0) {
+        const raceErr = new Error('ยอดคงเหลือถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง');
+        raceErr.statusCode = 409;
+        throw raceErr;
+      }
+
+      await dbQuery.run(
+        `INSERT INTO payment_transactions
+         (booking_id, amount, payment_method, transaction_type, status, created_at)
+         VALUES (?, ?, ?, 'balance', 'completed', ?)`,
+        [booking.id, payAmount, method, nowIso]
+      );
+    });
+
+    const updatedBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    res.json({
+      success: true,
+      message: newStatus === 'paid' ? 'ชำระเงินครบถ้วนเรียบร้อยแล้ว' : 'บันทึกการชำระเงินคงเหลือสำเร็จ',
+      paid_amount: newPaid,
+      balance_amount: newBalance,
+      payment_status: newStatus,
+      payment_method: method,
+      booking: updatedBooking
+    });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
 // Update booking details (notes) endpoint
 const handleUpdateBookingDetails = async (req, res) => {
   const { id } = req.params;
@@ -2389,6 +2536,38 @@ const handleReschedule = async (req, res) => {
       }
     }
 
+    const bType = booking_type || currentItem.booking_type || 'hourly';
+    const bLayout = layout || currentItem.layout || 'standard';
+    let itemPrice = currentItem.price;
+    let itemSubtotal = currentItem.subtotal;
+
+    if (targetRoomObj) {
+      if (bType === 'daily') {
+        itemPrice = bLayout === 'classroom' ? (targetRoomObj.classroom_daily_rate || targetRoomObj.daily_rate) : targetRoomObj.daily_rate;
+        itemSubtotal = itemPrice;
+      } else if (bType === 'halfday') {
+        itemPrice = targetRoomObj.half_day_rate;
+        itemSubtotal = itemPrice;
+      } else {
+        itemPrice = bLayout === 'classroom' ? (targetRoomObj.classroom_hourly_rate || targetRoomObj.hourly_rate) : targetRoomObj.hourly_rate;
+        const sDate = new Date(newStartISO);
+        const eDate = new Date(newEndISO);
+        const hours = Math.max(1, Math.ceil((eDate.getTime() - sDate.getTime()) / (1000 * 60 * 60)));
+        itemSubtotal = roundMoney(itemPrice * hours);
+      }
+    }
+
+    // Query other items if multi-item booking
+    const otherItems = await dbQuery.all('SELECT * FROM booking_items WHERE booking_id = ? AND id != ?', [bookingId, currentItem.id]);
+    const otherSubtotal = otherItems.reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
+    const fullNewGross = roundMoney(otherSubtotal + itemSubtotal);
+
+    // Compute new financials reapplying stored discount and preserving paid_amount
+    const newFin = calculateRescheduleFinancials({
+      oldBooking: booking,
+      newSubtotal: fullNewGross
+    });
+
     let updatedBooking = null;
     await dbQuery.transaction(async () => {
       await dbQuery.run(
@@ -2397,28 +2576,42 @@ const handleReschedule = async (req, res) => {
           targetRoomId,
           newStartISO,
           newEndISO,
-          total_amount !== undefined ? total_amount : currentItem.subtotal,
-          total_amount !== undefined ? total_amount : currentItem.price,
-          booking_type || currentItem.booking_type || 'hourly',
-          layout || currentItem.layout || 'standard',
+          itemSubtotal,
+          itemPrice,
+          bType,
+          bLayout,
           newPinCode,
           currentItem.id
         ]
       );
 
-      if (updateDetails) {
-        if (total_amount !== undefined) {
-          await dbQuery.run('UPDATE bookings SET pin_code = ?, total_amount = ?, booking_details = ? WHERE id = ?', [newPinCode, total_amount, normalizedDetailsValue, bookingId]);
-        } else {
-          await dbQuery.run('UPDATE bookings SET pin_code = ?, booking_details = ? WHERE id = ?', [newPinCode, normalizedDetailsValue, bookingId]);
-        }
-      } else {
-        if (total_amount !== undefined) {
-          await dbQuery.run('UPDATE bookings SET pin_code = ?, total_amount = ? WHERE id = ?', [newPinCode, total_amount, bookingId]);
-        } else {
-          await dbQuery.run('UPDATE bookings SET pin_code = ? WHERE id = ?', [newPinCode, bookingId]);
-        }
-      }
+      await dbQuery.run(
+        `UPDATE bookings
+         SET pin_code = ?,
+             subtotal_amount = ?,
+             discount_type = ?,
+             discount_value = ?,
+             discount_amount = ?,
+             total_amount = ?,
+             paid_amount = ?,
+             balance_amount = ?,
+             payment_status = ?,
+             booking_details = COALESCE(?, booking_details)
+         WHERE id = ?`,
+        [
+          newPinCode,
+          newFin.subtotal_amount,
+          newFin.discount_type,
+          newFin.discount_value,
+          newFin.discount_amount,
+          newFin.total_amount,
+          newFin.paid_amount,
+          newFin.balance_amount,
+          newFin.payment_status,
+          updateDetails ? normalizedDetailsValue : null,
+          bookingId
+        ]
+      );
 
       updatedBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
       const updatedItems = await dbQuery.all(

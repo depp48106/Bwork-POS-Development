@@ -15,6 +15,224 @@ async function hashPassword(password) {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// ==========================================
+// 1.1 FINANCIAL & DISCOUNT/DEPOSIT HELPERS
+// ==========================================
+function roundMoney(value) {
+  const num = Number(value);
+  if (isNaN(num)) return 0;
+  return Math.round((num + Number.EPSILON) * 100) / 100;
+}
+
+function calculateDiscount(subtotal, type = 'none', value = 0) {
+  const cleanSubtotal = roundMoney(Math.max(0, subtotal));
+  const normType = String(type || 'none').toLowerCase().trim();
+
+  if (normType === 'none' || !normType) {
+    return {
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0
+    };
+  }
+
+  const numVal = roundMoney(value);
+  if (numVal < 0) {
+    throw new Error('ค่าส่วนลดต้องไม่ติดลบ');
+  }
+
+  if (normType === 'percent') {
+    if (numVal > 100) {
+      throw new Error('ส่วนลดเปอร์เซ็นต์ต้องไม่เกิน 100%');
+    }
+    const discountAmount = roundMoney((cleanSubtotal * numVal) / 100);
+    return {
+      discount_type: 'percent',
+      discount_value: numVal,
+      discount_amount: Math.min(cleanSubtotal, Math.max(0, discountAmount))
+    };
+  }
+
+  if (normType === 'amount') {
+    if (numVal > cleanSubtotal) {
+      throw new Error(`ส่วนลดจำนวนเงิน (฿${numVal}) ต้องไม่เกินยอดรวมก่อนส่วนลด (฿${cleanSubtotal})`);
+    }
+    return {
+      discount_type: 'amount',
+      discount_value: numVal,
+      discount_amount: Math.min(cleanSubtotal, Math.max(0, numVal))
+    };
+  }
+
+  throw new Error(`ประเภทส่วนลดไม่ถูกต้อง: '${type}' (รองรับ: none, percent, amount)`);
+}
+
+function calculateBookingFinancials({
+  subtotal = 0,
+  discount_type = 'none',
+  discount_value = 0,
+  payment_mode = 'full',
+  deposit_amount = 0,
+  customer_type = 'walkin',
+  billing_option = 'paid'
+}) {
+  const cleanSubtotal = roundMoney(Math.max(0, subtotal));
+  const isBuiltland = customer_type === 'builtland';
+  const isInternalFree = isBuiltland || billing_option === 'internal_free';
+
+  if (isInternalFree) {
+    return {
+      subtotal_amount: cleanSubtotal,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
+      total_amount: 0,
+      paid_amount: 0,
+      balance_amount: 0,
+      payment_status: 'internal_free',
+      transaction_needed: false,
+      transaction_type: null,
+      transaction_amount: 0
+    };
+  }
+
+  const {
+    discount_type: dt,
+    discount_value: dv,
+    discount_amount: da
+  } = calculateDiscount(cleanSubtotal, discount_type, discount_value);
+
+  const totalAmount = roundMoney(Math.max(0, cleanSubtotal - da));
+  const normMode = String(payment_mode || 'full').toLowerCase().trim();
+  let paidAmount = 0;
+  let balanceAmount = 0;
+  let paymentStatus = 'paid';
+  let transactionNeeded = false;
+  let transactionType = null;
+
+  if (totalAmount === 0) {
+    paidAmount = 0;
+    balanceAmount = 0;
+    paymentStatus = 'paid';
+    transactionNeeded = false;
+  } else if (normMode === 'deposit') {
+    const depVal = roundMoney(deposit_amount);
+    if (depVal <= 0) {
+      throw new Error('ยอดเงินมัดจำต้องมากกว่า 0 บาท');
+    }
+    if (depVal >= totalAmount) {
+      paidAmount = totalAmount;
+      balanceAmount = 0;
+      paymentStatus = 'paid';
+      transactionNeeded = true;
+      transactionType = 'full';
+    } else {
+      paidAmount = depVal;
+      balanceAmount = roundMoney(totalAmount - paidAmount);
+      paymentStatus = 'deposit';
+      transactionNeeded = true;
+      transactionType = 'deposit';
+    }
+  } else if (normMode === 'unpaid' || normMode === 'pending') {
+    paidAmount = 0;
+    balanceAmount = totalAmount;
+    paymentStatus = 'pending';
+    transactionNeeded = false;
+  } else {
+    paidAmount = totalAmount;
+    balanceAmount = 0;
+    paymentStatus = 'paid';
+    transactionNeeded = true;
+    transactionType = 'full';
+  }
+
+  return {
+    subtotal_amount: cleanSubtotal,
+    discount_type: dt,
+    discount_value: dv,
+    discount_amount: da,
+    total_amount: totalAmount,
+    paid_amount: paidAmount,
+    balance_amount: balanceAmount,
+    payment_status: paymentStatus,
+    transaction_needed: transactionNeeded,
+    transaction_type: transactionType,
+    transaction_amount: paidAmount
+  };
+}
+
+function calculateRescheduleFinancials({
+  oldBooking,
+  newSubtotal = 0
+}) {
+  if (!oldBooking) throw new Error('Missing booking data for reschedule');
+  const cleanNewSubtotal = roundMoney(Math.max(0, newSubtotal));
+  const isBuiltland = oldBooking.customer_type === 'builtland' || oldBooking.billing_option === 'internal_free';
+
+  if (isBuiltland) {
+    return {
+      subtotal_amount: cleanNewSubtotal,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
+      total_amount: 0,
+      paid_amount: 0,
+      balance_amount: 0,
+      payment_status: 'internal_free'
+    };
+  }
+
+  const oldDiscountType = String(oldBooking.discount_type || 'none').toLowerCase().trim();
+  const oldDiscountValue = Number(oldBooking.discount_value) || 0;
+  const oldDiscountAmount = Number(oldBooking.discount_amount) || 0;
+
+  let newDiscountAmount = 0;
+  let newDiscountValue = 0;
+  let finalDiscountType = 'none';
+
+  if (oldDiscountType === 'percent') {
+    finalDiscountType = 'percent';
+    newDiscountValue = oldDiscountValue;
+    newDiscountAmount = roundMoney((cleanNewSubtotal * oldDiscountValue) / 100);
+  } else if (oldDiscountType === 'amount') {
+    finalDiscountType = 'amount';
+    const fixedAmount = oldDiscountAmount > 0 ? oldDiscountAmount : oldDiscountValue;
+    if (fixedAmount > cleanNewSubtotal) {
+      throw new Error(`ส่วนลดเดิม (฿${fixedAmount}) สูงกว่ายอดรวมใหม่ (฿${cleanNewSubtotal}) กรุณาปรับเปลี่ยนส่วนลดก่อนทำรายการ`);
+    }
+    newDiscountValue = fixedAmount;
+    newDiscountAmount = fixedAmount;
+  }
+
+  const newTotalAmount = roundMoney(Math.max(0, cleanNewSubtotal - newDiscountAmount));
+  const currentPaid = roundMoney(Math.max(0, Number(oldBooking.paid_amount || 0)));
+
+  if (newTotalAmount < currentPaid) {
+    throw new Error(`ยอดสุทธิใหม่ (฿${newTotalAmount}) ต่ำกว่ายอดเงินที่ชำระไปแล้ว (฿${currentPaid}) ไม่สามารถเปลี่ยนเวลาได้`);
+  }
+
+  const newBalanceAmount = roundMoney(newTotalAmount - currentPaid);
+  let newPaymentStatus = 'pending';
+  if (newBalanceAmount === 0) {
+    newPaymentStatus = 'paid';
+  } else if (currentPaid > 0) {
+    newPaymentStatus = 'deposit';
+  } else {
+    newPaymentStatus = oldBooking.payment_status || 'pending';
+  }
+
+  return {
+    subtotal_amount: cleanNewSubtotal,
+    discount_type: finalDiscountType,
+    discount_value: newDiscountValue,
+    discount_amount: newDiscountAmount,
+    total_amount: newTotalAmount,
+    paid_amount: currentPaid,
+    balance_amount: newBalanceAmount,
+    payment_status: newPaymentStatus
+  };
+}
+
 function base64urlEncode(str) {
   return btoa(unescape(encodeURIComponent(str)))
     .replace(/\+/g, '-')
@@ -2690,6 +2908,21 @@ export default {
           effectiveBillingOption = 'internal_free';
         }
 
+        // Financial Calculation Engine
+        const effectivePaymentMode = body.payment_mode
+          ? body.payment_mode
+          : (payment_status === 'pending' ? 'unpaid' : 'full');
+
+        const fin = calculateBookingFinancials({
+          subtotal: verifiedTotal,
+          discount_type: body.discount_type || 'none',
+          discount_value: body.discount_value || 0,
+          payment_mode: effectivePaymentMode,
+          deposit_amount: body.deposit_amount || 0,
+          customer_type: customer_type || 'walkin',
+          billing_option: effectiveBillingOption
+        });
+
         const receiptNumber = await generateReceiptNumber(env);
         const roomItem = items.find(it => !!it.room_id);
         let pinCode = null;
@@ -2722,22 +2955,31 @@ export default {
           : (items.find(it => it.guest_count)?.guest_count ? parseInt(items.find(it => it.guest_count).guest_count, 10) : null);
 
         const nowIso = new Date().toISOString();
-        const effectivePaymentStatus = customer_type === 'builtland'
-          ? 'internal_free'
-          : (verifiedTotal === 0 ? 'paid' : (payment_status || 'pending'));
 
         let insBooking;
         try {
           insBooking = await env.DB.prepare(
-            `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status, customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, booking_details, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`
+            `INSERT INTO bookings
+             (customer_name, department, contact,
+              subtotal_amount, discount_type, discount_value, discount_amount,
+              total_amount, paid_amount, balance_amount, payment_status, payment_method,
+              receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status,
+              customer_type, basecamp_sub_type, basecamp_unit, internal_department,
+              billing_option, quota_hours_used, booking_details, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name,
             department || internal_department || '',
             contact || '',
-            verifiedTotal,
-            effectivePaymentStatus,
-            payment_method || 'cash',
+            fin.subtotal_amount,
+            fin.discount_type,
+            fin.discount_value,
+            fin.discount_amount,
+            fin.total_amount,
+            fin.paid_amount,
+            fin.balance_amount,
+            fin.payment_status,
+            customer_type === 'builtland' ? '' : (payment_method || 'cash'),
             receiptNumber,
             pinCode,
             booking_source || 'walkin',
@@ -2756,10 +2998,29 @@ export default {
           insBooking = await env.DB.prepare(
             `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, checkin_status, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
-          ).bind(customer_name, department || '', contact || '', verifiedTotal, effectivePaymentStatus, payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
+          ).bind(customer_name, department || '', contact || '', fin.total_amount, fin.payment_status, payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
         }
 
         const bookingId = insBooking.meta.last_row_id;
+
+        // Insert initial payment transaction if funds were collected
+        if (fin.transaction_needed) {
+          try {
+            await env.DB.prepare(
+              `INSERT INTO payment_transactions
+               (booking_id, amount, payment_method, transaction_type, status, created_at)
+               VALUES (?, ?, ?, ?, 'completed', ?)`
+            ).bind(
+              bookingId,
+              fin.transaction_amount,
+              customer_type === 'builtland' ? '' : (payment_method || 'cash'),
+              fin.transaction_type,
+              nowIso
+            ).run();
+          } catch (txErr) {
+            console.error('Error inserting initial payment transaction in worker:', txErr);
+          }
+        }
 
         for (let item of items) {
           const normStart = (item.room_id && item.start_time) ? normalizeToLocalISO(item.start_time) : null;
@@ -3079,9 +3340,24 @@ export default {
                 receipt_number = ?,
                 pin_code = ?,
                 slip_verify_status = 'manual_approved',
-                slip_verified_at = ?
+                slip_verified_at = ?,
+                paid_amount = total_amount,
+                balance_amount = 0
             WHERE id = ?
           `).bind(paymentMethod, receiptNumber, pinCode, nowIso, bookingId).run();
+
+          // Record payment transaction for balance if needed
+          const remainingToPay = roundMoney(booking.total_amount - (booking.paid_amount || 0));
+          if (remainingToPay > 0) {
+            const txType = (booking.paid_amount > 0) ? 'balance' : 'full';
+            try {
+              await env.DB.prepare(
+                `INSERT INTO payment_transactions
+                 (booking_id, amount, payment_method, transaction_type, status, created_at)
+                 VALUES (?, ?, ?, ?, 'completed', ?)`
+              ).bind(booking.id, remainingToPay, paymentMethod || booking.payment_method || 'cash', txType, nowIso).run();
+            } catch (txErr) {}
+          }
 
           // Update slip_verifications record
           try {
@@ -3157,6 +3433,106 @@ export default {
             message: 'อัปเดตสถานะการชำระเงินสำเร็จ'
           }), { headers: corsHeaders });
         }
+      }
+
+      // Read payment ledger transactions
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/payments') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = parts[3];
+        const { results: payments } = await env.DB.prepare(
+          'SELECT * FROM payment_transactions WHERE booking_id = ? ORDER BY created_at ASC, id ASC'
+        ).bind(bookingId).all();
+
+        return new Response(JSON.stringify({
+          success: true,
+          booking_id: Number(bookingId),
+          payments: payments || []
+        }), { headers: corsHeaders });
+      }
+
+      // Pay balance endpoint
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/pay-balance') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = parts[3];
+        const body = await request.json().catch(() => ({}));
+        const { amount, payment_method } = body;
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        if (booking.payment_status === 'cancelled' || booking.payment_status === 'failed') {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถรับชำระเงินสำหรับรายการที่ถูกยกเลิกแล้ว' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (booking.customer_type === 'builtland' || booking.payment_status === 'internal_free' || booking.billing_option === 'internal_free') {
+          return new Response(JSON.stringify({ error: 'รายการใช้งานภายใน (Builtland) ไม่มีการเรียกเก็บเงิน' }), { status: 400, headers: corsHeaders });
+        }
+
+        const currentBalance = roundMoney(booking.balance_amount);
+        if (currentBalance <= 0) {
+          return new Response(JSON.stringify({ error: 'รายการนี้ชำระเงินครบถ้วนแล้ว ไม่มีเงินคงค้าง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const payAmount = roundMoney(amount);
+        if (payAmount <= 0) {
+          return new Response(JSON.stringify({ error: 'ยอดเงินชำระต้องมากกว่า 0 บาท' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (payAmount > currentBalance) {
+          return new Response(JSON.stringify({
+            error: `ยอดเงินที่ชำระ (฿${payAmount}) เกินกว่ายอดคงเหลือที่ต้องชำระ (฿${currentBalance})`
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        const newPaid = roundMoney((booking.paid_amount || 0) + payAmount);
+        const newBalance = roundMoney(booking.total_amount - newPaid);
+        const newStatus = newBalance <= 0 ? 'paid' : 'deposit';
+        const method = payment_method || 'cash';
+        const nowIso = new Date().toISOString();
+
+        let receiptNumber = booking.receipt_number;
+        if (newStatus === 'paid' && !receiptNumber) {
+          receiptNumber = await generateReceiptNumber(env);
+        }
+
+        // Atomic update with concurrency check in D1 batch
+        const updateStmt = env.DB.prepare(
+          `UPDATE bookings
+           SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?, receipt_number = COALESCE(receipt_number, ?)
+           WHERE id = ? AND balance_amount >= ?`
+        ).bind(newPaid, newBalance, newStatus, method, receiptNumber, booking.id, payAmount);
+
+        const txStmt = env.DB.prepare(
+          `INSERT INTO payment_transactions
+           (booking_id, amount, payment_method, transaction_type, status, created_at)
+           VALUES (?, ?, ?, 'balance', 'completed', ?)`
+        ).bind(booking.id, payAmount, method, nowIso);
+
+        const batchRes = await env.DB.batch([updateStmt, txStmt]);
+        if (batchRes[0].meta?.changes !== 1) {
+          return new Response(JSON.stringify({
+            error: 'ยอดคงเหลือถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง'
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        return new Response(JSON.stringify({
+          success: true,
+          message: newStatus === 'paid' ? 'ชำระเงินครบถ้วนเรียบร้อยแล้ว' : 'บันทึกการชำระเงินคงเหลือสำเร็จ',
+          paid_amount: newPaid,
+          balance_amount: newBalance,
+          payment_status: newStatus,
+          payment_method: method,
+          booking: updatedBooking
+        }), { headers: corsHeaders });
       }
 
       // Cancel booking endpoint (Soft cancel + LINE Notification)
@@ -3265,6 +3641,42 @@ export default {
           }
         }
 
+        const bType = booking_type || currentItem.booking_type || 'hourly';
+        const bLayout = layout || currentItem.layout || 'standard';
+        let itemPrice = currentItem.price;
+        let itemSubtotal = currentItem.subtotal;
+
+        if (targetRoomObj) {
+          if (bType === 'daily') {
+            itemPrice = bLayout === 'classroom' ? (targetRoomObj.classroom_daily_rate || targetRoomObj.daily_rate) : targetRoomObj.daily_rate;
+            itemSubtotal = itemPrice;
+          } else if (bType === 'halfday') {
+            itemPrice = targetRoomObj.half_day_rate;
+            itemSubtotal = itemPrice;
+          } else {
+            itemPrice = bLayout === 'classroom' ? (targetRoomObj.classroom_hourly_rate || targetRoomObj.hourly_rate) : targetRoomObj.hourly_rate;
+            const sDate = new Date(newStartISO);
+            const eDate = new Date(newEndISO);
+            const hours = Math.max(1, Math.ceil((eDate.getTime() - sDate.getTime()) / (1000 * 60 * 60)));
+            itemSubtotal = roundMoney(itemPrice * hours);
+          }
+        }
+
+        // Query other items if multi-item booking
+        const { results: otherItems } = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND id != ?').bind(bookingId, currentItem.id).all();
+        const otherSubtotal = (otherItems || []).reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
+        const fullNewGross = roundMoney(otherSubtotal + itemSubtotal);
+
+        let newFin;
+        try {
+          newFin = calculateRescheduleFinancials({
+            oldBooking: booking,
+            newSubtotal: fullNewGross
+          });
+        } catch (fErr) {
+          return new Response(JSON.stringify({ error: fErr.message }), { status: 400, headers: corsHeaders });
+        }
+
         const statements = [
           env.DB.prepare(
             `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`
@@ -3272,28 +3684,40 @@ export default {
             targetRoomId,
             newStartISO,
             newEndISO,
-            total_amount !== undefined ? total_amount : currentItem.subtotal,
-            total_amount !== undefined ? total_amount : currentItem.price,
-            booking_type || currentItem.booking_type || 'hourly',
-            layout || currentItem.layout || 'standard',
+            itemSubtotal,
+            itemPrice,
+            bType,
+            bLayout,
             newPinCode,
             currentItem.id
+          ),
+          env.DB.prepare(
+            `UPDATE bookings
+             SET pin_code = ?,
+                 subtotal_amount = ?,
+                 discount_type = ?,
+                 discount_value = ?,
+                 discount_amount = ?,
+                 total_amount = ?,
+                 paid_amount = ?,
+                 balance_amount = ?,
+                 payment_status = ?,
+                 booking_details = COALESCE(?, booking_details)
+             WHERE id = ?`
+          ).bind(
+            newPinCode,
+            newFin.subtotal_amount,
+            newFin.discount_type,
+            newFin.discount_value,
+            newFin.discount_amount,
+            newFin.total_amount,
+            newFin.paid_amount,
+            newFin.balance_amount,
+            newFin.payment_status,
+            updateDetails ? normalizedDetailsValue : null,
+            bookingId
           )
         ];
-
-        if (updateDetails) {
-          if (total_amount !== undefined) {
-            statements.push(env.DB.prepare('UPDATE bookings SET pin_code = ?, total_amount = ?, booking_details = ? WHERE id = ?').bind(newPinCode, total_amount, normalizedDetailsValue, bookingId));
-          } else {
-            statements.push(env.DB.prepare('UPDATE bookings SET pin_code = ?, booking_details = ? WHERE id = ?').bind(newPinCode, normalizedDetailsValue, bookingId));
-          }
-        } else {
-          if (total_amount !== undefined) {
-            statements.push(env.DB.prepare('UPDATE bookings SET pin_code = ?, total_amount = ? WHERE id = ?').bind(newPinCode, total_amount, bookingId));
-          } else {
-            statements.push(env.DB.prepare('UPDATE bookings SET pin_code = ? WHERE id = ?').bind(newPinCode, bookingId));
-          }
-        }
 
         await env.DB.batch(statements);
 

@@ -241,6 +241,16 @@ async function initDatabase() {
       layout TEXT DEFAULT 'standard',
       booking_type TEXT DEFAULT 'hourly'
     );
+
+    CREATE TABLE IF NOT EXISTS payment_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER REFERENCES bookings(id) ON DELETE CASCADE,
+      amount REAL NOT NULL,
+      payment_method TEXT NOT NULL,
+      transaction_type TEXT DEFAULT 'full',
+      status TEXT DEFAULT 'completed',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Migration: Add permissions column to users if not exists
@@ -483,8 +493,17 @@ async function initDatabase() {
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN slip_verified_at TEXT'); } catch (e) {}
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN slip_verify_status TEXT'); } catch (e) {}
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN cancellation_reason TEXT'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN subtotal_amount REAL'); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE bookings ADD COLUMN discount_type TEXT DEFAULT 'none'"); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN discount_value REAL DEFAULT 0'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN discount_amount REAL DEFAULT 0'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN paid_amount REAL DEFAULT 0'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN balance_amount REAL DEFAULT 0'); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE payment_transactions ADD COLUMN transaction_type TEXT DEFAULT 'full'"); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_slip_verifications_trans_ref ON slip_verifications(trans_ref)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_slip_verifications_booking_id ON slip_verifications(booking_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_payment_transactions_booking_id ON payment_transactions(booking_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_balance_amount ON bookings(balance_amount)'); } catch (e) {}
 
   // Performance: Database Indexes for High-Speed Queries
   try {
