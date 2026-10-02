@@ -148,3 +148,132 @@ test('6. Management.jsx renders badges for both normal PIN and Builtland PIN in 
   assert.ok(code.includes('🔑 {item.pin_code}'), 'Table must display customer PIN with key emoji');
   assert.ok(code.includes('🏢 {item.builtland_pin_code}'), 'Table must display Builtland PIN with building emoji');
 });
+
+test('7. resolveRoomPin: Item PIN precedence over stale parent booking PIN (Section 12)', async () => {
+  const { resolveRoomPin } = await import('../src/utils/doorPinHelper.js');
+  const booking = {
+    id: 101,
+    pin_code: 'OLD_PARENT_PIN',
+    items: [
+      { id: 1, room_id: 9, pin_code: 'NEW_ITEM_PIN' }
+    ]
+  };
+
+  const resolved = resolveRoomPin(booking, 9);
+  assert.strictEqual(resolved, 'NEW_ITEM_PIN', 'Item PIN must take strict precedence over stale parent PIN');
+
+  const resolvedDefault = resolveRoomPin(booking);
+  assert.strictEqual(resolvedDefault, 'NEW_ITEM_PIN', 'Default room item PIN must take precedence even if roomId is omitted');
+});
+
+test('8. resolveRoomPin: Multi-room PIN isolation (Section 13)', async () => {
+  const { resolveRoomPin } = await import('../src/utils/doorPinHelper.js');
+  const multiRoomBooking = {
+    id: 102,
+    pin_code: 'PARENT_SNAPSHOT',
+    items: [
+      { id: 1, room_id: 4, room_name: 'Mars (301)', pin_code: '111111#' },
+      { id: 2, room_id: 9, room_name: 'Neptune (306)', pin_code: '222222#' }
+    ]
+  };
+
+  const pinRoomA = resolveRoomPin(multiRoomBooking, 4);
+  const pinRoomB = resolveRoomPin(multiRoomBooking, 9);
+
+  assert.strictEqual(pinRoomA, '111111#', 'Room 4 must resolve Room 4 PIN');
+  assert.strictEqual(pinRoomB, '222222#', 'Room 9 must resolve Room 9 PIN');
+  assert.notStrictEqual(pinRoomA, pinRoomB, 'Room A and Room B PINs must never bleed into each other');
+});
+
+test('9. resolveRoomPin: Builtland booking item PIN authoritative (Section 14)', async () => {
+  const { resolveRoomPin } = await import('../src/utils/doorPinHelper.js');
+  const builtlandBooking = {
+    id: 103,
+    customer_type: 'builtland',
+    pin_code: 'OLD_GENERAL_PIN',
+    items: [
+      { id: 1, room_id: 5, pin_code: '302302#' }
+    ]
+  };
+
+  const roomMaster = { id: 5, pin_code: '075164#', builtland_pin_code: '999999#' };
+
+  // When item already has authoritative PIN, do NOT fall back to room master
+  const resolved = resolveRoomPin(builtlandBooking, 5, roomMaster);
+  assert.strictEqual(resolved, '302302#', 'Must show item PIN without re-resolving room master PIN');
+});
+
+test('10. Reveal state caching audit: boolean visibility only, zero PIN string caching (Section 6 & 15)', async () => {
+  const { resolveRoomPin } = await import('../src/utils/doorPinHelper.js');
+  const code = fs.readFileSync(path.join(ROOT_DIR, 'src/components/PendingBookings.jsx'), 'utf8');
+
+  // Verify state stores boolean map, not PIN strings
+  assert.ok(code.includes('const [revealedPins, setRevealedPins] = useState({});'), 'Must use revealedPins map for visibility flags');
+  assert.ok(!code.includes('setRevealedPin(pinRaw)'), 'Must NEVER store raw PIN string in revealed state');
+  assert.ok(!code.includes('setVisiblePin(pinRaw)'), 'Must NEVER store raw PIN string in visiblePin state');
+
+  // Simulate lifecycle:
+  // 1. Initial stale booking
+  let currentBooking = {
+    id: 3,
+    pin_code: '593105#',
+    items: [{ id: 3, room_id: 9, pin_code: '593105#' }]
+  };
+  let revealedMap = { 3: true }; // User clicked eye icon
+
+  let displayedPin = revealedMap[currentBooking.id] ? resolveRoomPin(currentBooking, 9) : '••••••';
+  assert.strictEqual(displayedPin, '593105#', 'Initial reveal shows current PIN');
+
+  // 2. Fresh booking response arrives from API
+  currentBooking = {
+    id: 3,
+    pin_code: '524149#',
+    items: [{ id: 3, room_id: 9, pin_code: '524149#' }]
+  };
+
+  // 3. User keeps same screen open, component re-renders
+  displayedPin = revealedMap[currentBooking.id] ? resolveRoomPin(currentBooking, 9) : '••••••';
+  assert.strictEqual(displayedPin, '524149#', 'Component dynamically renders fresh PIN immediately without stale cache');
+});
+
+test('11. PendingBookings.jsx source contract: selectedBooking refresh and precedence (Section 7, 8, 9)', () => {
+  const code = fs.readFileSync(path.join(ROOT_DIR, 'src/components/PendingBookings.jsx'), 'utf8');
+
+  // Imports
+  assert.ok(code.includes("import { roomUsesDoorPin, resolveRoomPin } from '../utils/doorPinHelper';"), 'Must import resolveRoomPin');
+
+  // fetchBookings refreshes selectedBooking
+  assert.ok(code.includes('setSelectedBooking(prevSelected => {'), 'fetchBookings must update selectedBooking');
+
+  // bookings effect refreshes selectedBooking
+  assert.ok(code.includes('// Keep selectedBooking authoritative and synchronized with bookings list'), 'Must have synchronization effect');
+
+  // handleOpenBookingDetail resolves fresh booking from state
+  assert.ok(code.includes('const freshFromState = bookings.find(b => b.id === booking.id) || booking;'), 'handleOpenBookingDetail must resolve fresh state');
+
+  // handleManualRefresh refreshes both bookings and rooms
+  assert.ok(code.includes('const handleManualRefresh = () => {'), 'Must define handleManualRefresh');
+  assert.ok(code.includes('fetchRooms();'), 'Must refresh rooms on manual refresh');
+});
+
+test('12. End-to-end simulated eye reveal lifecycle (Section 11)', async () => {
+  const { resolveRoomPin } = await import('../src/utils/doorPinHelper.js');
+
+  // Step 1: Initial state
+  let booking = { id: 3, pin_code: '593105#', items: [{ id: 3, room_id: 9, pin_code: '593105#' }] };
+  let isRevealed = false;
+
+  // Initial masked
+  assert.strictEqual(isRevealed ? resolveRoomPin(booking, 9) : '••••••', '••••••');
+
+  // Step 2: User clicks eye icon
+  isRevealed = true;
+  assert.strictEqual(isRevealed ? resolveRoomPin(booking, 9) : '••••••', '593105#');
+
+  // Step 3: Room saved & fresh API state arrives
+  booking = { id: 3, pin_code: '524149#', items: [{ id: 3, room_id: 9, pin_code: '524149#' }] };
+
+  // Step 4: Eye reveal immediately shows NEW PIN without page refresh or close/reopen
+  const freshRender = isRevealed ? resolveRoomPin(booking, 9) : '••••••';
+  assert.strictEqual(freshRender, '524149#', 'Eye display must immediately reflect NEW PIN');
+});

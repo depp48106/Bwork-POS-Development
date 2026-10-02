@@ -42,7 +42,7 @@ import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { API_BASE } from '../apiConfig';
 import { analyzeSlipInBrowser } from '../utils/browserSlipVerifier';
-import { roomUsesDoorPin } from '../utils/doorPinHelper';
+import { roomUsesDoorPin, resolveRoomPin } from '../utils/doorPinHelper';
 import './PendingBookings.css';
 
 const DATE_TYPE_OPTIONS = [
@@ -212,23 +212,36 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     };
   }, []);
 
-  // Door PIN reveal and copy states for table display
-  const [revealedPins, setRevealedPins] = useState({}); // { [bookingId]: boolean }
-  const [copiedPin, setCopiedPin] = useState(null); // bookingId of currently copied pin
+  // Door PIN reveal and copy states for table & detail display
+  const [revealedPins, setRevealedPins] = useState({}); // { [bookingId]: boolean, [`${bookingId}_item_${itemId}`]: boolean }
+  const [copiedPin, setCopiedPin] = useState(null); // targetKey of currently copied pin
 
-  const handleToggleRevealPin = (bookingId) => {
-    setRevealedPins(prev => ({
-      ...prev,
-      [bookingId]: !prev[bookingId]
-    }));
+  const handleToggleRevealPin = (bookingId, itemId = null) => {
+    const key = itemId != null ? `${bookingId}_item_${itemId}` : String(bookingId);
+    setRevealedPins(prev => {
+      const nextVal = !prev[key];
+      const updated = { ...prev, [key]: nextVal };
+      if (itemId == null) {
+        updated[bookingId] = nextVal;
+      }
+      return updated;
+    });
   };
 
-  const handleCopyPin = (bookingId, pinValue) => {
+  const isPinRevealed = (bookingId, itemId = null) => {
+    if (itemId != null) {
+      const itemKey = `${bookingId}_item_${itemId}`;
+      if (revealedPins[itemKey] !== undefined) return revealedPins[itemKey];
+    }
+    return Boolean(revealedPins[bookingId]);
+  };
+
+  const handleCopyPin = (targetKey, pinValue) => {
     if (!pinValue || pinValue === '-') return;
     navigator.clipboard.writeText(String(pinValue));
-    setCopiedPin(bookingId);
+    setCopiedPin(targetKey);
     setTimeout(() => {
-      setCopiedPin(prev => prev === bookingId ? null : prev);
+      setCopiedPin(prev => prev === targetKey ? null : prev);
     }, 2000);
     if (sysAlert) {
       sysAlert(`คัดลอกรหัสเข้าห้อง (${pinValue}) เรียบร้อยแล้ว`);
@@ -334,6 +347,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       if (res.ok) {
         const data = await res.json();
         setBookings(data || []);
+        setSelectedBooking(prevSelected => {
+          if (!prevSelected) return null;
+          const fresh = (data || []).find(b => b.id === prevSelected.id);
+          return fresh || prevSelected;
+        });
       }
       if (isManual) {
         const elapsed = performance.now() - startedAt;
@@ -357,6 +375,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       setIsRefreshing(false);
     }
   };
+
+  const handleManualRefresh = () => {
+    fetchBookings(false, true, true);
+    fetchRooms();
+  };
+
+  // Keep selectedBooking authoritative and synchronized with bookings list
+  useEffect(() => {
+    if (selectedBooking) {
+      const fresh = bookings.find(b => b.id === selectedBooking.id);
+      if (fresh && fresh !== selectedBooking) {
+        setSelectedBooking(fresh);
+      }
+    }
+  }, [bookings]);
 
   const handleOpenPayment = (booking) => {
     setSelectedBooking(booking);
@@ -449,18 +482,18 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
   const handleOpenBookingDetail = async (booking) => {
     if (!booking) return;
+    const freshFromState = bookings.find(b => b.id === booking.id) || booking;
+    setSelectedBooking(freshFromState);
+    setShowDetailModal(true);
     try {
       const res = await fetch(`/api/bookings/${booking.id}`);
       if (res.ok) {
         const detailData = await res.json();
         setSelectedBooking(detailData);
-      } else {
-        setSelectedBooking(booking);
       }
     } catch (err) {
-      setSelectedBooking(booking);
+      // Keep freshFromState
     }
-    setShowDetailModal(true);
   };
 
   const handleOpenReceiptPrint = async (booking) => {
@@ -1683,7 +1716,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           <button
             type="button"
             className={`pb-btn-action ${manualRefreshState === 'success' ? 'success' : ''}`}
-            onClick={() => fetchBookings(false, true)}
+            onClick={handleManualRefresh}
             disabled={loading || manualRefreshState === 'loading'}
             title="รีเฟรชข้อมูลการจอง"
           >
@@ -2107,10 +2140,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
                   const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
-                  let pinRaw = usesDoorPin ? (firstItem.pin_code || b.pin_code || '') : '';
-                  if (usesDoorPin && !pinRaw && roomObj) {
-                    pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
-                  }
+                  let pinRaw = resolveRoomPin(b, firstItem.room_id || b.room_id, usesDoorPin ? roomObj : null);
                   const hasPin = Boolean(usesDoorPin && pinRaw && pinRaw !== '-');
                   const isBuiltland = b.customer_type === 'builtland';
 
@@ -2265,18 +2295,18 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               )}
                               <span
                                 className="pb-pin-code"
-                                title={revealedPins[b.id] ? `รหัสเข้าห้อง: ${pinRaw}` : 'รหัสถูกซ่อนอยู่ คลิกเพื่อเปิดเผย'}
+                                title={isPinRevealed(b.id) ? `รหัสเข้าห้อง: ${pinRaw}` : 'รหัสถูกซ่อนอยู่ คลิกเพื่อเปิดเผย'}
                               >
-                                {revealedPins[b.id] ? pinRaw : '••••••'}
+                                {isPinRevealed(b.id) ? pinRaw : '••••••'}
                               </span>
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); handleToggleRevealPin(b.id); }}
                                 className="pb-pin-btn"
-                                title={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
-                                aria-label={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                                title={isPinRevealed(b.id) ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                                aria-label={isPinRevealed(b.id) ? 'ซ่อนรหัส' : 'แสดงรหัส'}
                               >
-                                {revealedPins[b.id] ? <EyeOff size={11} /> : <Eye size={11} />}
+                                {isPinRevealed(b.id) ? <EyeOff size={11} /> : <Eye size={11} />}
                               </button>
                               <button
                                 type="button"
@@ -2365,10 +2395,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
               const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
-              let pinRaw = usesDoorPin ? (firstItem.pin_code || b.pin_code || '') : '';
-              if (usesDoorPin && !pinRaw && roomObj) {
-                pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
-              }
+              let pinRaw = resolveRoomPin(b, firstItem.room_id || b.room_id, usesDoorPin ? roomObj : null);
               const hasPin = Boolean(usesDoorPin && pinRaw && pinRaw !== '-');
               const isBuiltland = b.customer_type === 'builtland';
 
@@ -2484,18 +2511,18 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                         )}
                         <span
                           className="pb-pin-code"
-                          title={revealedPins[b.id] ? `รหัสเข้าห้อง: ${pinRaw}` : 'รหัสถูกซ่อนอยู่ คลิกเพื่อเปิดเผย'}
+                          title={isPinRevealed(b.id) ? `รหัสเข้าห้อง: ${pinRaw}` : 'รหัสถูกซ่อนอยู่ คลิกเพื่อเปิดเผย'}
                         >
-                          {revealedPins[b.id] ? pinRaw : '••••••'}
+                          {isPinRevealed(b.id) ? pinRaw : '••••••'}
                         </span>
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); handleToggleRevealPin(b.id); }}
                           className="pb-pin-btn pb-pin-btn-mobile"
-                          title={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
-                          aria-label={revealedPins[b.id] ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                          title={isPinRevealed(b.id) ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                          aria-label={isPinRevealed(b.id) ? 'ซ่อนรหัส' : 'แสดงรหัส'}
                         >
-                          {revealedPins[b.id] ? <EyeOff size={11} /> : <Eye size={11} />}
+                          {isPinRevealed(b.id) ? <EyeOff size={11} /> : <Eye size={11} />}
                         </button>
                         <button
                           type="button"
@@ -2937,12 +2964,9 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาทั้งวัน' : (firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง');
 
         const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
-        let pinRaw = usesDoorPin ? (firstItem.pin_code || b.pin_code || '') : '';
-        if (usesDoorPin && !pinRaw && roomObj) {
-          pinRaw = (b.customer_type === 'builtland' && roomObj.builtland_pin_code) ? roomObj.builtland_pin_code : (roomObj.pin_code || '');
-        }
+        let pinRaw = resolveRoomPin(b, firstItem.room_id || b.room_id, usesDoorPin ? roomObj : null);
         const hasPin = Boolean(usesDoorPin && pinRaw && pinRaw !== '-');
-        const isPinRevealed = revealedPins[b.id];
+        const isPinRevealedVal = isPinRevealed(b.id);
         const isPinCopied = copiedPin === b.id;
         const hasSlip = Boolean(b.slip_image_url && b.slip_image_url !== 'uploaded');
 
@@ -3034,13 +3058,37 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                         {b.items && b.items.length > 1 && (
                           <div className="pb-detail-sub-items">
                             <span className="pb-detail-sub-items-title">รายการห้อง/บริการทั้งหมด ({b.items.length} รายการ):</span>
-                            {b.items.map((it, idx) => (
-                              <div key={idx} className="pb-detail-sub-item-row">
-                                <span>{it.room_name || it.service_name || `ห้อง #${it.room_id}`}</span>
-                                <span style={{ color: 'var(--text-muted)' }}>{formatUsageTime({ items: [it] })}</span>
-                                <span style={{ fontWeight: 600 }}>฿{Number(it.price || 0).toLocaleString()}</span>
-                              </div>
-                            ))}
+                            {b.items.map((it, idx) => {
+                              const itRoom = roomsList?.find(r => r.id === it.room_id);
+                              const itUsesPin = it.room_id && roomUsesDoorPin(itRoom || it);
+                              const itPin = resolveRoomPin(b, it.room_id, itRoom);
+                              const isItRevealed = isPinRevealed(b.id, it.id);
+                              return (
+                                <div key={idx} className="pb-detail-sub-item-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <div>
+                                    <span>{it.room_name || it.service_name || `ห้อง #${it.room_id}`}</span>
+                                    <span style={{ color: 'var(--text-muted)', marginLeft: '6px' }}>{formatUsageTime({ items: [it] })}</span>
+                                  </div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    {itUsesPin && itPin && (
+                                      <span style={{ fontSize: '0.78rem', background: 'var(--bg-card)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--border-color)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                        <Key size={11} />
+                                        <span>{isItRevealed ? itPin : '••••••'}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleToggleRevealPin(b.id, it.id)}
+                                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center' }}
+                                          title={isItRevealed ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                                        >
+                                          {isItRevealed ? <EyeOff size={11} /> : <Eye size={11} />}
+                                        </button>
+                                      </span>
+                                    )}
+                                    <span style={{ fontWeight: 600 }}>฿{Number(it.price || 0).toLocaleString()}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -3138,53 +3186,116 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                             <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>ไม่มีรหัสเข้าห้อง</div>
                             <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>ห้องนี้ไม่ใช้รหัสผ่าน</div>
                           </div>
-                        ) : hasPin ? (
-                          <div className="pb-detail-pin-box">
-                            <div className="pb-detail-pin-row">
-                              <div>
-                                <span className="pb-detail-label">รหัส PIN ปลดล็อคประตู</span>
-                                <div className="pb-detail-pin-value">
-                                  {isPinRevealed ? pinRaw : '••••••'}
+                        ) : (() => {
+                          const roomItemsWithPin = (b.items || []).filter(it => it.room_id && roomUsesDoorPin(roomsList?.find(r => r.id === it.room_id) || it));
+                          if (roomItemsWithPin.length > 1) {
+                            return (
+                              <div className="pb-detail-pin-box-multi">
+                                {roomItemsWithPin.map(it => {
+                                  const itRoom = roomsList?.find(r => r.id === it.room_id);
+                                  const itRoomName = it.room_name || itRoom?.name || `ห้อง #${it.room_id}`;
+                                  const itPin = resolveRoomPin(b, it.room_id, itRoom);
+                                  const itKey = `${b.id}_item_${it.id}`;
+                                  const isItRevealed = isPinRevealed(b.id, it.id);
+                                  const isItCopied = copiedPin === itKey;
+
+                                  return (
+                                    <div key={it.id} className="pb-detail-pin-box" style={{ marginTop: '8px' }}>
+                                      <div className="pb-detail-pin-row">
+                                        <div>
+                                          <span className="pb-detail-label">รหัส PIN ปลดล็อคประตู ({itRoomName})</span>
+                                          <div className="pb-detail-pin-value">
+                                            {isItRevealed ? itPin : '••••••'}
+                                          </div>
+                                        </div>
+                                        <div className="pb-detail-pin-actions">
+                                          <button
+                                            type="button"
+                                            className="pb-pin-btn"
+                                            onClick={() => handleToggleRevealPin(b.id, it.id)}
+                                            aria-label={isItRevealed ? `ซ่อนรหัส PIN ${itRoomName}` : `แสดงรหัส PIN ${itRoomName}`}
+                                            title={isItRevealed ? `ซ่อนรหัส PIN ${itRoomName}` : `แสดงรหัส PIN ${itRoomName}`}
+                                          >
+                                            {isItRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className={`pb-pin-btn ${isItCopied ? 'copied' : ''}`}
+                                            onClick={() => handleCopyPin(itKey, itPin)}
+                                            aria-label={`คัดลอกรหัส PIN ${itRoomName}`}
+                                            title={isItCopied ? 'คัดลอกแล้ว!' : `คัดลอกรหัส PIN ${itRoomName}`}
+                                          >
+                                            {isItCopied ? <Check size={14} /> : <Copy size={14} />}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                                {!isCancelled && (
+                                  <button
+                                    type="button"
+                                    className="pb-detail-btn-send-pin"
+                                    onClick={() => handleSendPin(b.id)}
+                                    aria-label="ส่งรหัส PIN ให้ลูกค้าผ่าน LINE OA"
+                                    style={{ marginTop: '10px' }}
+                                  >
+                                    <Send size={14} />
+                                    <span>ส่งรหัส PIN ให้ลูกค้าผ่าน LINE OA</span>
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          }
+
+                          return hasPin ? (
+                            <div className="pb-detail-pin-box">
+                              <div className="pb-detail-pin-row">
+                                <div>
+                                  <span className="pb-detail-label">รหัส PIN ปลดล็อคประตู</span>
+                                  <div className="pb-detail-pin-value">
+                                    {isPinRevealed(b.id) ? pinRaw : '••••••'}
+                                  </div>
+                                </div>
+                                <div className="pb-detail-pin-actions">
+                                  <button
+                                    type="button"
+                                    className="pb-pin-btn"
+                                    onClick={() => handleToggleRevealPin(b.id)}
+                                    aria-label={isPinRevealed(b.id) ? 'ซ่อนรหัส PIN' : 'แสดงรหัส PIN'}
+                                    title={isPinRevealed(b.id) ? 'ซ่อนรหัส PIN' : 'แสดงรหัส PIN'}
+                                  >
+                                    {isPinRevealed(b.id) ? <EyeOff size={14} /> : <Eye size={14} />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`pb-pin-btn ${isPinCopied ? 'copied' : ''}`}
+                                    onClick={() => handleCopyPin(b.id, pinRaw)}
+                                    aria-label="คัดลอกรหัส PIN"
+                                    title={isPinCopied ? 'คัดลอกแล้ว!' : 'คัดลอกรหัส PIN'}
+                                  >
+                                    {isPinCopied ? <Check size={14} /> : <Copy size={14} />}
+                                  </button>
                                 </div>
                               </div>
-                              <div className="pb-detail-pin-actions">
+                              {!isCancelled && (
                                 <button
                                   type="button"
-                                  className="pb-pin-btn"
-                                  onClick={() => handleToggleRevealPin(b.id)}
-                                  aria-label={isPinRevealed ? 'ซ่อนรหัส PIN' : 'แสดงรหัส PIN'}
-                                  title={isPinRevealed ? 'ซ่อนรหัส PIN' : 'แสดงรหัส PIN'}
+                                  className="pb-detail-btn-send-pin"
+                                  onClick={() => handleSendPin(b.id)}
+                                  aria-label="ส่งรหัส PIN ให้ลูกค้าผ่าน LINE OA"
                                 >
-                                  {isPinRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
+                                  <Send size={14} />
+                                  <span>ส่งรหัส PIN ให้ลูกค้าผ่าน LINE OA</span>
                                 </button>
-                                <button
-                                  type="button"
-                                  className={`pb-pin-btn ${isPinCopied ? 'copied' : ''}`}
-                                  onClick={() => handleCopyPin(b.id, pinRaw)}
-                                  aria-label="คัดลอกรหัส PIN"
-                                  title={isPinCopied ? 'คัดลอกแล้ว!' : 'คัดลอกรหัส PIN'}
-                                >
-                                  {isPinCopied ? <Check size={14} /> : <Copy size={14} />}
-                                </button>
-                              </div>
+                              )}
                             </div>
-                            {!isCancelled && (
-                              <button
-                                type="button"
-                                className="pb-detail-btn-send-pin"
-                                onClick={() => handleSendPin(b.id)}
-                                aria-label="ส่งรหัส PIN ให้ลูกค้าผ่าน LINE OA"
-                              >
-                                <Send size={14} />
-                                <span>ส่งรหัส PIN ให้ลูกค้าผ่าน LINE OA</span>
-                              </button>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="pb-detail-empty-note">
-                            ไม่มีการกำหนดรหัส PIN สำหรับรายการนี้
-                          </div>
-                        )}
+                          ) : (
+                            <div className="pb-detail-empty-note">
+                              ไม่มีการกำหนดรหัส PIN สำหรับรายการนี้
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
