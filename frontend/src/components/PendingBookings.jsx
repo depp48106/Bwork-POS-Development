@@ -2322,10 +2322,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 </tr>
               ) : (
                 paginatedBookings.map((b) => {
-                  const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
-                  const isCancelled = b.payment_status === 'cancelled';
-                  const isRejected = b.payment_status === 'rejected' || b.slip_verify_status === 'rejected';
-                  const isReviewing = (b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected;
+                  const fin = normalizeBookingFinancials(b);
+                  const isPaid = fin ? fin.is_paid : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
+                  const isCancelled = fin ? fin.is_cancelled : (b.payment_status === 'cancelled');
+                  const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
+                  const isReviewing = fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected);
 
                   const firstItem = b.items?.[0] || {};
                   const roomObj = roomsList.find(r => r.id === (firstItem.room_id || b.room_id));
@@ -2440,18 +2441,18 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       {/* Column 4: Payment */}
                       <td className="pb-td" style={{ textAlign: 'right' }}>
                         <div className="pb-cell-payment" style={{ alignItems: 'flex-end' }}>
-                          <span className="pb-payment-amount" style={{ color: fin.is_paid ? '#10b981' : (fin.is_deposit ? '#6366f1' : (isCancelled ? 'var(--text-muted)' : '#f59e0b')) }}>
-                            ฿{Number(fin.total_amount || 0).toLocaleString()}
+                          <span className="pb-payment-amount" style={{ color: fin?.is_paid ? '#10b981' : (fin?.is_deposit ? '#6366f1' : (isCancelled ? 'var(--text-muted)' : '#f59e0b')) }}>
+                            ฿{Number(fin?.total_amount || 0).toLocaleString()}
                           </span>
                           <span className="pb-sub-text">
-                            {fin.is_internal_free ? (
+                            {fin?.is_internal_free ? (
                               'สิทธิ์ภายใน'
-                            ) : fin.is_deposit ? (
-                              `ชำระ ฿${Number(fin.paid_amount || 0).toLocaleString()} · คงเหลือ ฿${Number(fin.balance_amount || 0).toLocaleString()}`
-                            ) : fin.is_paid ? (
+                            ) : fin?.is_deposit ? (
+                              `ชำระ ฿${Number(fin?.paid_amount || 0).toLocaleString()} · คงเหลือ ฿${Number(fin?.balance_amount || 0).toLocaleString()}`
+                            ) : fin?.is_paid ? (
                               'คงเหลือ ฿0'
                             ) : (
-                              `คงเหลือ ฿${Number(fin.balance_amount || 0).toLocaleString()}`
+                              `คงเหลือ ฿${Number(fin?.balance_amount || 0).toLocaleString()}`
                             )}
                           </span>
                           {b.slip_image_url && (
@@ -2466,7 +2467,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       <td className="pb-td" style={{ textAlign: 'center' }}>
                         <div className="pb-cell-status-access">
                           {/* Status Badge */}
-                          {fin.is_internal_free ? (
+                          {fin?.is_internal_free ? (
                             <span className="pb-status-badge pb-status-internal-free">
                               <ShieldCheck size={11} />
                               <span>สิทธิ์ภายใน</span>
@@ -2481,12 +2482,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               <AlertCircle size={11} />
                               <span>สลิปไม่ผ่าน</span>
                             </span>
-                          ) : fin.is_deposit ? (
+                          ) : fin?.is_deposit ? (
                             <span className="pb-status-badge pb-status-deposit">
                               <CheckCircle2 size={11} />
                               <span>มัดจำแล้ว</span>
                             </span>
-                          ) : fin.is_paid ? (
+                          ) : fin?.is_paid ? (
                             <span className="pb-status-badge pb-status-paid">
                               <CheckCircle2 size={11} />
                               <span>ชำระแล้ว</span>
@@ -2637,7 +2638,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     </div>
 
                     <div>
-                      {fin.is_internal_free ? (
+                      {fin?.is_internal_free ? (
                         <span className="pb-status-badge pb-status-internal-free">
                           <ShieldCheck size={11} />
                           <span>สิทธิ์ภายใน</span>
@@ -2652,12 +2653,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           <AlertCircle size={11} />
                           <span>สลิปไม่ผ่าน</span>
                         </span>
-                      ) : fin.is_deposit ? (
+                      ) : fin?.is_deposit ? (
                         <span className="pb-status-badge pb-status-deposit">
                           <CheckCircle2 size={11} />
                           <span>มัดจำแล้ว</span>
                         </span>
-                      ) : fin.is_paid ? (
+                      ) : fin?.is_paid ? (
                         <span className="pb-status-badge pb-status-paid">
                           <CheckCircle2 size={11} />
                           <span>ชำระแล้ว</span>
@@ -2717,19 +2718,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     <div className="pb-mobile-payment-block">
                       <span
                         className="pb-mobile-amount"
-                        style={{ color: fin.is_paid ? '#10b981' : (fin.is_deposit ? '#6366f1' : (isCancelled ? 'var(--text-muted)' : '#f59e0b')) }}
+                        style={{ color: fin?.is_paid ? '#10b981' : (fin?.is_deposit ? '#6366f1' : (isCancelled ? 'var(--text-muted)' : '#f59e0b')) }}
                       >
-                        ฿{Number(fin.total_amount || 0).toLocaleString()}
+                        ฿{Number(fin?.total_amount || 0).toLocaleString()}
                       </span>
                       <span className="pb-mobile-method">
-                        {fin.is_internal_free ? (
+                        {fin?.is_internal_free ? (
                           'สิทธิ์ภายใน'
-                        ) : fin.is_deposit ? (
-                          `ชำระ ฿${Number(fin.paid_amount || 0).toLocaleString()} · คงเหลือ ฿${Number(fin.balance_amount || 0).toLocaleString()}`
-                        ) : fin.is_paid ? (
+                        ) : fin?.is_deposit ? (
+                          `ชำระ ฿${Number(fin?.paid_amount || 0).toLocaleString()} · คงเหลือ ฿${Number(fin?.balance_amount || 0).toLocaleString()}`
+                        ) : fin?.is_paid ? (
                           'คงเหลือ ฿0'
                         ) : (
-                          `คงเหลือ ฿${Number(fin.balance_amount || 0).toLocaleString()}`
+                          `คงเหลือ ฿${Number(fin?.balance_amount || 0).toLocaleString()}`
                         )}
                       </span>
                       {b.slip_image_url && (
