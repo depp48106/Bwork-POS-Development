@@ -90,7 +90,7 @@ function ReceiptPrint({ booking, settings }) {
           </div>
         )}
         <div className="receipt-sub" style={{ fontSize: '0.92rem', marginTop: '6px', fontWeight: 800, color: '#000000', letterSpacing: '0.5px' }}>
-          {safeSettings.receipt_header || 'ใบเสร็จรับเงิน'}
+          {(!payment.isPaid || payment.isDeposit || payment.isFree) ? payment.receiptTitle : (safeSettings.receipt_header || payment.receiptTitle || 'ใบเสร็จรับเงิน')}
         </div>
       </div>
 
@@ -221,7 +221,21 @@ function ReceiptPrint({ booking, settings }) {
 
       {/* 4. Total & Payment Section */}
       <div className="receipt-total-section" style={{ color: '#000000', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-        {totals.hasAdjustment && (
+        {totals.hasDiscount && (
+          <>
+            <div className="receipt-info-row" style={{ fontSize: '0.84rem', fontWeight: 700, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>ยอดรวมก่อนส่วนลด:</span>
+              <span>{totals.grossSubtotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
+            </div>
+            <div className="receipt-info-row" style={{ fontSize: '0.84rem', fontWeight: 700, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{totals.discountLabel}:</span>
+              <span>
+                -{totals.discountAmount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
+              </span>
+            </div>
+          </>
+        )}
+        {totals.hasAdjustment && !totals.hasDiscount && (
           <>
             <div className="receipt-info-row" style={{ fontSize: '0.84rem', fontWeight: 700, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>รวมมูลค่ารายการ:</span>
@@ -237,16 +251,27 @@ function ReceiptPrint({ booking, settings }) {
           </>
         )}
         <div className="receipt-info-row" style={{ fontSize: '1.05rem', fontWeight: 900, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>ยอดรวมสุทธิ:</span>
-          <span>{totals.grandTotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
+          <span>ยอดสุทธิ:</span>
+          <span>{totals.netTotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
         </div>
         <div className="receipt-info-row" style={{ fontSize: '0.85rem', fontWeight: 700, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>การชำระเงิน:</span>
-          <span>
-            {payment.statusLabel}
-            {payment.methodLabel && !payment.isFree ? ` (${payment.methodLabel})` : ''}
-          </span>
+          <span>{payment.paidLabel || 'ชำระแล้ว'}:</span>
+          <span>{totals.paidAmount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
         </div>
+        <div className="receipt-info-row" style={{ fontSize: '0.85rem', fontWeight: 700, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>ยอดคงเหลือ:</span>
+          <span>{totals.balanceAmount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท</span>
+        </div>
+        <div className="receipt-info-row" style={{ fontSize: '0.85rem', fontWeight: 700, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>สถานะ:</span>
+          <span>{payment.statusLabel}</span>
+        </div>
+        {payment.methodLabel && !payment.isFree && (
+          <div className="receipt-info-row" style={{ fontSize: '0.78rem', fontWeight: 600, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{payment.isDeposit ? 'วิธีชำระล่าสุด:' : 'วิธีชำระ:'}</span>
+            <span>{payment.methodLabel}</span>
+          </div>
+        )}
         {payment.isFree && (
           <div className="receipt-info-row" style={{ fontSize: '0.78rem', fontWeight: 600, color: '#000000', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>ช่องทาง:</span>

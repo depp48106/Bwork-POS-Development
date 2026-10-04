@@ -12,6 +12,7 @@ import { printReceipt } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { roomUsesDoorPin } from '../utils/doorPinHelper';
+import { calculatePaymentPreview, formatMoney, roundMoney } from '../utils/financialUtils';
 
 const TIMELINE_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 const TIMELINE_START = 8;
@@ -168,6 +169,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [paymentStatus, setPaymentStatus] = useState('paid');
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [cartPaymentMethod, setCartPaymentMethod] = useState('cash');
+
+  // Financial Checkout States (Phase 3)
+  const [quickDiscountType, setQuickDiscountType] = useState('none'); // 'none' | 'percent' | 'amount'
+  const [quickDiscountValue, setQuickDiscountValue] = useState('');
+  const [quickPaymentMode, setQuickPaymentMode] = useState('full'); // 'full' | 'deposit' | 'unpaid'
+  const [quickDepositAmount, setQuickDepositAmount] = useState('');
+  const [isSubmittingQuickBooking, setIsSubmittingQuickBooking] = useState(false);
+
+  const [cartDiscountType, setCartDiscountType] = useState('none'); // 'none' | 'percent' | 'amount'
+  const [cartDiscountValue, setCartDiscountValue] = useState('');
+  const [cartPaymentMode, setCartPaymentMode] = useState('full'); // 'full' | 'deposit' | 'unpaid'
+  const [cartDepositAmount, setCartDepositAmount] = useState('');
+  const [isSubmittingCartBooking, setIsSubmittingCartBooking] = useState(false);
 
   // Main interactive calendar navigation (Large Calendar)
   const today = new Date();
@@ -773,11 +787,46 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     });
     setPaymentStatus('paid');
     setPaymentMethod('cash');
+    resetQuickFinancials();
+  };
+
+  const resetQuickFinancials = () => {
+    setQuickDiscountType('none');
+    setQuickDiscountValue('');
+    setQuickPaymentMode('full');
+    setQuickDepositAmount('');
+    setPaymentMethod('cash');
+  };
+
+  const resetCartFinancials = () => {
+    setCartDiscountType('none');
+    setCartDiscountValue('');
+    setCartPaymentMode('full');
+    setCartDepositAmount('');
+    setCartPaymentMethod('cash');
+  };
+
+  const handleCustomerTypeChange = (newType) => {
+    setCustomer(prev => ({
+      ...prev,
+      customer_type: newType,
+      billing_option: newType === 'builtland' ? 'internal_free' : 'paid'
+    }));
+    resetQuickFinancials();
+    resetCartFinancials();
+    if (newType === 'builtland' || newType === 'basecamp') {
+      setPaymentMethod('');
+      setCartPaymentMethod('');
+    } else {
+      setPaymentMethod('cash');
+      setCartPaymentMethod('cash');
+    }
   };
 
   const closeRoomModal = () => {
     setSelectedRoom(null);
     setBookingDetails('');
+    resetQuickFinancials();
   };
 
   // Handle transient preselectedRoom handoff from RoomLayout
@@ -936,8 +985,64 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     }
   };
 
+  // Gross Subtotal and Financial Previews (Phase 3)
+  const quickGrossSubtotal = useMemo(() => {
+    if (!selectedRoom) return 0;
+    if (customer.customer_type === 'builtland') return 0;
+    let ratePrice = 0;
+    if (bookingType === 'daily') {
+      ratePrice = layoutType === 'classroom' ? (selectedRoom.classroom_daily_rate || 0) : (selectedRoom.daily_rate || 0);
+      return ratePrice;
+    } else if (bookingType === 'halfday') {
+      ratePrice = selectedRoom.half_day_rate || 0;
+      return ratePrice;
+    } else {
+      const sH = parseInt(roomSchedule.startHour, 10) || 9;
+      const sM = parseInt(roomSchedule.startMinute, 10) || 0;
+      const eH = parseInt(roomSchedule.endHour, 10) || 10;
+      const eM = parseInt(roomSchedule.endMinute, 10) || 0;
+      const diffMinutes = (eH * 60 + eM) - (sH * 60 + sM);
+      const exactHours = diffMinutes > 0 ? diffMinutes / 60 : 1;
+      const billedHours = Math.max(1, Math.ceil(exactHours));
+      ratePrice = layoutType === 'classroom' ? (selectedRoom.classroom_hourly_rate || 0) : (selectedRoom.hourly_rate || 0);
+      return Math.round(billedHours * ratePrice * 100) / 100;
+    }
+  }, [selectedRoom, bookingType, layoutType, dailyTimeSlot, roomSchedule, customer.customer_type]);
+
+  const quickFinancialPreview = useMemo(() => {
+    return calculatePaymentPreview({
+      subtotal: quickGrossSubtotal,
+      discountType: quickDiscountType,
+      discountValue: quickDiscountValue,
+      paymentMode: quickPaymentMode,
+      depositAmount: quickDepositAmount,
+      customerType: customer.customer_type,
+      billingOption: customer.billing_option,
+      paymentMethod: paymentMethod
+    });
+  }, [quickGrossSubtotal, quickDiscountType, quickDiscountValue, quickPaymentMode, quickDepositAmount, customer.customer_type, customer.billing_option, paymentMethod]);
+
+  const cartGrossSubtotal = useMemo(() => {
+    if (customer.customer_type === 'builtland') return 0;
+    return cart.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0);
+  }, [cart, customer.customer_type]);
+
+  const cartFinancialPreview = useMemo(() => {
+    return calculatePaymentPreview({
+      subtotal: cartGrossSubtotal,
+      discountType: cartDiscountType,
+      discountValue: cartDiscountValue,
+      paymentMode: cartPaymentMode,
+      depositAmount: cartDepositAmount,
+      customerType: customer.customer_type,
+      billingOption: customer.billing_option,
+      paymentMethod: cartPaymentMethod
+    });
+  }, [cartGrossSubtotal, cartDiscountType, cartDiscountValue, cartPaymentMode, cartDepositAmount, customer.customer_type, customer.billing_option, cartPaymentMethod]);
+
   // ⚡ Quick Direct Booking (Checkout directly from Drawer without Cart)
   const quickDirectBooking = async () => {
+    if (isSubmittingQuickBooking) return;
     if (currentSlotOverlap.isOverlap) {
       if (currentSlotOverlap.isCleaningBuffer) {
         sysAlert(`ห้องนี้อยู่ในช่วงเวลาทำความสะอาด / เคลียร์ห้อง (${currentSlotOverlap.bufferMinutes || 30} นาที) กรุณาเลือกเวลาอื่น`);
@@ -950,12 +1055,38 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       sysAlert('กรุณากรอกชื่อผู้จองเพื่อทำรายการจองห้อง');
       return;
     }
+
+    const isBuiltland = customer.customer_type === 'builtland';
+    const isBasecamp = customer.customer_type === 'basecamp';
+
+    if (!isBuiltland && !isBasecamp) {
+      if (quickFinancialPreview.discount_error) {
+        sysAlert(quickFinancialPreview.discount_error);
+        return;
+      }
+      if (quickFinancialPreview.deposit_error) {
+        sysAlert(quickFinancialPreview.deposit_error);
+        return;
+      }
+      if (quickFinancialPreview.requires_payment_method && !paymentMethod) {
+        sysAlert('กรุณาเลือกช่องทางการชำระเงิน');
+        return;
+      }
+    }
+
     const singleItem = buildCartItem();
     if (!singleItem) return;
 
+    setIsSubmittingQuickBooking(true);
     try {
-      const isBuiltland = customer.customer_type === 'builtland';
-      const isBasecamp = customer.customer_type === 'basecamp';
+      const effectivePaymentMode = isBuiltland ? 'full' : (isBasecamp ? 'full' : quickFinancialPreview.payment_mode);
+      const effectiveDiscountType = isBuiltland ? 'none' : quickFinancialPreview.discount_type;
+      const effectiveDiscountValue = isBuiltland ? 0 : quickFinancialPreview.discount_value;
+      const effectiveDepositAmount = (isBuiltland || quickPaymentMode !== 'deposit') ? 0 : (Number(quickDepositAmount) || 0);
+
+      const effectivePaymentMethod = (isBuiltland || isBasecamp || effectivePaymentMode === 'unpaid' || quickFinancialPreview.total_amount === 0)
+        ? ''
+        : paymentMethod;
 
       const payload = {
         customer_name: customer.name,
@@ -966,11 +1097,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         basecamp_sub_type: isBasecamp ? (customer.basecamp_sub_type || 'office') : null,
         basecamp_unit: isBasecamp ? (customer.basecamp_unit || (customer.basecamp_sub_type === 'office' ? '401' : '419')) : null,
         internal_department: isBuiltland ? (customer.internal_department || null) : null,
-        payment_status: isBuiltland ? 'internal_free' : (isBasecamp ? 'paid' : paymentStatus),
-        payment_method: (isBuiltland || isBasecamp) ? '' : (paymentStatus === 'paid' ? paymentMethod : ''),
-        total_amount: isBuiltland ? 0 : singleItem.subtotal,
+        payment_status: quickFinancialPreview.payment_status,
+        payment_method: effectivePaymentMethod,
+        total_amount: isBuiltland ? 0 : quickFinancialPreview.total_amount,
         guest_count: singleItem.guest_count || null,
-        items: [singleItem]
+        items: [singleItem],
+        discount_type: effectiveDiscountType,
+        discount_value: effectiveDiscountValue,
+        payment_mode: effectivePaymentMode,
+        deposit_amount: effectiveDepositAmount
       };
 
       const res = await fetch('/api/bookings', {
@@ -996,6 +1131,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         setPrintBooking(fullBooking);
         setShowReceiptModal(true);
         closeRoomModal();
+        resetQuickFinancials();
         setBookingDetails('');
         setCustomer({
           name: '',
@@ -1006,16 +1142,16 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           basecamp_unit: '401',
           internal_department: ''
         });
-        setPaymentStatus('paid');
-        setPaymentMethod('cash');
         fetchCalendarEvents();
       } else {
-        const errData = await res.json();
-        sysAlert(`เกิดข้อผิดพลาด: ${errData.error || 'ไม่สามารถบันทึกการจองได้'}`);
+        const errData = await res.json().catch(() => ({}));
+        sysAlert(errData.error || 'เกิดข้อผิดพลาดในการสร้างรายการจอง');
       }
     } catch (err) {
       console.error('Direct booking failed:', err);
-      sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+      sysAlert(err.message || 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setIsSubmittingQuickBooking(false);
     }
   };
 
@@ -1051,6 +1187,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
   // Checkout function for multi-item Cart
   const checkout = async () => {
+    if (isSubmittingCartBooking) return;
     if (cart.length === 0) {
       sysAlert('กรุณาเพิ่มรายการห้องหรือบริการลงในตะกร้าก่อนทำรายการ');
       return;
@@ -1059,14 +1196,35 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       sysAlert('กรุณาระบุชื่อผู้จอง');
       return;
     }
-    if (!cartPaymentMethod) {
-      sysAlert('กรุณาเลือกช่องทางการชำระเงินสำหรับตะกร้า');
-      return;
+
+    const isBuiltland = customer.customer_type === 'builtland';
+    const isBasecamp = customer.customer_type === 'basecamp';
+
+    if (!isBuiltland && !isBasecamp) {
+      if (cartFinancialPreview.discount_error) {
+        sysAlert(cartFinancialPreview.discount_error);
+        return;
+      }
+      if (cartFinancialPreview.deposit_error) {
+        sysAlert(cartFinancialPreview.deposit_error);
+        return;
+      }
+      if (cartFinancialPreview.requires_payment_method && !cartPaymentMethod) {
+        sysAlert('กรุณาเลือกช่องทางการชำระเงินสำหรับตะกร้า');
+        return;
+      }
     }
 
+    setIsSubmittingCartBooking(true);
     try {
-      const isBuiltland = customer.customer_type === 'builtland';
-      const isBasecamp = customer.customer_type === 'basecamp';
+      const effectivePaymentMode = isBuiltland ? 'full' : (isBasecamp ? 'full' : cartFinancialPreview.payment_mode);
+      const effectiveDiscountType = isBuiltland ? 'none' : cartFinancialPreview.discount_type;
+      const effectiveDiscountValue = isBuiltland ? 0 : cartFinancialPreview.discount_value;
+      const effectiveDepositAmount = (isBuiltland || cartPaymentMode !== 'deposit') ? 0 : (Number(cartDepositAmount) || 0);
+
+      const effectivePaymentMethod = (isBuiltland || isBasecamp || effectivePaymentMode === 'unpaid' || cartFinancialPreview.total_amount === 0)
+        ? ''
+        : (cartPaymentMethod || 'cash');
 
       const payload = {
         customer_name: customer.name,
@@ -1077,11 +1235,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         basecamp_sub_type: isBasecamp ? (customer.basecamp_sub_type || 'office') : null,
         basecamp_unit: isBasecamp ? (customer.basecamp_unit || (customer.basecamp_sub_type === 'office' ? '401' : '419')) : null,
         internal_department: isBuiltland ? (customer.internal_department || null) : null,
-        payment_status: isBuiltland ? 'internal_free' : (isBasecamp ? 'paid' : 'paid'),
-        payment_method: (isBuiltland || isBasecamp) ? '' : (cartPaymentMethod || 'cash'),
-        total_amount: isBuiltland ? 0 : totalAmount,
+        payment_status: cartFinancialPreview.payment_status,
+        payment_method: effectivePaymentMethod,
+        total_amount: isBuiltland ? 0 : cartFinancialPreview.total_amount,
         guest_count: cart.find(c => c.guest_count)?.guest_count || null,
-        items: cart
+        items: cart,
+        discount_type: effectiveDiscountType,
+        discount_value: effectiveDiscountValue,
+        payment_mode: effectivePaymentMode,
+        deposit_amount: effectiveDepositAmount
       };
 
       const res = await fetch('/api/bookings', {
@@ -1107,7 +1269,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         setPrintBooking(fullBooking);
         setShowReceiptModal(true);
         setCart([]);
-        setCartPaymentMethod('cash');
+        resetCartFinancials();
         setBookingDetails('');
         setCustomer({
           name: '',
@@ -1120,12 +1282,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         });
         fetchCalendarEvents();
       } else {
-        const errData = await res.json();
-        sysAlert(`เกิดข้อผิดพลาด: ${errData.error || 'ไม่สามารถบันทึกการจองได้'}`);
+        const errData = await res.json().catch(() => ({}));
+        sysAlert(errData.error || 'เกิดข้อผิดพลาดในการสร้างรายการจอง');
       }
     } catch (err) {
       console.error('Checkout failed:', err);
-      sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+      sysAlert(err.message || 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setIsSubmittingCartBooking(false);
     }
   };
 
@@ -2316,64 +2480,296 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               )}
             </div>
 
-            {/* Cart Footer: Total & Checkout */}
+            {/* Cart Footer: Financial Controls & Checkout (Phase 3) */}
             <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดรวมสุทธิ:</span>
-                <strong style={{ fontSize: '1.25rem', color: 'var(--text-main)', fontWeight: 900 }}>฿{Number(totalAmount).toLocaleString()}</strong>
-              </div>
 
-              {/* Cart Payment Method Confirmation (Phase D) */}
-              <div style={{
-                backgroundColor: 'var(--bg-color)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '12px',
-                padding: '10px 12px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px'
-              }}>
-                <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                  <CreditCard size={13} style={{ color: 'var(--primary-color)' }} />
-                  <span>ช่องทางชำระเงินสำหรับตะกร้า *</span>
+              {customer.customer_type === 'builtland' ? (
+                <div style={{
+                  padding: '10px 12px',
+                  borderRadius: '12px',
+                  backgroundColor: 'rgba(234, 88, 12, 0.08)',
+                  border: '1px solid rgba(234, 88, 12, 0.25)',
+                  color: '#ea580c',
+                  fontSize: '0.76rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}>
+                  <CheckCircle2 size={15} style={{ flexShrink: 0 }} />
+                  <span>สิทธิ์ Builtland: ฟรี ไม่คิดค่าบริการ</span>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px' }}>
-                  {[
-                    { key: 'cash', label: 'เงินสด', icon: Banknote, color: '#10b981' },
-                    { key: 'transfer', label: 'โอนเงิน', icon: Smartphone, color: '#3b82f6' },
-                    { key: 'card', label: 'บัตรเครดิต', icon: CreditCard, color: '#8b5cf6' }
-                  ].map(m => {
-                    const isSel = cartPaymentMethod === m.key;
-                    const Icon = m.icon;
-                    return (
-                      <button
-                        key={m.key}
-                        type="button"
-                        onClick={() => setCartPaymentMethod(m.key)}
-                        style={{
-                          height: '32px',
-                          borderRadius: '8px',
-                          border: isSel ? `1.5px solid ${m.color}` : '1px solid var(--border-color)',
-                          backgroundColor: isSel ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-card)',
-                          color: isSel ? 'var(--text-main)' : 'var(--text-muted)',
-                          fontSize: '0.72rem',
-                          fontWeight: isSel ? 800 : 600,
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: '4px',
-                          transition: 'all 0.15s ease'
-                        }}
-                      >
-                        <Icon size={12} style={{ color: m.color }} />
-                        <span>{m.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              ) : (
+                <>
+                  {/* 1. ยอดรวมก่อนส่วนลด */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดรวมก่อนส่วนลด:</span>
+                    <strong style={{ fontSize: '0.92rem', color: 'var(--text-main)', fontWeight: 800 }}>฿{formatMoney(cartFinancialPreview.subtotal_amount)}</strong>
+                  </div>
 
+                  {/* 2. ส่วนลด Segmented Controls: [ ไม่มี ] [ % ] [ บาท ] */}
+                  <div style={{
+                    backgroundColor: 'var(--bg-color)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '12px',
+                    padding: '8px 10px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-main)' }}>ส่วนลด</span>
+                      {cartFinancialPreview.discount_amount > 0 && !cartFinancialPreview.discount_error && (
+                        <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#10b981' }}>
+                          -฿{formatMoney(cartFinancialPreview.discount_amount)}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px' }}>
+                      {[
+                        { key: 'none', label: 'ไม่มี' },
+                        { key: 'percent', label: '%' },
+                        { key: 'amount', label: 'บาท' }
+                      ].map(t => {
+                        const isSel = cartDiscountType === t.key;
+                        return (
+                          <button
+                            key={t.key}
+                            type="button"
+                            onClick={() => {
+                              setCartDiscountType(t.key);
+                              if (t.key === 'none') setCartDiscountValue('');
+                            }}
+                            style={{
+                              padding: '5px 0',
+                              border: 'none',
+                              borderRadius: '7px',
+                              fontSize: '0.72rem',
+                              fontWeight: isSel ? 800 : 600,
+                              cursor: 'pointer',
+                              backgroundColor: isSel ? 'var(--primary-color)' : 'var(--bg-card)',
+                              color: isSel ? '#ffffff' : 'var(--text-muted)',
+                              boxShadow: isSel ? '0 2px 6px rgba(37,99,235,0.25)' : 'none',
+                              transition: 'all 0.15s ease'
+                            }}
+                          >
+                            {t.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {cartDiscountType !== 'none' && (
+                      <div>
+                        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                          <input
+                            type="number"
+                            min="0"
+                            max={cartDiscountType === 'percent' ? 100 : cartFinancialPreview.subtotal_amount}
+                            step={cartDiscountType === 'percent' ? '1' : '10'}
+                            placeholder={cartDiscountType === 'percent' ? 'ระบุ % ส่วนลด' : 'ระบุจำนวนเงินส่วนลด'}
+                            value={cartDiscountValue}
+                            onChange={e => setCartDiscountValue(e.target.value)}
+                            style={{
+                              width: '100%',
+                              height: '32px',
+                              borderRadius: '8px',
+                              border: cartFinancialPreview.discount_error ? '1px solid #ef4444' : '1px solid var(--border-color)',
+                              backgroundColor: 'var(--bg-card)',
+                              padding: '0 32px 0 8px',
+                              fontSize: '0.8rem',
+                              color: 'var(--text-main)',
+                              outline: 'none',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                          <span style={{
+                            position: 'absolute',
+                            right: '8px',
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            color: 'var(--text-muted)',
+                            pointerEvents: 'none'
+                          }}>
+                            {cartDiscountType === 'percent' ? '%' : 'บาท'}
+                          </span>
+                        </div>
+                        {cartFinancialPreview.discount_error && (
+                          <div style={{ fontSize: '0.7rem', color: '#ef4444', fontWeight: 600, marginTop: '3px' }}>
+                            {cartFinancialPreview.discount_error}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. ยอดรวมสุทธิ */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 700 }}>ยอดสุทธิ:</span>
+                    <strong style={{ fontSize: '1.2rem', color: 'var(--text-main)', fontWeight: 900 }}>
+                      ฿{formatMoney(cartFinancialPreview.total_amount)}
+                    </strong>
+                  </div>
+
+                  {/* 4. การชำระเงิน Mode Selector */}
+                  <div style={{
+                    backgroundColor: 'var(--bg-color)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '12px',
+                    padding: '8px 10px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px'
+                  }}>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-main)' }}>การชำระเงิน *</span>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px' }}>
+                      {[
+                        { key: 'full', label: 'เต็มจำนวน' },
+                        { key: 'deposit', label: 'มัดจำ' },
+                        { key: 'unpaid', label: 'ยังไม่ชำระ' }
+                      ].map(m => {
+                        const isSel = cartPaymentMode === m.key;
+                        return (
+                          <button
+                            key={m.key}
+                            type="button"
+                            onClick={() => {
+                              setCartPaymentMode(m.key);
+                              if (m.key === 'unpaid') setCartPaymentMethod('');
+                              else if (!cartPaymentMethod) setCartPaymentMethod('cash');
+                            }}
+                            style={{
+                              padding: '5px 0',
+                              border: 'none',
+                              borderRadius: '7px',
+                              fontSize: '0.7rem',
+                              fontWeight: isSel ? 800 : 600,
+                              cursor: 'pointer',
+                              backgroundColor: isSel ? 'var(--primary-color)' : 'var(--bg-card)',
+                              color: isSel ? '#ffffff' : 'var(--text-muted)',
+                              boxShadow: isSel ? '0 2px 6px rgba(37,99,235,0.25)' : 'none',
+                              transition: 'all 0.15s ease'
+                            }}
+                          >
+                            {m.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Deposit Input */}
+                    {cartPaymentMode === 'deposit' && (
+                      <div>
+                        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                          <input
+                            type="number"
+                            min="1"
+                            max={Math.max(0, cartFinancialPreview.total_amount - 1)}
+                            step="50"
+                            placeholder="ระบุยอดมัดจำ (บาท)"
+                            value={cartDepositAmount}
+                            onChange={e => setCartDepositAmount(e.target.value)}
+                            style={{
+                              width: '100%',
+                              height: '32px',
+                              borderRadius: '8px',
+                              border: cartFinancialPreview.deposit_error ? '1px solid #ef4444' : '1px solid var(--border-color)',
+                              backgroundColor: 'var(--bg-card)',
+                              padding: '0 32px 0 8px',
+                              fontSize: '0.8rem',
+                              color: 'var(--text-main)',
+                              outline: 'none',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                          <span style={{
+                            position: 'absolute',
+                            right: '8px',
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            color: 'var(--text-muted)',
+                            pointerEvents: 'none'
+                          }}>
+                            บาท
+                          </span>
+                        </div>
+                        {cartFinancialPreview.deposit_error && (
+                          <div style={{ fontSize: '0.7rem', color: '#ef4444', fontWeight: 600, marginTop: '3px' }}>
+                            {cartFinancialPreview.deposit_error}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Payment Method Selector */}
+                    {(cartPaymentMode === 'full' || cartPaymentMode === 'deposit') && cartFinancialPreview.total_amount > 0 && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px', marginTop: '2px' }}>
+                        {[
+                          { key: 'cash', label: 'เงินสด', icon: Banknote, color: '#10b981' },
+                          { key: 'transfer', label: 'โอนเงิน', icon: Smartphone, color: '#3b82f6' },
+                          { key: 'card', label: 'บัตร', icon: CreditCard, color: '#8b5cf6' }
+                        ].map(m => {
+                          const isSel = cartPaymentMethod === m.key;
+                          const Icon = m.icon;
+                          return (
+                            <button
+                              key={m.key}
+                              type="button"
+                              onClick={() => setCartPaymentMethod(m.key)}
+                              style={{
+                                height: '28px',
+                                borderRadius: '7px',
+                                border: isSel ? `1.5px solid ${m.color}` : '1px solid var(--border-color)',
+                                backgroundColor: isSel ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-card)',
+                                color: isSel ? 'var(--text-main)' : 'var(--text-muted)',
+                                fontSize: '0.7rem',
+                                fontWeight: isSel ? 800 : 600,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '3px',
+                                transition: 'all 0.15s ease'
+                              }}
+                            >
+                              <Icon size={11} style={{ color: m.color }} />
+                              <span>{m.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Unpaid / Zero-Net Notice */}
+                    {cartPaymentMode === 'unpaid' && (
+                      <div style={{ fontSize: '0.7rem', color: '#d97706', fontWeight: 600 }}>
+                        ค้างชำระ: ยังไม่ต้องเลือกช่องทางชำระเงิน
+                      </div>
+                    )}
+
+                    {cartFinancialPreview.total_amount === 0 && (
+                      <div style={{ fontSize: '0.7rem', color: '#10b981', fontWeight: 600 }}>
+                        ยอดสุทธิ ฿0.00: บันทึกชำระแล้วโดยไม่ต้องชำระเงิน
+                      </div>
+                    )}
+
+                    {/* Live Snapshot Breakdown */}
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      fontSize: '0.72rem',
+                      borderTop: '1px dashed var(--border-color)',
+                      paddingTop: '6px',
+                      marginTop: '2px'
+                    }}>
+                      <span>ชำระวันนี้: <strong style={{ color: '#10b981' }}>฿{formatMoney(cartFinancialPreview.paid_amount)}</strong></span>
+                      <span>คงเหลือ: <strong style={{ color: cartFinancialPreview.balance_amount > 0 ? '#f59e0b' : 'var(--text-main)' }}>฿{formatMoney(cartFinancialPreview.balance_amount)}</strong></span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Action Buttons */}
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
                   type="button"
@@ -2386,11 +2782,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 <button
                   type="button"
                   onClick={checkout}
-                  disabled={cart.length === 0}
+                  disabled={cart.length === 0 || !cartFinancialPreview.is_valid || isSubmittingCartBooking}
                   className="btn btn-primary"
-                  style={{ flex: 2, borderRadius: '12px', fontSize: '0.82rem', fontWeight: 800, padding: '10px' }}
+                  style={{
+                    flex: 2,
+                    borderRadius: '12px',
+                    fontSize: '0.82rem',
+                    fontWeight: 800,
+                    padding: '10px',
+                    backgroundColor: (cart.length === 0 || !cartFinancialPreview.is_valid || isSubmittingCartBooking) ? '#94a3b8' : undefined,
+                    cursor: (cart.length === 0 || !cartFinancialPreview.is_valid || isSubmittingCartBooking) ? 'not-allowed' : 'pointer'
+                  }}
                 >
-                  ชำระเงิน / ยืนยันการจอง
+                  {isSubmittingCartBooking ? 'กำลังบันทึก...' : 'ชำระเงิน / ยืนยันการจอง'}
                 </button>
               </div>
             </div>
@@ -2922,7 +3326,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     {/* 1. Walk-in */}
                     <button
                       type="button"
-                      onClick={() => setCustomer({ ...customer, customer_type: 'walkin' })}
+                      onClick={() => handleCustomerTypeChange('walkin')}
                       style={{
                         padding: '10px 4px',
                         borderRadius: '9px',
@@ -2947,7 +3351,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     {/* 2. Builtland */}
                     <button
                       type="button"
-                      onClick={() => setCustomer({ ...customer, customer_type: 'builtland' })}
+                      onClick={() => handleCustomerTypeChange('builtland')}
                       style={{
                         padding: '10px 4px',
                         borderRadius: '9px',
@@ -2972,7 +3376,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     {/* 3. Basecamp */}
                     <button
                       type="button"
-                      onClick={() => setCustomer({ ...customer, customer_type: 'basecamp' })}
+                      onClick={() => handleCustomerTypeChange('basecamp')}
                       style={{
                         padding: '10px 4px',
                         borderRadius: '9px',
@@ -3311,7 +3715,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 </div>
               </div>
 
-              {/* Section 4: การชำระเงิน (Payment) */}
+              {/* Section 4: ค่าบริการและส่วนลด & การชำระเงิน (Pricing, Discount & Payment) */}
               <div style={{
                 backgroundColor: 'var(--bg-color)',
                 border: '1px solid var(--border-color)',
@@ -3319,45 +3723,339 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 padding: '14px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '10px'
+                gap: '12px'
               }}>
                 <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--primary-color)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  4. การชำระเงิน (Payment)
+                  4. ค่าบริการและการชำระเงิน (Pricing & Payment)
                 </div>
 
                 {customer.customer_type === 'walkin' ? (
-                  <div style={{ display: 'grid', gridTemplateColumns: paymentStatus === 'paid' ? '1fr 1fr' : '1fr', gap: '10px' }}>
-                    <div>
-                      <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
-                        สถานะชำระเงิน *
-                      </label>
-                      <CustomSelect
-                        value={paymentStatus}
-                        onChange={val => setPaymentStatus(val)}
-                        options={[
-                          { value: 'paid', label: 'ชำระเงินแล้ว (Paid)', icon: CheckCircle2, iconColor: '#10b981' },
-                          { value: 'pending', label: 'ค้างชำระ (Pending)', icon: Clock, iconColor: '#f59e0b' }
-                        ]}
-                      />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+                    {/* A. ค่าบริการและส่วนลด (Subtotal & Discount) */}
+                    <div style={{
+                      backgroundColor: 'var(--bg-card)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '12px',
+                      padding: '12px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดรวมก่อนส่วนลด</span>
+                        <strong style={{ fontSize: '0.95rem', color: 'var(--text-main)', fontWeight: 800 }}>฿{formatMoney(quickFinancialPreview.subtotal_amount)}</strong>
+                      </div>
+
+                      {/* ส่วนลด Segmented Controls: [ ไม่มี ] [ % ] [ บาท ] */}
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
+                            ส่วนลด (Discount)
+                          </label>
+                          {quickFinancialPreview.discount_amount > 0 && !quickFinancialPreview.discount_error && (
+                            <span style={{ fontSize: '0.74rem', fontWeight: 800, color: '#10b981' }}>
+                              -฿{formatMoney(quickFinancialPreview.discount_amount)}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px', backgroundColor: 'var(--bg-main)', padding: '3px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                          {[
+                            { key: 'none', label: 'ไม่มี' },
+                            { key: 'percent', label: '%' },
+                            { key: 'amount', label: 'บาท' }
+                          ].map(t => {
+                            const isSel = quickDiscountType === t.key;
+                            return (
+                              <button
+                                key={t.key}
+                                type="button"
+                                onClick={() => {
+                                  setQuickDiscountType(t.key);
+                                  if (t.key === 'none') setQuickDiscountValue('');
+                                }}
+                                style={{
+                                  padding: '6px 0',
+                                  border: 'none',
+                                  borderRadius: '7px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: isSel ? 800 : 600,
+                                  cursor: 'pointer',
+                                  backgroundColor: isSel ? 'var(--primary-color)' : 'transparent',
+                                  color: isSel ? '#ffffff' : 'var(--text-muted)',
+                                  boxShadow: isSel ? '0 2px 6px rgba(37,99,235,0.25)' : 'none',
+                                  transition: 'all 0.15s ease'
+                                }}
+                              >
+                                {t.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Discount Input Field */}
+                        {quickDiscountType !== 'none' && (
+                          <div style={{ marginTop: '8px' }}>
+                            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                              <input
+                                type="number"
+                                min="0"
+                                max={quickDiscountType === 'percent' ? 100 : quickFinancialPreview.subtotal_amount}
+                                step={quickDiscountType === 'percent' ? '1' : '10'}
+                                placeholder={quickDiscountType === 'percent' ? 'ระบุเปอร์เซ็นต์ส่วนลด (0-100)' : 'ระบุจำนวนเงินส่วนลด (บาท)'}
+                                value={quickDiscountValue}
+                                onChange={e => setQuickDiscountValue(e.target.value)}
+                                style={{
+                                  width: '100%',
+                                  height: '36px',
+                                  borderRadius: '8px',
+                                  border: quickFinancialPreview.discount_error ? '1px solid #ef4444' : '1px solid var(--border-color)',
+                                  backgroundColor: 'var(--bg-main)',
+                                  padding: '0 36px 0 10px',
+                                  fontSize: '0.84rem',
+                                  color: 'var(--text-main)',
+                                  outline: 'none',
+                                  boxSizing: 'border-box'
+                                }}
+                              />
+                              <span style={{
+                                position: 'absolute',
+                                right: '10px',
+                                fontSize: '0.74rem',
+                                fontWeight: 700,
+                                color: 'var(--text-muted)',
+                                pointerEvents: 'none'
+                              }}>
+                                {quickDiscountType === 'percent' ? '%' : 'บาท'}
+                              </span>
+                            </div>
+                            {quickFinancialPreview.discount_error && (
+                              <div style={{ fontSize: '0.72rem', color: '#ef4444', fontWeight: 600, marginTop: '4px' }}>
+                                {quickFinancialPreview.discount_error}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ยอดสุทธิ (Net Total) */}
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        borderTop: '1px dashed var(--border-color)',
+                        paddingTop: '8px',
+                        marginTop: '2px'
+                      }}>
+                        <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)' }}>ยอดสุทธิ</span>
+                        <strong style={{ fontSize: '1.2rem', color: 'var(--primary-color)', fontWeight: 900 }}>
+                          ฿{formatMoney(quickFinancialPreview.total_amount)}
+                        </strong>
+                      </div>
                     </div>
 
-                    {paymentStatus === 'paid' && (
+                    {/* B. การชำระเงิน (Payment Mode & Method) */}
+                    <div style={{
+                      backgroundColor: 'var(--bg-card)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '12px',
+                      padding: '12px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px'
+                    }}>
                       <div>
-                        <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
-                          ช่องทางชำระ *
+                        <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                          รูปแบบการชำระเงิน (Payment Mode) *
                         </label>
-                        <CustomSelect
-                          value={paymentMethod}
-                          onChange={val => setPaymentMethod(val)}
-                          options={[
-                            { value: 'cash', label: 'เงินสด (Cash)', icon: Banknote, iconColor: '#10b981' },
-                            { value: 'transfer', label: 'โอนเงินเข้าบัญชี (Transfer)', icon: Smartphone, iconColor: '#3b82f6' },
-                            { value: 'card', label: 'บัตรเครดิต (Card)', icon: CreditCard, iconColor: '#8b5cf6' }
-                          ]}
-                          align="right"
-                        />
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px', backgroundColor: 'var(--bg-main)', padding: '3px', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+                          {[
+                            { key: 'full', label: 'ชำระเต็ม' },
+                            { key: 'deposit', label: 'มัดจำ' },
+                            { key: 'unpaid', label: 'ยังไม่ชำระ' }
+                          ].map(m => {
+                            const isSel = quickPaymentMode === m.key;
+                            return (
+                              <button
+                                key={m.key}
+                                type="button"
+                                onClick={() => {
+                                  setQuickPaymentMode(m.key);
+                                  if (m.key === 'unpaid') setPaymentMethod('');
+                                  else if (!paymentMethod) setPaymentMethod('cash');
+                                }}
+                                style={{
+                                  padding: '6px 0',
+                                  border: 'none',
+                                  borderRadius: '7px',
+                                  fontSize: '0.74rem',
+                                  fontWeight: isSel ? 800 : 600,
+                                  cursor: 'pointer',
+                                  backgroundColor: isSel ? 'var(--primary-color)' : 'transparent',
+                                  color: isSel ? '#ffffff' : 'var(--text-muted)',
+                                  boxShadow: isSel ? '0 2px 6px rgba(37,99,235,0.25)' : 'none',
+                                  transition: 'all 0.15s ease'
+                                }}
+                              >
+                                {m.label}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    )}
+
+                      {/* Deposit Input */}
+                      {quickPaymentMode === 'deposit' && (
+                        <div>
+                          <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
+                            ยอดเงินมัดจำ (Deposit Amount) *
+                          </label>
+                          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                            <input
+                              type="number"
+                              min="1"
+                              max={Math.max(0, quickFinancialPreview.total_amount - 1)}
+                              step="50"
+                              placeholder="ระบุจำนวนเงินมัดจำ (บาท)"
+                              value={quickDepositAmount}
+                              onChange={e => setQuickDepositAmount(e.target.value)}
+                              style={{
+                                width: '100%',
+                                height: '36px',
+                                borderRadius: '8px',
+                                border: quickFinancialPreview.deposit_error ? '1px solid #ef4444' : '1px solid var(--border-color)',
+                                backgroundColor: 'var(--bg-main)',
+                                padding: '0 36px 0 10px',
+                                fontSize: '0.84rem',
+                                color: 'var(--text-main)',
+                                outline: 'none',
+                                boxSizing: 'border-box'
+                              }}
+                            />
+                            <span style={{
+                              position: 'absolute',
+                              right: '10px',
+                              fontSize: '0.74rem',
+                              fontWeight: 700,
+                              color: 'var(--text-muted)',
+                              pointerEvents: 'none'
+                            }}>
+                              บาท
+                            </span>
+                          </div>
+                          {quickFinancialPreview.deposit_error && (
+                            <div style={{ fontSize: '0.72rem', color: '#ef4444', fontWeight: 600, marginTop: '4px' }}>
+                              {quickFinancialPreview.deposit_error}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Payment Method Selector (for full and deposit when net > 0) */}
+                      {(quickPaymentMode === 'full' || quickPaymentMode === 'deposit') && quickFinancialPreview.total_amount > 0 && (
+                        <div>
+                          <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '5px', display: 'block' }}>
+                            ช่องทางชำระเงิน *
+                          </label>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px' }}>
+                            {[
+                              { key: 'cash', label: 'เงินสด', icon: Banknote, color: '#10b981' },
+                              { key: 'transfer', label: 'โอนเงิน', icon: Smartphone, color: '#3b82f6' },
+                              { key: 'card', label: 'บัตรเครดิต', icon: CreditCard, color: '#8b5cf6' }
+                            ].map(m => {
+                              const isSel = paymentMethod === m.key;
+                              const Icon = m.icon;
+                              return (
+                                <button
+                                  key={m.key}
+                                  type="button"
+                                  onClick={() => setPaymentMethod(m.key)}
+                                  style={{
+                                    height: '32px',
+                                    borderRadius: '8px',
+                                    border: isSel ? `1.5px solid ${m.color}` : '1px solid var(--border-color)',
+                                    backgroundColor: isSel ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-main)',
+                                    color: isSel ? 'var(--text-main)' : 'var(--text-muted)',
+                                    fontSize: '0.72rem',
+                                    fontWeight: isSel ? 800 : 600,
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '4px',
+                                    transition: 'all 0.15s ease'
+                                  }}
+                                >
+                                  <Icon size={12} style={{ color: m.color }} />
+                                  <span>{m.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Unpaid / Zero-Net Notice */}
+                      {quickPaymentMode === 'unpaid' && (
+                        <div style={{
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                          border: '1px solid rgba(245, 158, 11, 0.25)',
+                          fontSize: '0.72rem',
+                          color: '#d97706',
+                          fontWeight: 700,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          <Clock size={13} style={{ flexShrink: 0 }} />
+                          <span>ค้างชำระ (Pending): ยังไม่ต้องเลือกช่องทางชำระเงิน</span>
+                        </div>
+                      )}
+
+                      {quickFinancialPreview.total_amount === 0 && (
+                        <div style={{
+                          padding: '8px 10px',
+                          borderRadius: '8px',
+                          backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                          border: '1px solid rgba(16, 185, 129, 0.25)',
+                          fontSize: '0.72rem',
+                          color: '#10b981',
+                          fontWeight: 700,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          <CheckCircle2 size={13} style={{ flexShrink: 0 }} />
+                          <span>ยอดสุทธิ ฿0.00: บันทึกสถานะชำระแล้วโดยไม่ต้องชำระเงิน</span>
+                        </div>
+                      )}
+
+                      {/* Live Snapshot Breakdown */}
+                      <div style={{
+                        backgroundColor: 'var(--bg-main)',
+                        borderRadius: '8px',
+                        padding: '8px 10px',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        fontSize: '0.75rem',
+                        border: '1px solid var(--border-color)'
+                      }}>
+                        <div>
+                          <span style={{ color: 'var(--text-muted)' }}>ชำระวันนี้: </span>
+                          <strong style={{ color: '#10b981', fontWeight: 800 }}>฿{formatMoney(quickFinancialPreview.paid_amount)}</strong>
+                        </div>
+                        <div>
+                          <span style={{ color: 'var(--text-muted)' }}>คงเหลือ: </span>
+                          <strong style={{ color: quickFinancialPreview.balance_amount > 0 ? '#f59e0b' : 'var(--text-main)', fontWeight: 800 }}>
+                            ฿{formatMoney(quickFinancialPreview.balance_amount)}
+                          </strong>
+                        </div>
+                      </div>
+                    </div>
+
                   </div>
                 ) : customer.customer_type === 'builtland' ? (
                   <div style={{
@@ -3503,7 +4201,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
               <button
                 type="button"
-                className={currentSlotOverlap.isOverlap ? '' : 'btn btn-primary'}
+                className={(currentSlotOverlap.isOverlap || !quickFinancialPreview.is_valid || isSubmittingQuickBooking) ? '' : 'btn btn-primary'}
                 style={{
                   flex: 2,
                   height: '44px',
@@ -3514,23 +4212,27 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '6px',
-                  backgroundColor: currentSlotOverlap.isOverlap ? '#94a3b8' : undefined,
+                  backgroundColor: (currentSlotOverlap.isOverlap || !quickFinancialPreview.is_valid || isSubmittingQuickBooking) ? '#94a3b8' : undefined,
                   color: '#ffffff',
-                  opacity: currentSlotOverlap.isOverlap ? 0.75 : 1,
-                  cursor: currentSlotOverlap.isOverlap ? 'not-allowed' : 'pointer',
-                  boxShadow: currentSlotOverlap.isOverlap ? 'none' : '0 4px 14px rgba(37,99,235,0.3)',
+                  opacity: (currentSlotOverlap.isOverlap || !quickFinancialPreview.is_valid || isSubmittingQuickBooking) ? 0.75 : 1,
+                  cursor: (currentSlotOverlap.isOverlap || !quickFinancialPreview.is_valid || isSubmittingQuickBooking) ? 'not-allowed' : 'pointer',
+                  boxShadow: (currentSlotOverlap.isOverlap || !quickFinancialPreview.is_valid || isSubmittingQuickBooking) ? 'none' : '0 4px 14px rgba(37,99,235,0.3)',
                   border: 'none'
                 }}
                 onClick={quickDirectBooking}
-                disabled={currentSlotOverlap.isOverlap}
+                disabled={currentSlotOverlap.isOverlap || !quickFinancialPreview.is_valid || isSubmittingQuickBooking}
               >
-                {currentSlotOverlap.isOverlap ? (
+                {isSubmittingQuickBooking ? (
+                  <span>กำลังบันทึกข้อมูล...</span>
+                ) : currentSlotOverlap.isOverlap ? (
                   currentSlotOverlap.isCleaningBuffer ? <Clock size={16} /> : <AlertTriangle size={16} />
                 ) : (
                   <Zap size={16} />
                 )}
                 <span>
-                  {currentSlotOverlap.isOverlap
+                  {isSubmittingQuickBooking
+                    ? ''
+                    : currentSlotOverlap.isOverlap
                     ? 'ช่วงเวลานี้ไม่สามารถจองได้'
                     : 'ยืนยันจองทันที'}
                 </span>

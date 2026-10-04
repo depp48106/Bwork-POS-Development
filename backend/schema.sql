@@ -66,6 +66,12 @@ CREATE TABLE IF NOT EXISTS bookings (
   internal_department TEXT,
   billing_option TEXT DEFAULT 'paid',
   quota_hours_used REAL DEFAULT 0,
+  subtotal_amount REAL,
+  discount_type TEXT DEFAULT 'none',
+  discount_value REAL DEFAULT 0,
+  discount_amount REAL DEFAULT 0,
+  paid_amount REAL DEFAULT 0,
+  balance_amount REAL DEFAULT 0,
   slip_trans_ref TEXT,
   slip_verified_at TEXT,
   slip_verify_status TEXT,
@@ -183,10 +189,10 @@ CREATE TABLE IF NOT EXISTS departments (
 
 CREATE TABLE IF NOT EXISTS payment_transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  booking_id INTEGER,
+  booking_id INTEGER REFERENCES bookings(id) ON DELETE CASCADE,
   amount REAL NOT NULL,
   payment_method TEXT NOT NULL,
-  transaction_ref TEXT,
+  transaction_type TEXT DEFAULT 'full',
   status TEXT DEFAULT 'completed',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -241,6 +247,8 @@ CREATE INDEX IF NOT EXISTS idx_bookings_created_at ON bookings(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bookings_payment_status ON bookings(payment_status);
 CREATE INDEX IF NOT EXISTS idx_bookings_receipt_number ON bookings(receipt_number);
 CREATE INDEX IF NOT EXISTS idx_bookings_pin_code ON bookings(pin_code);
+CREATE INDEX IF NOT EXISTS idx_bookings_balance_amount ON bookings(balance_amount);
+CREATE INDEX IF NOT EXISTS idx_payment_transactions_booking_id ON payment_transactions(booking_id);
 CREATE INDEX IF NOT EXISTS idx_quotation_items_quotation_id ON quotation_items(quotation_id);
 CREATE INDEX IF NOT EXISTS idx_quotations_created_at ON quotations(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_quotations_status ON quotations(status);

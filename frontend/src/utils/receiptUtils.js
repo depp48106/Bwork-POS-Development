@@ -16,6 +16,8 @@
  * - Internal free (Builtland / staff quota)
  */
 
+import { normalizeBookingFinancials } from './financialUtils.js';
+
 export const ROOM_NAME_MAP = {
   4: 'Mars (301)',
   5: 'Mercury (302)',
@@ -242,9 +244,16 @@ export function normalizeReceiptItem(item = {}, booking = {}, index = 0) {
     if (!detailText) detailText = '(ส่วนลด' + parts[1];
   }
 
+  const safeRawItem = { ...item };
+  for (const k of Object.keys(safeRawItem)) {
+    if (k.toLowerCase().includes('pin')) {
+      delete safeRawItem[k];
+    }
+  }
+
   return {
     id: item.id || item.booking_item_id || `item-${index}`,
-    rawItem: item,
+    rawItem: safeRawItem,
     isRoom,
     displayName: cleanName,
     detailText,
@@ -420,7 +429,8 @@ export function normalizeBookingReceipt(booking = {}) {
  * Calculates receipt totals while strictly preserving booking.total_amount as authoritative.
  */
 export function getReceiptTotals(booking = {}, normalizedItems = []) {
-  const authoritativeTotal = Number(booking.total_amount ?? booking.totalAmount ?? 0);
+  const fin = normalizeBookingFinancials(booking);
+  const authoritativeTotal = fin ? fin.total_amount : Number(booking.total_amount ?? booking.totalAmount ?? 0);
   const itemsSubtotal = normalizedItems.reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
 
   const roundedItemsSubtotal = Math.round(itemsSubtotal * 100) / 100;
@@ -444,13 +454,47 @@ export function getReceiptTotals(booking = {}, normalizedItems = []) {
     }
   }
 
+  // Canonical V1 snapshot integration
+  const hasV1Discount = Boolean(fin && fin.discount_amount > 0);
+  const grossSubtotal = (fin && fin.subtotal_amount > 0)
+    ? fin.subtotal_amount
+    : (hasAdjustment && adjustmentType === 'discount' ? roundedItemsSubtotal : (roundedItemsSubtotal || roundedAuthoritativeTotal));
+
+  let discountLabel = 'ส่วนลด';
+  let discountAmount = 0;
+  let hasDiscount = false;
+
+  if (hasV1Discount) {
+    hasDiscount = true;
+    discountAmount = fin.discount_amount;
+    if (fin.discount_type === 'percent' && fin.discount_value > 0) {
+      discountLabel = `ส่วนลด (${fin.discount_value}%)`;
+    } else {
+      discountLabel = 'ส่วนลด';
+    }
+  } else if (hasAdjustment && adjustmentType === 'discount') {
+    hasDiscount = true;
+    discountAmount = Math.abs(adjustmentAmount);
+    discountLabel = adjustmentLabel;
+  }
+
+  const paidAmount = fin ? fin.paid_amount : (booking.payment_status === 'paid' ? roundedAuthoritativeTotal : 0);
+  const balanceAmount = fin ? fin.balance_amount : (booking.payment_status === 'paid' ? 0 : roundedAuthoritativeTotal);
+
   return {
     itemsSubtotal: roundedItemsSubtotal,
+    grossSubtotal,
+    hasDiscount,
+    discountLabel,
+    discountAmount,
     hasAdjustment,
     adjustmentType,
     adjustmentLabel,
     adjustmentAmount,
-    grandTotal: roundedAuthoritativeTotal
+    netTotal: roundedAuthoritativeTotal,
+    grandTotal: roundedAuthoritativeTotal,
+    paidAmount,
+    balanceAmount
   };
 }
 
@@ -458,58 +502,90 @@ export function getReceiptTotals(booking = {}, normalizedItems = []) {
  * Resolves receipt payment information respecting all active system payment statuses.
  */
 export function getReceiptPaymentDetails(booking = {}) {
-  const pStatus = booking.payment_status || 'pending';
+  const fin = normalizeBookingFinancials(booking);
+  const pStatus = fin ? fin.payment_status : (booking.payment_status || 'pending');
   const pMethod = booking.payment_method || '';
   const billingOption = booking.billing_option || '';
   const customerType = booking.customer_type || '';
   const hasSlip = Boolean(booking.slip_image_url);
 
   // 1. Internal Free Check
-  const isInternalFree = pStatus === 'internal_free' ||
-                         billingOption === 'internal_free' ||
-                         customerType === 'builtland';
+  const isInternalFree = fin ? fin.is_internal_free : (pStatus === 'internal_free' || billingOption === 'internal_free' || customerType === 'builtland');
 
   if (isInternalFree) {
     return {
       statusKey: 'internal_free',
-      statusLabel: 'ใช้งานภายใน (สิทธิ์องค์กร)',
+      statusLabel: 'สิทธิ์การใช้งานภายใน (ฟรี)',
       methodKey: 'internal_free',
       methodLabel: 'ไม่คิดค่าบริการ (สิทธิ์ภายใน)',
       paidAmount: 0,
+      balanceAmount: 0,
       isPaid: true,
       isFree: true,
+      isDeposit: false,
+      receiptTitle: 'ใบยืนยันการจอง',
+      paidLabel: 'ชำระแล้ว',
       transRef: null,
       note: Number(booking.quota_hours_used) > 0 ? `หักโควต้า ${booking.quota_hours_used} ชั่วโมง` : 'สิทธิ์พนักงาน / สมาชิกองค์กร'
     };
   }
 
-  // 2. Paid Check
-  if (pStatus === 'paid') {
-    let methodText = 'เงินสด (Cash)';
-    if (pMethod === 'transfer' || pMethod === 'bank_transfer' || hasSlip) {
-      methodText = 'โอนเงิน (Transfer)';
-    } else if (pMethod === 'cash') {
-      methodText = 'เงินสด (Cash)';
-    } else if (pMethod === 'credit_card') {
-      methodText = 'บัตรเครดิต';
-    } else if (pMethod) {
-      methodText = pMethod;
-    }
+  let methodText = 'เงินสด (Cash)';
+  if (pMethod === 'transfer' || pMethod === 'bank_transfer' || hasSlip) {
+    methodText = 'โอนเงิน (Transfer)';
+  } else if (pMethod === 'cash') {
+    methodText = 'เงินสด (Cash)';
+  } else if (pMethod === 'credit_card' || pMethod === 'card') {
+    methodText = 'บัตรเครดิต';
+  } else if (pMethod === 'hour_credit') {
+    methodText = 'เครดิตชั่วโมง';
+  } else if (pMethod) {
+    methodText = pMethod;
+  }
 
+  // 2. Deposit Check (payment_status === 'deposit' or paid_amount > 0 and balance_amount > 0)
+  const isDeposit = fin ? fin.is_deposit : (pStatus === 'deposit');
+  if (isDeposit) {
     return {
-      statusKey: 'paid',
-      statusLabel: 'ชำระเงินแล้ว',
+      statusKey: 'deposit',
+      statusLabel: 'ชำระมัดจำแล้ว',
       methodKey: pMethod || 'cash',
       methodLabel: methodText,
-      paidAmount: Number(booking.total_amount ?? booking.totalAmount ?? 0),
-      isPaid: true,
+      paidAmount: fin ? fin.paid_amount : Number(booking.paid_amount || 0),
+      balanceAmount: fin ? fin.balance_amount : Number(booking.balance_amount || 0),
+      isPaid: false,
       isFree: false,
+      isDeposit: true,
+      receiptTitle: 'ใบรับเงินมัดจำ',
+      paidLabel: 'มัดจำ/ชำระแล้ว',
       transRef: booking.slip_trans_ref || null,
       note: null
     };
   }
 
-  // 3. Reviewing Slip Check
+  // 3. Paid Check
+  if (pStatus === 'paid') {
+    const isZeroNet = (fin && fin.total_amount === 0 && fin.discount_amount > 0) ||
+                      (Number(booking.total_amount) === 0 && (Number(booking.discount_amount) > 0 || (booking.discount_type === 'percent' && Number(booking.discount_value) === 100)));
+    const title = isZeroNet ? 'ใบยืนยันการจอง' : 'ใบเสร็จรับเงิน';
+    return {
+      statusKey: 'paid',
+      statusLabel: isZeroNet ? 'ยืนยันการจองแล้ว (ส่วนลด 100%)' : 'ชำระเงินแล้ว',
+      methodKey: pMethod || 'cash',
+      methodLabel: isZeroNet ? 'ไม่คิดค่าบริการ (ส่วนลดเต็มจำนวน)' : methodText,
+      paidAmount: fin ? fin.paid_amount : Number(booking.total_amount ?? booking.totalAmount ?? 0),
+      balanceAmount: 0,
+      isPaid: true,
+      isFree: isZeroNet,
+      isDeposit: false,
+      receiptTitle: title,
+      paidLabel: 'ชำระแล้ว',
+      transRef: booking.slip_trans_ref || null,
+      note: null
+    };
+  }
+
+  // 4. Reviewing Slip Check
   if (pStatus === 'reviewing' || (hasSlip && pStatus !== 'cancelled' && pStatus !== 'rejected')) {
     return {
       statusKey: 'reviewing',
@@ -517,14 +593,18 @@ export function getReceiptPaymentDetails(booking = {}) {
       methodKey: pMethod || 'transfer',
       methodLabel: 'โอนเงิน (แนบสลิปแล้ว)',
       paidAmount: 0,
+      balanceAmount: fin ? fin.balance_amount : Number(booking.total_amount || 0),
       isPaid: false,
       isFree: false,
+      isDeposit: false,
+      receiptTitle: 'ใบแจ้งยอดการจอง',
+      paidLabel: 'ชำระแล้ว',
       transRef: booking.slip_trans_ref || null,
       note: 'รอเจ้าหน้าที่ตรวจสอบสลิป'
     };
   }
 
-  // 4. Rejected Check
+  // 5. Rejected Check
   if (pStatus === 'rejected') {
     return {
       statusKey: 'rejected',
@@ -532,14 +612,18 @@ export function getReceiptPaymentDetails(booking = {}) {
       methodKey: pMethod || '-',
       methodLabel: 'รอชำระเงินใหม่',
       paidAmount: 0,
+      balanceAmount: fin ? fin.balance_amount : Number(booking.total_amount || 0),
       isPaid: false,
       isFree: false,
+      isDeposit: false,
+      receiptTitle: 'ใบแจ้งยอดการจอง',
+      paidLabel: 'ชำระแล้ว',
       transRef: null,
       note: 'สลิปไม่ถูกต้อง กรุณาติดต่อเจ้าหน้าที่'
     };
   }
 
-  // 5. Cancelled Check
+  // 6. Cancelled Check
   if (pStatus === 'cancelled' || booking.status === 'cancelled') {
     return {
       statusKey: 'cancelled',
@@ -547,22 +631,30 @@ export function getReceiptPaymentDetails(booking = {}) {
       methodKey: 'cancelled',
       methodLabel: '-',
       paidAmount: 0,
+      balanceAmount: fin ? fin.balance_amount : Number(booking.total_amount || 0),
       isPaid: false,
       isFree: false,
+      isDeposit: false,
+      receiptTitle: 'ใบแจ้งยอดการจอง (ยกเลิก)',
+      paidLabel: 'ชำระแล้ว',
       transRef: null,
       note: booking.cancellation_reason ? `เหตุผล: ${booking.cancellation_reason}` : 'รายการจองถูกยกเลิกแล้ว'
     };
   }
 
-  // 6. Default: Pending
+  // 7. Default: Pending / Unpaid
   return {
     statusKey: 'pending',
     statusLabel: 'ค้างชำระ (Pending)',
     methodKey: pMethod || 'pending',
     methodLabel: pMethod === 'cash' ? 'เงินสด' : (pMethod === 'transfer' ? 'โอนเงิน' : 'รอการชำระเงิน'),
     paidAmount: 0,
+    balanceAmount: fin ? fin.balance_amount : Number(booking.total_amount || 0),
     isPaid: false,
     isFree: false,
+    isDeposit: false,
+    receiptTitle: 'ใบแจ้งยอดการจอง',
+    paidLabel: 'ชำระแล้ว',
     transRef: null,
     note: null
   };

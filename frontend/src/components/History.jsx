@@ -46,6 +46,7 @@ import {
   getDateOffsetBangkok,
   getStartOfMonthBangkok
 } from '../utils/dashboardExport';
+import { normalizeBookingFinancials } from '../utils/financialUtils';
 
 const CUSTOMER_TYPE_OPTIONS = [
   { value: 'all', label: 'ทุกประเภท' },
@@ -63,6 +64,7 @@ const CHANNEL_OPTIONS = [
 const STATUS_TABS = [
   { key: 'all', label: 'ทั้งหมด' },
   { key: 'paid', label: 'ชำระแล้ว' },
+  { key: 'deposit', label: 'มัดจำ' },
   { key: 'cancelled', label: 'ยกเลิก' },
   { key: 'tax_invoice', label: 'ขอใบกำกับภาษี' }
 ];
@@ -491,15 +493,44 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
   // Summary Counts (from baseBookings)
   const totalBaseCount = baseBookings.length;
-  const paidCount = baseBookings.filter(b => b.payment_status === 'paid' || b.payment_status === 'internal_free').length;
+  const paidCount = baseBookings.filter(b => {
+    const fin = normalizeBookingFinancials(b);
+    return fin ? (fin.is_paid || b.payment_status === 'internal_free') : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
+  }).length;
+  const depositCount = baseBookings.filter(b => {
+    const fin = normalizeBookingFinancials(b);
+    return fin ? fin.is_deposit : b.payment_status === 'deposit';
+  }).length;
   const cancelledCount = baseBookings.filter(b => b.payment_status === 'cancelled').length;
   const taxInvoiceCount = baseBookings.filter(b => b.tax_invoice_required === 1).length;
-  const totalAmountPaid = baseBookings.reduce((sum, b) => sum + (b.payment_status === 'cancelled' ? 0 : Number(b.total_amount || 0)), 0);
+
+  // Realized money received = sum(paid_amount)
+  const realizedRevenue = baseBookings.reduce((sum, b) => {
+    if (b.payment_status === 'cancelled' || b.payment_status === 'failed') return sum;
+    const fin = normalizeBookingFinancials(b);
+    return sum + (fin ? Number(fin.paid_amount || 0) : (b.payment_status === 'paid' ? Number(b.total_amount || 0) : 0));
+  }, 0);
+
+  // Outstanding balance = sum(balance_amount) only for active collectible bookings
+  const totalOutstanding = baseBookings.reduce((sum, b) => {
+    const fin = normalizeBookingFinancials(b);
+    return sum + (fin && fin.is_collectible ? Number(fin.balance_amount || 0) : 0);
+  }, 0);
+
+  // Backward compatibility alias
+  const totalAmountPaid = realizedRevenue;
 
   // 2. Final Filter with Status Quick Filter Tabs
   const filteredBookings = useMemo(() => {
     if (statusFilter === 'all') return baseBookings;
-    if (statusFilter === 'paid') return baseBookings.filter(b => b.payment_status === 'paid' || b.payment_status === 'internal_free');
+    if (statusFilter === 'paid') return baseBookings.filter(b => {
+      const fin = normalizeBookingFinancials(b);
+      return fin ? (fin.is_paid || b.payment_status === 'internal_free') : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
+    });
+    if (statusFilter === 'deposit') return baseBookings.filter(b => {
+      const fin = normalizeBookingFinancials(b);
+      return fin ? fin.is_deposit : b.payment_status === 'deposit';
+    });
     if (statusFilter === 'cancelled') return baseBookings.filter(b => b.payment_status === 'cancelled');
     if (statusFilter === 'tax_invoice') return baseBookings.filter(b => b.tax_invoice_required === 1);
     return baseBookings;
@@ -775,6 +806,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
             const isActive = statusFilter === tab.key;
             let count = totalBaseCount;
             if (tab.key === 'paid') count = paidCount;
+            if (tab.key === 'deposit') count = depositCount;
             if (tab.key === 'cancelled') count = cancelledCount;
             if (tab.key === 'tax_invoice') count = taxInvoiceCount;
 
@@ -817,6 +849,20 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
               </button>
             );
           })}
+        </div>
+
+        {/* Revenue and Outstanding Balance Summary Metrics */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', fontSize: '0.78rem', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>ยอดรับเงินจริง:</span>
+            <span style={{ color: '#16a34a', fontWeight: 850 }}>฿{realizedRevenue.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+          </div>
+          {totalOutstanding > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>ยอดคงค้าง:</span>
+              <span style={{ color: '#f59e0b', fontWeight: 850 }}>฿{totalOutstanding.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1229,11 +1275,28 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
                         // 4. ยอดชำระ
                         if (key === 'total_amount') {
+                          const fin = normalizeBookingFinancials(b);
+                          const netTotal = fin ? fin.total_amount : Number(b.total_amount || 0);
+                          const paidVal = fin ? fin.paid_amount : (b.payment_status === 'paid' ? netTotal : 0);
+                          const balVal = fin ? fin.balance_amount : (b.payment_status === 'paid' ? 0 : netTotal);
+                          const isDep = fin ? fin.is_deposit : (b.payment_status === 'deposit');
+
                           return (
                             <td key={key} style={{ textAlign: 'right', padding: '6px 10px', whiteSpace: 'nowrap', verticalAlign: 'middle', boxSizing: 'border-box' }}>
                               <div style={{ fontWeight: 800, color: 'var(--primary-color)', fontSize: '0.90rem' }}>
-                                ฿{Number(b.total_amount || 0).toLocaleString()}
+                                ฿{netTotal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </div>
+                              {isDep ? (
+                                <div style={{ fontSize: '0.68rem', lineHeight: 1.25, marginTop: '2px' }}>
+                                  <span style={{ color: '#10b981', fontWeight: 700 }}>ชำระ: ฿{paidVal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                  <span style={{ color: 'var(--text-muted)', margin: '0 3px' }}>·</span>
+                                  <span style={{ color: '#f59e0b', fontWeight: 700 }}>ค้าง: ฿{balVal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                </div>
+                              ) : fin && fin.is_collectible && balVal > 0 ? (
+                                <div style={{ fontSize: '0.68rem', color: '#ef4444', fontWeight: 600, marginTop: '2px' }}>
+                                  ค้างชำระ: ฿{balVal.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </div>
+                              ) : null}
                               <div style={{ marginTop: '2px' }}>
                                 <span style={{
                                   display: 'inline-flex',
@@ -1256,6 +1319,11 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
                         // 5. สถานะ
                         if (key === 'payment_status') {
+                          const fin = normalizeBookingFinancials(b);
+                          const isDep = fin ? fin.is_deposit : (b.payment_status === 'deposit');
+                          const isUnpaid = fin ? fin.is_pending : (b.payment_status === 'pending' || b.payment_status === 'unpaid');
+                          const isRev = fin ? fin.is_reviewing : (b.payment_status === 'reviewing');
+
                           return (
                             <td key={key} style={{ textAlign: 'center', padding: '6px 8px', whiteSpace: 'nowrap', verticalAlign: 'middle', boxSizing: 'border-box' }}>
                               {isCancelled ? (
@@ -1290,6 +1358,54 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                   <CheckCircle2 size={11} />
                                   <span>สิทธิ์ภายใน</span>
                                 </span>
+                              ) : isDep ? (
+                                <span style={{
+                                  padding: '2px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                                  color: '#d97706',
+                                  border: '1px solid rgba(245, 158, 11, 0.25)',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}>
+                                  <Clock size={11} />
+                                  <span>มัดจำ</span>
+                                </span>
+                              ) : isRev ? (
+                                <span style={{
+                                  padding: '2px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  backgroundColor: 'rgba(14, 165, 233, 0.12)',
+                                  color: '#0284c7',
+                                  border: '1px solid rgba(14, 165, 233, 0.25)',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}>
+                                  <Clock size={11} />
+                                  <span>รอตรวจสลิป</span>
+                                </span>
+                              ) : isUnpaid ? (
+                                <span style={{
+                                  padding: '2px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  backgroundColor: 'rgba(225, 29, 72, 0.12)',
+                                  color: '#e11d48',
+                                  border: '1px solid rgba(225, 29, 72, 0.25)',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}>
+                                  <Clock size={11} />
+                                  <span>รอชำระ</span>
+                                </span>
                               ) : (
                                 <span style={{
                                   padding: '2px 8px',
@@ -1304,7 +1420,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                   gap: '4px'
                                 }}>
                                   <CheckCircle2 size={11} />
-                                  <span>สำเร็จ</span>
+                                  <span>ชำระแล้ว</span>
                                 </span>
                               )}
                             </td>
@@ -1471,6 +1587,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
           {/* Mobile Card View (< 768px) */}
           <div className="history-mobile-cards" style={{ padding: '12px' }}>
             {paginatedBookings.map((b) => {
+              const fin = normalizeBookingFinancials(b);
               const usage = formatUsageDate(b);
               const firstItem = b.items?.[0] || {};
               const roomName = firstItem.room_name || b.room_name || 'ห้องประชุม';
@@ -1512,9 +1629,25 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(239, 68, 68, 0.12)', color: '#ef4444', fontWeight: 800 }}>
                           ยกเลิก
                         </span>
+                      ) : b.payment_status === 'internal_free' ? (
+                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(249, 115, 22, 0.12)', color: '#ea580c', fontWeight: 800 }}>
+                          สิทธิ์ภายใน
+                        </span>
+                      ) : fin?.is_deposit ? (
+                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(245, 158, 11, 0.12)', color: '#d97706', fontWeight: 800 }}>
+                          มัดจำ
+                        </span>
+                      ) : fin?.is_reviewing ? (
+                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(14, 165, 233, 0.12)', color: '#0284c7', fontWeight: 800 }}>
+                          รอตรวจสลิป
+                        </span>
+                      ) : fin?.is_pending ? (
+                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(225, 29, 72, 0.12)', color: '#e11d48', fontWeight: 800 }}>
+                          รอชำระ
+                        </span>
                       ) : (
                         <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(16, 185, 129, 0.12)', color: '#10b981', fontWeight: 800 }}>
-                          สำเร็จ
+                          ชำระแล้ว
                         </span>
                       )}
                     </div>
@@ -1551,8 +1684,19 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         {b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? '💵 เงินสด' : b.payment_method === 'transfer' ? '📱 โอนเงิน' : (b.payment_method || '-')}
                       </div>
                       <div style={{ fontWeight: 850, color: 'var(--primary-color)', fontSize: '1rem' }}>
-                        ฿{Number(b.total_amount || 0).toLocaleString()}
+                        ฿{Number(fin ? fin.total_amount : (b.total_amount || 0)).toLocaleString()}
                       </div>
+                      {fin?.is_deposit ? (
+                        <div style={{ fontSize: '0.68rem', lineHeight: 1.25, marginTop: '2px' }}>
+                          <span style={{ color: '#10b981', fontWeight: 700 }}>ชำระ: ฿{fin.paid_amount.toLocaleString()}</span>
+                          <span style={{ color: 'var(--text-muted)', margin: '0 3px' }}>·</span>
+                          <span style={{ color: '#f59e0b', fontWeight: 700 }}>ค้าง: ฿{fin.balance_amount.toLocaleString()}</span>
+                        </div>
+                      ) : fin && fin.is_collectible && fin.balance_amount > 0 ? (
+                        <div style={{ fontSize: '0.68rem', color: '#ef4444', fontWeight: 600, marginTop: '2px' }}>
+                          ค้างชำระ: ฿{fin.balance_amount.toLocaleString()}
+                        </div>
+                      ) : null}
                     </div>
                     <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                       {b.slip_image_url && b.slip_image_url !== 'uploaded' && (
@@ -1909,12 +2053,47 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     <strong style={{ color: 'var(--text-main)' }}>{selectedBooking.guest_count} ท่าน</strong>
                   </div>
                 )}
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>ยอดรวมสุทธิ:</span>
-                  <strong style={{ color: 'var(--primary-color)', fontSize: '1rem', fontWeight: 800 }}>
-                    {Number(selectedBooking.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} บาท
-                  </strong>
-                </div>
+                {(() => {
+                  const fin = normalizeBookingFinancials(selectedBooking);
+                  return (
+                    <>
+                      {fin && fin.discount_amount > 0 && (
+                        <>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                            <span style={{ color: 'var(--text-muted)' }}>ยอดรวมก่อนส่วนลด:</span>
+                            <strong style={{ color: 'var(--text-main)' }}>
+                              ฿{fin.subtotal_amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </strong>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                            <span style={{ color: 'var(--text-muted)' }}>ส่วนลด{fin.discount_type === 'percent' && fin.discount_value > 0 ? ` (${fin.discount_value}%)` : ''}:</span>
+                            <strong style={{ color: '#ef4444' }}>
+                              -฿{fin.discount_amount.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </strong>
+                          </div>
+                        </>
+                      )}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>ยอดสุทธิ:</span>
+                        <strong style={{ color: 'var(--primary-color)', fontSize: '1rem', fontWeight: 800 }}>
+                          ฿{(fin ? fin.total_amount : Number(selectedBooking.total_amount || 0)).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>{fin?.is_deposit ? 'มัดจำ/ชำระแล้ว:' : 'ชำระแล้ว:'}</span>
+                        <strong style={{ color: '#16a34a', fontWeight: 800 }}>
+                          ฿{(fin ? fin.paid_amount : (selectedBooking.payment_status === 'paid' ? Number(selectedBooking.total_amount || 0) : 0)).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>ยอดคงเหลือ:</span>
+                        <strong style={{ color: fin && fin.balance_amount > 0 ? '#f59e0b' : 'var(--text-muted)', fontWeight: 800 }}>
+                          ฿{(fin ? fin.balance_amount : 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </strong>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 {selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' && (
                   <div style={{ marginTop: '4px', padding: '10px 12px', backgroundColor: 'rgba(14, 165, 233, 0.08)', borderRadius: '12px', border: '1px solid rgba(14, 165, 233, 0.25)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
