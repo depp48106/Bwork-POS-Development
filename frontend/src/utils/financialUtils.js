@@ -222,12 +222,218 @@ export function calculatePaymentPreview({
   };
 }
 
+export function normalizeBookingFinancials(booking = {}) {
+  if (!booking) return null;
+  const isBuiltland = booking.customer_type === 'builtland' || booking.billing_option === 'internal_free' || booking.payment_status === 'internal_free';
+  if (isBuiltland) {
+    return {
+      subtotal_amount: 0,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
+      total_amount: 0,
+      paid_amount: 0,
+      balance_amount: 0,
+      payment_status: 'internal_free',
+      is_internal_free: true,
+      is_collectible: false,
+      is_paid: true,
+      is_deposit: false,
+      is_pending: false,
+      is_cancelled: false,
+      is_reviewing: false,
+      is_rejected: false
+    };
+  }
+
+  const rawTotal = roundMoney(Math.max(0, Number(booking.total_amount) || 0));
+  const rawSubtotal = booking.subtotal_amount !== undefined && booking.subtotal_amount !== null
+    ? roundMoney(Math.max(0, Number(booking.subtotal_amount) || 0))
+    : rawTotal;
+
+  const discountType = String(booking.discount_type || 'none').toLowerCase().trim();
+  const discountValue = Number(booking.discount_value || 0);
+  const discountAmount = roundMoney(Math.max(0, Number(booking.discount_amount || 0)));
+
+  // Fallbacks for legacy paid / pending
+  let paidAmount = 0;
+  if (booking.paid_amount !== undefined && booking.paid_amount !== null) {
+    paidAmount = roundMoney(Math.max(0, Number(booking.paid_amount) || 0));
+  } else if (booking.payment_status === 'paid') {
+    paidAmount = rawTotal;
+  } else {
+    paidAmount = 0;
+  }
+
+  let balanceAmount = 0;
+  if (booking.balance_amount !== undefined && booking.balance_amount !== null) {
+    balanceAmount = roundMoney(Math.max(0, Number(booking.balance_amount) || 0));
+  } else {
+    balanceAmount = roundMoney(Math.max(0, rawTotal - paidAmount));
+  }
+
+  const status = booking.payment_status || 'pending';
+  const isCancelled = status === 'cancelled';
+  const isFailed = status === 'failed';
+  const isPaid = status === 'paid';
+  const isDeposit = status === 'deposit';
+  const isReviewing = status === 'reviewing' || (!!booking.slip_image_url && !isPaid && !isCancelled);
+  const isRejected = status === 'rejected' || booking.slip_verify_status === 'rejected';
+  const isPending = !isPaid && !isCancelled && !isDeposit && !isReviewing && !isRejected;
+
+  // Collectible if balance > 0 and status is collectible (deposit or pending; non-cancelled, non-reviewing, non-paid)
+  const isCollectible = balanceAmount > 0 && !isCancelled && !isFailed && !isPaid && !isReviewing;
+
+  return {
+    subtotal_amount: rawSubtotal,
+    discount_type: discountType,
+    discount_value: discountValue,
+    discount_amount: discountAmount,
+    total_amount: rawTotal,
+    paid_amount: paidAmount,
+    balance_amount: balanceAmount,
+    payment_status: status,
+    is_internal_free: false,
+    is_collectible: isCollectible,
+    is_paid: isPaid,
+    is_deposit: isDeposit,
+    is_pending: isPending,
+    is_cancelled: isCancelled,
+    is_reviewing: isReviewing,
+    is_rejected: isRejected
+  };
+}
+
+export function getPaymentMethodLabel(method) {
+  if (!method) return '-';
+  switch (String(method).toLowerCase().trim()) {
+    case 'cash': return 'เงินสด';
+    case 'transfer': return 'โอนเงิน';
+    case 'promptpay': return 'พร้อมเพย์';
+    case 'card': return 'บัตร';
+    case 'hour_credit': return 'เครดิตชั่วโมง';
+    default: return method;
+  }
+}
+
+export function getTransactionTypeLabel(type) {
+  switch (String(type).toLowerCase().trim()) {
+    case 'full': return 'ชำระเต็มจำนวน';
+    case 'deposit': return 'เงินมัดจำ';
+    case 'balance': return 'ชำระเพิ่มเติม';
+    case 'refund': return 'คืนเงิน';
+    default: return type || '-';
+  }
+}
+
+export function calculateRescheduleFinancials({
+  oldBooking,
+  newSubtotal = 0
+}) {
+  if (!oldBooking) return { error: 'Missing booking data for reschedule', is_valid: false };
+  const cleanNewSubtotal = roundMoney(Math.max(0, Number(newSubtotal) || 0));
+  const isBuiltland = oldBooking.customer_type === 'builtland' || oldBooking.billing_option === 'internal_free' || oldBooking.payment_status === 'internal_free';
+
+  if (isBuiltland) {
+    return {
+      subtotal_amount: cleanNewSubtotal,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
+      total_amount: 0,
+      paid_amount: 0,
+      balance_amount: 0,
+      payment_status: 'internal_free',
+      is_valid: true,
+      error: null
+    };
+  }
+
+  const oldDiscountType = String(oldBooking.discount_type || 'none').toLowerCase().trim();
+  const oldDiscountValue = Number(oldBooking.discount_value) || 0;
+  const oldDiscountAmount = Number(oldBooking.discount_amount) || 0;
+
+  let newDiscountAmount = 0;
+  let newDiscountValue = 0;
+  let finalDiscountType = 'none';
+
+  if (oldDiscountType === 'percent') {
+    finalDiscountType = 'percent';
+    newDiscountValue = oldDiscountValue;
+    newDiscountAmount = roundMoney((cleanNewSubtotal * oldDiscountValue) / 100);
+  } else if (oldDiscountType === 'amount') {
+    finalDiscountType = 'amount';
+    const fixedAmount = oldDiscountAmount > 0 ? oldDiscountAmount : oldDiscountValue;
+    if (fixedAmount > cleanNewSubtotal) {
+      return {
+        subtotal_amount: cleanNewSubtotal,
+        discount_type: finalDiscountType,
+        discount_value: fixedAmount,
+        discount_amount: fixedAmount,
+        total_amount: 0,
+        paid_amount: roundMoney(Math.max(0, Number(oldBooking.paid_amount || 0))),
+        balance_amount: 0,
+        payment_status: oldBooking.payment_status || 'pending',
+        is_valid: false,
+        error: `ส่วนลดเดิม (฿${formatMoney(fixedAmount)}) สูงกว่ายอดรวมใหม่ (฿${formatMoney(cleanNewSubtotal)}) กรุณาปรับเปลี่ยนส่วนลดก่อนทำรายการ`
+      };
+    }
+    newDiscountValue = fixedAmount;
+    newDiscountAmount = fixedAmount;
+  }
+
+  const newTotalAmount = roundMoney(Math.max(0, cleanNewSubtotal - newDiscountAmount));
+  const currentPaid = roundMoney(Math.max(0, Number(oldBooking.paid_amount || 0)));
+
+  if (newTotalAmount < currentPaid) {
+    return {
+      subtotal_amount: cleanNewSubtotal,
+      discount_type: finalDiscountType,
+      discount_value: newDiscountValue,
+      discount_amount: newDiscountAmount,
+      total_amount: newTotalAmount,
+      paid_amount: currentPaid,
+      balance_amount: 0,
+      payment_status: oldBooking.payment_status || 'pending',
+      is_valid: false,
+      error: `ยอดสุทธิใหม่ (฿${formatMoney(newTotalAmount)}) ต่ำกว่ายอดเงินที่ชำระไปแล้ว (฿${formatMoney(currentPaid)}) ไม่สามารถเปลี่ยนเวลาได้`
+    };
+  }
+
+  const newBalanceAmount = roundMoney(newTotalAmount - currentPaid);
+  let newPaymentStatus = 'pending';
+  if (newBalanceAmount === 0) {
+    newPaymentStatus = 'paid';
+  } else if (currentPaid > 0) {
+    newPaymentStatus = 'deposit';
+  } else {
+    newPaymentStatus = oldBooking.payment_status || 'pending';
+  }
+
+  return {
+    subtotal_amount: cleanNewSubtotal,
+    discount_type: finalDiscountType,
+    discount_value: newDiscountValue,
+    discount_amount: newDiscountAmount,
+    total_amount: newTotalAmount,
+    paid_amount: currentPaid,
+    balance_amount: newBalanceAmount,
+    payment_status: newPaymentStatus,
+    is_valid: true,
+    error: null
+  };
+}
+
 // Support CommonJS imports for Node.js test runners
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     roundMoney,
     formatMoney,
     calculateDiscountPreview,
-    calculatePaymentPreview
+    calculatePaymentPreview,
+    normalizeBookingFinancials,
+    getPaymentMethodLabel,
+    getTransactionTypeLabel,
+    calculateRescheduleFinancials
   };
 }

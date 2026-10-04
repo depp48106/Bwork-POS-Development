@@ -43,6 +43,14 @@ import CustomSelect from './CustomSelect';
 import { API_BASE } from '../apiConfig';
 import { analyzeSlipInBrowser } from '../utils/browserSlipVerifier';
 import { roomUsesDoorPin, resolveRoomPin } from '../utils/doorPinHelper';
+import {
+  roundMoney,
+  formatMoney,
+  normalizeBookingFinancials,
+  getPaymentMethodLabel,
+  getTransactionTypeLabel,
+  calculateRescheduleFinancials
+} from '../utils/financialUtils';
 import './PendingBookings.css';
 
 const DATE_TYPE_OPTIONS = [
@@ -108,6 +116,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [showPayModal, setShowPayModal] = useState(false);
   const [payMethod, setPayMethod] = useState('transfer');
   const [isPayMethodOpen, setIsPayMethodOpen] = useState(false);
+
+  // Collect Balance Modal states (Phase 4)
+  const [showCollectBalanceModal, setShowCollectBalanceModal] = useState(false);
+  const [collectBalanceBooking, setCollectBalanceBooking] = useState(null);
+  const [collectBalanceAmount, setCollectBalanceAmount] = useState('');
+  const [collectBalanceMethod, setCollectBalanceMethod] = useState('cash');
+  const [isCollectingBalance, setIsCollectingBalance] = useState(false);
+  const [collectBalanceError, setCollectBalanceError] = useState(null);
+
+  // Payment Transactions History for Detail Modal (Phase 4)
+  const [paymentTransactions, setPaymentTransactions] = useState([]);
+  const [isLoadingPayments, setIsLoadingPayments] = useState(false);
+  const activePaymentFetchBookingIdRef = useRef(null);
 
   // Reject Slip Modal states
   const [showRejectSlipModal, setShowRejectSlipModal] = useState(false);
@@ -391,17 +412,74 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     }
   }, [bookings]);
 
+  // Payment transactions synchronization for Detail Modal (Phase 4)
+  const fetchPaymentTransactions = async (bookingId) => {
+    if (!bookingId) {
+      setPaymentTransactions([]);
+      return;
+    }
+    activePaymentFetchBookingIdRef.current = bookingId;
+    setPaymentTransactions([]);
+    setIsLoadingPayments(true);
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const res = await fetch(`/api/bookings/${bookingId}/payments`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (activePaymentFetchBookingIdRef.current === bookingId) {
+          setPaymentTransactions(data.payments || []);
+        }
+      } else {
+        if (activePaymentFetchBookingIdRef.current === bookingId) {
+          setPaymentTransactions([]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch payment transactions:', err);
+      if (activePaymentFetchBookingIdRef.current === bookingId) {
+        setPaymentTransactions([]);
+      }
+    } finally {
+      if (activePaymentFetchBookingIdRef.current === bookingId) {
+        setIsLoadingPayments(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (showDetailModal && selectedBooking?.id) {
+      fetchPaymentTransactions(selectedBooking.id);
+    } else {
+      activePaymentFetchBookingIdRef.current = null;
+      setPaymentTransactions([]);
+    }
+  }, [showDetailModal, selectedBooking?.id]);
+
+  const handleOpenCollectBalance = (booking) => {
+    if (!booking) return;
+    const fresh = bookings.find(b => b.id === booking.id) || booking;
+    const fin = normalizeBookingFinancials(fresh);
+    setCollectBalanceBooking(fresh);
+    setCollectBalanceAmount(String(fin.balance_amount || 0));
+    setCollectBalanceMethod('cash');
+    setCollectBalanceError(null);
+    setShowCollectBalanceModal(true);
+  };
+
   const handleOpenPayment = (booking) => {
-    setSelectedBooking(booking);
-    setPayMethod(booking.payment_method || 'transfer');
-    setShowPayModal(true);
+    handleOpenCollectBalance(booking);
   };
 
   const handleOpenPayModal = (booking) => {
     if (booking?.slip_image_url) {
       setViewingSlipBooking(booking);
     } else {
-      handleOpenPayment(booking);
+      handleOpenCollectBalance(booking);
     }
   };
 
@@ -638,9 +716,107 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     sendDoorPin(bookingId);
   };
 
-  // Staff confirms payment
+  // Staff collects balance / partial payment via Phase 2 endpoint (POST /api/bookings/:id/pay-balance)
+  const submitCollectBalance = async () => {
+    if (!collectBalanceBooking || isCollectingBalance) return;
+    const fin = normalizeBookingFinancials(collectBalanceBooking);
+    const amountNum = roundMoney(Number(collectBalanceAmount));
+
+    if (isNaN(amountNum) || amountNum <= 0) {
+      setCollectBalanceError('กรุณาระบุจำนวนเงินที่ต้องการชำระ (ต้องมากกว่า 0 บาท)');
+      return;
+    }
+    if (amountNum > fin.balance_amount) {
+      setCollectBalanceError(`ยอดเงินที่ชำระ (฿${formatMoney(amountNum)}) เกินกว่ายอดคงเหลือ (฿${formatMoney(fin.balance_amount)})`);
+      return;
+    }
+    if (!collectBalanceMethod) {
+      setCollectBalanceError('กรุณาเลือกช่องทางการชำระเงิน');
+      return;
+    }
+
+    setIsCollectingBalance(true);
+    setCollectBalanceError(null);
+
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const res = await fetch(`/api/bookings/${collectBalanceBooking.id}/pay-balance`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          amount: amountNum,
+          payment_method: collectBalanceMethod
+        })
+      });
+
+      const data = await res.json();
+
+      if (res.status === 409) {
+        // 409 Concurrency conflict
+        setCollectBalanceError('ยอดคงเหลือมีการเปลี่ยนแปลง กรุณาตรวจสอบยอดล่าสุดก่อนรับชำระอีกครั้ง');
+        try {
+          const freshRes = await fetch(`/api/bookings/${collectBalanceBooking.id}`);
+          if (freshRes.ok) {
+            const freshBooking = await freshRes.json();
+            setBookings(prev => prev.map(b => b.id === freshBooking.id ? freshBooking : b));
+            if (selectedBooking && selectedBooking.id === freshBooking.id) {
+              setSelectedBooking(freshBooking);
+            }
+            setCollectBalanceBooking(freshBooking);
+            const freshFin = normalizeBookingFinancials(freshBooking);
+            setCollectBalanceAmount(String(freshFin.balance_amount || 0));
+          }
+        } catch (e) {
+          console.error(e);
+        }
+        fetchPaymentTransactions(collectBalanceBooking.id);
+        fetchBookings(true, false, true);
+        return;
+      }
+
+      if (res.ok && data.success) {
+        const freshBooking = data.booking || {
+          ...collectBalanceBooking,
+          paid_amount: data.paid_amount,
+          balance_amount: data.balance_amount,
+          payment_status: data.payment_status,
+          payment_method: data.payment_method
+        };
+
+        setBookings(prev => prev.map(b => b.id === freshBooking.id ? { ...b, ...freshBooking } : b));
+        if (selectedBooking && selectedBooking.id === freshBooking.id) {
+          setSelectedBooking(freshBooking);
+        }
+        fetchPaymentTransactions(freshBooking.id);
+
+        setShowCollectBalanceModal(false);
+        setCollectBalanceBooking(null);
+
+        await sysAlert(data.message || 'บันทึกการชำระเงินสำเร็จแล้ว');
+        fetchBookings(true, false, true);
+      } else {
+        setCollectBalanceError(data.error || 'เกิดข้อผิดพลาดในการทำรายการ');
+      }
+    } catch (err) {
+      console.error('Error submitting balance payment:', err);
+      setCollectBalanceError('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsCollectingBalance(false);
+    }
+  };
+
+  // Legacy fallback payment handler (routes to submitCollectBalance if collectible)
   const submitPayment = async () => {
     if (!selectedBooking) return;
+    const fin = normalizeBookingFinancials(selectedBooking);
+    if (fin && fin.is_collectible) {
+      handleOpenCollectBalance(selectedBooking);
+      setShowPayModal(false);
+      return;
+    }
     try {
       const res = await fetch(`/api/bookings/${selectedBooking.id}/payment`, {
         method: 'PATCH',
@@ -649,7 +825,6 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       });
 
       if (res.ok) {
-        const payData = await res.json();
         const detailRes = await fetch(`/api/bookings/${selectedBooking.id}`);
         if (detailRes.ok) {
           const detailData = await detailRes.json();
@@ -949,15 +1124,15 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     const roomId = rescheduleRoomId || rescheduleTarget.items?.[0]?.room_id || rescheduleTarget.room_id;
     const room = roomsList.find(r => String(r.id) === String(roomId)) || {};
 
-    let newTotal = oldTotal;
+    let newGross = oldTotal;
     let isValid = true;
 
     if (rescheduleBookingType === 'daily') {
-      newTotal = rescheduleLayout === 'classroom'
+      newGross = rescheduleLayout === 'classroom'
         ? (room.classroom_daily_rate || room.daily_rate || 0)
         : (room.daily_rate || 0);
     } else if (rescheduleBookingType === 'halfday') {
-      newTotal = room.half_day_rate || 0;
+      newGross = room.half_day_rate || 0;
     } else {
       const sh = parseInt(rescheduleStartHour, 10);
       const sm = parseInt(rescheduleStartMinute, 10);
@@ -971,12 +1146,36 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const hourlyRate = rescheduleLayout === 'classroom'
           ? (room.classroom_hourly_rate || room.hourly_rate || 0)
           : (room.hourly_rate || 0);
-        newTotal = totalHours * (hourlyRate || (oldTotal / (totalHours || 1)));
+        newGross = totalHours * (hourlyRate || (oldTotal / (totalHours || 1)));
       }
     }
 
-    const diff = newTotal - oldTotal;
-    return { newTotal, oldTotal, diff, isValid };
+    const otherItems = (rescheduleTarget.items || []).filter(it => it.id !== rescheduleTarget.items?.[0]?.id);
+    const otherSubtotal = otherItems.reduce((sum, it) => sum + (Number(it.subtotal || it.price) || 0), 0);
+    const totalGross = roundMoney(newGross + otherSubtotal);
+
+    const fin = calculateRescheduleFinancials({
+      oldBooking: rescheduleTarget,
+      newSubtotal: totalGross
+    });
+
+    const newTotal = fin.total_amount !== undefined ? fin.total_amount : totalGross;
+    const diff = roundMoney(newTotal - oldTotal);
+
+    return {
+      newGross: totalGross,
+      newTotal,
+      oldTotal,
+      diff,
+      paidAmount: fin.paid_amount || 0,
+      balanceAmount: fin.balance_amount || 0,
+      discountAmount: fin.discount_amount || 0,
+      discountType: fin.discount_type || 'none',
+      discountValue: fin.discount_value || 0,
+      financialStatus: fin.payment_status,
+      financialError: fin.error,
+      isValid: isValid && !fin.error
+    };
   }, [rescheduleTarget, rescheduleRoomId, rescheduleBookingType, rescheduleLayout, rescheduleDailySlot, rescheduleStartHour, rescheduleStartMinute, rescheduleEndHour, rescheduleEndMinute, roomsList]);
 
   // Real-time Overlap Checker for Reschedule
@@ -1457,10 +1656,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
   // 7. Exactly One Primary Action Helper by Status
   const getPrimaryAction = (b) => {
-    const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
-    const isCancelled = b.payment_status === 'cancelled';
-    const isRejected = b.payment_status === 'rejected' || b.slip_verify_status === 'rejected';
-    const isReviewing = (b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected;
+    const fin = normalizeBookingFinancials(b);
+    const isPaid = fin ? fin.is_paid : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
+    const isCancelled = fin ? fin.is_cancelled : (b.payment_status === 'cancelled');
+    const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
+    const isReviewing = fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected);
 
     // 1. reviewing -> ตรวจสลิป
     if (isReviewing) {
@@ -1489,18 +1689,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       };
     }
 
-    // 2. pending -> รับชำระเงิน
-    if (!isPaid && !isCancelled && !isRejected) {
+    // 2. collectible (deposit / pending) -> รับชำระส่วนที่เหลือ / รับชำระเงิน
+    if (fin && fin.is_collectible) {
+      const isDep = fin.is_deposit;
       return {
-        type: 'pay',
-        label: 'รับชำระเงิน',
+        type: isDep ? 'pay_balance' : 'pay',
+        label: isDep ? 'รับชำระส่วนที่เหลือ' : 'รับชำระเงิน',
         icon: DollarSign,
-        className: 'pb-primary-action-btn pb-btn-pay',
+        className: `pb-primary-action-btn ${isDep ? 'pb-btn-pay-balance' : 'pb-btn-pay'}`,
         style: {
-          backgroundColor: '#f59e0b',
-          borderColor: '#f59e0b',
+          backgroundColor: isDep ? '#10b981' : '#f59e0b',
+          borderColor: isDep ? '#10b981' : '#f59e0b',
           color: '#ffffff',
-          boxShadow: '0 2px 8px rgba(245, 158, 11, 0.25)',
+          boxShadow: isDep ? '0 2px 8px rgba(16, 185, 129, 0.25)' : '0 2px 8px rgba(245, 158, 11, 0.25)',
           padding: '5px 11px',
           fontSize: '0.76rem',
           borderRadius: '8px',
@@ -1512,7 +1713,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           border: 'none',
           cursor: 'pointer'
         },
-        onClick: (e) => { e.stopPropagation(); handleOpenPayModal(b); }
+        onClick: (e) => { e.stopPropagation(); handleOpenCollectBalance(b); }
       };
     }
 
@@ -2239,11 +2440,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       {/* Column 4: Payment */}
                       <td className="pb-td" style={{ textAlign: 'right' }}>
                         <div className="pb-cell-payment" style={{ alignItems: 'flex-end' }}>
-                          <span className="pb-payment-amount" style={{ color: isPaid ? '#10b981' : (isCancelled ? 'var(--text-muted)' : '#f59e0b') }}>
-                            ฿{Number(b.total_amount || 0).toLocaleString()}
+                          <span className="pb-payment-amount" style={{ color: fin.is_paid ? '#10b981' : (fin.is_deposit ? '#6366f1' : (isCancelled ? 'var(--text-muted)' : '#f59e0b')) }}>
+                            ฿{Number(fin.total_amount || 0).toLocaleString()}
                           </span>
                           <span className="pb-sub-text">
-                            {b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : (b.payment_method || '-'))}
+                            {fin.is_internal_free ? (
+                              'สิทธิ์ภายใน'
+                            ) : fin.is_deposit ? (
+                              `ชำระ ฿${Number(fin.paid_amount || 0).toLocaleString()} · คงเหลือ ฿${Number(fin.balance_amount || 0).toLocaleString()}`
+                            ) : fin.is_paid ? (
+                              'คงเหลือ ฿0'
+                            ) : (
+                              `คงเหลือ ฿${Number(fin.balance_amount || 0).toLocaleString()}`
+                            )}
                           </span>
                           {b.slip_image_url && (
                             <span className="pb-slip-indicator">
@@ -2257,7 +2466,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       <td className="pb-td" style={{ textAlign: 'center' }}>
                         <div className="pb-cell-status-access">
                           {/* Status Badge */}
-                          {isReviewing ? (
+                          {fin.is_internal_free ? (
+                            <span className="pb-status-badge pb-status-internal-free">
+                              <ShieldCheck size={11} />
+                              <span>สิทธิ์ภายใน</span>
+                            </span>
+                          ) : isReviewing ? (
                             <span className="pb-status-badge pb-status-reviewing">
                               <Eye size={11} />
                               <span>รอตรวจสลิป</span>
@@ -2267,20 +2481,25 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               <AlertCircle size={11} />
                               <span>สลิปไม่ผ่าน</span>
                             </span>
-                          ) : !isPaid && !isCancelled ? (
-                            <span className="pb-status-badge pb-status-pending">
-                              <Clock size={11} />
-                              <span>รอชำระเงิน</span>
+                          ) : fin.is_deposit ? (
+                            <span className="pb-status-badge pb-status-deposit">
+                              <CheckCircle2 size={11} />
+                              <span>มัดจำแล้ว</span>
                             </span>
-                          ) : isPaid ? (
+                          ) : fin.is_paid ? (
                             <span className="pb-status-badge pb-status-paid">
                               <CheckCircle2 size={11} />
                               <span>ชำระแล้ว</span>
                             </span>
-                          ) : (
+                          ) : isCancelled ? (
                             <span className="pb-status-badge pb-status-cancelled">
                               <Ban size={11} />
                               <span>ยกเลิก</span>
+                            </span>
+                          ) : (
+                            <span className="pb-status-badge pb-status-pending">
+                              <Clock size={11} />
+                              <span>ยังไม่ชำระ</span>
                             </span>
                           )}
 
@@ -2376,10 +2595,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             </div>
           ) : (
             paginatedBookings.map((b) => {
-              const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
-              const isCancelled = b.payment_status === 'cancelled';
-              const isRejected = b.payment_status === 'rejected' || b.slip_verify_status === 'rejected';
-              const isReviewing = (b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected;
+              const fin = normalizeBookingFinancials(b);
+              const isPaid = fin ? fin.is_paid : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
+              const isCancelled = fin ? fin.is_cancelled : (b.payment_status === 'cancelled');
+              const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
+              const isReviewing = fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected);
 
               const firstItem = b.items?.[0] || {};
               const roomObj = roomsList.find(r => r.id === (firstItem.room_id || b.room_id));
@@ -2417,7 +2637,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     </div>
 
                     <div>
-                      {isReviewing ? (
+                      {fin.is_internal_free ? (
+                        <span className="pb-status-badge pb-status-internal-free">
+                          <ShieldCheck size={11} />
+                          <span>สิทธิ์ภายใน</span>
+                        </span>
+                      ) : isReviewing ? (
                         <span className="pb-status-badge pb-status-reviewing">
                           <Eye size={11} />
                           <span>รอตรวจสลิป</span>
@@ -2427,20 +2652,25 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           <AlertCircle size={11} />
                           <span>สลิปไม่ผ่าน</span>
                         </span>
-                      ) : !isPaid && !isCancelled ? (
-                        <span className="pb-status-badge pb-status-pending">
-                          <Clock size={11} />
-                          <span>รอชำระเงิน</span>
+                      ) : fin.is_deposit ? (
+                        <span className="pb-status-badge pb-status-deposit">
+                          <CheckCircle2 size={11} />
+                          <span>มัดจำแล้ว</span>
                         </span>
-                      ) : isPaid ? (
+                      ) : fin.is_paid ? (
                         <span className="pb-status-badge pb-status-paid">
                           <CheckCircle2 size={11} />
                           <span>ชำระแล้ว</span>
                         </span>
-                      ) : (
+                      ) : isCancelled ? (
                         <span className="pb-status-badge pb-status-cancelled">
                           <Ban size={11} />
                           <span>ยกเลิก</span>
+                        </span>
+                      ) : (
+                        <span className="pb-status-badge pb-status-pending">
+                          <Clock size={11} />
+                          <span>ยังไม่ชำระ</span>
                         </span>
                       )}
                     </div>
@@ -2487,12 +2717,20 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     <div className="pb-mobile-payment-block">
                       <span
                         className="pb-mobile-amount"
-                        style={{ color: isPaid ? '#10b981' : (isCancelled ? 'var(--text-muted)' : '#f59e0b') }}
+                        style={{ color: fin.is_paid ? '#10b981' : (fin.is_deposit ? '#6366f1' : (isCancelled ? 'var(--text-muted)' : '#f59e0b')) }}
                       >
-                        ฿{Number(b.total_amount || 0).toLocaleString()}
+                        ฿{Number(fin.total_amount || 0).toLocaleString()}
                       </span>
                       <span className="pb-mobile-method">
-                        {b.payment_method === 'hour_credit' ? 'เครดิตชั่วโมง' : b.payment_method === 'cash' ? 'เงินสด' : (b.payment_method === 'transfer' ? 'โอนเงิน' : (b.payment_method || '-'))}
+                        {fin.is_internal_free ? (
+                          'สิทธิ์ภายใน'
+                        ) : fin.is_deposit ? (
+                          `ชำระ ฿${Number(fin.paid_amount || 0).toLocaleString()} · คงเหลือ ฿${Number(fin.balance_amount || 0).toLocaleString()}`
+                        ) : fin.is_paid ? (
+                          'คงเหลือ ฿0'
+                        ) : (
+                          `คงเหลือ ฿${Number(fin.balance_amount || 0).toLocaleString()}`
+                        )}
                       </span>
                       {b.slip_image_url && (
                         <span className="pb-slip-indicator">มีสลิปแนบ</span>
@@ -2948,17 +3186,20 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const usageTimeStr = formatUsageTime(b);
         const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
         const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
-        const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
+        const fin = normalizeBookingFinancials(b);
+        const isInternalFree = fin?.is_internal_free;
+        const isDeposit = fin?.is_deposit;
+        const isPaid = fin?.is_paid;
         const isCancelled = b.payment_status === 'cancelled';
         const isRejected = b.payment_status === 'rejected' || b.slip_verify_status === 'rejected';
-        const isReviewing = (b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected;
-        const isPending = !isPaid && !isCancelled && !isRejected && !isReviewing;
+        const isReviewing = (b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isDeposit && !isCancelled && !isRejected;
+        const isPending = !isPaid && !isDeposit && !isCancelled && !isRejected && !isReviewing;
 
         const customerName = b.customer_name || b.contact_name || '-';
         const contactPhone = b.contact || b.phone || '-';
         const custTypeLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
         const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : (b.booking_source === 'pos' ? 'POS' : (b.booking_source || 'Walk-in'));
-        const paymentMethodLabel = b.payment_method === 'transfer' ? 'โอนเงินผ่านธนาคาร' : (b.payment_method === 'promptpay' ? 'พร้อมเพย์' : (b.payment_method || '-'));
+        const paymentMethodLabel = getPaymentMethodLabel(b.payment_method);
 
         const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom (จัดโต๊ะเรียน)' : 'Standard (ห้องประชุมมาตรฐาน)';
         const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาทั้งวัน' : (firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง');
@@ -2972,8 +3213,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
         let statusText = 'รอชำระเงิน';
         let statusBadgeClass = 'pb-status-badge--pending';
-        if (isPaid) {
-          statusText = b.payment_status === 'internal_free' ? 'ใช้งานภายใน (ฟรี)' : 'ชำระเงินแล้ว';
+        if (isInternalFree) {
+          statusText = 'ใช้งานภายใน (ฟรี)';
+          statusBadgeClass = 'pb-status-badge--internal-free';
+        } else if (isDeposit) {
+          statusText = 'มัดจำแล้ว';
+          statusBadgeClass = 'pb-status-badge--deposit';
+        } else if (isPaid) {
+          statusText = 'ชำระเงินแล้ว';
           statusBadgeClass = 'pb-status-badge--paid';
         } else if (isCancelled) {
           statusText = 'ยกเลิกการจอง';
@@ -3302,34 +3549,86 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
                   {/* RIGHT COLUMN */}
                   <div className="pb-detail-col">
-                    {/* 4. PAYMENT SECTION */}
+                    {/* 4. PAYMENT SECTION & FINANCIAL LIFECYCLE */}
                     <div className="pb-detail-card">
                       <div className="pb-detail-card-header">
                         <span className="pb-detail-card-title">ข้อมูลการชำระเงิน</span>
+                        {fin?.is_deposit && (
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: '5px', backgroundColor: 'rgba(99, 102, 241, 0.12)', color: '#6366f1' }}>
+                            มัดจำบางส่วน
+                          </span>
+                        )}
                       </div>
                       <div className="pb-detail-content">
                         <div className="pb-detail-amount-hero">
-                          <span className="pb-detail-label">ยอดที่ต้องชำระตามบิล</span>
-                          <span className="pb-detail-amount-val" style={{ color: isPaid ? '#16a34a' : 'var(--text-main)' }}>
-                            ฿{Number(b.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          <span className="pb-detail-label">
+                            {isInternalFree ? 'ยอดรวม (สิทธิ์ใช้งานภายใน)' : 'ยอดสุทธิ (Total Amount)'}
+                          </span>
+                          <span
+                            className="pb-detail-amount-val"
+                            style={{
+                              color: isPaid ? '#16a34a' : (isDeposit ? '#6366f1' : 'var(--text-main)')
+                            }}
+                          >
+                            ฿{formatMoney(fin?.total_amount || 0)}
                           </span>
                         </div>
 
+                        {/* Financial Breakdown Table */}
                         <div className="pb-detail-field-group" style={{ marginTop: '12px' }}>
                           <div className="pb-detail-field">
-                            <span className="pb-detail-label">วิธีชำระเงิน</span>
-                            <span className="pb-detail-val">{paymentMethodLabel}</span>
+                            <span className="pb-detail-label">ยอดก่อนส่วนลด</span>
+                            <span className="pb-detail-val">฿{formatMoney(fin?.subtotal_amount || 0)}</span>
                           </div>
+
+                          {Boolean(fin?.discount_amount > 0) && (
+                            <div className="pb-detail-field">
+                              <span className="pb-detail-label">
+                                ส่วนลด {fin?.discount_type === 'percent' ? `(${fin?.discount_value}%)` : ''}
+                              </span>
+                              <span className="pb-detail-val" style={{ color: '#16a34a', fontWeight: 700 }}>
+                                -฿{formatMoney(fin?.discount_amount || 0)}
+                              </span>
+                            </div>
+                          )}
+
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">ชำระแล้ว</span>
+                            <span className="pb-detail-val" style={{ color: '#16a34a', fontWeight: 700 }}>
+                              ฿{formatMoney(fin?.paid_amount || 0)}
+                            </span>
+                          </div>
+
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">ยอดคงเหลือ</span>
+                            <span
+                              className="pb-detail-val"
+                              style={{
+                                color: (fin?.balance_amount > 0) ? '#f59e0b' : 'var(--text-muted)',
+                                fontWeight: (fin?.balance_amount > 0) ? 800 : 600
+                              }}
+                            >
+                              ฿{formatMoney(fin?.balance_amount || 0)}
+                            </span>
+                          </div>
+
                           <div className="pb-detail-field">
                             <span className="pb-detail-label">สถานะการชำระ</span>
                             <span className="pb-detail-val">{statusText}</span>
                           </div>
+
+                          <div className="pb-detail-field">
+                            <span className="pb-detail-label">วิธีชำระล่าสุด</span>
+                            <span className="pb-detail-val">{paymentMethodLabel}</span>
+                          </div>
+
                           {b.paid_at && (
                             <div className="pb-detail-field">
-                              <span className="pb-detail-label">เวลาที่ชำระ</span>
+                              <span className="pb-detail-label">เวลาที่ชำระล่าสุด</span>
                               <span className="pb-detail-val">{formatCreatedDateTime(b.paid_at)}</span>
                             </div>
                           )}
+
                           {b.hour_credit_used && (
                             <div className="pb-detail-field">
                               <span className="pb-detail-label">เครดิตชั่วโมงที่ใช้</span>
@@ -3338,9 +3637,71 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           )}
                         </div>
 
+                        {/* Payment Transaction History */}
+                        <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--border-color)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                              ประวัติการทำรายการชำระเงิน
+                            </span>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                              {paymentTransactions?.length || 0} รายการ
+                            </span>
+                          </div>
+
+                          {isLoadingPayments ? (
+                            <div className="pb-detail-empty-note">
+                              กำลังโหลดประวัติธุรกรรม...
+                            </div>
+                          ) : (paymentTransactions && paymentTransactions.length > 0) ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              {paymentTransactions.map((tx, idx) => (
+                                <div
+                                  key={tx.id || idx}
+                                  style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    padding: '8px 10px',
+                                    borderRadius: '8px',
+                                    background: 'var(--bg-hover)',
+                                    border: '1px solid var(--border-color)',
+                                    fontSize: '0.78rem'
+                                  }}
+                                >
+                                  <div>
+                                    <div style={{ fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      <span>{getTransactionTypeLabel(tx.transaction_type)}</span>
+                                      <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(37, 99, 235, 0.12)', color: 'var(--primary-color)', fontWeight: 600 }}>
+                                        {getPaymentMethodLabel(tx.payment_method)}
+                                      </span>
+                                    </div>
+                                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                      {formatCreatedDateTime(tx.payment_time || tx.created_at)}
+                                    </div>
+                                  </div>
+                                  <div style={{ textAlign: 'right' }}>
+                                    <div style={{ fontWeight: 800, color: '#16a34a', fontSize: '0.86rem' }}>
+                                      +฿{formatMoney(tx.amount)}
+                                    </div>
+                                    {tx.receipt_number && (
+                                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                        #{tx.receipt_number}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="pb-detail-empty-note">
+                              ไม่มีประวัติธุรกรรมแยกรายการสำหรับการจองเดิม
+                            </div>
+                          )}
+                        </div>
+
                         {/* Slip Review Action */}
                         {hasSlip ? (
-                          <div className="pb-detail-slip-box">
+                          <div className="pb-detail-slip-box" style={{ marginTop: '14px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                               <FileText size={16} style={{ color: 'var(--primary-color)' }} />
                               <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>มีสลิปโอนเงินแนบมา</span>
@@ -3359,7 +3720,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                             </button>
                           </div>
                         ) : (
-                          <div className="pb-detail-empty-note" style={{ marginTop: '8px' }}>
+                          <div className="pb-detail-empty-note" style={{ marginTop: '12px' }}>
                             ไม่มีการแนบสลิปโอนเงิน
                           </div>
                         )}
@@ -3512,19 +3873,22 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     </button>
                   )}
 
-                  {isPending && (
+                  {fin?.is_collectible && (
                     <button
                       type="button"
                       className="pb-detail-btn-primary"
-                      style={{ backgroundColor: '#f59e0b', borderColor: '#f59e0b' }}
+                      style={{
+                        backgroundColor: fin.is_deposit ? '#6366f1' : '#f59e0b',
+                        borderColor: fin.is_deposit ? '#6366f1' : '#f59e0b'
+                      }}
                       onClick={() => {
                         setShowDetailModal(false);
-                        handleOpenPayment(b);
+                        handleOpenCollectBalance(b);
                       }}
-                      aria-label="รับชำระเงิน"
+                      aria-label={fin.is_deposit ? 'รับชำระส่วนที่เหลือ' : 'รับชำระเงิน'}
                     >
                       <DollarSign size={14} />
-                      <span>รับชำระเงิน</span>
+                      <span>{fin.is_deposit ? 'รับชำระส่วนที่เหลือ' : 'รับชำระเงิน'}</span>
                     </button>
                   )}
 
@@ -3583,6 +3947,304 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           <ReceiptPrint booking={selectedBooking} settings={settings} />
         </div>
       )}
+
+      {/* ========================================================= */}
+      {/*  COLLECT BALANCE / SETTLEMENT MODAL (Phase 4)              */}
+      {/* ========================================================= */}
+      {showCollectBalanceModal && collectBalanceBooking && (() => {
+        const b = collectBalanceBooking;
+        const fin = normalizeBookingFinancials(b);
+        const amountNum = roundMoney(Number(collectBalanceAmount) || 0);
+        const remainingAfter = roundMoney(Math.max(0, fin.balance_amount - amountNum));
+        const isOverpaying = amountNum > fin.balance_amount;
+        const isZeroOrNegative = isNaN(amountNum) || amountNum <= 0;
+        const isFormValid = !isZeroOrNegative && !isOverpaying && Boolean(collectBalanceMethod);
+        const displayCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
+
+        return (
+          <div
+            className="pb-modal-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pb-collect-balance-title"
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(15, 23, 42, 0.75)',
+              backdropFilter: 'blur(8px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 9999,
+              padding: '20px'
+            }}
+          >
+            <div
+              className="card"
+              style={{
+                width: '100%',
+                maxWidth: '480px',
+                padding: '24px',
+                borderRadius: '20px',
+                backgroundColor: 'var(--bg-card)',
+                border: '1px solid var(--border-color)',
+                boxShadow: 'var(--glass-shadow)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                position: 'relative',
+                maxHeight: '90vh',
+                overflowY: 'auto'
+              }}
+            >
+              <button
+                type="button"
+                style={{
+                  position: 'absolute',
+                  right: '16px',
+                  top: '16px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer'
+                }}
+                onClick={() => {
+                  if (!isCollectingBalance) {
+                    setShowCollectBalanceModal(false);
+                    setCollectBalanceBooking(null);
+                    setCollectBalanceError(null);
+                  }
+                }}
+                aria-label="ปิดหน้าต่าง"
+              >
+                <X size={20} />
+              </button>
+
+              {/* Title */}
+              <div>
+                <h3
+                  id="pb-collect-balance-title"
+                  style={{
+                    fontSize: '1.2rem',
+                    fontWeight: 800,
+                    margin: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    color: 'var(--text-main)'
+                  }}
+                >
+                  <DollarSign size={22} style={{ color: fin.is_deposit ? '#6366f1' : '#10b981' }} />
+                  <span>{fin.is_deposit ? 'รับชำระส่วนที่เหลือ' : 'รับชำระเงิน'}</span>
+                </h3>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  ใบจอง: <strong style={{ color: 'var(--text-main)' }}>{displayCode}</strong> | ลูกค้า: <strong>{b.customer_name || '-'}</strong>
+                </div>
+              </div>
+
+              {/* Financial Snapshot Card */}
+              <div
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: '12px',
+                  backgroundColor: 'var(--bg-hover)',
+                  border: '1px solid var(--border-color)',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(3, 1fr)',
+                  gap: '8px',
+                  textAlign: 'center'
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดสุทธิ</div>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
+                    ฿{formatMoney(fin.total_amount)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ชำระแล้ว</div>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#16a34a', marginTop: '2px' }}>
+                    ฿{formatMoney(fin.paid_amount)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดคงเหลือ</div>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#f59e0b', marginTop: '2px' }}>
+                    ฿{formatMoney(fin.balance_amount)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Amount Input */}
+              <div className="form-group" style={{ margin: 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
+                    จำนวนเงินที่ต้องการรับชำระ (บาท)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCollectBalanceAmount(String(fin.balance_amount));
+                      if (collectBalanceError) setCollectBalanceError(null);
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--primary-color)',
+                      fontSize: '0.75rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      padding: 0,
+                      textDecoration: 'underline'
+                    }}
+                  >
+                    ชำระเต็มยอด (฿{formatMoney(fin.balance_amount)})
+                  </button>
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontWeight: 700, color: 'var(--text-muted)', fontSize: '0.95rem' }}>
+                    ฿
+                  </span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max={fin.balance_amount}
+                    value={collectBalanceAmount}
+                    onChange={(e) => {
+                      setCollectBalanceAmount(e.target.value);
+                      if (collectBalanceError) setCollectBalanceError(null);
+                    }}
+                    disabled={isCollectingBalance}
+                    className="form-control"
+                    placeholder="0.00"
+                    style={{
+                      paddingLeft: '30px',
+                      fontSize: '1.05rem',
+                      fontWeight: 800,
+                      height: '44px',
+                      borderRadius: '12px'
+                    }}
+                    autoFocus
+                  />
+                </div>
+                <div style={{ marginTop: '6px', fontSize: '0.75rem', color: isOverpaying ? '#ef4444' : 'var(--text-muted)' }}>
+                  {isOverpaying ? (
+                    `ยอดเงินที่ระบุเกินกว่ายอดคงเหลือ (฿${formatMoney(fin.balance_amount)})`
+                  ) : remainingAfter === 0 && amountNum > 0 ? (
+                    'การชำระนี้จะปิดยอดคงเหลือทั้งหมด (สถานะ: ชำระครบถ้วน)'
+                  ) : amountNum > 0 ? (
+                    `หลังการชำระ จะมียอดคงเหลือค้างอีก ฿${formatMoney(remainingAfter)}`
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Payment Method Selector */}
+              <div>
+                <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  ช่องทางการรับชำระเงิน
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                  {[
+                    { id: 'cash', label: 'เงินสด (Cash)' },
+                    { id: 'transfer', label: 'โอนเงิน (Transfer)' },
+                    { id: 'card', label: 'บัตร (Card)' }
+                  ].map(m => {
+                    const isSel = collectBalanceMethod === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setCollectBalanceMethod(m.id)}
+                        disabled={isCollectingBalance}
+                        style={{
+                          padding: '10px 8px',
+                          borderRadius: '10px',
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          border: isSel ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                          backgroundColor: isSel ? 'var(--primary-light)' : 'rgba(255, 255, 255, 0.03)',
+                          color: isSel ? 'var(--primary-color)' : 'var(--text-main)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        {m.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Error Banner */}
+              {collectBalanceError && (
+                <div
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: '10px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    color: '#ef4444',
+                    fontSize: '0.82rem',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                  <span>{collectBalanceError}</span>
+                </div>
+              )}
+
+              {/* Modal Actions */}
+              <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ flex: 1, borderRadius: '12px', height: '42px' }}
+                  onClick={() => {
+                    setShowCollectBalanceModal(false);
+                    setCollectBalanceBooking(null);
+                    setCollectBalanceError(null);
+                  }}
+                  disabled={isCollectingBalance}
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{
+                    flex: 2,
+                    borderRadius: '12px',
+                    height: '42px',
+                    backgroundColor: fin.is_deposit ? '#6366f1' : '#10b981',
+                    borderColor: fin.is_deposit ? '#6366f1' : '#10b981',
+                    fontWeight: 800,
+                    opacity: (!isFormValid || isCollectingBalance) ? 0.5 : 1,
+                    cursor: (!isFormValid || isCollectingBalance) ? 'not-allowed' : 'pointer'
+                  }}
+                  onClick={submitCollectBalance}
+                  disabled={!isFormValid || isCollectingBalance}
+                >
+                  {isCollectingBalance ? (
+                    'กำลังบันทึก...'
+                  ) : (
+                    <>
+                      <CheckCircle2 size={16} style={{ marginRight: '6px' }} />
+                      <span>ยืนยันรับชำระ ฿{formatMoney(amountNum || 0)}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ========================================================= */}
       {/*  WIDE SLIP MODAL: ตรวจสอบสลิป (Enterprise Review Layout)  */}
@@ -5312,37 +5974,103 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
               {/* Price Recalculation Summary */}
               <div style={{
-                padding: '12px 16px',
+                padding: '14px 16px',
                 borderRadius: '12px',
                 backgroundColor: 'var(--bg-hover)',
                 border: '1px solid var(--border-color)',
                 display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: '8px'
+                flexDirection: 'column',
+                gap: '10px'
               }}>
-                <div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>ยอดเงินเดิม: ฿{reschedulePriceCalc.oldTotal.toLocaleString()}</div>
-                  <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
-                    ยอดคำนวณใหม่: <strong style={{ color: 'var(--primary-color)' }}>฿{reschedulePriceCalc.newTotal.toLocaleString()}</strong>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                  <div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                      ยอดเงินเดิม: ฿{formatMoney(reschedulePriceCalc.oldTotal)}
+                    </div>
+                    <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
+                      ยอดสุทธิใหม่: <strong style={{ color: 'var(--primary-color)' }}>฿{formatMoney(reschedulePriceCalc.newTotal)}</strong>
+                    </div>
+                  </div>
+                  <div>
+                    {reschedulePriceCalc.diff > 0 ? (
+                      <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', fontWeight: 800, fontSize: '0.82rem' }}>
+                        +฿{formatMoney(reschedulePriceCalc.diff)} (ชำระเพิ่ม)
+                      </span>
+                    ) : reschedulePriceCalc.diff < 0 ? (
+                      <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(14, 165, 233, 0.15)', color: '#0ea5e9', fontWeight: 800, fontSize: '0.82rem' }}>
+                        -฿{formatMoney(Math.abs(reschedulePriceCalc.diff))} (คืนเงินส่วนต่าง)
+                      </span>
+                    ) : (
+                      <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 800, fontSize: '0.82rem' }}>
+                        ยอดเท่าเดิม
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div>
-                  {reschedulePriceCalc.diff > 0 ? (
-                    <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', fontWeight: 800, fontSize: '0.82rem' }}>
-                      +฿{reschedulePriceCalc.diff.toLocaleString()} (ชำระเพิ่ม)
-                    </span>
-                  ) : reschedulePriceCalc.diff < 0 ? (
-                    <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(14, 165, 233, 0.15)', color: '#0ea5e9', fontWeight: 800, fontSize: '0.82rem' }}>
-                      -฿{Math.abs(reschedulePriceCalc.diff).toLocaleString()} (คืนเงินส่วนต่าง)
-                    </span>
-                  ) : (
-                    <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 800, fontSize: '0.82rem' }}>
-                      ยอดเท่าเดิม
-                    </span>
+
+                {/* Detailed financial preview row */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
+                  gap: '8px',
+                  paddingTop: '8px',
+                  borderTop: '1px solid var(--border-color)',
+                  fontSize: '0.75rem'
+                }}>
+                  <div>
+                    <span style={{ color: 'var(--text-muted)' }}>ยอดก่อนส่วนลดใหม่:</span>
+                    <strong style={{ display: 'block', color: 'var(--text-main)', marginTop: '1px' }}>
+                      ฿{formatMoney(reschedulePriceCalc.newGross || reschedulePriceCalc.newTotal)}
+                    </strong>
+                  </div>
+
+                  {Boolean(reschedulePriceCalc.discountAmount > 0) && (
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>
+                        ส่วนลดเดิม {reschedulePriceCalc.discountType === 'percent' ? `(${reschedulePriceCalc.discountValue}%)` : ''}:
+                      </span>
+                      <strong style={{ display: 'block', color: '#16a34a', marginTop: '1px' }}>
+                        -฿{formatMoney(reschedulePriceCalc.discountAmount)}
+                      </strong>
+                    </div>
                   )}
+
+                  <div>
+                    <span style={{ color: 'var(--text-muted)' }}>ชำระแล้ว:</span>
+                    <strong style={{ display: 'block', color: '#16a34a', marginTop: '1px' }}>
+                      ฿{formatMoney(reschedulePriceCalc.paidAmount || 0)}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span style={{ color: 'var(--text-muted)' }}>ยอดคงเหลือใหม่:</span>
+                    <strong style={{
+                      display: 'block',
+                      color: (reschedulePriceCalc.balanceAmount > 0) ? '#f59e0b' : 'var(--text-main)',
+                      marginTop: '1px'
+                    }}>
+                      ฿{formatMoney(reschedulePriceCalc.balanceAmount || 0)}
+                    </strong>
+                  </div>
                 </div>
+
+                {reschedulePriceCalc.financialError && (
+                  <div style={{
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    color: '#ef4444',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}>
+                    <AlertCircle size={14} style={{ flexShrink: 0 }} />
+                    <span>{reschedulePriceCalc.financialError}</span>
+                  </div>
+                )}
               </div>
 
               {/* รายละเอียดเพิ่มเติม (Booking Details) */}
