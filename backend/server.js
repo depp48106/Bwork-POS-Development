@@ -2145,6 +2145,38 @@ async function sendLineNotification(bookingId) {
 app.patch('/api/bookings/:id/payment', async (req, res) => {
   const { payment_status, payment_method } = req.body;
   try {
+    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [req.params.id]);
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    if (payment_status === 'paid') {
+      const hasV1Snapshots = (booking.balance_amount !== null && booking.balance_amount !== undefined) ||
+                             (booking.paid_amount !== null && booking.paid_amount !== undefined);
+      if (hasV1Snapshots) {
+        const balance = Number(booking.balance_amount || 0);
+        const paid = Number(booking.paid_amount || 0);
+        const total = Number(booking.total_amount || 0);
+
+        if (balance > 0) {
+          return res.status(409).json({
+            error: 'ไม่สามารถเปลี่ยนสถานะเป็นชำระแล้วโดยตรงสำหรับรายการที่มีเงินคงค้าง กรุณาใช้ระบบรับชำระเงินคงเหลือ (POST /api/bookings/:id/pay-balance)',
+            code: 'PAYMENT_BALANCE_REMAINING',
+            balance_amount: balance
+          });
+        }
+
+        if (Math.round((paid - total) * 100) / 100 !== 0) {
+          return res.status(409).json({
+            error: 'ไม่สามารถเปลี่ยนสถานะเป็นชำระแล้วโดยตรงสำหรับรายการที่ยอดชำระไม่ตรงกับยอดสุทธิ กรุณาใช้ระบบรับชำระเงินคงเหลือ (POST /api/bookings/:id/pay-balance)',
+            code: 'PAYMENT_STATE_INCONSISTENT',
+            paid_amount: paid,
+            total_amount: total
+          });
+        }
+      }
+    }
+
     await dbQuery.run(
       'UPDATE bookings SET payment_status = ?, payment_method = ? WHERE id = ?',
       [payment_status, payment_method, req.params.id]

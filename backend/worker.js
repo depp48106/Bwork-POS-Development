@@ -3321,6 +3321,31 @@ export default {
         const nowIso = new Date().toISOString();
 
         if (paymentStatus === 'paid') {
+          const hasV1Snapshots = (booking.balance_amount !== null && booking.balance_amount !== undefined) ||
+                                 (booking.paid_amount !== null && booking.paid_amount !== undefined);
+          if (hasV1Snapshots) {
+            const balance = Number(booking.balance_amount || 0);
+            const paid = Number(booking.paid_amount || 0);
+            const total = Number(booking.total_amount || 0);
+
+            if (balance > 0) {
+              return new Response(JSON.stringify({
+                error: 'ไม่สามารถเปลี่ยนสถานะเป็นชำระแล้วโดยตรงสำหรับรายการที่มีเงินคงค้าง กรุณาใช้ระบบรับชำระเงินคงเหลือ (POST /api/bookings/:id/pay-balance)',
+                code: 'PAYMENT_BALANCE_REMAINING',
+                balance_amount: balance
+              }), { status: 409, headers: corsHeaders });
+            }
+
+            if (Math.round((paid - total) * 100) / 100 !== 0) {
+              return new Response(JSON.stringify({
+                error: 'ไม่สามารถเปลี่ยนสถานะเป็นชำระแล้วโดยตรงสำหรับรายการที่ยอดชำระไม่ตรงกับยอดสุทธิ กรุณาใช้ระบบรับชำระเงินคงเหลือ (POST /api/bookings/:id/pay-balance)',
+                code: 'PAYMENT_STATE_INCONSISTENT',
+                paid_amount: paid,
+                total_amount: total
+              }), { status: 409, headers: corsHeaders });
+            }
+          }
+
           let receiptNumber = booking.receipt_number;
           if (!receiptNumber) {
             receiptNumber = await generateReceiptNumber(env);

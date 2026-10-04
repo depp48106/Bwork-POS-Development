@@ -4,6 +4,8 @@
  * for external Dashboard data entry.
  */
 
+import { normalizeBookingFinancials } from './financialUtils.js';
+
 export const DASHBOARD_EXPORT_COLUMNS = [
   'Booking ID',
   'เลขที่ใบเสร็จ',
@@ -161,6 +163,7 @@ export function formatPricingType(item) {
  * - Multi-item booking: allocated proportionally to item subtotals so sum never exceeds total_amount
  */
 export function calculateAmountReceived(b, item) {
+  if (!b) return 0;
   if (b.billing_option === 'hour_credit' || b.payment_method === 'hour_credit') {
     return 0;
   }
@@ -174,44 +177,65 @@ export function calculateAmountReceived(b, item) {
     return 0;
   }
 
-  // Total billed is the definitive ceiling of revenue actually received
-  const totalBilled = Number(b.total_amount || 0);
-  if (totalBilled <= 0) {
+  // Realized money received using normalizeBookingFinancials (with safe legacy fallback)
+  const fin = normalizeBookingFinancials(b);
+  const realizedRevenue = fin ? Number(fin.paid_amount || 0) : 0;
+  if (realizedRevenue <= 0) {
     return 0;
   }
 
   // Single item or no items
   if (!item) {
-    return totalBilled;
+    return realizedRevenue;
   }
 
   const items = Array.isArray(b.items) && b.items.length > 0 ? b.items : null;
   if (!items || items.length <= 1) {
-    return totalBilled;
+    return realizedRevenue;
   }
 
   // For multi-item bookings: allocate proportionally to item subtotals
-  // to avoid overstating revenue if discounts or quota hours were applied
+  // so the sum of all item allocations strictly equals realizedRevenue
   const sumSubtotals = items.reduce((sum, it) => {
     const itSub = it.subtotal != null ? Number(it.subtotal) : (Number(it.price || 0) * Number(it.quantity || 1));
     return sum + (isNaN(itSub) ? 0 : itSub);
   }, 0);
 
+  const itemIndex = items.findIndex(it => (it.id != null && it.id === item.id) || it === item);
+
+  if (itemIndex === items.length - 1) {
+    // Last item receives the exact remaining balance to prevent 1-satang rounding drift
+    let sumPrev = 0;
+    for (let i = 0; i < items.length - 1; i++) {
+      const prevIt = items[i];
+      const prevSub = prevIt.subtotal != null ? Number(prevIt.subtotal) : (Number(prevIt.price || 0) * Number(prevIt.quantity || 1));
+      let prevAlloc = 0;
+      if (sumSubtotals > 0 && !isNaN(prevSub)) {
+        prevAlloc = Math.round((prevSub / sumSubtotals) * realizedRevenue * 100) / 100;
+      } else {
+        prevAlloc = Math.round((realizedRevenue / items.length) * 100) / 100;
+      }
+      sumPrev += prevAlloc;
+    }
+    return Math.round((realizedRevenue - sumPrev) * 100) / 100;
+  }
+
   const thisSubtotal = item.subtotal != null ? Number(item.subtotal) : (Number(item.price || 0) * Number(item.quantity || 1));
 
   if (sumSubtotals > 0 && !isNaN(thisSubtotal)) {
-    return Math.round((thisSubtotal / sumSubtotals) * totalBilled * 100) / 100;
+    return Math.round((thisSubtotal / sumSubtotals) * realizedRevenue * 100) / 100;
   }
 
-  return Math.round((totalBilled / items.length) * 100) / 100;
+  return Math.round((realizedRevenue / items.length) * 100) / 100;
 }
 
 /**
  * Formats Payment Status into Thai
  */
 export function formatPaymentStatus(b) {
-  const status = b.payment_status;
+  const status = b?.payment_status;
   if (status === 'paid') return 'ชำระแล้ว';
+  if (status === 'deposit') return 'ชำระมัดจำแล้ว';
   if (status === 'cancelled') return 'ยกเลิก';
   if (status === 'pending' || status === 'unpaid') return 'รอชำระ';
   if (status === 'reviewing') return 'รอตรวจสอบสลิป';
@@ -243,7 +267,7 @@ export function formatPaymentMethod(b) {
  * Formats Payment Date (DD/MM/YYYY)
  */
 export function formatPaymentDate(b) {
-  if (b.payment_status !== 'paid' && b.payment_status !== 'internal_free') {
+  if (b.payment_status !== 'paid' && b.payment_status !== 'deposit' && b.payment_status !== 'internal_free') {
     return '-';
   }
   const dateStr = b.slip_verified_at || b.paid_at || b.created_at;
@@ -269,10 +293,12 @@ export function formatBillingOption(b) {
 /**
  * Formats Advance Payment flag
  * External Dashboard expects payment in advance status.
- * POS does not reliably store an advance payment / deposit transaction field.
- * Reported as unsupported ('-').
+ * For deposit bookings, returns 'มัดจำ'. Otherwise '-'.
  */
-export function formatAdvancePaymentFlag() {
+export function formatAdvancePaymentFlag(b, item) {
+  if (b?.payment_status === 'deposit') {
+    return 'มัดจำ';
+  }
   return '-';
 }
 
