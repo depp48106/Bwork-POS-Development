@@ -1,17 +1,18 @@
 import BasecampQuotaModal from './BasecampQuotaModal';
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Plus, Minus, Trash2, Calendar, ShoppingCart, Printer, X, CreditCard,
   User, Users, Building, Building2, Phone, FileText, Check, ChevronLeft, ChevronRight,
   Clock, Search, ChevronUp, ChevronDown, Image, CheckCircle2, Key, Send,
   AlertTriangle, LayoutGrid, Columns, Sparkles, Layers, Presentation, Laptop, Coffee, Car, BookmarkPlus, Zap,
-  Banknote, Smartphone, ExternalLink
+  Banknote, Smartphone, ExternalLink, Eye, EyeOff, Copy
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import { printReceipt } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { roomUsesDoorPin } from '../utils/doorPinHelper';
+import { resolveRoomPin, NO_PIN_ROOM_IDS } from '../utils/doorPinHelper';
 import { calculatePaymentPreview, formatMoney, roundMoney } from '../utils/financialUtils';
 
 const TIMELINE_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
@@ -220,6 +221,171 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     endMinute: '00',
     guestCount: ''
   });
+
+  // Room Access PIN viewing & popover state (BWORK-CALENDAR-PIN-V1)
+  const [activePinPopover, setActivePinPopover] = useState(null);
+  const [revealedAgendaPins, setRevealedAgendaPins] = useState({});
+  const [copiedPinKey, setCopiedPinKey] = useState(null);
+  const pinPopoverTimeoutRef = useRef(null);
+
+  // Clear popovers and reveals on date/month navigation
+  useEffect(() => {
+    setActivePinPopover(null);
+    setRevealedAgendaPins({});
+  }, [calendarYear, calendarMonth, timelineDate, sidebarSelectedDay]);
+
+  // Dismiss PIN popover on outside click, scroll, or resize
+  useEffect(() => {
+    if (!activePinPopover) return;
+
+    const handleOutsideClick = (e) => {
+      if (!e.target.closest('.room-pin-popover-portal') &&
+          !e.target.closest('.room-pin-trigger-btn') &&
+          !e.target.closest('.calendar-pin-trigger-btn') &&
+          !e.target.closest('.floorplan-pin-trigger-btn')) {
+        setActivePinPopover(null);
+      }
+    };
+
+    const handleScrollOrResize = (e) => {
+      if (e.target && e.target.closest && e.target.closest('.room-pin-popover-portal')) {
+        return;
+      }
+      setActivePinPopover(null);
+    };
+
+    window.addEventListener('mousedown', handleOutsideClick);
+    window.addEventListener('touchstart', handleOutsideClick);
+    window.addEventListener('scroll', handleScrollOrResize, true);
+    window.addEventListener('resize', handleScrollOrResize);
+
+    return () => {
+      window.removeEventListener('mousedown', handleOutsideClick);
+      window.removeEventListener('touchstart', handleOutsideClick);
+      window.removeEventListener('scroll', handleScrollOrResize, true);
+      window.removeEventListener('resize', handleScrollOrResize);
+    };
+  }, [activePinPopover]);
+
+  // Clean up timer on unmount
+  useEffect(() => {
+    return () => {
+      if (pinPopoverTimeoutRef.current) {
+        clearTimeout(pinPopoverTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const handleCopyPin = async (pinText, key) => {
+    if (!pinText) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(pinText);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = pinText;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setCopiedPinKey(key);
+      setTimeout(() => {
+        setCopiedPinKey(prev => (prev === key ? null : prev));
+      }, 2000);
+    } catch (err) {
+      // Do not log raw PIN
+    }
+  };
+
+  const handleTogglePinPopover = (key, roomsData, anchorEl) => {
+    if (pinPopoverTimeoutRef.current) {
+      clearTimeout(pinPopoverTimeoutRef.current);
+      pinPopoverTimeoutRef.current = null;
+    }
+    if (activePinPopover && activePinPopover.key === key) {
+      setActivePinPopover(null);
+    } else {
+      const rect = anchorEl.getBoundingClientRect();
+      setActivePinPopover({
+        key,
+        rect,
+        rooms: roomsData
+      });
+    }
+  };
+
+  const handleHoverPinPopover = (key, roomsData, anchorEl) => {
+    if (pinPopoverTimeoutRef.current) {
+      clearTimeout(pinPopoverTimeoutRef.current);
+      pinPopoverTimeoutRef.current = null;
+    }
+    const rect = anchorEl.getBoundingClientRect();
+    setActivePinPopover({
+      key,
+      rect,
+      rooms: roomsData
+    });
+  };
+
+  const handleLeavePinPopover = () => {
+    if (pinPopoverTimeoutRef.current) {
+      clearTimeout(pinPopoverTimeoutRef.current);
+    }
+    pinPopoverTimeoutRef.current = setTimeout(() => {
+      setActivePinPopover(null);
+    }, 250);
+  };
+
+  const toggleAgendaPinReveal = (key) => {
+    setRevealedAgendaPins(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  const getCalendarEventRoomsData = (ev) => {
+    if (!ev) return [];
+    const bId = ev.booking_id || ev.id;
+    const related = (Array.isArray(calendarEvents) ? calendarEvents : []).filter(it => (it.booking_id || it.id) === bId);
+    const items = related.length > 0 ? related : [ev];
+
+    const seenRooms = new Set();
+    const uniqueItems = items.filter(it => {
+      const rId = it.room_id || ev.room_id;
+      if (!rId) return true;
+      if (seenRooms.has(rId)) return false;
+      seenRooms.add(rId);
+      return true;
+    });
+
+    return uniqueItems.map(item => {
+      const rId = item.room_id || ev.room_id;
+      const rObj = (Array.isArray(rooms) ? rooms : []).find(r => r.id === rId);
+      const usesPin = roomUsesDoorPin(rObj || rId);
+      const pin = usesPin ? resolveRoomPin({ ...item, customer_type: item.customer_type || ev.customer_type, items: [item] }, rId, rObj) : '';
+      return {
+        roomId: rId || 0,
+        roomName: item.room_name || rObj?.name || (rId ? `ห้อง #${rId}` : 'ห้อง'),
+        pin: pin || '',
+        hasDoorPin: usesPin && !!pin
+      };
+    });
+  };
+
+  const getFloorPlanRoomData = (ev, room) => {
+    const rId = room?.id || ev?.room_id;
+    const usesPin = roomUsesDoorPin(room || rId);
+    const pin = usesPin ? resolveRoomPin(ev ? { ...ev, items: [ev] } : null, rId, room) : '';
+    return [{
+      roomId: rId || 0,
+      roomName: room?.name || ev?.room_name || (rId ? `ห้อง #${rId}` : 'ห้อง'),
+      pin: pin || '',
+      hasDoorPin: usesPin && !!pin
+    }];
+  };
 
 
   // Fetch Basecamp Quota when unit/subtype changes
@@ -1866,19 +2032,50 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                             <span style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-main)' }}>
                                               {ev.customer_name || 'ลูกค้า'}
                                             </span>
-                                            <span style={{
-                                              fontSize: '0.62rem',
-                                              fontWeight: 700,
-                                              color: statusInfo.color,
-                                              backgroundColor: statusInfo.bgLight,
-                                              border: `1px solid ${statusInfo.border}`,
-                                              padding: '1px 5px',
-                                              borderRadius: '4px',
-                                              whiteSpace: 'nowrap',
-                                              flexShrink: 0
-                                            }}>
-                                              {statusInfo.label}
-                                            </span>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+                                              <button
+                                                type="button"
+                                                className="floorplan-pin-trigger-btn"
+                                                aria-label="ดูรหัสผ่านห้อง"
+                                                title="ดูรหัสผ่านห้อง"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  const floorKey = `floor-${ev.booking_id || ev.id}-${room.id}-${ev.start_time}`;
+                                                  const roomsData = getFloorPlanRoomData(ev, room);
+                                                  handleTogglePinPopover(floorKey, roomsData, e.currentTarget);
+                                                }}
+                                                style={{
+                                                  display: 'inline-flex',
+                                                  alignItems: 'center',
+                                                  gap: '2px',
+                                                  fontSize: '0.58rem',
+                                                  fontWeight: 700,
+                                                  padding: '1px 4px',
+                                                  borderRadius: '3px',
+                                                  border: '1px solid var(--border-color)',
+                                                  backgroundColor: 'var(--bg-card, #ffffff)',
+                                                  color: 'var(--primary-color)',
+                                                  cursor: 'pointer',
+                                                  lineHeight: 1.1,
+                                                  flexShrink: 0
+                                                }}
+                                              >
+                                                <Eye size={10} />
+                                                <span>ดูรหัส</span>
+                                              </button>
+                                              <span style={{
+                                                fontSize: '0.62rem',
+                                                fontWeight: 700,
+                                                color: statusInfo.color,
+                                                backgroundColor: statusInfo.bgLight,
+                                                border: `1px solid ${statusInfo.border}`,
+                                                padding: '1px 5px',
+                                                borderRadius: '4px',
+                                                whiteSpace: 'nowrap'
+                                              }}>
+                                                {statusInfo.label}
+                                              </span>
+                                            </div>
                                           </div>
                                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px', fontSize: '0.65rem', color: 'var(--text-muted)' }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
@@ -1895,8 +2092,36 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                         </>
                                       ) : (
                                         <>
-                                          <div style={{ fontWeight: 700, fontSize: '0.69rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-main)', lineHeight: 1.2 }}>
-                                            {ev.customer_name || 'ลูกค้า'}
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '2px' }}>
+                                            <div style={{ fontWeight: 700, fontSize: '0.69rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-main)', lineHeight: 1.2 }}>
+                                              {ev.customer_name || 'ลูกค้า'}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              className="floorplan-pin-trigger-btn"
+                                              aria-label="ดูรหัสผ่านห้อง"
+                                              title="ดูรหัสผ่านห้อง"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                const floorKey = `floor-${ev.booking_id || ev.id}-${room.id}-${ev.start_time}`;
+                                                const roomsData = getFloorPlanRoomData(ev, room);
+                                                handleTogglePinPopover(floorKey, roomsData, e.currentTarget);
+                                              }}
+                                              style={{
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                padding: '1px 2px',
+                                                borderRadius: '3px',
+                                                border: '1px solid var(--border-color)',
+                                                backgroundColor: 'var(--bg-card, #ffffff)',
+                                                color: 'var(--primary-color)',
+                                                cursor: 'pointer',
+                                                lineHeight: 1,
+                                                flexShrink: 0
+                                              }}
+                                            >
+                                              <Eye size={9} />
+                                            </button>
                                           </div>
                                           <div style={{ display: 'flex', alignItems: 'center', gap: '3px', marginTop: '2px', fontSize: '0.62rem', color: 'var(--text-muted)' }}>
                                             <span style={{ width: '5px', height: '5px', borderRadius: '50%', backgroundColor: statusInfo.color, flexShrink: 0 }} />
@@ -2160,6 +2385,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               const endTime = new Date(ev.end_time);
                               const sT = !isNaN(startTime.getTime()) ? startTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '--:--';
                               const eT = !isNaN(endTime.getTime()) ? endTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '--:--';
+                              const popoverKey = `cal-${ev.booking_id || ev.id}-${ev.room_id}-${dateKey}`;
+                              const isPopoverOpen = activePinPopover?.key === popoverKey;
 
                               return (
                                 <div
@@ -2172,17 +2399,50 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                     <span className="event-chip-room" style={{ fontWeight: 800 }}>{ev.room_name}</span>
                                     <span className="event-chip-time" style={{ fontWeight: 600 }}>{sT}-{eT}</span>
                                   </div>
-                                  <span style={{
-                                    fontSize: '0.6rem',
-                                    fontWeight: 700,
-                                    flexShrink: 0,
-                                    backgroundColor: statusInfo.bgLight,
-                                    color: statusInfo.color,
-                                    padding: '0 4px',
-                                    borderRadius: '3px'
-                                  }}>
-                                    {statusInfo.label}
-                                  </span>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
+                                    <button
+                                      type="button"
+                                      className="calendar-pin-trigger-btn"
+                                      aria-label={isPopoverOpen ? "ซ่อนรหัสผ่านห้อง" : "ดูรหัสผ่านห้อง"}
+                                      title="ดูรหัสผ่านห้อง"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const roomsData = getCalendarEventRoomsData(ev);
+                                        handleTogglePinPopover(popoverKey, roomsData, e.currentTarget);
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        const roomsData = getCalendarEventRoomsData(ev);
+                                        handleHoverPinPopover(popoverKey, roomsData, e.currentTarget);
+                                      }}
+                                      onMouseLeave={handleLeavePinPopover}
+                                      style={{
+                                        background: isPopoverOpen ? 'rgba(37, 99, 235, 0.2)' : 'rgba(0, 0, 0, 0.06)',
+                                        border: 'none',
+                                        borderRadius: '3px',
+                                        padding: '1px 3px',
+                                        cursor: 'pointer',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '2px',
+                                        color: isPopoverOpen ? 'var(--primary-color)' : 'inherit',
+                                        lineHeight: 1
+                                      }}
+                                    >
+                                      {isPopoverOpen ? <EyeOff size={10} /> : <Eye size={10} />}
+                                      <span style={{ fontSize: '0.58rem', fontWeight: 700 }} className="cal-pin-label-text">ดูรหัส</span>
+                                    </button>
+                                    <span style={{
+                                      fontSize: '0.6rem',
+                                      fontWeight: 700,
+                                      flexShrink: 0,
+                                      backgroundColor: statusInfo.bgLight,
+                                      color: statusInfo.color,
+                                      padding: '0 4px',
+                                      borderRadius: '3px'
+                                    }}>
+                                      {statusInfo.label}
+                                    </span>
+                                  </div>
                                 </div>
                               );
                             })}
@@ -2397,6 +2657,102 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               {ev.customer_name || 'ลูกค้าทั่วไป'} {ev.guest_count ? `(${ev.guest_count} คน)` : ''}
                             </span>
                           </div>
+
+                          {/* Internal Room Access PIN Section (BWORK-CALENDAR-PIN-V1) */}
+                          {(() => {
+                            const cardRoom = rooms.find(r => r.id === ev.room_id);
+                            const usesDoorPin = roomUsesDoorPin(cardRoom || ev.room_id);
+                            const cardPin = usesDoorPin ? resolveRoomPin({ ...ev, items: [ev] }, ev.room_id, cardRoom) : '';
+                            const agendaKey = `agenda-${ev.booking_id || ev.id}-${ev.room_id}`;
+                            const isAgendaRevealed = !!revealedAgendaPins[agendaKey];
+
+                            return (
+                              <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px dashed var(--border-color)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <button
+                                    type="button"
+                                    className="room-pin-trigger-btn"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      toggleAgendaPinReveal(agendaKey);
+                                    }}
+                                    aria-label={isAgendaRevealed ? "ซ่อนรหัสผ่านห้อง" : "ดูรหัสผ่านห้อง"}
+                                    title={isAgendaRevealed ? "ซ่อนรหัสผ่านห้อง" : "ดูรหัสผ่านห้อง"}
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      fontSize: '0.72rem',
+                                      fontWeight: 700,
+                                      padding: '3px 8px',
+                                      borderRadius: '6px',
+                                      border: '1px solid var(--border-color)',
+                                      backgroundColor: isAgendaRevealed ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-card)',
+                                      color: isAgendaRevealed ? 'var(--primary-color)' : 'var(--text-main)',
+                                      cursor: 'pointer',
+                                      transition: 'all 0.15s ease'
+                                    }}
+                                  >
+                                    {isAgendaRevealed ? <EyeOff size={12} /> : <Eye size={12} />}
+                                    <span>{isAgendaRevealed ? 'ซ่อนรหัสผ่านห้อง' : 'ดูรหัสผ่านห้อง'}</span>
+                                  </button>
+                                </div>
+
+                                {isAgendaRevealed && (
+                                  <div style={{
+                                    marginTop: '4px',
+                                    padding: '6px 8px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'var(--bg-card)',
+                                    border: '1px solid var(--border-color)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between'
+                                  }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>รหัสผ่านห้อง:</span>
+                                      {usesDoorPin ? (
+                                        <span style={{ fontFamily: 'monospace', fontSize: '0.84rem', fontWeight: 800, color: 'var(--primary-color)', letterSpacing: '0.5px' }}>
+                                          {cardPin || 'ไม่มีรหัสเข้าห้อง'}
+                                        </span>
+                                      ) : (
+                                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                                          ไม่มีรหัสเข้าห้อง
+                                        </span>
+                                      )}
+                                    </div>
+                                    {usesDoorPin && cardPin ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleCopyPin(cardPin, agendaKey);
+                                        }}
+                                        aria-label="คัดลอก"
+                                        title="คัดลอก"
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '4px',
+                                          fontSize: '0.68rem',
+                                          fontWeight: 700,
+                                          padding: '3px 7px',
+                                          borderRadius: '5px',
+                                          border: '1px solid rgba(37, 99, 235, 0.3)',
+                                          backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                                          color: 'var(--primary-color)',
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        {copiedPinKey === agendaKey ? <Check size={11} /> : <Copy size={11} />}
+                                        <span>{copiedPinKey === agendaKey ? 'คัดลอกแล้ว' : 'คัดลอก'}</span>
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })
@@ -4469,6 +4825,52 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   );
                 })()}
               </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                <span style={{ color: 'var(--text-muted)' }}>รหัสผ่านห้อง:</span>
+                {(() => {
+                  const vRoom = rooms.find(r => r.id === viewedEvent.room_id);
+                  const usesPin = roomUsesDoorPin(vRoom || viewedEvent.room_id);
+                  const pin = usesPin ? resolveRoomPin({ ...viewedEvent, items: [viewedEvent] }, viewedEvent.room_id, vRoom) : '';
+                  const vKey = `viewed-${viewedEvent.booking_id || viewedEvent.id}-${viewedEvent.room_id}`;
+                  const isRevealed = !!revealedAgendaPins[vKey];
+
+                  if (!usesPin) {
+                    return <span style={{ fontWeight: 600, color: 'var(--text-muted)' }}>ไม่มีรหัสเข้าห้อง</span>;
+                  }
+
+                  return (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <button
+                        type="button"
+                        onClick={() => toggleAgendaPinReveal(vKey)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', color: 'var(--primary-color)' }}
+                        aria-label={isRevealed ? "ซ่อนรหัสผ่านห้อง" : "ดูรหัสผ่านห้อง"}
+                        title={isRevealed ? "ซ่อนรหัสผ่านห้อง" : "ดูรหัสผ่านห้อง"}
+                      >
+                        {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
+                        <span>{isRevealed ? 'ซ่อนรหัสผ่านห้อง' : 'ดูรหัสผ่านห้อง'}</span>
+                      </button>
+                      {isRevealed && pin && (
+                        <>
+                          <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '0.88rem', color: 'var(--primary-color)' }}>
+                            {pin}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyPin(pin, vKey)}
+                            aria-label="คัดลอก"
+                            title="คัดลอก"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.68rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(37, 99, 235, 0.3)', backgroundColor: 'rgba(37, 99, 235, 0.08)', color: 'var(--primary-color)', cursor: 'pointer' }}
+                          >
+                            {copiedPinKey === vKey ? <Check size={11} /> : <Copy size={11} />}
+                            <span>{copiedPinKey === vKey ? 'คัดลอกแล้ว' : 'คัดลอก'}</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ color: 'var(--text-muted)' }}>สถานะการใช้งาน:</span>
                 {(() => {
@@ -4593,6 +4995,111 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               }
               return <span style={{ color: 'var(--primary-color)', fontWeight: 600 }}>รอเริ่มการใช้งาน</span>;
             })()}
+          </div>
+        </div>
+      )}
+
+      {/* Floating Room Access PIN Popover Portal for Calendar & Floor Plan (BWORK-CALENDAR-PIN-V1) */}
+      {activePinPopover && (
+        <div
+          className="room-pin-popover-portal"
+          onMouseEnter={() => {
+            if (pinPopoverTimeoutRef.current) {
+              clearTimeout(pinPopoverTimeoutRef.current);
+              pinPopoverTimeoutRef.current = null;
+            }
+          }}
+          onMouseLeave={handleLeavePinPopover}
+          style={{
+            position: 'fixed',
+            top: (() => {
+              const spaceBelow = window.innerHeight - activePinPopover.rect.bottom;
+              if (spaceBelow < 180 && activePinPopover.rect.top > 180) {
+                return activePinPopover.rect.top - 8;
+              }
+              return activePinPopover.rect.bottom + 8;
+            })(),
+            left: Math.max(12, Math.min(window.innerWidth - 250, activePinPopover.rect.left)),
+            transform: (() => {
+              const spaceBelow = window.innerHeight - activePinPopover.rect.bottom;
+              if (spaceBelow < 180 && activePinPopover.rect.top > 180) {
+                return 'translateY(-100%)';
+              }
+              return 'none';
+            })(),
+            zIndex: 1060,
+            backgroundColor: 'var(--bg-card-solid, #ffffff)',
+            border: '1px solid var(--border-color)',
+            boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+            borderRadius: '10px',
+            padding: '10px 14px',
+            minWidth: '220px',
+            maxWidth: '300px',
+            fontSize: '0.75rem',
+            color: 'var(--text-main)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 800, fontSize: '0.78rem' }}>
+              <Key size={13} style={{ color: 'var(--primary-color)' }} />
+              <span>รหัสผ่านห้อง</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActivePinPopover(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--text-muted)' }}
+              aria-label="ปิด"
+            >
+              <X size={13} />
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {activePinPopover.rooms.map((rm, idx) => (
+              <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '3px', padding: '4px 0', borderBottom: idx < activePinPopover.rooms.length - 1 ? '1px dashed var(--border-color)' : 'none' }}>
+                <div style={{ fontWeight: 700, fontSize: '0.74rem', color: 'var(--text-main)' }}>
+                  {rm.roomName}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                  {rm.hasDoorPin && rm.pin ? (
+                    <>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '0.86rem', color: 'var(--primary-color)', letterSpacing: '0.8px' }}>
+                        {rm.pin}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyPin(rm.pin, `${activePinPopover.key}_${rm.roomId}`)}
+                        aria-label="คัดลอก"
+                        title="คัดลอก"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          fontSize: '0.68rem',
+                          fontWeight: 700,
+                          padding: '2px 7px',
+                          borderRadius: '5px',
+                          border: '1px solid rgba(37, 99, 235, 0.3)',
+                          backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                          color: 'var(--primary-color)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {copiedPinKey === `${activePinPopover.key}_${rm.roomId}` ? <Check size={11} /> : <Copy size={11} />}
+                        <span>{copiedPinKey === `${activePinPopover.key}_${rm.roomId}` ? 'คัดลอกแล้ว' : 'คัดลอก'}</span>
+                      </button>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      ไม่มีรหัสเข้าห้อง
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
