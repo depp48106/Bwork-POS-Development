@@ -12,7 +12,7 @@ import { printReceipt } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { roomUsesDoorPin } from '../utils/doorPinHelper';
-import { resolveRoomPin, NO_PIN_ROOM_IDS } from '../utils/doorPinHelper';
+import { resolveRoomPin, resolveRoomPinInfo, isInternalBooking, getRoomPinLabel, NO_PIN_ROOM_IDS } from '../utils/doorPinHelper';
 import { calculatePaymentPreview, formatMoney, roundMoney } from '../utils/financialUtils';
 
 const TIMELINE_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
@@ -309,10 +309,12 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       setActivePinPopover(null);
     } else {
       const rect = anchorEl.getBoundingClientRect();
+      const isInternal = roomsData.some(rm => rm.pinType === 'internal');
       setActivePinPopover({
         key,
         rect,
-        rooms: roomsData
+        rooms: roomsData,
+        isInternal
       });
     }
   };
@@ -323,10 +325,12 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       pinPopoverTimeoutRef.current = null;
     }
     const rect = anchorEl.getBoundingClientRect();
+    const isInternal = roomsData.some(rm => rm.pinType === 'internal');
     setActivePinPopover({
       key,
       rect,
-      rooms: roomsData
+      rooms: roomsData,
+      isInternal
     });
   };
 
@@ -365,12 +369,21 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       const rId = item.room_id || ev.room_id;
       const rObj = (Array.isArray(rooms) ? rooms : []).find(r => r.id === rId);
       const usesPin = roomUsesDoorPin(rObj || rId);
-      const pin = usesPin ? resolveRoomPin({ ...item, customer_type: item.customer_type || ev.customer_type, items: [item] }, rId, rObj) : '';
+      const pinBooking = {
+        ...ev,
+        ...item,
+        customer_type: item.customer_type || ev.customer_type,
+        billing_option: item.billing_option || ev.billing_option,
+        payment_status: item.payment_status || ev.payment_status,
+        items: [item]
+      };
+      const pinInfo = usesPin ? resolveRoomPinInfo(pinBooking, rId, rObj) : { pin: '', pinType: 'none' };
       return {
         roomId: rId || 0,
         roomName: item.room_name || rObj?.name || (rId ? `ห้อง #${rId}` : 'ห้อง'),
-        pin: pin || '',
-        hasDoorPin: usesPin && !!pin
+        pin: pinInfo.pin || '',
+        pinType: pinInfo.pinType,
+        hasDoorPin: usesPin && !!pinInfo.pin
       };
     });
   };
@@ -378,12 +391,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const getFloorPlanRoomData = (ev, room) => {
     const rId = room?.id || ev?.room_id;
     const usesPin = roomUsesDoorPin(room || rId);
-    const pin = usesPin ? resolveRoomPin(ev ? { ...ev, items: [ev] } : null, rId, room) : '';
+    const pinBooking = ev ? { ...ev, items: [ev] } : null;
+    const pinInfo = usesPin ? resolveRoomPinInfo(pinBooking, rId, room) : { pin: '', pinType: 'none' };
     return [{
       roomId: rId || 0,
       roomName: room?.name || ev?.room_name || (rId ? `ห้อง #${rId}` : 'ห้อง'),
-      pin: pin || '',
-      hasDoorPin: usesPin && !!pin
+      pin: pinInfo.pin || '',
+      pinType: pinInfo.pinType,
+      hasDoorPin: usesPin && !!pinInfo.pin
     }];
   };
 
@@ -2662,7 +2677,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                           {(() => {
                             const cardRoom = rooms.find(r => r.id === ev.room_id);
                             const usesDoorPin = roomUsesDoorPin(cardRoom || ev.room_id);
-                            const cardPin = usesDoorPin ? resolveRoomPin({ ...ev, items: [ev] }, ev.room_id, cardRoom) : '';
+                            const pinInfo = usesDoorPin ? resolveRoomPinInfo({ ...ev, items: [ev] }, ev.room_id, cardRoom) : { pin: '', pinType: 'none' };
+                            const cardPin = pinInfo.pin;
+                            const isInternal = pinInfo.pinType === 'internal' || isInternalBooking(ev);
+                            const pinLabel = isInternal ? 'รหัสผ่านห้อง (ภายใน):' : 'รหัสผ่านห้อง (ลูกค้าทั่วไป):';
                             const agendaKey = `agenda-${ev.booking_id || ev.id}-${ev.room_id}`;
                             const isAgendaRevealed = !!revealedAgendaPins[agendaKey];
 
@@ -2710,8 +2728,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                     justifyContent: 'space-between'
                                   }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>รหัสผ่านห้อง:</span>
-                                      {usesDoorPin ? (
+                                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>{pinLabel || 'รหัสผ่านห้อง:'}</span>
+                                      {usesDoorPin && cardPin ? (
                                         <span style={{ fontFamily: 'monospace', fontSize: '0.84rem', fontWeight: 800, color: 'var(--primary-color)', letterSpacing: '0.5px' }}>
                                           {cardPin || 'ไม่มีรหัสเข้าห้อง'}
                                         </span>
@@ -4826,48 +4844,59 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 })()}
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>รหัสผ่านห้อง:</span>
                 {(() => {
                   const vRoom = rooms.find(r => r.id === viewedEvent.room_id);
                   const usesPin = roomUsesDoorPin(vRoom || viewedEvent.room_id);
-                  const pin = usesPin ? resolveRoomPin({ ...viewedEvent, items: [viewedEvent] }, viewedEvent.room_id, vRoom) : '';
+                  const pinInfo = usesPin ? resolveRoomPinInfo({ ...viewedEvent, items: [viewedEvent] }, viewedEvent.room_id, vRoom) : { pin: '', pinType: 'none' };
+                  const pin = pinInfo.pin;
+                  const isInternal = pinInfo.pinType === 'internal' || isInternalBooking(viewedEvent);
+                  const pinDetailLabel = isInternal ? 'รหัสผ่านห้อง (ภายใน):' : 'รหัสผ่านห้อง (ลูกค้าทั่วไป):';
                   const vKey = `viewed-${viewedEvent.booking_id || viewedEvent.id}-${viewedEvent.room_id}`;
                   const isRevealed = !!revealedAgendaPins[vKey];
 
-                  if (!usesPin) {
-                    return <span style={{ fontWeight: 600, color: 'var(--text-muted)' }}>ไม่มีรหัสเข้าห้อง</span>;
-                  }
-
                   return (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <button
-                        type="button"
-                        onClick={() => toggleAgendaPinReveal(vKey)}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', color: 'var(--primary-color)' }}
-                        aria-label={isRevealed ? "ซ่อนรหัสผ่านห้อง" : "ดูรหัสผ่านห้อง"}
-                        title={isRevealed ? "ซ่อนรหัสผ่านห้อง" : "ดูรหัสผ่านห้อง"}
-                      >
-                        {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
-                        <span>{isRevealed ? 'ซ่อนรหัสผ่านห้อง' : 'ดูรหัสผ่านห้อง'}</span>
-                      </button>
-                      {isRevealed && pin && (
-                        <>
-                          <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '0.88rem', color: 'var(--primary-color)' }}>
-                            {pin}
-                          </span>
+                    <>
+                      <span style={{ color: 'var(--text-muted)' }}>{pinDetailLabel}</span>
+                      {!usesPin ? (
+                        <span style={{ fontWeight: 600, color: 'var(--text-muted)' }}>ไม่มีรหัสเข้าห้อง</span>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <button
                             type="button"
-                            onClick={() => handleCopyPin(pin, vKey)}
-                            aria-label="คัดลอก"
-                            title="คัดลอก"
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.68rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(37, 99, 235, 0.3)', backgroundColor: 'rgba(37, 99, 235, 0.08)', color: 'var(--primary-color)', cursor: 'pointer' }}
+                            onClick={() => toggleAgendaPinReveal(vKey)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.72rem', color: 'var(--primary-color)' }}
+                            aria-label={isRevealed ? "ซ่อนรหัสผ่านห้อง" : "ดูรหัสผ่านห้อง"}
+                            title={isRevealed ? "ซ่อนรหัสผ่านห้อง" : "ดูรหัสผ่านห้อง"}
                           >
-                            {copiedPinKey === vKey ? <Check size={11} /> : <Copy size={11} />}
-                            <span>{copiedPinKey === vKey ? 'คัดลอกแล้ว' : 'คัดลอก'}</span>
+                            {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
+                            <span>{isRevealed ? 'ซ่อนรหัสผ่านห้อง' : 'ดูรหัสผ่านห้อง'}</span>
                           </button>
-                        </>
+                          {isRevealed && (
+                            pin ? (
+                              <>
+                                <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '0.88rem', color: 'var(--primary-color)' }}>
+                                  {pin}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyPin(pin, vKey)}
+                                  aria-label="คัดลอก"
+                                  title="คัดลอก"
+                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.68rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(37, 99, 235, 0.3)', backgroundColor: 'rgba(37, 99, 235, 0.08)', color: 'var(--primary-color)', cursor: 'pointer' }}
+                                >
+                                  {copiedPinKey === vKey ? <Check size={11} /> : <Copy size={11} />}
+                                  <span>{copiedPinKey === vKey ? 'คัดลอกแล้ว' : 'คัดลอก'}</span>
+                                </button>
+                              </>
+                            ) : (
+                              <span style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                                ไม่มีรหัสเข้าห้อง
+                              </span>
+                            )
+                          )}
+                        </div>
                       )}
-                    </div>
+                    </>
                   );
                 })()}
               </div>
@@ -5045,7 +5074,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '6px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 800, fontSize: '0.78rem' }}>
               <Key size={13} style={{ color: 'var(--primary-color)' }} />
-              <span>รหัสผ่านห้อง</span>
+              <span>{activePinPopover.isInternal ? 'รหัสผ่านห้อง (ภายใน)' : 'รหัสผ่านห้อง (ลูกค้าทั่วไป)'}</span>
             </div>
             <button
               type="button"
@@ -5060,8 +5089,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {activePinPopover.rooms.map((rm, idx) => (
               <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '3px', padding: '4px 0', borderBottom: idx < activePinPopover.rooms.length - 1 ? '1px dashed var(--border-color)' : 'none' }}>
-                <div style={{ fontWeight: 700, fontSize: '0.74rem', color: 'var(--text-main)' }}>
-                  {rm.roomName}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 700, fontSize: '0.74rem', color: 'var(--text-main)' }}>
+                    {rm.roomName}
+                  </span>
+                  {rm.hasDoorPin && rm.pin && (
+                    <span style={{ fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      {rm.pinType === 'internal' ? '(ภายใน)' : '(ลูกค้าทั่วไป)'}
+                    </span>
+                  )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
                   {rm.hasDoorPin && rm.pin ? (

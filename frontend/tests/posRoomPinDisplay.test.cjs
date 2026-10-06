@@ -185,7 +185,7 @@ test('8. resolveRoomPin: Multi-room PIN isolation (Section 13)', async () => {
   assert.notStrictEqual(pinRoomA, pinRoomB, 'Room A and Room B PINs must never bleed into each other');
 });
 
-test('9. resolveRoomPin: Builtland booking item PIN authoritative (Section 14)', async () => {
+test('9. resolveRoomPin: Builtland booking master internal PIN authoritative (ignores general item snapshot)', async () => {
   const { resolveRoomPin } = await import('../src/utils/doorPinHelper.js');
   const builtlandBooking = {
     id: 103,
@@ -198,9 +198,9 @@ test('9. resolveRoomPin: Builtland booking item PIN authoritative (Section 14)',
 
   const roomMaster = { id: 5, pin_code: '075164#', builtland_pin_code: '999999#' };
 
-  // When item already has authoritative PIN, do NOT fall back to room master
+  // For Builtland bookings, master builtland_pin_code is authoritative and general item snapshot is ignored
   const resolved = resolveRoomPin(builtlandBooking, 5, roomMaster);
-  assert.strictEqual(resolved, '302302#', 'Must show item PIN without re-resolving room master PIN');
+  assert.strictEqual(resolved, '999999#', 'Builtland booking must resolve master internal PIN, ignoring general item snapshot');
 });
 
 test('10. Reveal state caching audit: boolean visibility only, zero PIN string caching (Section 6 & 15)', async () => {
