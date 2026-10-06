@@ -257,19 +257,12 @@ export function normalizeBookingFinancials(booking = {}) {
 
   // Fallbacks for legacy paid / pending
   let paidAmount = 0;
-  if (booking.paid_amount !== undefined && booking.paid_amount !== null) {
+  if (booking.paid_amount !== undefined && booking.paid_amount !== null && !(Number(booking.paid_amount) === 0 && booking.payment_status === 'paid' && rawTotal > 0)) {
     paidAmount = roundMoney(Math.max(0, Number(booking.paid_amount) || 0));
   } else if (booking.payment_status === 'paid') {
     paidAmount = rawTotal;
   } else {
     paidAmount = 0;
-  }
-
-  let balanceAmount = 0;
-  if (booking.balance_amount !== undefined && booking.balance_amount !== null) {
-    balanceAmount = roundMoney(Math.max(0, Number(booking.balance_amount) || 0));
-  } else {
-    balanceAmount = roundMoney(Math.max(0, rawTotal - paidAmount));
   }
 
   const status = booking.payment_status || 'pending';
@@ -280,6 +273,24 @@ export function normalizeBookingFinancials(booking = {}) {
   const isReviewing = status === 'reviewing' || (!!booking.slip_image_url && !isPaid && !isCancelled);
   const isRejected = status === 'rejected' || booking.slip_verify_status === 'rejected';
   const isPending = !isPaid && !isCancelled && !isDeposit && !isReviewing && !isRejected;
+
+  // Authoritative derived remaining balance
+  const derivedRemaining = roundMoney(Math.max(0, rawTotal - paidAmount));
+
+  let balanceAmount = 0;
+  if (isPaid || isCancelled || isFailed || rawTotal === 0) {
+    balanceAmount = 0;
+  } else if (booking.balance_amount !== undefined && booking.balance_amount !== null) {
+    const candidateBalance = roundMoney(Math.max(0, Number(booking.balance_amount) || 0));
+    // Stored balance_amount may only be used when consistent with authoritative derived remaining
+    if (candidateBalance === derivedRemaining && candidateBalance > 0) {
+      balanceAmount = candidateBalance;
+    } else {
+      balanceAmount = derivedRemaining;
+    }
+  } else {
+    balanceAmount = derivedRemaining;
+  }
 
   // Collectible if balance > 0 and status is collectible (deposit or pending; non-cancelled, non-reviewing, non-paid)
   const isCollectible = balanceAmount > 0 && !isCancelled && !isFailed && !isPaid && !isReviewing;
