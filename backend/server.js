@@ -2228,21 +2228,28 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
     }
 
-    if (booking.payment_status === 'cancelled' || booking.payment_status === 'failed') {
-      return res.status(400).json({ error: 'ไม่สามารถรับชำระเงินสำหรับรายการที่ถูกยกเลิกแล้ว' });
+    if (booking.payment_status === 'cancelled' || booking.payment_status === 'failed' || booking.payment_status === 'rejected') {
+      return res.status(400).json({ error: 'ไม่สามารถรับชำระเงินสำหรับรายการที่ถูกยกเลิกหรือไม่สมบูรณ์' });
     }
 
     if (booking.customer_type === 'builtland' || booking.payment_status === 'internal_free' || booking.billing_option === 'internal_free') {
       return res.status(400).json({ error: 'รายการใช้งานภายใน (Builtland) ไม่มีการเรียกเก็บเงิน' });
     }
 
-    const currentBalance = roundMoney(booking.balance_amount);
-    if (currentBalance <= 0) {
+    if (booking.payment_status === 'paid') {
+      return res.status(400).json({ error: 'รายการนี้ชำระเงินครบถ้วนแล้ว ไม่มีเงินคงค้าง' });
+    }
+
+    const netTotal = roundMoney(Math.max(0, Number(booking.total_amount) || 0));
+    const currentPaid = roundMoney(Math.max(0, Number(booking.paid_amount) || 0));
+    const currentBalance = roundMoney(Math.max(0, netTotal - currentPaid));
+
+    if (netTotal <= 0 || currentBalance <= 0) {
       return res.status(400).json({ error: 'รายการนี้ชำระเงินครบถ้วนแล้ว ไม่มีเงินคงค้าง' });
     }
 
     const payAmount = roundMoney(amount);
-    if (payAmount <= 0) {
+    if (isNaN(payAmount) || payAmount <= 0) {
       return res.status(400).json({ error: 'ยอดเงินชำระต้องมากกว่า 0 บาท' });
     }
 
@@ -2252,8 +2259,8 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
       });
     }
 
-    const newPaid = roundMoney((booking.paid_amount || 0) + payAmount);
-    const newBalance = roundMoney(booking.total_amount - newPaid);
+    const newPaid = roundMoney(currentPaid + payAmount);
+    const newBalance = roundMoney(Math.max(0, netTotal - newPaid));
     const newStatus = newBalance <= 0 ? 'paid' : 'deposit';
     const method = payment_method || 'cash';
     const nowIso = getBangkokLocalISO(new Date());
@@ -2264,11 +2271,13 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
     }
 
     await dbQuery.transaction(async () => {
-      // Concurrency check: enforce balance_amount >= payAmount in UPDATE condition
+      // Concurrency check: enforce canonical remaining >= payAmount in UPDATE condition
       const updateRes = await dbQuery.run(
         `UPDATE bookings
          SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?, receipt_number = COALESCE(receipt_number, ?)
-         WHERE id = ? AND balance_amount >= ?`,
+         WHERE id = ?
+           AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free')
+           AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?`,
         [newPaid, newBalance, newStatus, method, receiptNumber, booking.id, payAmount]
       );
       if (updateRes.changes === 0) {
@@ -3190,10 +3199,23 @@ app.post('/api/quotations/:id/convert', async (req, res) => {
 
       const receiptNumber = await generateReceiptNumber();
 
+      const qTotal = roundMoney(Number(quotation.total_amount) || 0);
+      const qStatus = payment_status || 'pending';
+      const qPaid = qStatus === 'paid' ? qTotal : 0;
+      const qBalance = qStatus === 'paid' ? 0 : qTotal;
+
       // 1. Insert into bookings
       const bookingResult = await dbQuery.run(
-        'INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [quotation.customer_name, quotation.department, quotation.contact, quotation.total_amount, payment_status || 'pending', payment_method || 'cash', receiptNumber, getBangkokLocalISO(new Date())]
+        `INSERT INTO bookings (
+          customer_name, department, contact,
+          subtotal_amount, total_amount, paid_amount, balance_amount,
+          payment_status, payment_method, receipt_number, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          quotation.customer_name, quotation.department, quotation.contact,
+          qTotal, qTotal, qPaid, qBalance,
+          qStatus, payment_method || 'cash', receiptNumber, getBangkokLocalISO(new Date())
+        ]
       );
       const bookingId = bookingResult.id;
 
@@ -4353,18 +4375,24 @@ app.post('/api/public/bookings', async (req, res) => {
         pinCode = await generateUniquePinCode();
       }
 
+      const netTotal = roundMoney(Number(subtotal) || 0);
+
       // Insert master booking (with mandatory guest_count, booking_channel = 'line_oa', customer_type = 'general')
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings (
-          customer_name, department, contact, total_amount, payment_status, payment_method,
+          customer_name, department, contact,
+          subtotal_amount, total_amount, paid_amount, balance_amount,
+          payment_status, payment_method,
           receipt_number, pin_code, qr_token, booking_source, booking_channel, customer_type, customer_email, checkin_status, line_user_id,
           tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
           guest_count,
           created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          customer_name, department || note || '', contact, subtotal, 'pending', 'transfer',
+          customer_name, department || note || '', contact,
+          netTotal, netTotal, 0, netTotal,
+          'pending', 'transfer',
           receiptNumber, pinCode, accessToken, 'online', 'line_oa', 'general', email || null, 'pending', line_user_id || null,
           tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
           tax_delivery_method || null, tax_postal_address || null,

@@ -3493,21 +3493,28 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
         }
 
-        if (booking.payment_status === 'cancelled' || booking.payment_status === 'failed') {
-          return new Response(JSON.stringify({ error: 'ไม่สามารถรับชำระเงินสำหรับรายการที่ถูกยกเลิกแล้ว' }), { status: 400, headers: corsHeaders });
+        if (booking.payment_status === 'cancelled' || booking.payment_status === 'failed' || booking.payment_status === 'rejected') {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถรับชำระเงินสำหรับรายการที่ถูกยกเลิกหรือไม่สมบูรณ์' }), { status: 400, headers: corsHeaders });
         }
 
         if (booking.customer_type === 'builtland' || booking.payment_status === 'internal_free' || booking.billing_option === 'internal_free') {
           return new Response(JSON.stringify({ error: 'รายการใช้งานภายใน (Builtland) ไม่มีการเรียกเก็บเงิน' }), { status: 400, headers: corsHeaders });
         }
 
-        const currentBalance = roundMoney(booking.balance_amount);
-        if (currentBalance <= 0) {
+        if (booking.payment_status === 'paid') {
+          return new Response(JSON.stringify({ error: 'รายการนี้ชำระเงินครบถ้วนแล้ว ไม่มีเงินคงค้าง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const netTotal = roundMoney(Math.max(0, Number(booking.total_amount) || 0));
+        const currentPaid = roundMoney(Math.max(0, Number(booking.paid_amount) || 0));
+        const currentBalance = roundMoney(Math.max(0, netTotal - currentPaid));
+
+        if (netTotal <= 0 || currentBalance <= 0) {
           return new Response(JSON.stringify({ error: 'รายการนี้ชำระเงินครบถ้วนแล้ว ไม่มีเงินคงค้าง' }), { status: 400, headers: corsHeaders });
         }
 
         const payAmount = roundMoney(amount);
-        if (payAmount <= 0) {
+        if (isNaN(payAmount) || payAmount <= 0) {
           return new Response(JSON.stringify({ error: 'ยอดเงินชำระต้องมากกว่า 0 บาท' }), { status: 400, headers: corsHeaders });
         }
 
@@ -3517,8 +3524,8 @@ export default {
           }), { status: 400, headers: corsHeaders });
         }
 
-        const newPaid = roundMoney((booking.paid_amount || 0) + payAmount);
-        const newBalance = roundMoney(booking.total_amount - newPaid);
+        const newPaid = roundMoney(currentPaid + payAmount);
+        const newBalance = roundMoney(Math.max(0, netTotal - newPaid));
         const newStatus = newBalance <= 0 ? 'paid' : 'deposit';
         const method = payment_method || 'cash';
         const nowIso = new Date().toISOString();
@@ -3528,25 +3535,26 @@ export default {
           receiptNumber = await generateReceiptNumber(env);
         }
 
-        // Atomic update with concurrency check in D1 batch
-        const updateStmt = env.DB.prepare(
+        // Concurrency-safe atomic update guard
+        const updateRes = await env.DB.prepare(
           `UPDATE bookings
            SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?, receipt_number = COALESCE(receipt_number, ?)
-           WHERE id = ? AND balance_amount >= ?`
-        ).bind(newPaid, newBalance, newStatus, method, receiptNumber, booking.id, payAmount);
+           WHERE id = ?
+             AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free')
+             AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?`
+        ).bind(newPaid, newBalance, newStatus, method, receiptNumber, booking.id, payAmount).run();
 
-        const txStmt = env.DB.prepare(
-          `INSERT INTO payment_transactions
-           (booking_id, amount, payment_method, transaction_type, status, created_at)
-           VALUES (?, ?, ?, 'balance', 'completed', ?)`
-        ).bind(booking.id, payAmount, method, nowIso);
-
-        const batchRes = await env.DB.batch([updateStmt, txStmt]);
-        if (batchRes[0].meta?.changes !== 1) {
+        if (updateRes.meta?.changes !== 1) {
           return new Response(JSON.stringify({
             error: 'ยอดคงเหลือถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง'
           }), { status: 409, headers: corsHeaders });
         }
+
+        await env.DB.prepare(
+          `INSERT INTO payment_transactions
+           (booking_id, amount, payment_method, transaction_type, status, created_at)
+           VALUES (?, ?, ?, 'balance', 'completed', ?)`
+        ).bind(booking.id, payAmount, method, nowIso).run();
 
         const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         return new Response(JSON.stringify({
@@ -4693,6 +4701,7 @@ export default {
         }
 
         const subtotal = total_amount || Math.round(price * quantity * 100) / 100;
+        const netTotal = roundMoney(Number(subtotal) || 0);
         const receiptNumber = await generateReceiptNumber(env);
         const pinCode = !roomUsesDoorPin(room || room_id) ? null : (room.pin_code?.trim() || await generateUniquePinCode(env));
 
@@ -4701,15 +4710,19 @@ export default {
         try {
           insBooking = await env.DB.prepare(
             `INSERT INTO bookings (
-               customer_name, department, contact, total_amount, payment_status, payment_method,
+               customer_name, department, contact,
+               subtotal_amount, total_amount, paid_amount, balance_amount,
+               payment_status, payment_method,
                receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
                tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
                guest_count,
                created_at
              )
-             VALUES (?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
-            customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode,
+            customer_name, department || note || '', contact,
+            netTotal, netTotal, 0, netTotal,
+            receiptNumber, pinCode,
             email || null, line_user_id || null,
             tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
             tax_delivery_method || null, tax_postal_address || null,
@@ -4720,13 +4733,17 @@ export default {
           console.warn('Extended booking insert failed, falling back to core schema:', dbErr);
           insBooking = await env.DB.prepare(
             `INSERT INTO bookings (
-               customer_name, department, contact, total_amount, payment_status, payment_method,
+               customer_name, department, contact,
+               subtotal_amount, total_amount, paid_amount, balance_amount,
+               payment_status, payment_method,
                receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
                created_at
              )
-             VALUES (?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?)`
           ).bind(
-            customer_name, department || note || '', contact, subtotal, receiptNumber, pinCode,
+            customer_name, department || note || '', contact,
+            netTotal, netTotal, 0, netTotal,
+            receiptNumber, pinCode,
             email || null, line_user_id || null,
             nowIso
           ).run();
