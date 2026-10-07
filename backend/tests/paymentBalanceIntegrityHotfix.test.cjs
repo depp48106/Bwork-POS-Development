@@ -432,9 +432,9 @@ describe('BWORK-POS — Payment Balance Backend Integrity Tests', () => {
       'worker.js must reject cancelled, failed, rejected');
 
     // Both must initialize balance_amount in public online bookings
-    assert.match(serverSrc, /subtotal_amount,\s*total_amount,\s*paid_amount,\s*balance_amount/,
+    assert.match(serverSrc, /subtotal_amount[\s\S]*?total_amount,\s*paid_amount,\s*balance_amount/,
       'server.js public booking must include financial snapshot columns');
-    assert.match(workerSrc, /subtotal_amount,\s*total_amount,\s*paid_amount,\s*balance_amount/,
+    assert.match(workerSrc, /subtotal_amount[\s\S]*?total_amount,\s*paid_amount,\s*balance_amount/,
       'worker.js public booking must include financial snapshot columns');
   });
 });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { KeyRound, Smartphone, FileSpreadsheet, Save, CheckCircle2, ShieldCheck, Clock, ExternalLink, HelpCircle, Lock, RefreshCw, AlertCircle } from 'lucide-react';
+import { KeyRound, Smartphone, FileSpreadsheet, Save, CheckCircle2, ShieldCheck, Clock, ExternalLink, HelpCircle, Lock, RefreshCw, AlertCircle, Tag } from 'lucide-react';
 import { authManager } from '../authManager';
 
 function DoorAccessSettings({ sysAlert }) {
@@ -21,9 +21,83 @@ function DoorAccessSettings({ sysAlert }) {
   const [testResult, setTestResult] = useState(null);
   const [testLoading, setTestLoading] = useState(false);
 
+  // Online Promotion State
+  const [promoData, setPromoData] = useState(null);
+  const [promoLoading, setPromoLoading] = useState(false);
+  const [promoActionLoading, setPromoActionLoading] = useState(false);
+
   useEffect(() => {
     fetchSettings();
+    fetchPromotion();
   }, []);
+
+  const fetchPromotion = async () => {
+    setPromoLoading(true);
+    try {
+      const token = authManager.getToken() || localStorage.getItem('token') || '';
+      const res = await fetch('/api/admin/promotion', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPromoData(data.promotion);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch promotion:', err);
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  const handleActivatePromotion = async () => {
+    setPromoActionLoading(true);
+    try {
+      const token = authManager.getToken() || localStorage.getItem('token') || '';
+      const res = await fetch('/api/admin/promotion/activate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        if (sysAlert) sysAlert(data.message || 'เปิดใช้งานโปรโมชั่นสำเร็จ');
+        setPromoData(data.promotion);
+      } else {
+        if (sysAlert) sysAlert(data.error || 'ไม่สามารถเปิดใช้งานโปรโมชั่นได้');
+      }
+    } catch (err) {
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setPromoActionLoading(false);
+    }
+  };
+
+  const handleDeactivatePromotion = async () => {
+    setPromoActionLoading(true);
+    try {
+      const token = authManager.getToken() || localStorage.getItem('token') || '';
+      const res = await fetch('/api/admin/promotion/deactivate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        if (sysAlert) sysAlert(data.message || 'หยุดการใช้งานโปรโมชั่นสำเร็จ');
+        setPromoData(data.promotion);
+      } else {
+        if (sysAlert) sysAlert(data.error || 'ไม่สามารถหยุดการใช้งานโปรโมชั่นได้');
+      }
+    } catch (err) {
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setPromoActionLoading(false);
+    }
+  };
 
   const fetchSettings = async () => {
     try {
@@ -549,6 +623,178 @@ function DoorAccessSettings({ sysAlert }) {
             )}
           </div>
 
+        </div>
+
+        {/* Full-width Section: Online Booking Promotion Card */}
+        <div style={{
+          gridColumn: '1 / -1',
+          background: 'var(--glass-bg)',
+          border: '1px solid var(--glass-border)',
+          borderRadius: '24px',
+          padding: '24px 28px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '18px',
+          boxShadow: 'var(--glass-shadow)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{
+                width: '42px',
+                height: '42px',
+                borderRadius: '12px',
+                background: 'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#fff'
+              }}>
+                <Tag size={22} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                  โปรโมชั่นจองออนไลน์ 5% (Online Booking Promotion)
+                </h3>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
+                  ส่วนลด 5% สำหรับการจองผ่าน LINE OA และระบบออนไลน์เท่านั้น (การจองผ่าน POS หรือหน้าร้านคิดราคาเต็ม)
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{
+                padding: '4px 12px',
+                borderRadius: '20px',
+                fontSize: '0.82rem',
+                fontWeight: 700,
+                backgroundColor: promoData?.status === 'active' ? 'rgba(16, 185, 129, 0.15)' :
+                                 promoData?.status === 'ready' ? 'rgba(59, 130, 246, 0.15)' :
+                                 promoData?.status === 'ended' ? 'rgba(107, 114, 128, 0.15)' :
+                                 'rgba(245, 158, 11, 0.15)',
+                color: promoData?.status === 'active' ? '#10b981' :
+                       promoData?.status === 'ready' ? '#3b82f6' :
+                       promoData?.status === 'ended' ? '#6b7280' :
+                       '#f59e0b',
+                border: `1px solid ${
+                  promoData?.status === 'active' ? 'rgba(16, 185, 129, 0.3)' :
+                  promoData?.status === 'ready' ? 'rgba(59, 130, 246, 0.3)' :
+                  promoData?.status === 'ended' ? 'rgba(107, 114, 128, 0.3)' :
+                  'rgba(245, 158, 11, 0.3)'
+                }`
+              }}>
+                {promoData?.status_label || (promoData?.is_enabled ? 'กำลังใช้งาน' : 'รอเปิดใช้งาน')}
+              </span>
+              <button
+                type="button"
+                onClick={fetchPromotion}
+                disabled={promoLoading}
+                className="btn btn-secondary"
+                style={{ padding: '6px 12px', height: '34px', borderRadius: '10px', fontSize: '0.8rem', cursor: 'pointer' }}
+                title="รีเฟรชข้อมูลโปรโมชั่น"
+              >
+                <RefreshCw size={14} className={promoLoading ? 'spin' : ''} />
+              </button>
+            </div>
+          </div>
+
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            gap: '14px',
+            backgroundColor: 'var(--bg-page)',
+            padding: '16px',
+            borderRadius: '16px',
+            border: '1px solid var(--border)'
+          }}>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ประเภทส่วนลด</div>
+              <div style={{ fontSize: '0.92rem', fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                ส่วนลด 5% ทุกห้องประชุม
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ช่องทางที่ได้รับสิทธิ์</div>
+              <div style={{ fontSize: '0.92rem', fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                Online & LINE OA เท่านั้น
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>วันเริ่มเปิดใช้งานได้</div>
+              <div style={{ fontSize: '0.92rem', fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                13 ต.ค. 2026 เวลา 08:00 น.
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>วันสิ้นสุดโปรโมชั่น</div>
+              <div style={{ fontSize: '0.92rem', fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                {promoData?.end_at ? promoData.end_at : 'ไม่มีกำหนดสิ้นสุด (ควบคุมด้วยตนเอง)'}
+              </div>
+            </div>
+          </div>
+
+          {/* Audit trail info */}
+          {(promoData?.activated_at || promoData?.deactivated_at) && (
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+              {promoData?.activated_at && (
+                <span>เปิดใช้งานล่าสุด: {promoData.activated_at} โดย {promoData.activated_by || '-'}</span>
+              )}
+              {promoData?.deactivated_at && !promoData?.is_enabled && (
+                <span>หยุดใช้งานล่าสุด: {promoData.deactivated_at} โดย {promoData.deactivated_by || '-'}</span>
+              )}
+            </div>
+          )}
+
+          {/* Action Button Row */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', alignItems: 'center' }}>
+            {promoData?.status === 'upcoming' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#f59e0b', fontSize: '0.85rem', fontWeight: 600 }}>
+                <Clock size={16} />
+                <span>สามารถเปิดใช้งานได้ตั้งแต่ 13 ต.ค. 2026 เวลา 08:00 น. เป็นต้นไป</span>
+              </div>
+            )}
+
+            {promoData?.status === 'active' ? (
+              <button
+                type="button"
+                onClick={handleDeactivatePromotion}
+                disabled={promoActionLoading}
+                className="btn"
+                style={{
+                  height: '42px',
+                  padding: '0 20px',
+                  borderRadius: '12px',
+                  fontWeight: 700,
+                  fontSize: '0.88rem',
+                  backgroundColor: '#ef4444',
+                  color: '#fff',
+                  border: 'none',
+                  cursor: 'pointer'
+                }}
+              >
+                {promoActionLoading ? 'กำลังดำเนินการ...' : 'หยุดใช้งานโปรโมชั่น'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleActivatePromotion}
+                disabled={promoActionLoading || promoData?.status === 'upcoming' || promoData?.status === 'ended'}
+                className="btn"
+                style={{
+                  height: '42px',
+                  padding: '0 20px',
+                  borderRadius: '12px',
+                  fontWeight: 700,
+                  fontSize: '0.88rem',
+                  backgroundColor: (promoData?.status === 'upcoming' || promoData?.status === 'ended') ? '#94a3b8' : '#10b981',
+                  color: '#fff',
+                  border: 'none',
+                  cursor: (promoData?.status === 'upcoming' || promoData?.status === 'ended') ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {promoActionLoading ? 'กำลังดำเนินการ...' : 'เปิดใช้งานโปรโมชั่น 5%'}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Full-width Save Button Footer spanning both columns */}

@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
+import { calculateOnlineBookingPricing } from '../utils/onlinePromotionHelper';
 
 // Generate 30-minute interval time options from 08:00 to 18:00
 const TIME_OPTIONS = [];
@@ -88,6 +89,7 @@ export default function RoomListPage() {
 
   const [rooms, setRooms] = useState([]);
   const [schedule, setSchedule] = useState(null);
+  const [promotion, setPromotion] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Per-Room Selections State: { [roomId]: { mode, startTime, endTime, halfDaySlot, dailySlot } }
@@ -128,14 +130,15 @@ export default function RoomListPage() {
     }
   }, [availableStartOptions, globalStartTime, handleGlobalStartChange]);
 
-  // Fetch rooms and schedule on date change
+  // Fetch rooms, schedule, and promotion on date change
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const [roomsRes, scheduleRes] = await Promise.all([
+        const [roomsRes, scheduleRes, promoRes] = await Promise.all([
           fetch(`${API_BASE}/api/public/rooms`),
-          fetch(`${API_BASE}/api/public/rooms/schedule?date=${dateStr}`)
+          fetch(`${API_BASE}/api/public/rooms/schedule?date=${dateStr}`),
+          fetch(`${API_BASE}/api/public/promotion`).catch(() => null)
         ]);
 
         if (roomsRes.ok) {
@@ -145,6 +148,10 @@ export default function RoomListPage() {
         if (scheduleRes.ok) {
           const scheduleData = await scheduleRes.json();
           setSchedule(scheduleData);
+        }
+        if (promoRes && promoRes.ok) {
+          const promoData = await promoRes.json();
+          setPromotion(promoData);
         }
       } catch (err) {
         console.warn('Failed to load room data:', err);
@@ -210,6 +217,12 @@ export default function RoomListPage() {
       rateLabel = `อัตราเหมาทั้งวัน (${effStart} - ${effEnd} น.)`;
     }
 
+    const promoPricing = calculateOnlineBookingPricing({
+      subtotal: totalPrice,
+      promo: promotion,
+      currentTime: Date.now()
+    });
+
     return {
       mode,
       startTime: effStart,
@@ -219,7 +232,10 @@ export default function RoomListPage() {
       halfDaySlot,
       dailySlot,
       duration,
-      totalPrice,
+      subtotalPrice: promoPricing.subtotal_amount,
+      totalPrice: promoPricing.total_amount,
+      discountAmount: promoPricing.discount_amount,
+      isPromotionApplied: promoPricing.is_promotion_applied,
       rateLabel,
       hasHourly,
       hasHalfDay,
@@ -407,6 +423,10 @@ export default function RoomListPage() {
       hourly_rate: sel.hourlyPrice,
       daily_rate: sel.dailyPrice,
       half_day_rate: sel.halfDayPrice,
+      subtotal_amount: sel.subtotalPrice || sel.totalPrice,
+      discount_amount: sel.discountAmount || 0,
+      discount_type: sel.isPromotionApplied ? 'percent' : 'none',
+      discount_value: sel.isPromotionApplied ? 5 : 0,
       total_amount: sel.totalPrice
     };
 
@@ -868,13 +888,40 @@ export default function RoomListPage() {
             gap: '12px'
           }}>
             <div>
-              <div style={{ fontSize: '0.78rem', color: 'var(--primary)', fontWeight: 700 }}>
-                {sel.rateLabel}
+              <div style={{ fontSize: '0.78rem', color: 'var(--primary)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span>{sel.rateLabel}</span>
+                {sel.isPromotionApplied && (
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    background: '#dcfce7',
+                    color: '#15803d',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    padding: '1px 7px',
+                    borderRadius: '9999px',
+                    border: '1px solid #bbf7d0'
+                  }}>
+                    <Sparkles size={11} /> ส่วนลดจองออนไลน์ 5%
+                  </span>
+                )}
               </div>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginTop: '2px' }}>
-                <span style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--primary)' }}>
-                  ฿{Number(sel.totalPrice).toLocaleString()}
-                </span>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginTop: '2px', flexWrap: 'wrap' }}>
+                {sel.isPromotionApplied ? (
+                  <>
+                    <span style={{ fontSize: '1.4rem', fontWeight: 900, color: '#16a34a' }}>
+                      ฿{Number(sel.totalPrice).toLocaleString()}
+                    </span>
+                    <span style={{ fontSize: '0.95rem', fontWeight: 600, color: '#94a3b8', textDecoration: 'line-through' }}>
+                      ฿{Number(sel.subtotalPrice).toLocaleString()}
+                    </span>
+                  </>
+                ) : (
+                  <span style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--primary)' }}>
+                    ฿{Number(sel.totalPrice).toLocaleString()}
+                  </span>
+                )}
                 <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-muted)' }}>
                   ({sel.startTime} - {sel.endTime} น.)
                 </span>
