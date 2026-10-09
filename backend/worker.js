@@ -715,14 +715,16 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
     const bufHHMM = `${String(bufH).padStart(2, '0')}:${String(bufM).padStart(2, '0')}`;
     const endBufferedISO = `${bEndDate}T${bufHHMM}:00`;
 
-    // Overlap condition taking cleaning buffer into account:
+    // Overlap condition taking 30-min cleaning buffer into account:
     // (Requested Start < Existing End + Buffer) AND (Requested End + Buffer > Existing Start)
     if (reqStartMs < bEndBufferedMs && reqEndBufferedMs > bStartMs) {
       const isDirectUsage = (reqStartMs < bEndMs && reqEndMs > bStartMs);
+      const isNextQueueBuffer = !isDirectUsage && (reqEndMs <= bStartMs);
       return {
         hasOverlap: true,
         overlap: true,
         isCleaningBuffer: !isDirectUsage,
+        isNextQueueBuffer,
         bufferMinutes: bufferMins,
         booking: {
           ...b,
@@ -746,6 +748,12 @@ function formatOverlapErrorMessage(roomName, overlapResult) {
   const nameLabel = roomName ? `ห้อง "${roomName}"` : 'ห้องนี้';
 
   if (overlapResult.isCleaningBuffer) {
+    if (overlapResult.isNextQueueBuffer) {
+      return `${nameLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
+    }
+    if (nextAvail >= '18:00') {
+      return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
+    }
     return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
   }
   return `${nameLabel} ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: ${customer} ช่วงเวลา ${sTime} - ${eTime} น.)`;
@@ -3910,6 +3918,13 @@ export default {
           return new Response(JSON.stringify({ error: 'กรุณาระบุ วันที่, เวลาเริ่มต้น และเวลาสิ้นสุด ให้ครบถ้วน' }), { status: 400, headers: corsHeaders });
         }
 
+        const sHHMM = start_time.substring(0, 5);
+        const eHHMM = end_time.substring(0, 5);
+
+        if (eHHMM <= sHHMM) {
+          return new Response(JSON.stringify({ error: 'เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น' }), { status: 400, headers: corsHeaders });
+        }
+
         let updateDetails = false;
         let normalizedDetailsValue = null;
         if (booking_details !== undefined) {
@@ -3923,6 +3938,20 @@ export default {
 
         const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         if (!booking) return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+
+        // Business hours boundary (08:00 - 18:00) applies to Online Booking channel
+        const isOnlineBooking = booking.booking_channel === 'line_oa' || booking.booking_source === 'online';
+        if (isOnlineBooking) {
+          if (sHHMM < '08:00') {
+            return new Response(JSON.stringify({ error: 'เวลาเริ่มต้นต้องไม่เร็วกว่าเวลาเปิดทำการ (08:00 น.)' }), { status: 400, headers: corsHeaders });
+          }
+          if (sHHMM >= '18:00') {
+            return new Response(JSON.stringify({ error: 'ไม่สามารถจองเวลาเริ่มต้นตั้งแต่เวลาปิดทำการ (18:00 น.) เป็นต้นไป' }), { status: 400, headers: corsHeaders });
+          }
+          if (eHHMM > '18:00') {
+            return new Response(JSON.stringify({ error: 'เวลาสิ้นสุดต้องไม่เกินเวลาปิดทำการ (18:00 น.)' }), { status: 400, headers: corsHeaders });
+          }
+        }
 
         const currentItem = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
         if (!currentItem) return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องในการจองนี้' }), { status: 404, headers: corsHeaders });
@@ -4946,8 +4975,20 @@ export default {
           return new Response(JSON.stringify({ error: 'กรุณาระบุจำนวนผู้เข้าใช้งาน (อย่างน้อย 1 ท่าน)' }), { status: 400, headers: corsHeaders });
         }
 
-        if (end_time <= start_time) {
+        const sHHMM = start_time.substring(0, 5);
+        const eHHMM = end_time.substring(0, 5);
+
+        if (eHHMM <= sHHMM) {
           return new Response(JSON.stringify({ error: 'เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น' }), { status: 400, headers: corsHeaders });
+        }
+        if (sHHMM < '08:00') {
+          return new Response(JSON.stringify({ error: 'เวลาเริ่มต้นต้องไม่เร็วกว่าเวลาเปิดทำการ (08:00 น.)' }), { status: 400, headers: corsHeaders });
+        }
+        if (sHHMM >= '18:00') {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถจองเวลาเริ่มต้นตั้งแต่เวลาปิดทำการ (18:00 น.) เป็นต้นไป' }), { status: 400, headers: corsHeaders });
+        }
+        if (eHHMM > '18:00') {
+          return new Response(JSON.stringify({ error: 'เวลาสิ้นสุดต้องไม่เกินเวลาปิดทำการ (18:00 น.)' }), { status: 400, headers: corsHeaders });
         }
 
         // Validate past time for today's booking
