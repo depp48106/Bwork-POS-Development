@@ -26,7 +26,8 @@ const {
   canActivatePromotion,
   getPromotionStatus,
   getPublicPromotionPayload,
-  calculateOnlineBookingPricing
+  calculateOnlineBookingPricing,
+  validatePromotionUpdatePayload
 } = require('./onlinePromotionHelper');
 const crypto = require('crypto');
 
@@ -3437,6 +3438,7 @@ async function handleGetPromotion(req, res) {
     const now = Date.now();
     const statusInfo = getPromotionStatus(promoState, now);
     const eligibility = canActivatePromotion(promoState, now);
+
     res.json({
       ...promoState,
       status: statusInfo.status,
@@ -3516,9 +3518,58 @@ async function handleDeactivatePromotion(req, res) {
   }
 }
 
-app.get(['/api/admin/promotion', '/api/settings/promotion'], requireAnyPermission('admin-management', 'admin-system'), handleGetPromotion);
-app.post(['/api/admin/promotion/activate', '/api/settings/promotion/activate'], requireAnyPermission('admin-management', 'admin-system'), handleActivatePromotion);
-app.post(['/api/admin/promotion/deactivate', '/api/settings/promotion/deactivate'], requireAnyPermission('admin-management', 'admin-system'), handleDeactivatePromotion);
+async function handleUpdatePromotion(req, res) {
+  try {
+    const promoSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'online_promotion'");
+    const currentPromoState = parsePromotionState(promoSetting?.value);
+
+    const validation = validatePromotionUpdatePayload(req.body, currentPromoState);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const adminName = req.user.fullname || req.user.username || 'admin';
+    const updatedState = {
+      ...currentPromoState,
+      promotion_name: validation.data.promotion_name,
+      discount_value: validation.data.discount_value,
+      start_at: validation.data.start_at,
+      end_at: validation.data.end_at,
+      updated_at: getBangkokLocalISO(new Date()),
+      updated_by: adminName
+    };
+
+    await dbQuery.run(
+      "INSERT INTO settings (key, value) VALUES ('online_promotion', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      [JSON.stringify(updatedState)]
+    );
+
+    const now = Date.now();
+    const statusInfo = getPromotionStatus(updatedState, now);
+    const eligibility = canActivatePromotion(updatedState, now);
+
+    res.json({
+      success: true,
+      message: 'บันทึกการตั้งค่าโปรโมชั่นเรียบร้อยแล้ว',
+      promotion: {
+        ...updatedState,
+        status: statusInfo.status,
+        status_label: statusInfo.label,
+        can_activate: eligibility.allowed,
+        activation_blocked_reason: eligibility.allowed ? null : eligibility.reason
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'ไม่สามารถบันทึกการตั้งค่าโปรโมชั่นได้' });
+  }
+}
+
+app.get(['/api/admin/promotion', '/api/settings/promotion'], requireAnyPermission('admin-management', 'admin-promotion', 'admin-promotions'), handleGetPromotion);
+app.put(['/api/admin/promotion', '/api/settings/promotion'], requireAnyPermission('admin-management', 'admin-promotion', 'admin-promotions'), handleUpdatePromotion);
+app.post(['/api/admin/promotion', '/api/settings/promotion'], requireAnyPermission('admin-management', 'admin-promotion', 'admin-promotions'), handleUpdatePromotion);
+app.post(['/api/admin/promotion/activate', '/api/settings/promotion/activate'], requireAnyPermission('admin-management', 'admin-promotion', 'admin-promotions'), handleActivatePromotion);
+app.post(['/api/admin/promotion/deactivate', '/api/settings/promotion/deactivate'], requireAnyPermission('admin-management', 'admin-promotion', 'admin-promotions'), handleDeactivatePromotion);
+
 
 
 // Test LINE Messaging API Connection (Bot Info & Credentials Check)
@@ -4468,9 +4519,10 @@ app.post('/api/public/bookings', async (req, res) => {
 
       // Authoritative promotion pricing evaluation
       const promoSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'online_promotion'");
+      const canonicalPromoState = parsePromotionState(promoSetting?.value);
       const promoPricing = calculateOnlineBookingPricing({
         subtotal,
-        promo: promoSetting?.value,
+        promo: canonicalPromoState,
         currentTime: Date.now()
       });
 
@@ -4989,8 +5041,8 @@ app.get('/api/bookings/:id/slip-verification', async (req, res) => {
 app.get('/api/public/promotion', async (req, res) => {
   try {
     const promoSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'online_promotion'");
-    const promoState = parsePromotionState(promoSetting?.value);
-    res.json(getPublicPromotionPayload(promoState, Date.now()));
+    const canonicalState = parsePromotionState(promoSetting?.value);
+    res.json(getPublicPromotionPayload(canonicalState, Date.now()));
   } catch (err) {
     res.status(500).json({ error: 'ไม่สามารถดึงข้อมูลโปรโมชั่นได้' });
   }
@@ -5005,7 +5057,7 @@ app.get('/api/public/settings/payment', async (req, res) => {
 
     const windowMins = Math.max(1, parseInt(settingsMap.payment_window_minutes || '15', 10) || 15);
     const deadlineHours = Math.round((windowMins / 60) * 100) / 100;
-    const promoState = parsePromotionState(settingsMap.online_promotion);
+    const canonicalState = parsePromotionState(settingsMap.online_promotion);
 
     res.json({
       promptpay_id: settingsMap.promptpay_id || '0125554000401',
@@ -5016,7 +5068,7 @@ app.get('/api/public/settings/payment', async (req, res) => {
       payment_window_minutes: windowMins,
       cleaning_buffer_minutes: parseInt(settingsMap.cleaning_buffer_minutes || '30', 10),
       line_liff_id: settingsMap.line_liff_id || '2011136579-c1TeSWNs',
-      promotion: getPublicPromotionPayload(promoState, Date.now())
+      promotion: getPublicPromotionPayload(canonicalState, Date.now())
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

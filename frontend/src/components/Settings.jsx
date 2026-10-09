@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone, CreditCard, Building2, Download, RefreshCw, ExternalLink, ShieldCheck, Clock, FileText, UploadCloud, RotateCcw, Upload } from 'lucide-react';
 import DoorAccessSettings from './DoorAccessSettings';
+import PromotionSettings from './PromotionSettings';
 
 function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, sysAlert, sysConfirm, sysPrompt, onClearHistory }) {
   // Config Settings
@@ -534,6 +535,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
           <h1 className="tab-title">
             {viewMode === 'users' && 'จัดการสิทธิ์บัญชีผู้ใช้'}
             {viewMode === 'system' && 'ตั้งค่าใบเสร็จ & บัญชีรับเงิน'}
+            {viewMode === 'promotion' && 'ตั้งค่าโปรโมชั่น'}
             {viewMode === 'backup' && 'จัดการฐานข้อมูล'}
             {viewMode === 'quotation' && 'แก้ไขใบเสนอราคา'}
             {viewMode === 'dooraccess' && 'ระบบจอง LINE OA & รหัสเข้าห้อง'}
@@ -542,6 +544,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '4px' }}>
             {viewMode === 'users' && 'บริหารบัญชีพนักงานต้อนรับและแอดมิน เพื่อสิทธิ์การเปิดบิลและจัดการฐานข้อมูล'}
             {viewMode === 'system' && 'ตั้งค่าข้อมูลบริษัท ข้อความใบเสร็จ และข้อมูลบัญชีธนาคาร/พร้อมเพย์ สำหรับรับชำระเงินระบบออนไลน์'}
+            {viewMode === 'promotion' && 'จัดการโปรโมชั่นสำหรับการจองออนไลน์'}
             {viewMode === 'backup' && 'จัดการการสำรองข้อมูล คัดลอกฐานข้อมูล และล้างข้อมูลประวัติการทำรายการเพื่อรีเซ็ตระบบ'}
             {viewMode === 'quotation' && 'กำหนดเงื่อนไขเริ่มต้น วันหมดอายุ และชื่อผู้ลงนามบนเอกสารใบเสนอราคา'}
             {viewMode === 'dooraccess' && 'กำหนดการเชื่อมต่อ LINE Messaging API, Google Sheets Sync และสิทธิ์เวลาการเช็คอินรหัส PIN'}
@@ -552,6 +555,11 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
         
+        {/* VIEW: PROMOTION SETTINGS */}
+        {viewMode === 'promotion' && (
+          <PromotionSettings sysAlert={sysAlert} />
+        )}
+
         {/* VIEW: DOOR ACCESS & LINE OA SETTINGS */}
         {viewMode === 'dooraccess' && (
           <DoorAccessSettings sysAlert={sysAlert} />
@@ -2436,6 +2444,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                               { key: 'manage', label: 'จัดการคลังสินค้า' },
                               { key: 'admin-users', label: 'จัดการผู้ใช้ & บทบาท' },
                               { key: 'admin-system', label: 'ตั้งค่าระบบ & ใบเสร็จ' },
+                              { key: 'admin-promotion', label: 'ตั้งค่าโปรโมชั่น' },
                               { key: 'admin-quotation', label: 'ตั้งค่าใบเสนอราคา' },
                               { key: 'admin-backup', label: 'สำรองข้อมูล (Backup)' }
                             ].map(menu => {

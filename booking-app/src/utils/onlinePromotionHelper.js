@@ -4,6 +4,7 @@
  */
 
 export const DEFAULT_ONLINE_PROMOTION = {
+  promotion_name: 'โปรโมชั่นจองออนไลน์',
   promotion_code: 'ONLINE_5_PERCENT',
   discount_type: 'percent',
   discount_value: 5,
@@ -18,12 +19,19 @@ export function parsePromotionState(raw) {
   if (!raw) return { ...DEFAULT_ONLINE_PROMOTION };
   try {
     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const discountVal = (parsed.discount_value !== undefined && parsed.discount_value !== null && !isNaN(Number(parsed.discount_value)))
+      ? Math.round((Number(parsed.discount_value) + Number.EPSILON) * 100) / 100
+      : DEFAULT_ONLINE_PROMOTION.discount_value;
+
     return {
       ...DEFAULT_ONLINE_PROMOTION,
       ...parsed,
+      promotion_name: (typeof parsed.promotion_name === 'string' && parsed.promotion_name.trim())
+        ? parsed.promotion_name.trim()
+        : DEFAULT_ONLINE_PROMOTION.promotion_name,
       promotion_code: 'ONLINE_5_PERCENT',
       discount_type: 'percent',
-      discount_value: 5,
+      discount_value: discountVal,
       channel: 'online'
     };
   } catch (e) {
@@ -54,6 +62,7 @@ export function calculateOnlineBookingPricing({ subtotal, promo, currentTime = D
   const num = Number(subtotal);
   const cleanSubtotal = isNaN(num) ? 0 : Math.round((Math.max(0, num) + Number.EPSILON) * 100) / 100;
   const active = isPromotionActive(promo, currentTime, 'online');
+  const promoState = parsePromotionState(promo);
 
   if (!active) {
     return {
@@ -66,14 +75,15 @@ export function calculateOnlineBookingPricing({ subtotal, promo, currentTime = D
     };
   }
 
-  const rawDiscount = (cleanSubtotal * 5) / 100;
+  const discountVal = promoState.discount_value;
+  const rawDiscount = (cleanSubtotal * discountVal) / 100;
   const discountAmount = Math.round((rawDiscount + Number.EPSILON) * 100) / 100;
   const totalAmount = Math.round((Math.max(0, cleanSubtotal - discountAmount) + Number.EPSILON) * 100) / 100;
 
   return {
     subtotal_amount: cleanSubtotal,
     discount_type: 'percent',
-    discount_value: 5,
+    discount_value: discountVal,
     discount_amount: discountAmount,
     total_amount: totalAmount,
     is_promotion_applied: true

@@ -235,6 +235,7 @@ export default function RoomListPage() {
       subtotalPrice: promoPricing.subtotal_amount,
       totalPrice: promoPricing.total_amount,
       discountAmount: promoPricing.discount_amount,
+      discountValue: promoPricing.discount_value,
       isPromotionApplied: promoPricing.is_promotion_applied,
       rateLabel,
       hasHourly,
@@ -426,7 +427,7 @@ export default function RoomListPage() {
       subtotal_amount: sel.subtotalPrice || sel.totalPrice,
       discount_amount: sel.discountAmount || 0,
       discount_type: sel.isPromotionApplied ? 'percent' : 'none',
-      discount_value: sel.isPromotionApplied ? 5 : 0,
+      discount_value: sel.isPromotionApplied ? (sel.discountValue ?? (promotion?.discount_value || 5)) : 0,
       total_amount: sel.totalPrice
     };
 
@@ -903,7 +904,7 @@ export default function RoomListPage() {
                     borderRadius: '9999px',
                     border: '1px solid #bbf7d0'
                   }}>
-                    <Sparkles size={11} /> ส่วนลดจองออนไลน์ 5%
+                    <Sparkles size={11} /> ส่วนลดจองออนไลน์ {sel.discountValue ?? (promotion?.discount_value || 5)}%
                   </span>
                 )}
               </div>

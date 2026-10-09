@@ -273,7 +273,7 @@ export default function BookingFormPage() {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#16a34a', fontWeight: 600 }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <Sparkles size={14} /> ส่วนลดจองออนไลน์ 5%
+                    <Sparkles size={14} /> ส่วนลดจองออนไลน์ {bookingData.discount_value || 5}%
                   </span>
                   <span>-฿{Number(bookingData.discount_amount).toLocaleString()}</span>
                 </div>

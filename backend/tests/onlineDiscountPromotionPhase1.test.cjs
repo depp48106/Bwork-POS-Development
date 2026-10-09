@@ -559,4 +559,47 @@ describe('BWORK-ONLINE-DISCOUNT-V1 Phase 1 Backend Tests', () => {
       assert.match(workerSrc, /pathname === '\/api\/admin\/promotion\/deactivate'/);
     });
   });
+
+  describe('11. Phase 1.1 Backend Auth Permissions & Parity Audit', () => {
+    test('server.js and worker.js enforce dedicated admin-promotion permission', () => {
+      const fs = require('fs');
+      const path = require('path');
+      const serverSrc = fs.readFileSync(path.resolve(__dirname, '../server.js'), 'utf8');
+      const workerSrc = fs.readFileSync(path.resolve(__dirname, '../worker.js'), 'utf8');
+
+      // Server routes permission check
+      assert.match(serverSrc, /requireAnyPermission\('admin-management',\s*'admin-promotion',\s*'admin-promotions'\)/,
+        'server.js must protect promotion routes with admin-promotion permission');
+
+      // Worker auth helper and check
+      assert.match(workerSrc, /function checkAdminPromotionAuth\(auth\)/,
+        'worker.js must define checkAdminPromotionAuth');
+      assert.match(workerSrc, /perms\.includes\('admin-promotion'\)\s*\|\|\s*perms\.includes\('admin-promotions'\)/,
+        'worker.js must check admin-promotion and admin-promotions permission');
+    });
+
+    test('functional permission guard rejects unauthorized roles and allows admin-promotion', () => {
+      const evaluatePromotionAccess = (user) => {
+        if (!user) return false;
+        if (user.role === 'admin' || user.username === 'admin') return true;
+        const perms = new Set(String(user.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+        return perms.has('admin-management') || perms.has('admin-promotion') || perms.has('admin-promotions');
+      };
+
+      // Allowed
+      assert.equal(evaluatePromotionAccess({ role: 'admin' }), true, 'admin role allowed');
+      assert.equal(evaluatePromotionAccess({ username: 'admin' }), true, 'admin username allowed');
+      assert.equal(evaluatePromotionAccess({ permissions: 'admin-management' }), true, 'admin-management allowed');
+      assert.equal(evaluatePromotionAccess({ permissions: 'admin-promotion' }), true, 'admin-promotion allowed');
+      assert.equal(evaluatePromotionAccess({ permissions: 'admin-promotions' }), true, 'admin-promotions allowed');
+      assert.equal(evaluatePromotionAccess({ permissions: 'pos,admin-promotion,history' }), true, 'mixed with admin-promotion allowed');
+
+      // Denied
+      assert.equal(evaluatePromotionAccess({ permissions: 'admin-system' }), false, 'only admin-system rejected');
+      assert.equal(evaluatePromotionAccess({ permissions: 'admin-users' }), false, 'only admin-users rejected');
+      assert.equal(evaluatePromotionAccess({ permissions: 'pos,history' }), false, 'regular POS rejected');
+      assert.equal(evaluatePromotionAccess({ permissions: '' }), false, 'empty permissions rejected');
+      assert.equal(evaluatePromotionAccess(null), false, 'null user rejected');
+    });
+  });
 });

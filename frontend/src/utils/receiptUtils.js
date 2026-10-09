@@ -468,8 +468,8 @@ export function getReceiptTotals(booking = {}, normalizedItems = []) {
     hasDiscount = true;
     discountAmount = fin.discount_amount;
     const isOnline = booking?.booking_source === 'online' || booking?.booking_channel === 'line_oa';
-    if (isOnline && fin.discount_type === 'percent' && Number(fin.discount_value) === 5) {
-      discountLabel = 'ส่วนลดจองออนไลน์ 5%';
+    if (isOnline && fin.discount_type === 'percent' && Number(fin.discount_value) > 0) {
+      discountLabel = `ส่วนลดจองออนไลน์ ${Number(fin.discount_value)}%`;
     } else if (fin.discount_type === 'percent' && fin.discount_value > 0) {
       discountLabel = `ส่วนลด (${fin.discount_value}%)`;
     } else {
