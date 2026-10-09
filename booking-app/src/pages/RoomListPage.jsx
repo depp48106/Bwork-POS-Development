@@ -287,6 +287,11 @@ export default function RoomListPage() {
     const reqStartMins = sH * 60 + (sM || 0);
     const reqEndMins = eH * 60 + (eM || 0);
 
+    // Business hours boundary checks: 08:00 - 18:00 Asia/Bangkok
+    if (reqStartMins < 8 * 60 || reqStartMins >= 18 * 60 || reqEndMins > 18 * 60 || reqEndMins <= reqStartMins) {
+      return { isOccupied: true, reason: 'outside_hours', label: 'อยู่นอกเวลาทำการ (08:00 - 18:00 น.)' };
+    }
+
     // Real-time past time check for today
     if (isToday && reqStartMins < currentMins) {
       return { isOccupied: true, reason: 'past', label: 'เวลานี้ผ่านมาแล้ว' };
@@ -313,25 +318,46 @@ export default function RoomListPage() {
       const bEndBufferedMins = bEndMins + bufferMins;
       const reqEndBufferedMins = reqEndMins + bufferMins;
 
-      // Overlap condition taking cleaning buffer into account
-      if (reqStartMins < bEndBufferedMins && reqEndBufferedMins > bStartMins) {
-        const isDirectUsage = (reqStartMins < bEndMins && reqEndMins > bStartMins);
-        if (isDirectUsage) {
-          return { 
-            isOccupied: true, 
-            reason: 'booked',
-            label: `ติดจอง (${bStartHHMM} - ${bEndHHMM} น.)` 
+      // 1. Direct booking overlap
+      if (reqStartMins < bEndMins && reqEndMins > bStartMins) {
+        return {
+          isOccupied: true,
+          reason: 'booked',
+          label: `ติดจอง (${bStartHHMM} - ${bEndHHMM} น.)`
+        };
+      }
+
+      // 2. Cleaning buffer of PREVIOUS booking b:
+      // If b ends at or before reqStartMins AND reqStartMins < bEndBufferedMins
+      // But if b ends at or after 18:00, its cleaning is entirely outside business hours (>= 18:00), so ignore it.
+      if (bEndMins <= reqStartMins && reqStartMins < bEndBufferedMins && bEndMins < 18 * 60) {
+        if (bEndBufferedMins >= 18 * 60) {
+          // Cleaning intersects closing time (18:00) -> clip visually to closing time
+          return {
+            isOccupied: true,
+            reason: 'cleaning',
+            label: `ติดทำความสะอาด (คิวก่อนหน้าใช้ถึง ${bEndHHMM} น.)`
           };
         } else {
           const cleanEndH = Math.floor(bEndBufferedMins / 60);
           const cleanEndM = bEndBufferedMins % 60;
           const cleanEndHHMM = `${String(cleanEndH).padStart(2, '0')}:${String(cleanEndM).padStart(2, '0')}`;
-          return { 
-            isOccupied: true, 
+          return {
+            isOccupied: true,
             reason: 'cleaning',
-            label: `ติดทำความสะอาด (คิวก่อนหน้าใช้ถึง ${bEndHHMM} น. • พร้อมจอง ${cleanEndHHMM} น.)` 
+            label: `ติดทำความสะอาด (คิวก่อนหน้าใช้ถึง ${bEndHHMM} น. • พร้อมจอง ${cleanEndHHMM} น.)`
           };
         }
+      }
+
+      // 3. Cleaning buffer needed before SUBSEQUENT booking b:
+      // If requested booking ends at or before b starts, but customer's cleaning buffer overlaps bStartMins.
+      if (reqEndMins <= bStartMins && reqEndBufferedMins > bStartMins) {
+        return {
+          isOccupied: true,
+          reason: 'cleaning',
+          label: `ติดเวลาเตรียมห้องสำหรับคิวถัดไป (${bStartHHMM} น.)`
+        };
       }
     }
     return { isOccupied: false, label: 'ว่างพร้อมจอง' };
