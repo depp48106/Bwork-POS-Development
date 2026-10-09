@@ -551,6 +551,8 @@ function DoorAccessSettings({ sysAlert }) {
 
         </div>
 
+
+
         {/* Full-width Save Button Footer spanning both columns */}
         <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
           <button

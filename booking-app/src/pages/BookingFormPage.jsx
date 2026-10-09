@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   User, Phone, Mail, Building, FileText, CheckCircle2, 
-  ArrowLeft, ChevronRight, ChevronDown, AlertCircle, ShieldCheck, CheckSquare, Square, MessageSquare, Send, Truck 
+  ArrowLeft, ChevronRight, ChevronDown, AlertCircle, ShieldCheck, CheckSquare, Square, MessageSquare, Send, Truck, Sparkles
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
@@ -172,6 +172,9 @@ export default function BookingFormPage() {
           booking_id: finalBookingId,
           booking_code: finalBookingCode,
           receipt_number: data.receipt_number || data.receiptNumber,
+          total_amount: data.totalAmount ?? data.total_amount ?? bookingData?.total_amount ?? 0,
+          subtotal_amount: data.subtotalAmount ?? bookingData?.subtotal_amount,
+          discount_amount: data.discountAmount ?? bookingData?.discount_amount ?? 0,
           paymentDeadline: deadline,
           payment_window_minutes: windowMins,
           customer_name: name.trim(),
@@ -182,7 +185,7 @@ export default function BookingFormPage() {
           id: finalBookingId,
           code: finalBookingCode,
           roomName: bookingData?.room?.name || 'ห้องประชุม',
-          totalAmount: bookingData?.totalPrice || bookingData?.total_amount || 0,
+          totalAmount: data.totalAmount ?? data.total_amount ?? bookingData?.totalPrice ?? bookingData?.total_amount ?? 0,
           paymentDeadline: deadline,
           paymentWindowMinutes: windowMins,
           createdAt: Date.now(),
@@ -251,26 +254,47 @@ export default function BookingFormPage() {
             )}
           </div>
 
-          {/* Total Amount Box */}
+          {/* Total Amount Box / Price Breakdown */}
           <div style={{
             marginTop: '16px',
-            padding: '12px 14px',
+            padding: '14px',
             borderRadius: '12px',
             backgroundColor: 'var(--bg-page)',
             border: '1.5px solid var(--border)',
             display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center'
+            flexDirection: 'column',
+            gap: '8px'
           }}>
-            <div>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดชำระสุทธิ</div>
-              <div style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--primary)' }}>
-                ฿{Number(bookingData.total_amount).toLocaleString()}
+            {bookingData.discount_amount > 0 && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  <span>ค่าบริการห้องประชุม</span>
+                  <span>฿{Number(bookingData.subtotal_amount || bookingData.total_amount).toLocaleString()}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', color: '#16a34a', fontWeight: 600 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Sparkles size={14} /> ส่วนลดจองออนไลน์ {bookingData.discount_value || 5}%
+                  </span>
+                  <span>-฿{Number(bookingData.discount_amount).toLocaleString()}</span>
+                </div>
+                <div style={{ borderTop: '1px dashed var(--border)', margin: '4px 0' }} />
+              </>
+            )}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดชำระสุทธิ</div>
+                <div style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--primary)' }}>
+                  ฿{Number(bookingData.total_amount).toLocaleString()}
+                </div>
               </div>
+              <span style={{ fontSize: '0.72rem', fontWeight: 700, backgroundColor: 'rgba(37,99,235,0.1)', color: 'var(--primary)', padding: '2px 8px', borderRadius: '6px' }}>
+                รวมภาษีแล้ว
+              </span>
             </div>
-            <span style={{ fontSize: '0.72rem', fontWeight: 700, backgroundColor: 'rgba(37,99,235,0.1)', color: 'var(--primary)', padding: '2px 8px', borderRadius: '6px' }}>
-              รวมภาษีแล้ว
-            </span>
           </div>
         </div>
 

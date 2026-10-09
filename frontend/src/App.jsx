@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu, Trash2, Package, Bell, CheckCircle2, Calendar, AlertCircle } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu, Trash2, Package, Bell, CheckCircle2, Calendar, AlertCircle, Tag } from 'lucide-react';
 import BookingPOS from './components/BookingPOS';
 import Dashboard from './components/Dashboard';
 import HistoryLog from './components/History';
 import SettingsPanel from './components/Settings';
+import PromotionSettings from './components/PromotionSettings';
 import ManagementPanel from './components/Management';
 import RoomLayout from './components/RoomLayout';
 import PendingBookings from './components/PendingBookings';
@@ -51,6 +52,7 @@ function App() {
     if (perms.includes('manage')) return 'manage';
     if (perms.includes('admin-users') || currentUser.username === 'admin') return 'users';
     if (perms.includes('admin-system')) return 'system';
+    if (perms.includes('admin-promotion') || perms.includes('admin-promotions')) return 'promotion';
     if (perms.includes('admin-quotation')) return 'quotation';
     if (perms.includes('admin-backup')) return 'backup';
     return 'general';
@@ -102,14 +104,14 @@ function App() {
     const permString = typeof currentUser.permissions === 'string' ? currentUser.permissions : '';
     const perms = permString.split(',').map(p => p.trim()).filter(Boolean);
     if (tabKey === 'admin-management' || tabKey === 'settings') {
-      return perms.includes('admin-management') || perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage');
+      return perms.includes('admin-management') || perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-promotion') || perms.includes('admin-promotions') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage');
     }
     if (tabKey === 'hour-credits') {
       return perms.includes('pos');
     }
     // If checking a settings sub-tab, grant it if they have the main 'admin-management' permission
-    if (['manage', 'admin-users', 'admin-system', 'admin-quotation', 'admin-backup', 'admin-dooraccess'].includes(tabKey)) {
-      return perms.includes('admin-management') || perms.includes(tabKey);
+    if (['manage', 'admin-users', 'admin-system', 'admin-promotion', 'admin-promotions', 'admin-quotation', 'admin-backup', 'admin-dooraccess'].includes(tabKey)) {
+      return perms.includes('admin-management') || perms.includes(tabKey) || (tabKey === 'admin-promotion' && perms.includes('admin-promotions')) || (tabKey === 'admin-promotions' && perms.includes('admin-promotion'));
     }
     return perms.includes(tabKey);
   };
@@ -140,6 +142,49 @@ function App() {
       setActiveTab(getDefaultLandingTab(user));
     }
   }, [user, activeTab]);
+
+  // Dedicated route protection & deep-linking for /promotion-settings
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const isPromoRoute = window.location.pathname === '/promotion-settings' ||
+                         window.location.hash === '#/promotion-settings' ||
+                         window.location.search.includes('tab=promotion-settings');
+    if (isPromoRoute && user) {
+      if (hasPermission('admin-promotion') || hasPermission('admin-promotions')) {
+        setActiveTab('settings');
+        setActiveSettingsSubTab('promotion');
+      } else {
+        // Unauthorized direct route access: redirect to permitted tab and reset URL
+        setActiveTab(getDefaultLandingTab(user));
+        if (window.history?.replaceState) {
+          window.history.replaceState({}, '', '/');
+        }
+      }
+    }
+  }, [user]);
+
+  // Synchronize browser URL bar with active view
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.history?.replaceState) return;
+    if (activeTab === 'settings' && activeSettingsSubTab === 'promotion') {
+      if (window.location.pathname !== '/promotion-settings') {
+        window.history.replaceState({}, '', '/promotion-settings');
+      }
+    } else {
+      if (window.location.pathname === '/promotion-settings') {
+        window.history.replaceState({}, '', '/');
+      }
+    }
+  }, [activeTab, activeSettingsSubTab]);
+
+  // Ensure current user stays on a permitted settings subtab
+  useEffect(() => {
+    if (user && activeTab === 'settings' && activeSettingsSubTab === 'promotion') {
+      if (!hasPermission('admin-promotion') && !hasPermission('admin-promotions')) {
+        setActiveSettingsSubTab(getFirstAllowedSettingsTab(user));
+      }
+    }
+  }, [user, activeTab, activeSettingsSubTab]);
 
   // Change Password states
   const [showChangePassModal, setShowChangePassModal] = useState(false);
@@ -1084,6 +1129,31 @@ function App() {
                   </button>
                 )}
 
+                {(hasPermission('admin-promotion') || hasPermission('admin-promotions')) && (
+                  <button
+                    onClick={() => {
+                      setActiveSettingsSubTab('promotion');
+                      if (typeof window !== 'undefined' && window.history?.pushState) {
+                        window.history.pushState({}, '', '/promotion-settings');
+                      }
+                    }}
+                    className={`top-menu-item ${activeSettingsSubTab === 'promotion' ? 'active' : ''}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      width: '100%',
+                      textAlign: 'left',
+                      justifyContent: 'flex-start',
+                      boxSizing: 'border-box',
+                      height: '44px'
+                    }}
+                  >
+                    <Tag size={16} />
+                    <span>ตั้งค่าโปรโมชั่น</span>
+                  </button>
+                )}
+
                 {hasPermission('admin-quotation') && (
                   <button
                     onClick={() => setActiveSettingsSubTab('quotation')}
@@ -1173,6 +1243,7 @@ function App() {
               {activeSettingsSubTab === 'users' && hasPermission('admin-users') && <SettingsPanel viewMode="users" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
               {activeSettingsSubTab === 'manage' && hasPermission('manage') && <ManagementPanel sysAlert={customAlert} sysConfirm={customConfirm} />}
               {activeSettingsSubTab === 'system' && hasPermission('admin-system') && <SettingsPanel viewMode="system" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'promotion' && (hasPermission('admin-promotion') || hasPermission('admin-promotions')) && <PromotionSettings sysAlert={customAlert} />}
               {activeSettingsSubTab === 'quotation' && hasPermission('admin-quotation') && <SettingsPanel viewMode="quotation" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
               {activeSettingsSubTab === 'backup' && hasPermission('admin-backup') && <SettingsPanel viewMode="backup" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} onClearHistory={handleClearHistory} />}
               {activeSettingsSubTab === 'dooraccess' && <SettingsPanel viewMode="dooraccess" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}

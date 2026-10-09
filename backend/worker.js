@@ -233,6 +233,270 @@ function calculateRescheduleFinancials({
   };
 }
 
+// ==========================================
+// 1.2 ONLINE BOOKING PROMOTION HELPERS
+// ==========================================
+const DEFAULT_ONLINE_PROMOTION = {
+  promotion_name: 'โปรโมชั่นจองออนไลน์',
+  promotion_code: 'ONLINE_5_PERCENT',
+  discount_type: 'percent',
+  discount_value: 5,
+  channel: 'online',
+  start_at: '2026-10-13T08:00:00+07:00', // Asia/Bangkok
+  end_at: null,
+  is_enabled: false,
+  activated_at: null,
+  activated_by: null,
+  deactivated_at: null,
+  deactivated_by: null,
+  updated_at: null,
+  updated_by: null
+};
+
+function formatBangkokDateTime(iso) {
+  try {
+    const d = new Date(iso);
+    const thMonths = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+    const bkkMs = d.getTime() + (7 * 60 + d.getTimezoneOffset()) * 60 * 1000;
+    const bkk = new Date(bkkMs);
+    const day = bkk.getDate();
+    const month = thMonths[bkk.getMonth()];
+    const year = bkk.getFullYear();
+    const h = String(bkk.getHours()).padStart(2, '0');
+    const m = String(bkk.getMinutes()).padStart(2, '0');
+    return `${day} ${month} ${year} เวลา ${h}:${m}`;
+  } catch (e) {
+    return '13 ต.ค. 2026 เวลา 08:00';
+  }
+}
+
+function getBangkokLocalISO(d = new Date()) {
+  const now = (d instanceof Date) ? d : new Date(d);
+  const bkkMs = now.getTime() + (7 * 60 + now.getTimezoneOffset()) * 60 * 1000;
+  const bkk = new Date(bkkMs);
+  const y = bkk.getFullYear();
+  const m = String(bkk.getMonth() + 1).padStart(2, '0');
+  const day = String(bkk.getDate()).padStart(2, '0');
+  const h = String(bkk.getHours()).padStart(2, '0');
+  const min = String(bkk.getMinutes()).padStart(2, '0');
+  const sec = String(bkk.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day}T${h}:${min}:${sec}`;
+}
+
+function parsePromotionState(raw) {
+  if (!raw) return { ...DEFAULT_ONLINE_PROMOTION };
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const discountVal = (parsed.discount_value !== undefined && parsed.discount_value !== null && !isNaN(Number(parsed.discount_value)))
+      ? Math.round((Number(parsed.discount_value) + Number.EPSILON) * 100) / 100
+      : DEFAULT_ONLINE_PROMOTION.discount_value;
+
+    return {
+      ...DEFAULT_ONLINE_PROMOTION,
+      ...parsed,
+      promotion_name: (typeof parsed.promotion_name === 'string' && parsed.promotion_name.trim())
+        ? parsed.promotion_name.trim()
+        : DEFAULT_ONLINE_PROMOTION.promotion_name,
+      promotion_code: 'ONLINE_5_PERCENT',
+      discount_type: 'percent',
+      discount_value: discountVal,
+      channel: 'online',
+      start_at: parsed.start_at || DEFAULT_ONLINE_PROMOTION.start_at,
+      end_at: (parsed.end_at !== undefined && parsed.end_at !== null && String(parsed.end_at).trim() !== '')
+        ? parsed.end_at
+        : null,
+      is_enabled: Boolean(parsed.is_enabled)
+    };
+  } catch (e) {
+    return { ...DEFAULT_ONLINE_PROMOTION };
+  }
+}
+
+function resolveTimestampMs(input) {
+  if (input === undefined || input === null) return Date.now();
+  if (typeof input === 'number') return input;
+  if (input instanceof Date) return input.getTime();
+  const parsed = Date.parse(input);
+  return isNaN(parsed) ? Date.now() : parsed;
+}
+
+function isPromotionActive(promo, currentTime = Date.now(), channel = 'online') {
+  if (channel !== 'online') return false;
+  const promoState = parsePromotionState(promo);
+  if (!promoState.is_enabled) return false;
+
+  const nowMs = resolveTimestampMs(currentTime);
+  const startMs = Date.parse(promoState.start_at || DEFAULT_ONLINE_PROMOTION.start_at);
+  if (isNaN(startMs) || nowMs < startMs) return false;
+
+  if (promoState.end_at) {
+    const endMs = Date.parse(promoState.end_at);
+    if (!isNaN(endMs) && nowMs >= endMs) return false;
+  }
+
+  return true;
+}
+
+function canActivatePromotion(promo, currentTime = Date.now()) {
+  const promoState = parsePromotionState(promo);
+  const nowMs = resolveTimestampMs(currentTime);
+  const startMs = Date.parse(promoState.start_at || DEFAULT_ONLINE_PROMOTION.start_at);
+
+  if (isNaN(startMs) || nowMs < startMs) {
+    const dateFormatted = formatBangkokDateTime(promoState.start_at || DEFAULT_ONLINE_PROMOTION.start_at);
+    return {
+      allowed: false,
+      reason: `ยังไม่ถึงเวลาเปิดใช้งานโปรโมชั่น (เปิดใช้งานได้ตั้งแต่ ${dateFormatted})`
+    };
+  }
+
+  if (promoState.end_at) {
+    const endMs = Date.parse(promoState.end_at);
+    if (!isNaN(endMs) && nowMs >= endMs) {
+      return {
+        allowed: false,
+        reason: 'โปรโมชั่นสิ้นสุดระยะเวลาแล้ว'
+      };
+    }
+  }
+
+  return { allowed: true };
+}
+
+function getPromotionStatus(promo, currentTime = Date.now()) {
+  const promoState = parsePromotionState(promo);
+  const nowMs = resolveTimestampMs(currentTime);
+  const startMs = Date.parse(promoState.start_at || DEFAULT_ONLINE_PROMOTION.start_at);
+
+  if (promoState.end_at) {
+    const endMs = Date.parse(promoState.end_at);
+    if (!isNaN(endMs) && nowMs >= endMs) {
+      return { status: 'ended', label: 'สิ้นสุดแล้ว' };
+    }
+  }
+
+  if (isNaN(startMs) || nowMs < startMs) {
+    return { status: 'upcoming', label: 'รอเปิดใช้งาน' };
+  }
+
+  if (promoState.is_enabled) {
+    return { status: 'active', label: 'กำลังใช้งาน' };
+  }
+
+  return { status: 'ready', label: 'พร้อมเปิดใช้งาน' };
+}
+
+function getPublicPromotionPayload(promo, currentTime = Date.now()) {
+  const promoState = parsePromotionState(promo);
+  const active = isPromotionActive(promoState, currentTime, 'online');
+  return {
+    is_active: active,
+    discount_type: 'percent',
+    discount_value: promoState.discount_value,
+    start_at: promoState.start_at,
+    end_at: promoState.end_at || null,
+    channel: 'online',
+    promotion_name: promoState.promotion_name || 'โปรโมชั่นจองออนไลน์'
+  };
+}
+
+function calculateOnlineBookingPricing({ subtotal, promo, currentTime = Date.now() }) {
+  const num = Number(subtotal);
+  const cleanSubtotal = isNaN(num) ? 0 : Math.round((Math.max(0, num) + Number.EPSILON) * 100) / 100;
+  const active = isPromotionActive(promo, currentTime, 'online');
+  const promoState = parsePromotionState(promo);
+
+  if (!active) {
+    return {
+      subtotal_amount: cleanSubtotal,
+      discount_type: 'none',
+      discount_value: 0,
+      discount_amount: 0,
+      total_amount: cleanSubtotal,
+      is_promotion_applied: false
+    };
+  }
+
+  const discountVal = promoState.discount_value;
+  const rawDiscount = (cleanSubtotal * discountVal) / 100;
+  const discountAmount = Math.round((rawDiscount + Number.EPSILON) * 100) / 100;
+  const totalAmount = Math.round((Math.max(0, cleanSubtotal - discountAmount) + Number.EPSILON) * 100) / 100;
+
+  return {
+    subtotal_amount: cleanSubtotal,
+    discount_type: 'percent',
+    discount_value: discountVal,
+    discount_amount: discountAmount,
+    total_amount: totalAmount,
+    is_promotion_applied: true
+  };
+}
+
+function validatePromotionUpdatePayload(payload, currentPromoState) {
+  if (!payload || typeof payload !== 'object') {
+    return { valid: false, error: 'ข้อมูลการตั้งค่าโปรโมชั่นไม่ถูกต้อง' };
+  }
+
+  if (currentPromoState && Boolean(currentPromoState.is_enabled)) {
+    return {
+      valid: false,
+      error: 'กรุณาหยุดโปรโมชั่นก่อนแก้ไขการตั้งค่า'
+    };
+  }
+
+  let promotionName = DEFAULT_ONLINE_PROMOTION.promotion_name;
+  if (payload.promotion_name !== undefined) {
+    if (typeof payload.promotion_name === 'string' && payload.promotion_name.trim()) {
+      promotionName = payload.promotion_name.trim();
+    }
+  } else if (currentPromoState?.promotion_name) {
+    promotionName = currentPromoState.promotion_name;
+  }
+
+  if (payload.discount_value === undefined || payload.discount_value === null || String(payload.discount_value).trim() === '') {
+    return { valid: false, error: 'กรุณาระบุเปอร์เซ็นต์ส่วนลด' };
+  }
+  const discountNum = Number(payload.discount_value);
+  if (isNaN(discountNum) || !isFinite(discountNum)) {
+    return { valid: false, error: 'ส่วนลดต้องเป็นตัวเลขที่ถูกต้อง' };
+  }
+  if (discountNum < 0.01 || discountNum > 100) {
+    return { valid: false, error: 'ส่วนลดต้องอยู่ระหว่าง 0.01% ถึง 100%' };
+  }
+  const roundedDiscount = Math.round((discountNum + Number.EPSILON) * 100) / 100;
+
+  if (!payload.start_at || typeof payload.start_at !== 'string' || !payload.start_at.trim()) {
+    return { valid: false, error: 'กรุณาระบุวันและเวลาเริ่มต้นโปรโมชั่น' };
+  }
+  const startMs = Date.parse(payload.start_at.trim());
+  if (isNaN(startMs)) {
+    return { valid: false, error: 'วันและเวลาเริ่มต้นโปรโมชั่นไม่ถูกต้อง' };
+  }
+  const cleanStartAt = payload.start_at.trim();
+
+  let cleanEndAt = null;
+  if (payload.end_at !== undefined && payload.end_at !== null && String(payload.end_at).trim() !== '') {
+    const endMs = Date.parse(String(payload.end_at).trim());
+    if (isNaN(endMs)) {
+      return { valid: false, error: 'วันและเวลาสิ้นสุดโปรโมชั่นไม่ถูกต้อง' };
+    }
+    if (endMs <= startMs) {
+      return { valid: false, error: 'วันสิ้นสุดต้องอยู่หลังวันเริ่มต้นโปรโมชั่น' };
+    }
+    cleanEndAt = String(payload.end_at).trim();
+  }
+
+  return {
+    valid: true,
+    data: {
+      promotion_name: promotionName,
+      discount_value: roundedDiscount,
+      start_at: cleanStartAt,
+      end_at: cleanEndAt
+    }
+  };
+}
+
 function base64urlEncode(str) {
   return btoa(unescape(encodeURIComponent(str)))
     .replace(/\+/g, '-')
@@ -862,6 +1126,34 @@ function checkStaffPosAuth(auth) {
     }
   }
   return null;
+}
+
+function checkAdminSystemAuth(auth) {
+  if (auth.error) return { error: auth.error, status: auth.status };
+  const user = auth.user;
+  if (!user || (!Number.isSafeInteger(user.id)) || user.id <= 0) {
+    return { error: 'กรุณาเข้าสู่ระบบ', status: 401 };
+  }
+  if (user.role === 'admin') return null;
+  const perms = (user.permissions || '').split(',').map(p => p.trim());
+  if (perms.includes('admin-system') || perms.includes('admin-management') || perms.includes('admin-users')) {
+    return null;
+  }
+  return { error: 'ไม่มีสิทธิ์เข้าถึงฟังก์ชันนี้ (สำหรับผู้ดูแลระบบเท่านั้น)', status: 403 };
+}
+
+function checkAdminPromotionAuth(auth) {
+  if (auth.error) return { error: auth.error, status: auth.status };
+  const user = auth.user;
+  if (!user || (!Number.isSafeInteger(user.id)) || user.id <= 0) {
+    return { error: 'กรุณาเข้าสู่ระบบ', status: 401 };
+  }
+  if (user.role === 'admin') return null;
+  const perms = (user.permissions || '').split(',').map(p => p.trim());
+  if (perms.includes('admin-promotion') || perms.includes('admin-promotions') || perms.includes('admin-management')) {
+    return null;
+  }
+  return { error: 'ไม่มีสิทธิ์เข้าถึงฟังก์ชันนี้ (สำหรับผู้ดูแลระบบหรือผู้ได้รับสิทธิ์ตั้งค่าโปรโมชั่นเท่านั้น)', status: 403 };
 }
 
 // ==========================================
@@ -4700,8 +4992,17 @@ export default {
           quantity = Math.max(1, Math.ceil((endMinutes - startMinutes) / 60));
         }
 
-        const subtotal = total_amount || Math.round(price * quantity * 100) / 100;
-        const netTotal = roundMoney(Number(subtotal) || 0);
+        // The server, not the browser, is the source of truth for public pricing.
+        const subtotal = Math.round(price * quantity * 100) / 100;
+
+        // Authoritative promotion pricing evaluation
+        const promoRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'online_promotion'").first();
+        const promoPricing = calculateOnlineBookingPricing({
+          subtotal,
+          promo: promoRow?.value,
+          currentTime: Date.now()
+        });
+
         const receiptNumber = await generateReceiptNumber(env);
         const pinCode = !roomUsesDoorPin(room || room_id) ? null : (room.pin_code?.trim() || await generateUniquePinCode(env));
 
@@ -4711,17 +5012,17 @@ export default {
           insBooking = await env.DB.prepare(
             `INSERT INTO bookings (
                customer_name, department, contact,
-               subtotal_amount, total_amount, paid_amount, balance_amount,
+               subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
                payment_status, payment_method,
                receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
                tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
                guest_count,
                created_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name, department || note || '', contact,
-            netTotal, netTotal, 0, netTotal,
+            promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
             receiptNumber, pinCode,
             email || null, line_user_id || null,
             tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
@@ -4734,15 +5035,15 @@ export default {
           insBooking = await env.DB.prepare(
             `INSERT INTO bookings (
                customer_name, department, contact,
-               subtotal_amount, total_amount, paid_amount, balance_amount,
+               subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
                payment_status, payment_method,
                receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
                created_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?)`
           ).bind(
             customer_name, department || note || '', contact,
-            netTotal, netTotal, 0, netTotal,
+            promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
             receiptNumber, pinCode,
             email || null, line_user_id || null,
             nowIso
@@ -4779,8 +5080,12 @@ export default {
           bookingCode: receiptNumber || bookingCode,
           receipt_number: receiptNumber,
           receiptNumber: receiptNumber,
-          total_amount: subtotal,
-          totalAmount: subtotal,
+          total_amount: promoPricing.total_amount,
+          totalAmount: promoPricing.total_amount,
+          subtotalAmount: promoPricing.subtotal_amount,
+          discountAmount: promoPricing.discount_amount,
+          discountType: promoPricing.discount_type,
+          discountValue: promoPricing.discount_value,
           paymentDeadline: new Date(Date.now() + windowMins * 60 * 1000).toISOString(),
           payment_window_minutes: windowMins,
           message: `บันทึกการจองสำเร็จ! กรุณาแนบสลิปชำระเงินภายใน ${windowMins} นาทีเพื่อยืนยันการจอง`
@@ -4907,14 +5212,21 @@ export default {
       }
 
       // ----------------------------------------------------
-      // 7. SETTINGS, USERS & ROLES CRUD (REQUIRES AUTH)
+      // 7. SETTINGS, PROMOTION, USERS & ROLES CRUD (REQUIRES AUTH)
       // ----------------------------------------------------
+      if (pathname === '/api/public/promotion' && method === 'GET') {
+        const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'online_promotion'").first();
+        const promoState = parsePromotionState(row?.value);
+        return new Response(JSON.stringify(getPublicPromotionPayload(promoState, Date.now())), { headers: corsHeaders });
+      }
+
       if (pathname === '/api/public/settings/payment' && method === 'GET') {
         const { results: settings } = await env.DB.prepare("SELECT key, value FROM settings").all();
         const map = {};
         (settings || []).forEach(s => map[s.key] = s.value);
         const windowMins = Math.max(1, parseInt(map.payment_window_minutes || '15', 10) || 15);
         const deadlineHours = Math.round((windowMins / 60) * 100) / 100;
+        const promoState = parsePromotionState(map.online_promotion);
         return new Response(JSON.stringify({
           company_name: map.company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)',
           promptpay_id: map.promptpay_id || '0125554000401',
@@ -4924,7 +5236,144 @@ export default {
           payment_deadline_hours: deadlineHours,
           payment_window_minutes: windowMins,
           cleaning_buffer_minutes: parseInt(map.cleaning_buffer_minutes || '30', 10),
-          line_liff_id: map.line_liff_id || '2011136579-c1TeSWNs'
+          line_liff_id: map.line_liff_id || '2011136579-c1TeSWNs',
+          promotion: getPublicPromotionPayload(promoState, Date.now())
+        }), { headers: corsHeaders });
+      }
+
+      if ((pathname === '/api/admin/promotion' || pathname === '/api/settings/promotion') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        const authErr = checkAdminPromotionAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'online_promotion'").first();
+        const promoState = parsePromotionState(row?.value);
+        const statusInfo = getPromotionStatus(promoState, Date.now());
+        return new Response(JSON.stringify({
+          success: true,
+          promotion: {
+            ...promoState,
+            status: statusInfo.status,
+            status_label: statusInfo.label
+          }
+        }), { headers: corsHeaders });
+      }
+
+      if ((pathname === '/api/admin/promotion' || pathname === '/api/settings/promotion') && (method === 'PUT' || method === 'POST')) {
+        const auth = await authenticateUser(request, env);
+        const authErr = checkAdminPromotionAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'online_promotion'").first();
+        const currentPromoState = parsePromotionState(row?.value);
+
+        let body = {};
+        try {
+          body = await request.json();
+        } catch (e) {
+          body = {};
+        }
+
+        const validation = validatePromotionUpdatePayload(body, currentPromoState);
+        if (!validation.valid) {
+          return new Response(JSON.stringify({ error: validation.error }), { status: 400, headers: corsHeaders });
+        }
+
+        const adminName = auth.user.fullname || auth.user.username || 'admin';
+        const updatedState = {
+          ...currentPromoState,
+          promotion_name: validation.data.promotion_name,
+          discount_value: validation.data.discount_value,
+          start_at: validation.data.start_at,
+          end_at: validation.data.end_at,
+          updated_at: getBangkokLocalISO(new Date()),
+          updated_by: adminName
+        };
+
+        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('online_promotion', ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+          .bind(JSON.stringify(updatedState), JSON.stringify(updatedState)).run();
+
+        const now = Date.now();
+        const statusInfo = getPromotionStatus(updatedState, now);
+        const eligibility = canActivatePromotion(updatedState, now);
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'บันทึกการตั้งค่าโปรโมชั่นเรียบร้อยแล้ว',
+          promotion: {
+            ...updatedState,
+            status: statusInfo.status,
+            status_label: statusInfo.label,
+            can_activate: eligibility.allowed,
+            activation_blocked_reason: eligibility.allowed ? null : eligibility.reason
+          }
+        }), { headers: corsHeaders });
+      }
+
+      if ((pathname === '/api/admin/promotion/activate' || pathname === '/api/settings/promotion/activate') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        const authErr = checkAdminPromotionAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'online_promotion'").first();
+        const promoState = parsePromotionState(row?.value);
+        const now = Date.now();
+        const eligibility = canActivatePromotion(promoState, now);
+        if (!eligibility.allowed) {
+          return new Response(JSON.stringify({ error: eligibility.reason }), { status: 400, headers: corsHeaders });
+        }
+
+        const adminName = auth.user.fullname || auth.user.username || 'admin';
+        const updatedState = {
+          ...promoState,
+          is_enabled: true,
+          activated_at: getBangkokLocalISO(new Date()),
+          activated_by: adminName
+        };
+
+        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('online_promotion', ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+          .bind(JSON.stringify(updatedState), JSON.stringify(updatedState)).run();
+
+        const statusInfo = getPromotionStatus(updatedState, now);
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'เปิดใช้งานโปรโมชั่นจองออนไลน์ 5% สำเร็จ',
+          promotion: {
+            ...updatedState,
+            status: statusInfo.status,
+            status_label: statusInfo.label
+          }
+        }), { headers: corsHeaders });
+      }
+
+      if ((pathname === '/api/admin/promotion/deactivate' || pathname === '/api/settings/promotion/deactivate') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        const authErr = checkAdminPromotionAuth(auth);
+        if (authErr) return new Response(JSON.stringify({ error: authErr.error }), { status: authErr.status, headers: corsHeaders });
+
+        const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'online_promotion'").first();
+        const promoState = parsePromotionState(row?.value);
+        const now = Date.now();
+        const adminName = auth.user.fullname || auth.user.username || 'admin';
+        const updatedState = {
+          ...promoState,
+          is_enabled: false,
+          deactivated_at: getBangkokLocalISO(new Date()),
+          deactivated_by: adminName
+        };
+
+        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('online_promotion', ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+          .bind(JSON.stringify(updatedState), JSON.stringify(updatedState)).run();
+
+        const statusInfo = getPromotionStatus(updatedState, now);
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'หยุดการใช้งานโปรโมชั่นเรียบร้อยแล้ว',
+          promotion: {
+            ...updatedState,
+            status: statusInfo.status,
+            status_label: statusInfo.label
+          }
         }), { headers: corsHeaders });
       }
 
