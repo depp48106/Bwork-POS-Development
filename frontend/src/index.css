@@ -2174,6 +2174,16 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     -moz-osx-font-smoothing: grayscale !important;
     text-rendering: optimizeLegibility !important;
   }
+
+  #print-receipt-area .receipt-header,
+  #print-receipt-area .receipt-info-row,
+  #print-receipt-area table,
+  #print-receipt-area tr,
+  #print-receipt-area .receipt-total-section,
+  #print-receipt-area .receipt-footer-text {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
   
   @page {
     margin: 0;
