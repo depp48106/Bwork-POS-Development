@@ -52,6 +52,7 @@ import {
   getTransactionTypeLabel,
   calculateRescheduleFinancials
 } from '../utils/financialUtils';
+import { groupBookingItemsByDate, formatTimeSlot, resolveBookingItemPinInfo } from '../utils/bookingScheduleHelper';
 import './PendingBookings.css';
 
 const DATE_TYPE_OPTIONS = [
@@ -237,6 +238,59 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   // Door PIN reveal and copy states for table & detail display
   const [revealedPins, setRevealedPins] = useState({}); // { [bookingId]: boolean, [`${bookingId}_item_${itemId}`]: boolean }
   const [copiedPin, setCopiedPin] = useState(null); // targetKey of currently copied pin
+  const [expandedDatesByBooking, setExpandedDatesByBooking] = useState({}); // { [bookingId]: { [dateKey]: boolean } }
+
+  const isDateGroupExpanded = (dateKey, index, isMultiDate, bId) => {
+    if (!isMultiDate) return true;
+    const bookingState = expandedDatesByBooking[bId];
+    if (!bookingState || bookingState[dateKey] === undefined) {
+      return index === 0; // Earliest date expanded by default
+    }
+    return Boolean(bookingState[dateKey]);
+  };
+
+  const handleToggleDateGroup = (bId, dateKey, currentlyExpanded) => {
+    setExpandedDatesByBooking(prev => ({
+      ...prev,
+      [bId]: {
+        ...(prev[bId] || {}),
+        [dateKey]: !currentlyExpanded
+      }
+    }));
+  };
+
+  const handleToggleAllDates = (bId, dateKeys, shouldExpandAll) => {
+    const nextBookingState = {};
+    dateKeys.forEach(k => {
+      nextBookingState[k] = shouldExpandAll;
+    });
+    setExpandedDatesByBooking(prev => ({
+      ...prev,
+      [bId]: nextBookingState
+    }));
+  };
+
+  // Rule D: Clean up stale expanded date groups if selectedBooking items are updated
+  useEffect(() => {
+    if (!selectedBooking?.id) return;
+    const bId = selectedBooking.id;
+    const currentExpanded = expandedDatesByBooking[bId];
+    if (!currentExpanded) return;
+    const { summary } = groupBookingItemsByDate(selectedBooking, roomsList);
+    const validKeys = new Set(summary.dateKeys);
+    let hasStale = false;
+    const cleaned = {};
+    Object.keys(currentExpanded).forEach(k => {
+      if (validKeys.has(k)) {
+        cleaned[k] = currentExpanded[k];
+      } else {
+        hasStale = true;
+      }
+    });
+    if (hasStale) {
+      setExpandedDatesByBooking(prev => ({ ...prev, [bId]: cleaned }));
+    }
+  }, [selectedBooking, roomsList]);
 
   const handleToggleRevealPin = (bookingId, itemId = null) => {
     const key = itemId != null ? `${bookingId}_item_${itemId}` : String(bookingId);
@@ -253,7 +307,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const isPinRevealed = (bookingId, itemId = null) => {
     if (itemId != null) {
       const itemKey = `${bookingId}_item_${itemId}`;
-      if (revealedPins[itemKey] !== undefined) return revealedPins[itemKey];
+      if (revealedPins[itemKey] !== undefined) return Boolean(revealedPins[itemKey]);
+      return false;
     }
     return Boolean(revealedPins[bookingId]);
   };
@@ -3195,6 +3250,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       {/* ========================================================= */}
       {showDetailModal && selectedBooking && (() => {
         const b = selectedBooking;
+        const scheduleData = groupBookingItemsByDate(b, roomsList);
+        const { summary, groups } = scheduleData;
+        const allDatesExpanded = groups.length > 0 && groups.every((grp, idx) =>
+          isDateGroupExpanded(grp.dateKey, idx, summary.isMultiDate, b.id)
+        );
+
         const firstItem = b.items?.[0] || {};
         const roomObj = roomsList?.find(r => r.id === (firstItem.room_id || b.room_id));
         const roomName = firstItem.room_name || b.room_name || roomObj?.name || 'ห้องประชุม';
@@ -3291,75 +3352,196 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 <div className="pb-detail-grid">
                   {/* LEFT COLUMN */}
                   <div className="pb-detail-col">
-                    {/* 1. ROOM & SERVICE (Strongest Section) */}
+                    {/* 1. ROOM & SERVICE (Strongest Section - Adaptive Expansion) */}
                     <div className="pb-detail-card">
                       <div className="pb-detail-card-header">
                         <span className="pb-detail-card-title">ห้องและการใช้งาน</span>
+                        {summary.isMultiDate && (
+                          <button
+                            type="button"
+                            className="pb-btn-toggle-all"
+                            onClick={() => handleToggleAllDates(b.id, summary.dateKeys, !allDatesExpanded)}
+                            aria-label={allDatesExpanded ? 'ยุบทั้งหมด' : 'ขยายทั้งหมด'}
+                          >
+                            {allDatesExpanded ? 'ยุบทั้งหมด' : 'ขยายทั้งหมด'}
+                          </button>
+                        )}
                       </div>
                       <div className="pb-detail-content">
-                        <div className="pb-detail-field-group">
-                          <div className="pb-detail-field">
-                            <span className="pb-detail-label">ห้องประชุม</span>
-                            <span className="pb-detail-val pb-detail-val--strong">{roomName}</span>
-                          </div>
-                          <div className="pb-detail-field">
-                            <span className="pb-detail-label">วันที่ใช้งาน</span>
-                            <span className="pb-detail-val pb-detail-val--strong">{usageDateStr}</span>
-                          </div>
-                          <div className="pb-detail-field">
-                            <span className="pb-detail-label">เวลาใช้งาน</span>
-                            <span className="pb-detail-val">{usageTimeStr}</span>
-                          </div>
-                          <div className="pb-detail-field">
-                            <span className="pb-detail-label">รูปแบบการจัดโต๊ะ</span>
-                            <span className="pb-detail-val">{layoutLabel}</span>
-                          </div>
-                          <div className="pb-detail-field">
-                            <span className="pb-detail-label">ประเภทแพ็กเกจ</span>
-                            <span className="pb-detail-val">{typeLabel}</span>
+                        {/* Compact Booking Summary */}
+                        <div className="pb-detail-summary-bar">
+                          <div className="pb-summary-chips">
+                            <div className="pb-summary-chip" title={summary.uniqueRoomsList.join(', ')}>
+                              <span className="pb-chip-label">ห้อง:</span>
+                              <strong>{summary.uniqueRoomCount} ห้อง</strong>
+                            </div>
+                            <div className="pb-summary-chip">
+                              <Calendar size={12} />
+                              <span>{summary.dateRangeStr}</span>
+                            </div>
+                            <div className="pb-summary-chip">
+                              <span className="pb-chip-label">รายการ:</span>
+                              <strong>{summary.totalItems} รายการ</strong>
+                            </div>
                           </div>
                         </div>
 
-                        {/* Additional items if multi-room/service */}
-                        {b.items && b.items.length > 1 && (
-                          <div className="pb-detail-sub-items">
-                            <span className="pb-detail-sub-items-title">รายการห้อง/บริการทั้งหมด ({b.items.length} รายการ):</span>
-                            {b.items.map((it, idx) => {
-                              const itRoom = roomsList?.find(r => r.id === it.room_id);
-                              const itUsesPin = it.room_id && roomUsesDoorPin(itRoom || it);
-                              const itPinInfo = itUsesPin ? resolveRoomPinInfo(b, it.room_id, itRoom) : { pin: '', pinType: 'none' };
-                              const itPin = itPinInfo.pin;
-                              const isItInternal = itPinInfo.pinType === 'internal' || isInternal;
-                              const itLabel = isItInternal ? 'รหัสผ่านห้อง (ภายใน)' : 'รหัสผ่านห้อง (ลูกค้าทั่วไป)';
-                              const isItRevealed = isPinRevealed(b.id, it.id);
-                              return (
-                                <div key={idx} className="pb-detail-sub-item-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                  <div>
-                                    <span>{it.room_name || it.service_name || `ห้อง #${it.room_id}`}</span>
-                                    <span style={{ color: 'var(--text-muted)', marginLeft: '6px' }}>{formatUsageTime({ items: [it] })}</span>
+                        {/* Date-Grouped Room Items (Adaptive Expansion) */}
+                        <div className="pb-detail-date-groups">
+                          {groups.map((grp, grpIdx) => {
+                            const isExpanded = isDateGroupExpanded(grp.dateKey, grpIdx, summary.isMultiDate, b.id);
+                            const dateHeaderId = `pb-date-header-${b.id}-${grp.dateKey}`;
+                            const dateBodyId = `pb-date-body-${b.id}-${grp.dateKey}`;
+
+                            return (
+                              <div key={grp.dateKey} className="pb-date-group-card">
+                                {summary.isMultiDate ? (
+                                  <button
+                                    type="button"
+                                    id={dateHeaderId}
+                                    className={`pb-date-group-header ${isExpanded ? 'is-expanded' : ''}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleToggleDateGroup(b.id, grp.dateKey, isExpanded);
+                                    }}
+                                    aria-expanded={isExpanded}
+                                    aria-controls={dateBodyId}
+                                  >
+                                    <div className="pb-date-group-title">
+                                      <Calendar size={13} />
+                                      <span>{grp.thaiFullDate}</span>
+                                      <span className="pb-date-item-badge">{grp.itemCount} รายการ</span>
+                                    </div>
+                                    <div className="pb-date-group-meta">
+                                      <span className="pb-date-subtotal">฿{grp.subtotal.toLocaleString()}</span>
+                                      <ChevronDown
+                                        size={15}
+                                        className={`pb-chevron-icon ${isExpanded ? 'rotated' : ''}`}
+                                      />
+                                    </div>
+                                  </button>
+                                ) : (
+                                  <div className="pb-date-group-header pb-date-group-header--static">
+                                    <div className="pb-date-group-title">
+                                      <Calendar size={13} />
+                                      <span>{grp.thaiFullDate}</span>
+                                      <span className="pb-date-item-badge">{grp.itemCount} รายการ</span>
+                                    </div>
+                                    <div className="pb-date-group-meta">
+                                      <span className="pb-date-subtotal">฿{grp.subtotal.toLocaleString()}</span>
+                                    </div>
                                   </div>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    {itUsesPin && itPin && (
-                                      <span style={{ fontSize: '0.78rem', background: 'var(--bg-card)', padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--border-color)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                                        <Key size={11} />
-                                        <span>{isItRevealed ? itPin : '••••••'}</span>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleToggleRevealPin(b.id, it.id)}
-                                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center' }}
-                                          title={isItRevealed ? 'ซ่อนรหัส' : 'แสดงรหัส'}
-                                        >
-                                          {isItRevealed ? <EyeOff size={11} /> : <Eye size={11} />}
-                                        </button>
-                                      </span>
-                                    )}
-                                    <span style={{ fontWeight: 600 }}>฿{Number(it.price || 0).toLocaleString()}</span>
+                                )}
+
+                                {isExpanded && (
+                                  <div
+                                    id={dateBodyId}
+                                    role={summary.isMultiDate ? 'region' : undefined}
+                                    aria-labelledby={summary.isMultiDate ? dateHeaderId : undefined}
+                                    className="pb-date-group-body"
+                                  >
+                                    {grp.items.map((it, itemIdx) => {
+                                      const itRoom = roomsList?.find(r => r.id === it.room_id);
+                                      const itRoomName = it.room_name || itRoom?.name || (it.room_id ? `ห้อง #${it.room_id}` : (it.service_name || 'ห้องประชุม'));
+                                      const itTimeStr = formatTimeSlot(it.start_time, it.end_time);
+                                      const itTypeLabel = it.booking_type === 'daily'
+                                        ? 'เหมาทั้งวัน'
+                                        : (it.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง');
+                                      const isClassroom = it.layout === 'classroom';
+                                      const itPrice = Number(it.subtotal !== undefined && it.subtotal !== null ? it.subtotal : (it.price || 0));
+
+                                      // Item PIN Resolution & Association
+                                      const itUsesPin = it.room_id && roomUsesDoorPin(itRoom || it);
+                                      const itPinInfo = itUsesPin ? resolveBookingItemPinInfo(b, it, itRoom) : { pin: '', pinType: 'none' };
+                                      const itPin = itPinInfo.pin;
+                                      const itHasPin = Boolean(itUsesPin && itPin && itPin !== '-');
+                                      const itIsInternal = itPinInfo.pinType === 'internal' || isInternal;
+                                      const itPinLabel = itIsInternal ? 'รหัสผ่านห้อง (ภายใน)' : 'รหัสผ่านห้อง (ลูกค้าทั่วไป)';
+
+                                      const itemStableId = it.id != null ? it.id : `idx_${grpIdx}_${itemIdx}`;
+                                      const itKey = `${b.id}_item_${itemStableId}`;
+                                      const isItRevealed = isPinRevealed(b.id, itemStableId);
+                                      const isItCopied = copiedPin === itKey;
+
+                                      return (
+                                        <div key={itemStableId} className="pb-room-item-card">
+                                          <div className="pb-room-item-header">
+                                            <div className="pb-room-item-title-row">
+                                              <span className="pb-room-item-name">{itRoomName}</span>
+                                              <span className="pb-room-item-badge">{itTypeLabel}</span>
+                                              {isClassroom && (
+                                                <span className="pb-room-item-badge pb-room-item-badge--classroom">Classroom</span>
+                                              )}
+                                            </div>
+                                            <div className="pb-room-item-price">
+                                              ฿{itPrice.toLocaleString()}
+                                            </div>
+                                          </div>
+
+                                          <div className="pb-room-item-meta">
+                                            <div className="pb-room-item-slot">
+                                              <Clock size={12} />
+                                              <span>{itTimeStr}</span>
+                                            </div>
+                                            {it.guest_count && (
+                                              <div className="pb-room-item-guests">
+                                                <User size={12} />
+                                                <span>{it.guest_count} ท่าน</span>
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          {/* Item-Specific Door PIN Control */}
+                                          <div className="pb-room-item-pin-row">
+                                            {!itUsesPin ? (
+                                              <span className="pb-room-item-no-pin">ห้องนี้ไม่ใช้รหัสผ่าน</span>
+                                            ) : itHasPin ? (
+                                              <div className="pb-room-item-pin-pill">
+                                                <Key size={11} className="pb-pin-icon" />
+                                                <span className="pb-pin-label">{itPinLabel}:</span>
+                                                <span className="pb-pin-code-val">
+                                                  {isItRevealed ? itPin : '••••••'}
+                                                </span>
+                                                <div className="pb-pin-pill-actions">
+                                                  <button
+                                                    type="button"
+                                                    className="pb-pin-mini-btn"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleToggleRevealPin(b.id, itemStableId);
+                                                    }}
+                                                    title={isItRevealed ? 'ซ่อนรหัส' : 'แสดงรหัส'}
+                                                    aria-label={isItRevealed ? `ซ่อน${itPinLabel} ${itRoomName}` : `แสดง${itPinLabel} ${itRoomName}`}
+                                                  >
+                                                    {isItRevealed ? <EyeOff size={11} /> : <Eye size={11} />}
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    className={`pb-pin-mini-btn ${isItCopied ? 'copied' : ''}`}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleCopyPin(itKey, itPin);
+                                                    }}
+                                                    title={isItCopied ? 'คัดลอกแล้ว!' : 'คัดลอกรหัส'}
+                                                    aria-label={`คัดลอก${itPinLabel} ${itRoomName}`}
+                                                  >
+                                                    {isItCopied ? <Check size={11} /> : <Copy size={11} />}
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              <span className="pb-room-item-no-pin">ไม่มีการกำหนดรหัส PIN</span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
                                   </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
 

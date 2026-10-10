@@ -1986,6 +1986,289 @@
   color: var(--text-main);
 }
 
+/* ========================================================= */
+/*  ADAPTIVE EXPANSION: ROOM & USAGE DETAILS (Phase 2)       */
+/* ========================================================= */
+
+.pb-detail-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: var(--bg-main);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pb-summary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.pb-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-main);
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.pb-chip-label {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.pb-btn-toggle-all {
+  background: none;
+  border: none;
+  color: var(--primary-color);
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.pb-btn-toggle-all:hover {
+  background-color: rgba(37, 99, 235, 0.08);
+}
+
+.pb-detail-date-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.pb-date-group-card {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background-color: var(--bg-card);
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+
+.pb-date-group-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background-color: var(--bg-main);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+
+.pb-date-group-header:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+.pb-date-group-header--static {
+  cursor: default;
+}
+
+.pb-date-group-header--static:hover {
+  background-color: var(--bg-main);
+}
+
+.pb-date-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.pb-date-item-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+}
+
+.pb-date-group-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pb-date-subtotal {
+  font-size: 0.80rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.pb-chevron-icon {
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+}
+
+.pb-chevron-icon.rotated {
+  transform: rotate(180deg);
+}
+
+.pb-date-group-body {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border-color);
+  background-color: var(--bg-card);
+}
+
+.pb-room-item-card {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-main);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.pb-room-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pb-room-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pb-room-item-name {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.pb-room-item-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+}
+
+.pb-room-item-badge--classroom {
+  background-color: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.25);
+  color: #2563eb;
+}
+
+.pb-room-item-price {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.pb-room-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.pb-room-item-slot,
+.pb-room-item-guests {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pb-room-item-pin-row {
+  margin-top: 2px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-color);
+  display: flex;
+  align-items: center;
+}
+
+.pb-room-item-pin-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--bg-card);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  font-size: 0.74rem;
+}
+
+.pb-pin-icon {
+  color: var(--text-muted);
+}
+
+.pb-pin-label {
+  font-size: 0.70rem;
+  color: var(--text-muted);
+}
+
+.pb-pin-code-val {
+  font-family: monospace;
+  font-weight: 700;
+  color: var(--primary-color);
+  letter-spacing: 1.5px;
+  font-size: 0.78rem;
+}
+
+.pb-pin-pill-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 2px;
+}
+
+.pb-pin-mini-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  border-radius: 3px;
+  transition: all 0.15s ease;
+}
+
+.pb-pin-mini-btn:hover {
+  color: var(--text-main);
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.pb-pin-mini-btn.copied {
+  color: #16a34a;
+}
+
+.pb-room-item-no-pin {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+
 /* Access / PIN Presentation */
 .pb-detail-pin-box {
   padding: 10px 12px;
