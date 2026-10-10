@@ -2156,7 +2156,7 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     overflow: visible !important;
     background: #ffffff !important;
     color: #000000 !important;
-    padding: 3mm 4mm !important;
+    padding: 3mm 2mm !important;
     font-size: 13px !important;
     line-height: 1.35 !important;
     font-family: 'Sarabun', 'Prompt', 'Noto Sans Thai', 'Segoe UI', Tahoma, sans-serif !important;
@@ -2173,6 +2173,16 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     -webkit-font-smoothing: antialiased !important;
     -moz-osx-font-smoothing: grayscale !important;
     text-rendering: optimizeLegibility !important;
+  }
+
+  #print-receipt-area .receipt-header,
+  #print-receipt-area .receipt-info-row,
+  #print-receipt-area table,
+  #print-receipt-area tr,
+  #print-receipt-area .receipt-total-section,
+  #print-receipt-area .receipt-footer-text {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
   
   @page {
@@ -2196,7 +2206,7 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   border: none !important;
   border-radius: 0 !important;
   box-shadow: none !important;
-  padding: 3mm 4mm !important;
+  padding: 3mm 2mm !important;
   font-weight: 600;
   -webkit-print-color-adjust: exact !important;
   print-color-adjust: exact !important;
