@@ -42,7 +42,7 @@ function ReceiptPrint({ booking, settings }) {
         maxHeight: 'none',
         overflow: 'visible',
         margin: '0 auto',
-        padding: '3mm 4mm',
+        padding: '3mm 2mm',
         fontSize: '13px',
         lineHeight: 1.35,
         color: '#000000',

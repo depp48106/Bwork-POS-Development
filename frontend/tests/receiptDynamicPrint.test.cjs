@@ -269,8 +269,8 @@ test('9. Print parent reset rules scope ancestors and strictly exclude #print-re
   // #print-receipt-area must define explicit padding and font stack matching Flow B on-screen preview
   assert.match(
     css,
-    /#print-receipt-area\s*\{[^}]*padding:\s*3mm\s+4mm\s*!important;/s,
-    '#print-receipt-area must explicitly enforce 3mm 4mm padding in @media print'
+    /#print-receipt-area\s*\{[^}]*padding:\s*3mm\s+2mm\s*!important;/s,
+    '#print-receipt-area must explicitly enforce 3mm 2mm padding in @media print'
   );
   assert.match(
     css,
