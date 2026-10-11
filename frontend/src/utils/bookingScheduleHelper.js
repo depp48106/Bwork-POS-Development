@@ -371,3 +371,225 @@ export function resolveBookingItemPinInfo(booking, item, room = null) {
 
   return { pin: '', pinType: 'none' };
 }
+
+/**
+ * Formats multiple canonical YYYY-MM-DD date keys into compact Thai Buddhist Era strings.
+ *
+ * Rules:
+ * - 0 dates: '-'
+ * - 1 date: '15 ต.ค. 2569'
+ * - 2-3 dates:
+ *   - Same month & year: '15, 17 ต.ค. 2569' or '15, 17, 19 ต.ค. 2569'
+ *   - Different month, same year: '31 ต.ค., 2 พ.ย. 2569'
+ *   - Different years: '31 ธ.ค. 2569, 2 ม.ค. 2570'
+ * - 4+ dates:
+ *   - Boundary range:
+ *   - Same month & year: '15 - 20 ต.ค. 2569 (4 วัน)'
+ *   - Different month, same year: '15 ต.ค. - 5 พ.ย. 2569 (4 วัน)'
+ *   - Different years: '25 ธ.ค. 2569 - 5 ม.ค. 2570 (4 วัน)'
+ *
+ * @param {Array<string>} dateKeys - Sorted canonical date keys ['YYYY-MM-DD', ...]
+ * @returns {string}
+ */
+export function formatMultiDatesThai(dateKeys) {
+  const validKeys = (dateKeys || []).filter(k => k && k !== 'no_date' && /^\d{4}-\d{2}-\d{2}/.test(String(k)));
+  if (validKeys.length === 0) return '-';
+  if (validKeys.length === 1) {
+    return formatThaiDate(validKeys[0]);
+  }
+
+  const parsed = validKeys.map(dk => {
+    const m = String(dk).match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return null;
+    const y = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10);
+    const d = parseInt(m[3], 10);
+    const thaiYear = y + 543;
+    const monthStr = THAI_MONTH_SHORT[month - 1] || '';
+    return { y, m: month, d, thaiYear, monthStr };
+  }).filter(Boolean);
+
+  if (parsed.length === 0) return '-';
+  const count = parsed.length;
+
+  if (count <= 3) {
+    const allSameYear = parsed.every(p => p.y === parsed[0].y);
+    const allSameMonth = allSameYear && parsed.every(p => p.m === parsed[0].m);
+    if (allSameMonth) {
+      const days = parsed.map(p => p.d).join(', ');
+      return `${days} ${parsed[0].monthStr} ${parsed[0].thaiYear}`;
+    }
+    if (allSameYear) {
+      return parsed.map(p => `${p.d} ${p.monthStr}`).join(', ') + ` ${parsed[0].thaiYear}`;
+    }
+    return parsed.map(p => `${p.d} ${p.monthStr} ${p.thaiYear}`).join(', ');
+  }
+
+  // 4 or more dates: boundary range
+  const first = parsed[0];
+  const last = parsed[parsed.length - 1];
+  if (first.y === last.y && first.m === last.m) {
+    return `${first.d} - ${last.d} ${first.monthStr} ${first.thaiYear} (${count} วัน)`;
+  }
+  if (first.y === last.y) {
+    return `${first.d} ${first.monthStr} - ${last.d} ${last.monthStr} ${first.thaiYear} (${count} วัน)`;
+  }
+  return `${first.d} ${first.monthStr} ${first.thaiYear} - ${last.d} ${last.monthStr} ${last.thaiYear} (${count} วัน)`;
+}
+
+/**
+ * Computes compact adaptive summary data for the main table "Room & Usage Time" column.
+ *
+ * Cases:
+ * - CASE A (Single item): Preserve compact standard view (Room, Date, Exact Time, Layout/Type).
+ * - CASE B (Same room, same date, multiple slots): One room, one date, "N ช่วงเวลา" (badges).
+ * - CASE C (Same room, multiple dates): One room, listed dates / range, badges (1 ห้อง, N วัน, N รายการ).
+ * - CASE D (Multiple rooms, same date): First 2 rooms (+N), one date, badges (N ห้อง, N รายการ).
+ * - CASE E (Multiple rooms, multiple dates): First 2 rooms (+N), dates, badges (N ห้อง, N วัน, N รายการ).
+ *
+ * @param {Object} booking - Booking record
+ * @param {Array<Object>} roomsList - Master rooms catalog
+ * @returns {Object} Table summary view model
+ */
+export function getBookingTableSummary(booking, roomsList = []) {
+  const scheduleData = groupBookingItemsByDate(booking, roomsList);
+  const { summary, groups } = scheduleData;
+  const { totalItems, uniqueRoomCount, uniqueRoomsList, uniqueDateCount, dateKeys } = summary;
+
+  // Case A: 0 or 1 item
+  if (totalItems <= 1) {
+    const rawItems = Array.isArray(booking?.items) && booking.items.length > 0
+      ? booking.items
+      : normalizeBookingItems(booking);
+    const firstItem = rawItems[0] || {};
+    const roomObj = roomsList?.find(r => r.id === (firstItem.room_id || booking?.room_id));
+    const roomName = firstItem.room_name || booking?.room_name || roomObj?.name || (firstItem.room_id ? `ห้อง #${firstItem.room_id}` : (firstItem.service_name || 'ห้องประชุม'));
+    const rawDate = firstItem.start_time || firstItem.booking_date || booking?.booking_date || booking?.created_at;
+    const dateKey = extractCanonicalDateKey(rawDate);
+    const usageDateStr = formatThaiDate(dateKey);
+    const timeDisplay = formatTimeSlot(firstItem.start_time, firstItem.end_time);
+    const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom' : 'Standard';
+    const typeLabel = firstItem.booking_type === 'daily'
+      ? 'เหมาวัน'
+      : (firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง');
+
+    return {
+      caseType: 'single', // Case A
+      isMultiItem: false,
+      totalItems,
+      uniqueRoomCount: uniqueRoomCount || (roomName ? 1 : 0),
+      uniqueDateCount: uniqueDateCount || (dateKey ? 1 : 0),
+      roomName,
+      roomDisplay: roomName,
+      displayedRooms: roomName,
+      extraRoomCount: 0,
+      fullRoomNamesTitle: roomName,
+      uniqueRoomsList: uniqueRoomsList.length > 0 ? uniqueRoomsList : [roomName],
+      usageDateStr,
+      timeDisplay,
+      layoutLabel,
+      typeLabel,
+      badges: [],
+      hasCustomSummary: false
+    };
+  }
+
+  // Multi-item cases: B, C, D, E
+  const fullRoomNamesTitle = uniqueRoomsList.join(', ');
+  const displayedRooms = uniqueRoomsList.slice(0, 2).join(', ');
+  const extraRoomCount = Math.max(0, uniqueRoomCount - 2);
+  const roomDisplay = extraRoomCount > 0 ? `${displayedRooms} +${extraRoomCount}` : displayedRooms;
+  const multiDateStr = formatMultiDatesThai(dateKeys);
+
+  // Case B: Same Room, Same Date, Multiple slots
+  if (uniqueRoomCount === 1 && uniqueDateCount === 1) {
+    const singleDateStr = formatThaiDate(dateKeys[0]);
+    const firstItem = groups[0]?.items?.[0] || {};
+    const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom' : 'Standard';
+    const typeLabel = firstItem.booking_type === 'daily'
+      ? 'เหมาวัน'
+      : (firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง');
+
+    return {
+      caseType: 'same_room_same_date', // Case B
+      isMultiItem: true,
+      totalItems,
+      uniqueRoomCount: 1,
+      uniqueDateCount: 1,
+      roomName: uniqueRoomsList[0] || 'ห้องประชุม',
+      roomDisplay: uniqueRoomsList[0] || 'ห้องประชุม',
+      displayedRooms: uniqueRoomsList[0] || 'ห้องประชุม',
+      extraRoomCount: 0,
+      fullRoomNamesTitle: uniqueRoomsList[0] || 'ห้องประชุม',
+      uniqueRoomsList,
+      usageDateStr: singleDateStr,
+      timeDisplay: `${totalItems} ช่วงเวลา`,
+      layoutLabel,
+      typeLabel,
+      badges: [`${totalItems} ช่วงเวลา`, `${totalItems} รายการ`],
+      hasCustomSummary: true
+    };
+  }
+
+  // Case C: Same Room, Multiple Dates
+  if (uniqueRoomCount === 1 && uniqueDateCount > 1) {
+    return {
+      caseType: 'same_room_multi_date', // Case C
+      isMultiItem: true,
+      totalItems,
+      uniqueRoomCount: 1,
+      uniqueDateCount,
+      roomName: uniqueRoomsList[0] || 'ห้องประชุม',
+      roomDisplay: uniqueRoomsList[0] || 'ห้องประชุม',
+      displayedRooms: uniqueRoomsList[0] || 'ห้องประชุม',
+      extraRoomCount: 0,
+      fullRoomNamesTitle: uniqueRoomsList[0] || 'ห้องประชุม',
+      uniqueRoomsList,
+      usageDateStr: multiDateStr,
+      timeDisplay: '',
+      badges: ['1 ห้อง', `${uniqueDateCount} วัน`, `${totalItems} รายการ`],
+      hasCustomSummary: true
+    };
+  }
+
+  // Case D: Multiple Rooms, Same Date
+  if (uniqueRoomCount > 1 && uniqueDateCount === 1) {
+    const singleDateStr = formatThaiDate(dateKeys[0]);
+    return {
+      caseType: 'multi_room_same_date', // Case D
+      isMultiItem: true,
+      totalItems,
+      uniqueRoomCount,
+      uniqueDateCount: 1,
+      roomName: roomDisplay,
+      roomDisplay,
+      displayedRooms,
+      extraRoomCount,
+      fullRoomNamesTitle,
+      uniqueRoomsList,
+      usageDateStr: singleDateStr,
+      timeDisplay: '',
+      badges: [`${uniqueRoomCount} ห้อง`, `${totalItems} รายการ`],
+      hasCustomSummary: true
+    };
+  }
+
+  // Case E: Multiple Rooms, Multiple Dates
+  return {
+    caseType: 'multi_room_multi_date', // Case E
+    isMultiItem: true,
+    totalItems,
+    uniqueRoomCount,
+    uniqueDateCount,
+    roomName: roomDisplay,
+    roomDisplay,
+    displayedRooms,
+    extraRoomCount,
+    fullRoomNamesTitle,
+    uniqueRoomsList,
+    usageDateStr: multiDateStr,
+    timeDisplay: '',
+    badges: [`${uniqueRoomCount} ห้อง`, `${uniqueDateCount} วัน`, `${totalItems} รายการ`],
+    hasCustomSummary: true
+  };
+}

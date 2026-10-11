@@ -52,7 +52,12 @@ import {
   getTransactionTypeLabel,
   calculateRescheduleFinancials
 } from '../utils/financialUtils';
-import { groupBookingItemsByDate, formatTimeSlot, resolveBookingItemPinInfo } from '../utils/bookingScheduleHelper';
+import {
+  groupBookingItemsByDate,
+  formatTimeSlot,
+  resolveBookingItemPinInfo,
+  getBookingTableSummary
+} from '../utils/bookingScheduleHelper';
 import './PendingBookings.css';
 
 const DATE_TYPE_OPTIONS = [
@@ -2391,6 +2396,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   const timeDisplay = formatUsageTime(b);
                   const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom' : 'Standard';
                   const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาวัน' : firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง';
+                  const tableSchedule = getBookingTableSummary(b, roomsList);
                   const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
                   const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
 
@@ -2487,13 +2493,39 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       {/* Column 3: Room & Schedule */}
                       <td className="pb-td">
                         <div className="pb-cell-schedule">
-                          <span className="pb-primary-text pb-room-name" title={roomName}>{roomName}</span>
+                          <div className="pb-room-name-row">
+                            <span className="pb-primary-text pb-room-name" title={tableSchedule.fullRoomNamesTitle}>
+                              {tableSchedule.displayedRooms || tableSchedule.roomName}
+                            </span>
+                            {tableSchedule.extraRoomCount > 0 && (
+                              <span
+                                className="pb-room-extra-pill"
+                                title={`${tableSchedule.extraRoomCount} ห้องเพิ่มเติม: ${tableSchedule.uniqueRoomsList.slice(2).join(', ')}`}
+                              >
+                                +{tableSchedule.extraRoomCount}
+                              </span>
+                            )}
+                          </div>
                           <span className="pb-schedule-time">
-                            {usageDateStr} {timeDisplay && timeDisplay !== '-' ? `• ${timeDisplay}` : ''}
+                            {tableSchedule.caseType === 'single' ? (
+                              `${tableSchedule.usageDateStr}${tableSchedule.timeDisplay && tableSchedule.timeDisplay !== '-' ? ` • ${tableSchedule.timeDisplay}` : ''}`
+                            ) : (
+                              tableSchedule.usageDateStr
+                            )}
                           </span>
-                          <span className="pb-tertiary-text">
-                            {layoutLabel} • {typeLabel}
-                          </span>
+                          {tableSchedule.isMultiItem && tableSchedule.badges && tableSchedule.badges.length > 0 ? (
+                            <div className="pb-summary-badges-row">
+                              {tableSchedule.badges.map((bText, bIdx) => (
+                                <span key={bIdx} className="pb-summary-mini-badge">
+                                  {bText}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="pb-tertiary-text">
+                              {tableSchedule.layoutLabel} • {tableSchedule.typeLabel}
+                            </span>
+                          )}
                         </div>
                       </td>
 
@@ -2672,6 +2704,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               const timeDisplay = formatUsageTime(b);
               const layoutLabel = firstItem.layout === 'classroom' ? 'Classroom' : 'Standard';
               const typeLabel = firstItem.booking_type === 'daily' ? 'เหมาวัน' : firstItem.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง';
+              const tableSchedule = getBookingTableSummary(b, roomsList);
               const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
               const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
 
@@ -2745,13 +2778,39 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
                   {/* 2. Room & Schedule (Visually Prominent) */}
                   <div className="pb-mobile-card-schedule">
-                    <div className="pb-mobile-room-name">{roomName}</div>
+                    <div className="pb-mobile-room-name-row">
+                      <div className="pb-mobile-room-name" title={tableSchedule.fullRoomNamesTitle}>
+                        {tableSchedule.displayedRooms || tableSchedule.roomName}
+                      </div>
+                      {tableSchedule.extraRoomCount > 0 && (
+                        <span
+                          className="pb-room-extra-pill"
+                          title={`${tableSchedule.extraRoomCount} ห้องเพิ่มเติม: ${tableSchedule.uniqueRoomsList.slice(2).join(', ')}`}
+                        >
+                          +{tableSchedule.extraRoomCount}
+                        </span>
+                      )}
+                    </div>
                     <div className="pb-mobile-usage-time">
-                      {usageDateStr} {timeDisplay && timeDisplay !== '-' ? `• ${timeDisplay}` : ''}
+                      {tableSchedule.caseType === 'single' ? (
+                        `${tableSchedule.usageDateStr}${tableSchedule.timeDisplay && tableSchedule.timeDisplay !== '-' ? ` • ${tableSchedule.timeDisplay}` : ''}`
+                      ) : (
+                        tableSchedule.usageDateStr
+                      )}
                     </div>
-                    <div className="pb-mobile-layout-type">
-                      {layoutLabel} • {typeLabel}
-                    </div>
+                    {tableSchedule.isMultiItem && tableSchedule.badges && tableSchedule.badges.length > 0 ? (
+                      <div className="pb-summary-badges-row">
+                        {tableSchedule.badges.map((bText, bIdx) => (
+                          <span key={bIdx} className="pb-summary-mini-badge">
+                            {bText}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="pb-mobile-layout-type">
+                        {tableSchedule.layoutLabel} • {tableSchedule.typeLabel}
+                      </div>
+                    )}
                   </div>
 
                   {/* 3. Customer Info */}
