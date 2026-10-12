@@ -4628,14 +4628,14 @@ export default {
         }
 
         const booking = await env.DB.prepare(
-          'SELECT id, receipt_number, customer_name, status, payment_status FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
+          'SELECT id, receipt_number, customer_name, payment_status FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
         ).bind(numericId, rawId, rawId, rawId).first();
 
         if (!booking) {
           return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจองนี้' }), { status: 404, headers: secureHeaders });
         }
 
-        if (booking.status === 'cancelled' || booking.payment_status === 'cancelled') {
+        if (booking.payment_status === 'cancelled') {
           return new Response(JSON.stringify({ error: 'รายการจองนี้ถูกยกเลิกแล้ว ไม่สามารถดูข้อมูลบัตร Wi-Fi ได้' }), { status: 400, headers: secureHeaders });
         }
 
@@ -4645,22 +4645,22 @@ export default {
         let items = [];
         try {
           const { results } = await env.DB.prepare(
-            `SELECT bi.id, bi.booking_id, bi.room_id, bi.booking_date, bi.start_time, bi.end_time, bi.time_slot,
+            `SELECT bi.*,
                     r.name as room_name, r.wifi_username, r.wifi_password_enc
              FROM booking_items bi
              LEFT JOIN rooms r ON bi.room_id = r.id
              WHERE bi.booking_id = ?
-             ORDER BY bi.booking_date ASC, bi.start_time ASC`
+             ORDER BY bi.start_time ASC`
           ).bind(booking.id).all();
           items = results || [];
         } catch (queryErr) {
           const { results } = await env.DB.prepare(
-            `SELECT bi.id, bi.booking_id, bi.room_id, bi.booking_date, bi.start_time, bi.end_time, bi.time_slot,
+            `SELECT bi.*,
                     r.name as room_name
              FROM booking_items bi
              LEFT JOIN rooms r ON bi.room_id = r.id
              WHERE bi.booking_id = ?
-             ORDER BY bi.booking_date ASC, bi.start_time ASC`
+             ORDER BY bi.start_time ASC`
           ).bind(booking.id).all();
           items = results || [];
         }
@@ -4692,13 +4692,19 @@ export default {
           });
         }
 
-        const scheduleList = items.map(item => ({
-          room_name: item.room_name || `ห้อง ${item.room_id}`,
-          booking_date: item.booking_date,
-          start_time: item.start_time,
-          end_time: item.end_time,
-          time_slot: item.time_slot || (item.start_time && item.end_time ? `${item.start_time} - ${item.end_time}` : '')
-        }));
+        const scheduleList = items.map(item => {
+          const bDate = item.booking_date || (item.start_time ? String(item.start_time).slice(0, 10) : '');
+          const sTime = item.start_time ? (String(item.start_time).includes('T') ? String(item.start_time).slice(11, 16) : item.start_time) : '';
+          const eTime = item.end_time ? (String(item.end_time).includes('T') ? String(item.end_time).slice(11, 16) : item.end_time) : '';
+          const slot = item.time_slot || ((sTime && eTime) ? `${sTime} - ${eTime}` : '');
+          return {
+            room_name: item.room_name || `ห้อง ${item.room_id}`,
+            booking_date: bDate,
+            start_time: sTime,
+            end_time: eTime,
+            time_slot: slot
+          };
+        });
 
         const cardPayload = {
           booking_id: booking.id,

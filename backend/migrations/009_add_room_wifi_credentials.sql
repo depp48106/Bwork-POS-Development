@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- BWORK-POS MIGRATION 009: Room Wi-Fi Hotspot Credentials
--- Status: PENDING APPROVAL (DO NOT EXECUTE IN PRODUCTION OR DEV UNTIL APPROVED)
+-- Status: APPROVED (Development Phase 3D)
 -- Target: SQLite (database_dev.sqlite) / Cloudflare D1 (rooms table)
 -- ==============================================================================
 

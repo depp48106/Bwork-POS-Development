@@ -236,7 +236,7 @@ test('BWORK-POS Room Wi-Fi Protected API Suite', async (t) => {
     res.json(obj);
   });
 
-  app.get('/api/admin/rooms/:id/wifi', authenticateToken, requireAnyPermission('manage', 'admin-management'), async (req, res) => {
+  app.get(['/api/admin/rooms/:id/wifi', '/api/rooms/:id/wifi'], authenticateToken, requireAnyPermission('manage', 'admin-management'), async (req, res) => {
     res.setHeader('Cache-Control', 'no-store, private');
     const room = await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [req.params.id]);
     if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -262,7 +262,7 @@ test('BWORK-POS Room Wi-Fi Protected API Suite', async (t) => {
     });
   });
 
-  app.put('/api/admin/rooms/:id/wifi', authenticateToken, requireAnyPermission('manage', 'admin-management'), async (req, res) => {
+  app.put(['/api/admin/rooms/:id/wifi', '/api/rooms/:id/wifi'], authenticateToken, requireAnyPermission('manage', 'admin-management'), async (req, res) => {
     res.setHeader('Cache-Control', 'no-store, private');
     const room = await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [req.params.id]);
     if (!room) return res.status(404).json({ error: 'Room not found' });
@@ -297,9 +297,9 @@ test('BWORK-POS Room Wi-Fi Protected API Suite', async (t) => {
 
   app.get('/api/bookings/:id/wifi-card', authenticateToken, requireAnyPermission('pos', 'pending', 'manage', 'admin-management'), async (req, res) => {
     res.setHeader('Cache-Control', 'private, no-store');
-    const booking = await dbQuery.get('SELECT id, receipt_number, customer_name, status FROM bookings WHERE id = ?', [req.params.id]);
+    const booking = await dbQuery.get('SELECT id, receipt_number, customer_name, payment_status FROM bookings WHERE id = ?', [req.params.id]);
     if (!booking) return res.status(404).json({ error: 'Booking not found' });
-    if (booking.status === 'cancelled') {
+    if (booking.payment_status === 'cancelled') {
       return res.status(400).json({ error: 'รายการจองนี้ถูกยกเลิกแล้ว ไม่สามารถดูข้อมูลบัตร Wi-Fi ได้' });
     }
 
@@ -482,6 +482,14 @@ test('BWORK-POS Room Wi-Fi Protected API Suite', async (t) => {
       const readBackData = await readBackRes.json();
       assert.strictEqual(readBackData.wifi_username, 'hotspot_room102');
       assert.strictEqual(readBackData.wifi_password, 'VeryStrongPassword#2026', 'Reveals decrypted plaintext to authorized admin');
+
+      // C2. Verify Canonical Route Parity: GET /api/rooms/2/wifi matches /api/admin/rooms/2/wifi
+      const canonicalReadRes = await fetch(`${baseUrl}/api/rooms/2/wifi`, {
+        headers: { Authorization: `Bearer ${adminToken}` }
+      });
+      assert.strictEqual(canonicalReadRes.status, 200, 'Canonical route /api/rooms/:id/wifi must be 200');
+      const canonicalData = await canonicalReadRes.json();
+      assert.deepStrictEqual(canonicalData, readBackData, 'Canonical and admin alias must return identical payload');
 
       // D. Update username only with empty password -> must NOT overwrite existing password
       const emptyPassUpdateRes = await fetch(`${baseUrl}/api/admin/rooms/2/wifi`, {

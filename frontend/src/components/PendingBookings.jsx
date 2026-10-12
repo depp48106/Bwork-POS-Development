@@ -35,7 +35,8 @@ import {
   EyeOff,
   Copy,
   Check,
-  Wifi
+  Wifi,
+  Coffee
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import { printReceipt } from '../utils/printReceiptHelper';
@@ -3599,7 +3600,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             {/* Tax Invoice Request Info */}
             {selectedBooking?.tax_invoice_required === 1 && (
               <div style={{ padding: '10px 12px', borderRadius: '10px', backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.25)', fontSize: '0.8rem' }}>
-                <div style={{ color: '#3b82f6', fontWeight: 800, marginBottom: '4px' }}>📄 ลูกค้าขอใบกำกับภาษี (Tax Invoice):</div>
+                <div style={{ color: '#3b82f6', fontWeight: 800, marginBottom: '4px' }}>ลูกค้าขอใบกำกับภาษี (Tax Invoice):</div>
                 <div style={{ color: 'var(--text-main)' }}><strong>ชื่อ:</strong> {selectedBooking.tax_name} | <strong>เลข 13 หลัก:</strong> {selectedBooking.tax_id}</div>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '2px' }}><strong>ที่อยู่:</strong> {selectedBooking.tax_address}</div>
                 <div style={{ color: '#3b82f6', fontSize: '0.75rem', marginTop: '2px' }}>
@@ -8284,7 +8285,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: '#2563eb', fontWeight: 800 }}>ช่องทางการจัดส่งเอกสาร:</span>
                     <span style={{ fontWeight: 800, color: 'var(--text-main)', backgroundColor: 'rgba(255,255,255,0.8)', padding: '2px 8px', borderRadius: '6px', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
-                      {selectedTaxBooking.tax_delivery_method === 'postal' ? '📮 จัดส่งทางไปรษณีย์ / จดหมาย' : (selectedTaxBooking.tax_delivery_method === 'pickup' ? '🏢 รับด้วยตนเองที่หน้าร้าน' : '✉️ อีเมล / e-Tax')}
+                      {selectedTaxBooking.tax_delivery_method === 'postal' ? 'จัดส่งทางไปรษณีย์ / จดหมาย' : (selectedTaxBooking.tax_delivery_method === 'pickup' ? 'รับด้วยตนเองที่หน้าร้าน' : 'อีเมล / e-Tax')}
                     </span>
                   </div>
 
@@ -8681,21 +8682,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       flexShrink: 0
                     }}
                   >
-                    ☕
+                    <Coffee size={18} />
                   </div>
                   <div>
                     <div style={{ fontSize: '0.72rem', fontWeight: 800, color: '#d97706', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                       สิทธิประโยชน์พิเศษ
                     </div>
-                    <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
-                      {wifiCardData.beverage_perk?.message || 'แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลดเครื่องดื่มตามเงื่อนไขของร้าน'}
+                    <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.4, whiteSpace: 'pre-line' }}>
+                      {(wifiCardData.beverage_perk?.message || 'แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลดเครื่องดื่มตามเงื่อนไขของร้าน').replace('แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลดเครื่องดื่ม', 'แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลด\nเครื่องดื่ม')}
                     </div>
                   </div>
                 </div>
 
                 {/* Screenshot Hint */}
                 <div style={{ textAlign: 'center', fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                  📸 แคปหน้าจอนี้เพื่อบันทึกข้อมูลการเข้าใช้งาน Wi-Fi และแสดงรับสิทธิ์ส่วนลด
+                  แคปหน้าจอนี้เพื่อบันทึกข้อมูลการเข้าใช้งาน Wi-Fi และแสดงรับสิทธิ์ส่วนลด
                 </div>
               </div>
             )}
