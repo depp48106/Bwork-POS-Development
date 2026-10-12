@@ -1722,6 +1722,54 @@ function buildLineDoorPinFlex(booking, item, room) {
   };
 }
 
+/**
+ * Lowest reliable dispatch helper for LINE push messages.
+ * HARD-BLOCK IN STAGING: When env.ENVIRONMENT === 'staging', zero HTTP requests are issued to LINE APIs.
+ * Returns { sent: false, mocked: true, status: 200, success: true, ok: true }.
+ * Never logs tokens or customer PII.
+ */
+async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }) {
+  if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
+    return {
+      sent: false,
+      mocked: true,
+      status: 200,
+      ok: true,
+      success: true,
+      reason: 'staging_environment_mock'
+    };
+  }
+
+  if (!channelAccessToken) {
+    return {
+      sent: false,
+      mocked: false,
+      status: 401,
+      ok: false,
+      success: false,
+      reason: 'no_channel_access_token'
+    };
+  }
+
+  const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${channelAccessToken}`
+    },
+    body: JSON.stringify({ to, messages })
+  });
+
+  return {
+    sent: lineRes.ok,
+    mocked: false,
+    status: lineRes.status,
+    ok: lineRes.ok,
+    success: lineRes.ok,
+    response: lineRes
+  };
+}
+
 async function sendLineBookingConfirmation(env, bookingId) {
   try {
     const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
@@ -1732,23 +1780,19 @@ async function sendLineBookingConfirmation(env, bookingId) {
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value;
-    if (!channelAccessToken) return null;
 
     const flexCard = buildLineBookingConfirmationFlex(booking, item, room);
 
-    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
-      body: JSON.stringify({
-        to: booking.line_user_id,
-        messages: [flexCard]
-      })
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [flexCard]
     });
 
-    return { success: lineRes.ok, status: lineRes.status };
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return null;
+    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
   } catch (err) {
     console.error('Error sending confirmation message:', err);
     return null;
@@ -1767,23 +1811,19 @@ async function sendLineDoorPin(env, bookingId) {
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value;
-    if (!channelAccessToken) return null;
 
     const flexCard = buildLineDoorPinFlex(booking, item, room);
 
-    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
-      body: JSON.stringify({
-        to: booking.line_user_id,
-        messages: [flexCard]
-      })
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [flexCard]
     });
 
-    return { success: lineRes.ok, status: lineRes.status };
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return null;
+    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
   } catch (err) {
     console.error('Error sending door pin message:', err);
     return null;
@@ -1955,23 +1995,19 @@ async function sendLineBookingCancellation(env, bookingId, reason = '') {
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value;
-    if (!channelAccessToken) return null;
 
     const flexCard = buildLineBookingCancellationFlex(booking, item, room, reason);
 
-    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
-      body: JSON.stringify({
-        to: booking.line_user_id,
-        messages: [flexCard]
-      })
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [flexCard]
     });
 
-    return { success: lineRes.ok, status: lineRes.status };
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return null;
+    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
   } catch (err) {
     console.error('Error sending cancellation message:', err);
     return null;
@@ -2118,23 +2154,19 @@ async function sendLineBookingReschedule(env, bookingId, oldStartTime, oldEndTim
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value;
-    if (!channelAccessToken) return null;
 
     const flexCard = buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal);
 
-    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
-      body: JSON.stringify({
-        to: booking.line_user_id,
-        messages: [flexCard]
-      })
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [flexCard]
     });
 
-    return { success: lineRes.ok, status: lineRes.status };
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return null;
+    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
   } catch (err) {
     console.error('Error sending reschedule message:', err);
     return null;
@@ -2158,23 +2190,18 @@ async function sendLineBookingCustomerInfoUpdate(env, booking, newCustomerName, 
     if (!booking || !booking.line_user_id) return { sent: false, reason: 'no_line_recipient' };
 
     const channelAccessToken = env.LINE_CHANNEL_ACCESS_TOKEN;
-    if (!channelAccessToken) return { sent: false, reason: 'no_channel_access_token' };
-
     const textContent = buildCustomerInfoUpdateTextMessage(booking, newCustomerName, newContact);
 
-    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
-      body: JSON.stringify({
-        to: booking.line_user_id,
-        messages: [{ type: 'text', text: textContent }]
-      })
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [{ type: 'text', text: textContent }]
     });
 
-    return { sent: lineRes.ok, status: lineRes.status };
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return { sent: false, reason: dispatch.reason || 'dispatch_failed' };
+    return { sent: dispatch.sent, status: dispatch.status };
   } catch (err) {
     console.error('Error sending customer info update LINE message:', err);
     return { sent: false, error: err.message };
@@ -5239,9 +5266,6 @@ export default {
 
         const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
         const channelAccessToken = tokenSetting?.value?.trim() || env.LINE_CHANNEL_ACCESS_TOKEN;
-        if (!channelAccessToken) {
-          return new Response(JSON.stringify({ error: 'ไม่ได้ตั้งค่า LINE Channel Access Token ในระบบ' }), { status: 503, headers: corsHeaders });
-        }
 
         const sentAt = new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
         const flexMessage = buildHourCreditVoucherFlex({
@@ -5251,26 +5275,27 @@ export default {
           sent_at: sentAt
         });
 
-        let lineRes;
-        try {
-          lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${channelAccessToken}`
-            },
-            body: JSON.stringify({
-              to: c.line_user_id.trim(),
-              messages: [flexMessage]
-            })
-          });
-        } catch (err) {
-          return new Response(JSON.stringify({ error: 'การเชื่อมต่อกับ LINE API ล้มเหลว: ' + err.message }), { status: 502, headers: corsHeaders });
+        const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+          to: c.line_user_id.trim(),
+          messages: [flexMessage]
+        });
+
+        if (dispatch.mocked) {
+          return new Response(JSON.stringify({
+            success: true,
+            sent: false,
+            mocked: true,
+            message: '[Staging Mode] จำลองการส่งใบยืนยันชั่วโมงคงเหลือเข้า LINE OA สำเร็จ (Mocked; No Live Dispatch)',
+            credit_id: c.credit_id
+          }), { headers: corsHeaders });
         }
 
-        if (!lineRes.ok) {
-          const errText = await lineRes.text().catch(() => '');
-          return new Response(JSON.stringify({ error: `LINE API ตอบกลับผิดพลาด (${lineRes.status}): ${errText || 'ส่งข้อความไม่สำเร็จ'}` }), { status: 502, headers: corsHeaders });
+        if (!dispatch.ok) {
+          if (!channelAccessToken) {
+            return new Response(JSON.stringify({ error: 'ไม่ได้ตั้งค่า LINE Channel Access Token ในระบบ' }), { status: 503, headers: corsHeaders });
+          }
+          const errText = await dispatch.response?.text().catch(() => '');
+          return new Response(JSON.stringify({ error: `LINE API ตอบกลับผิดพลาด (${dispatch.status}): ${errText || 'ส่งข้อความไม่สำเร็จ'}` }), { status: 502, headers: corsHeaders });
         }
 
         return new Response(JSON.stringify({
@@ -6251,6 +6276,22 @@ export default {
               error: 'ยังไม่ได้ระบุหรือบันทึก LINE Channel Access Token ในระบบ',
               channelSecretStatus: secretStatus,
               liffIdStatus: liffIdStatus
+            }), { headers: corsHeaders });
+          }
+
+          if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
+            return new Response(JSON.stringify({
+              success: true,
+              connected: true,
+              sent: false,
+              mocked: true,
+              bot: {
+                name: 'LINE Official Account (Staging Mock)',
+                basicId: '@bwork-staging'
+              },
+              channelSecretStatus: secretStatus,
+              liffIdStatus: liffIdStatus,
+              message: '[Staging Mode] การเชื่อมต่อกับ LINE Messaging API ถูกจำลอง (Mocked; No Live Dispatch)'
             }), { headers: corsHeaders });
           }
 
