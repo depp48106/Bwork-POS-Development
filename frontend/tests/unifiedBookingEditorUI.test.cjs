@@ -9,13 +9,20 @@ const PENDING_BOOKINGS_PATH = path.join(ROOT_DIR, 'src/components/PendingBooking
 test('Phase EDIT-3: Unified Booking Editor UI Integration & LINE Policy Test Suite', async (t) => {
   const code = fs.readFileSync(PENDING_BOOKINGS_PATH, 'utf8').replace(/\r\n/g, '\n');
 
-  await t.test('1. Single Unified Entry Point "แก้ไขการจอง" in Table Actions & Booking Details modal', () => {
-    // Verified Table menu invokes handleOpenUnifiedEdit with 'schedule'
-    assert.ok(code.includes("handleOpenUnifiedEdit(b, 'schedule')"), 'Table menu invokes handleOpenUnifiedEdit with default schedule tab');
-    // Verified Details modal invokes handleOpenUnifiedEdit with fromDetail=true
-    assert.ok(code.includes("handleOpenUnifiedEdit(b, 'schedule', true)"), 'Details modal invokes handleOpenUnifiedEdit with fromDetail=true');
-    // Verified primary label
-    assert.ok(code.includes('<span>แก้ไขการจอง</span>'), 'Renders label "แก้ไขการจอง"');
+  await t.test('1. Restored Separate Booking Edit Entry Points in Table Actions & Booking Details modal', () => {
+    // Verified Table menu invokes separate actions
+    assert.ok(code.includes('handleOpenBookingDetail(b)'), 'Table menu invokes handleOpenBookingDetail');
+    assert.ok(code.includes('handleOpenReschedule(b)'), 'Table menu invokes handleOpenReschedule');
+    assert.ok(code.includes('handleOpenCustomerInfoEdit(b)'), 'Table menu invokes handleOpenCustomerInfoEdit');
+    assert.ok(code.includes('handleOpenEditDetails(b)'), 'Table menu invokes handleOpenEditDetails');
+
+    // Verified Details modal invokes contextual actions
+    assert.ok(code.includes('handleOpenReschedule(b, true)'), 'Details modal footer invokes handleOpenReschedule with fromDetail=true');
+    assert.ok(code.includes('handleOpenCustomerInfoEdit(b, true)'), 'Details modal customer card invokes handleOpenCustomerInfoEdit with fromDetail=true');
+    assert.ok(code.includes('handleOpenEditDetails(b, true)'), 'Details modal details card invokes handleOpenEditDetails with fromDetail=true');
+
+    // Verified Reschedule Multi-Item safety guard
+    assert.ok(code.includes('Array.isArray(fullBooking.items) && fullBooking.items.length > 1'), 'handleOpenReschedule guards against multi-item overwriting');
   });
 
   await t.test('2. Unified Editor Shell & 3 Segmented Navigation Tabs in Exact Order (A: Schedule, B: Customer, C: Details)', () => {
@@ -111,5 +118,52 @@ test('Phase EDIT-3: Unified Booking Editor UI Integration & LINE Policy Test Sui
       code.includes('if (returnToDetailAfterUnified) {\n          setSelectedBooking(freshBooking);\n          setShowDetailModal(true);\n          setReturnToDetailAfterUnified(false);\n        }'),
       'Restores Booking Details modal on schedule save'
     );
+  });
+
+  await t.test('10. Crash Regression: showUnifiedEditModal evaluates with zero ReferenceErrors', () => {
+    const parser = require('@babel/parser');
+    const traverse = require('@babel/traverse').default;
+
+    const ast = parser.parse(code, {
+      sourceType: 'module',
+      plugins: ['jsx']
+    });
+
+    const undeclaredInModal = [];
+
+    traverse(ast, {
+      Identifier(path) {
+        const loc = path.node.loc;
+        if (loc && loc.start.line >= 5884 && loc.start.line <= 6870) {
+          const name = path.node.name;
+          if (
+            (path.parentPath.isMemberExpression({ property: path.node }) ||
+             path.parentPath.isOptionalMemberExpression({ property: path.node })) &&
+            !path.parentPath.node.computed
+          ) return;
+          if (path.parentPath.isObjectProperty({ key: path.node }) && !path.parentPath.node.computed) return;
+          if (path.parentPath.isJSXAttribute()) return;
+          if (path.parentPath.isJSXIdentifier()) return;
+
+          if (!path.scope.hasBinding(name, true)) {
+            const globals = ['window', 'document', 'console', 'parseInt', 'parseFloat', 'Math', 'String', 'Number', 'Boolean', 'Array', 'Date', 'Set', 'Map', 'fetch', 'setTimeout', 'clearTimeout'];
+            if (!globals.includes(name)) {
+              undeclaredInModal.push({ name, line: loc.start.line, col: loc.start.column });
+            }
+          }
+        }
+      }
+    });
+
+    assert.strictEqual(
+      undeclaredInModal.length,
+      0,
+      `showUnifiedEditModal must have ZERO undeclared identifiers. Found: ${JSON.stringify(undeclaredInModal)}`
+    );
+
+    // Verify explicit variable declarations for previously bugged variables
+    assert.ok(code.includes('rescheduleStartMinute'), 'Uses correct rescheduleStartMinute state variable');
+    assert.ok(code.includes('rescheduleEndMinute'), 'Uses correct rescheduleEndMinute state variable');
+    assert.ok(code.includes('let origTimeFormatted = formatDate(origItem?.start_time);'), 'Declares origTimeFormatted before usage');
   });
 });

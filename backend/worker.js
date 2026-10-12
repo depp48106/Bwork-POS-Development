@@ -16,6 +16,114 @@ async function hashPassword(password) {
 }
 
 // ==========================================
+// 1.15 ROOM WI-FI CREDENTIAL ENCRYPTION (WEB CRYPTO)
+// ==========================================
+const WIFI_PAYLOAD_REGEX = /^v1:([0-9a-fA-F]{24}):([0-9a-fA-F]{32}):([0-9a-fA-F]+)$/;
+
+function parseWifiKeyWebCrypto(keyInput) {
+  if (!keyInput || typeof keyInput !== 'string') {
+    const err = new Error('WIFI_CREDENTIAL_ENCRYPTION_KEY is missing');
+    err.code = 'ERR_WIFI_KEY_MISSING';
+    throw err;
+  }
+  const trimmed = keyInput.trim();
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    const match = trimmed.match(/.{1,2}/g) || [];
+    return new Uint8Array(match.map(byte => parseInt(byte, 16)));
+  }
+  if (/^[A-Za-z0-9+/]{43}=$/.test(trimmed)) {
+    const binary = atob(trimmed);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    if (bytes.length === 32) return bytes;
+  }
+  const err = new Error('WIFI_CREDENTIAL_ENCRYPTION_KEY must be a 256-bit key (64 hex characters or 44 base64 characters)');
+  err.code = 'ERR_WIFI_KEY_INVALID';
+  throw err;
+}
+
+async function encryptWifiPasswordWebCrypto(plaintext, rawKey, roomId) {
+  if (plaintext === null || plaintext === undefined || typeof plaintext !== 'string') {
+    throw new Error('Plaintext password must be a string');
+  }
+  if (!roomId && roomId !== 0) {
+    throw new Error('roomId is required for room-specific AAD binding');
+  }
+  const keyBytes = rawKey instanceof Uint8Array ? rawKey : parseWifiKeyWebCrypto(rawKey);
+  const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV
+  const aad = new TextEncoder().encode(`room:${roomId}`);
+  const plainBytes = new TextEncoder().encode(plaintext);
+
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+  const encryptedBuf = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: aad, tagLength: 128 },
+    cryptoKey,
+    plainBytes
+  );
+
+  const encryptedBytes = new Uint8Array(encryptedBuf);
+  const ctBytes = encryptedBytes.slice(0, encryptedBytes.length - 16);
+  const tagBytes = encryptedBytes.slice(encryptedBytes.length - 16);
+
+  const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
+  const tagHex = Array.from(tagBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  const ctHex = Array.from(ctBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  return `v1:${ivHex}:${tagHex}:${ctHex}`;
+}
+
+async function decryptWifiPasswordWebCrypto(payload, rawKey, roomId) {
+  if (!payload || typeof payload !== 'string') {
+    const err = new Error('Invalid payload string');
+    err.code = 'ERR_WIFI_BAD_PAYLOAD';
+    throw err;
+  }
+  if (!roomId && roomId !== 0) {
+    throw new Error('roomId is required for room-specific AAD verification');
+  }
+  const match = payload.trim().match(WIFI_PAYLOAD_REGEX);
+  if (!match) {
+    const err = new Error('Invalid ciphertext payload format (expected v1:<iv>:<tag>:<ct>)');
+    err.code = 'ERR_WIFI_BAD_FORMAT';
+    throw err;
+  }
+  const [, ivHex, tagHex, ctHex] = match;
+  const keyBytes = rawKey instanceof Uint8Array ? rawKey : parseWifiKeyWebCrypto(rawKey);
+
+  const ivMatch = ivHex.match(/.{1,2}/g) || [];
+  const iv = new Uint8Array(ivMatch.map(b => parseInt(b, 16)));
+
+  const tagMatch = tagHex.match(/.{1,2}/g) || [];
+  const tag = new Uint8Array(tagMatch.map(b => parseInt(b, 16)));
+
+  const ctMatch = ctHex.match(/.{1,2}/g) || [];
+  const ct = new Uint8Array(ctMatch.map(b => parseInt(b, 16)));
+
+  const aad = new TextEncoder().encode(`room:${roomId}`);
+
+  const combined = new Uint8Array(ct.length + tag.length);
+  combined.set(ct, 0);
+  combined.set(tag, ct.length);
+
+  try {
+    const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+    const decryptedBuf = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv, additionalData: aad, tagLength: 128 },
+      cryptoKey,
+      combined
+    );
+    return new TextDecoder().decode(decryptedBuf);
+  } catch (err) {
+    const authErr = new Error('Wi-Fi credential authentication failed (wrong key, wrong room, or tampered payload)');
+    authErr.code = 'ERR_WIFI_AUTH_FAILED';
+    authErr.originalError = err.message;
+    throw authErr;
+  }
+}
+
+// ==========================================
 // 1.1 FINANCIAL & DISCOUNT/DEPOSIT HELPERS
 // ==========================================
 function roundMoney(value) {
@@ -2418,10 +2526,15 @@ export default {
           }
           query += " ORDER BY name ASC";
           const { results } = await env.DB.prepare(query).bind(...params).all();
-          if (isPublic && Array.isArray(results)) {
+          if (Array.isArray(results)) {
             for (const r of results) {
-              delete r.pin_code;
-              delete r.builtland_pin_code;
+              if (isPublic) {
+                delete r.pin_code;
+                delete r.builtland_pin_code;
+                delete r.wifi_username;
+              }
+              r.has_wifi_credentials = Boolean(r.wifi_username && r.wifi_password_enc);
+              delete r.wifi_password_enc;
             }
           }
           return new Response(JSON.stringify(results), { headers: corsHeaders });
@@ -2669,6 +2782,121 @@ export default {
             "SELECT bi.* FROM booking_items bi JOIN bookings b ON bi.booking_id = b.id WHERE bi.room_id = ? AND b.payment_status != 'cancelled'"
           ).bind(roomId).all();
           return new Response(JSON.stringify(results), { headers: corsHeaders });
+        }
+      }
+
+      // ----------------------------------------------------
+      // 2.2 ROOM WI-FI CREDENTIAL MANAGEMENT
+      // ----------------------------------------------------
+      if ((pathname.startsWith('/api/rooms/') || pathname.startsWith('/api/admin/rooms/')) && pathname.endsWith('/wifi')) {
+        const parts = pathname.split('/');
+        const roomId = parseInt(parts[parts.length - 2], 10);
+        if (isNaN(roomId)) {
+          return new Response(JSON.stringify({ error: 'รหัสห้องไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        if (auth.user?.role !== 'admin' && auth.user?.username !== 'admin' && !auth.user?.permissions?.includes('manage') && !auth.user?.permissions?.includes('admin-management')) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์ดำเนินการนี้' }), { status: 403, headers: corsHeaders });
+        }
+
+        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(roomId).first();
+        if (!room) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลห้องประชุม' }), { status: 404, headers: corsHeaders });
+        }
+
+        const secureHeaders = { ...corsHeaders, 'Cache-Control': 'no-store, private' };
+
+        if (method === 'GET') {
+          if (room.wifi_username === undefined && room.wifi_password_enc === undefined) {
+            return new Response(JSON.stringify({
+              room_id: room.id,
+              room_name: room.name,
+              wifi_username: null,
+              wifi_password: null,
+              has_password: false,
+              wifi_configured: false,
+              migration_pending: true
+            }), { headers: secureHeaders });
+          }
+
+          let plainPassword = '';
+          let hasPassword = false;
+
+          if (room.wifi_password_enc) {
+            try {
+              plainPassword = await decryptWifiPasswordWebCrypto(room.wifi_password_enc, env.WIFI_CREDENTIAL_ENCRYPTION_KEY, room.id);
+              hasPassword = true;
+            } catch (decErr) {
+              return new Response(JSON.stringify({
+                error: 'ไม่สามารถถอดรหัสรหัสผ่าน Wi-Fi ได้ (กุญแจเข้ารหัสไม่ถูกต้องหรือสูญหาย)',
+                code: decErr.code || 'ERR_WIFI_DECRYPT_FAILED'
+              }), { status: 500, headers: secureHeaders });
+            }
+          }
+
+          return new Response(JSON.stringify({
+            room_id: room.id,
+            room_name: room.name,
+            wifi_username: room.wifi_username || '',
+            wifi_password: plainPassword,
+            has_password: hasPassword,
+            wifi_configured: Boolean(room.wifi_username && hasPassword)
+          }), { headers: secureHeaders });
+        }
+
+        if (method === 'PUT') {
+          const body = await request.json();
+          const { wifi_username, wifi_password, clear_credentials } = body || {};
+
+          if (clear_credentials === true) {
+            try {
+              await env.DB.prepare('UPDATE rooms SET wifi_username = NULL, wifi_password_enc = NULL WHERE id = ?').bind(room.id).run();
+              return new Response(JSON.stringify({
+                success: true,
+                message: 'ล้างข้อมูลการเชื่อมต่อ Wi-Fi ของห้องเรียบร้อยแล้ว',
+                room_id: room.id,
+                wifi_username: null,
+                has_password: false,
+                wifi_configured: false
+              }), { headers: secureHeaders });
+            } catch (clearErr) {
+              return new Response(JSON.stringify({ error: 'Wi-Fi schema migration pending approval', code: 'MIGRATION_PENDING' }), { status: 503, headers: secureHeaders });
+            }
+          }
+
+          const newUsername = wifi_username !== undefined ? (String(wifi_username).trim() || null) : (room.wifi_username || null);
+          let newPasswordEnc = room.wifi_password_enc || null;
+          let passwordUpdated = false;
+
+          if (wifi_password !== undefined && wifi_password !== null && String(wifi_password).trim() !== '') {
+            const plain = String(wifi_password).trim();
+            try {
+              newPasswordEnc = await encryptWifiPasswordWebCrypto(plain, env.WIFI_CREDENTIAL_ENCRYPTION_KEY, room.id);
+              passwordUpdated = true;
+            } catch (encErr) {
+              return new Response(JSON.stringify({
+                error: 'ไม่สามารถเข้ารหัสรหัสผ่าน Wi-Fi ได้ กรุณาตรวจสอบการตั้งค่ากุญแจความปลอดภัย',
+                code: encErr.code || 'ERR_WIFI_ENCRYPT_FAILED'
+              }), { status: 500, headers: secureHeaders });
+            }
+          }
+
+          try {
+            await env.DB.prepare('UPDATE rooms SET wifi_username = ?, wifi_password_enc = ? WHERE id = ?').bind(newUsername, newPasswordEnc, room.id).run();
+            return new Response(JSON.stringify({
+              success: true,
+              message: 'บันทึกข้อมูลการเชื่อมต่อ Wi-Fi สำเร็จ',
+              room_id: room.id,
+              wifi_username: newUsername,
+              has_password: Boolean(newPasswordEnc),
+              wifi_configured: Boolean(newUsername && newPasswordEnc),
+              password_updated: passwordUpdated
+            }), { headers: secureHeaders });
+          } catch (updateErr) {
+            return new Response(JSON.stringify({ error: 'Wi-Fi schema migration pending approval', code: 'MIGRATION_PENDING' }), { status: 503, headers: secureHeaders });
+          }
         }
       }
 
@@ -4368,6 +4596,126 @@ export default {
           pin_code: newPinCode,
           booking: updatedBooking
         }), { headers: corsHeaders });
+      }
+
+      // ----------------------------------------------------
+      // 3.5 CUSTOMER WI-FI CARD DATA ENDPOINT
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/wifi-card') && method === 'GET') {
+        const secureHeaders = { ...corsHeaders, 'Cache-Control': 'private, no-store' };
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: secureHeaders });
+
+        const isStaffAuthorized = auth.user?.role === 'admin'
+          || auth.user?.username === 'admin'
+          || auth.user?.permissions?.includes('pos')
+          || auth.user?.permissions?.includes('pending')
+          || auth.user?.permissions?.includes('manage')
+          || auth.user?.permissions?.includes('admin-management');
+
+        if (!isStaffAuthorized) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์ดำเนินการนี้' }), { status: 403, headers: secureHeaders });
+        }
+
+        const parts = pathname.split('/');
+        const rawId = parts[3];
+        let numericId = null;
+        if (!isNaN(rawId)) {
+          numericId = parseInt(rawId, 10);
+        } else if (typeof rawId === 'string' && rawId.startsWith('BK-')) {
+          const stripped = rawId.replace('BK-', '');
+          if (!isNaN(stripped)) numericId = parseInt(stripped, 10);
+        }
+
+        const booking = await env.DB.prepare(
+          'SELECT id, receipt_number, customer_name, status, payment_status FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
+        ).bind(numericId, rawId, rawId, rawId).first();
+
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจองนี้' }), { status: 404, headers: secureHeaders });
+        }
+
+        if (booking.status === 'cancelled' || booking.payment_status === 'cancelled') {
+          return new Response(JSON.stringify({ error: 'รายการจองนี้ถูกยกเลิกแล้ว ไม่สามารถดูข้อมูลบัตร Wi-Fi ได้' }), { status: 400, headers: secureHeaders });
+        }
+
+        const ssidRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'wifi_ssid'").first();
+        const sharedSsid = (ssidRow?.value || '').trim() || 'BWORK_GUEST';
+
+        let items = [];
+        try {
+          const { results } = await env.DB.prepare(
+            `SELECT bi.id, bi.booking_id, bi.room_id, bi.booking_date, bi.start_time, bi.end_time, bi.time_slot,
+                    r.name as room_name, r.wifi_username, r.wifi_password_enc
+             FROM booking_items bi
+             LEFT JOIN rooms r ON bi.room_id = r.id
+             WHERE bi.booking_id = ?
+             ORDER BY bi.booking_date ASC, bi.start_time ASC`
+          ).bind(booking.id).all();
+          items = results || [];
+        } catch (queryErr) {
+          const { results } = await env.DB.prepare(
+            `SELECT bi.id, bi.booking_id, bi.room_id, bi.booking_date, bi.start_time, bi.end_time, bi.time_slot,
+                    r.name as room_name
+             FROM booking_items bi
+             LEFT JOIN rooms r ON bi.room_id = r.id
+             WHERE bi.booking_id = ?
+             ORDER BY bi.booking_date ASC, bi.start_time ASC`
+          ).bind(booking.id).all();
+          items = results || [];
+        }
+
+        const roomMap = new Map();
+        for (const item of items) {
+          if (!item.room_id || roomMap.has(item.room_id)) continue;
+
+          let plainWifiPassword = null;
+          if (item.wifi_password_enc) {
+            try {
+              plainWifiPassword = await decryptWifiPasswordWebCrypto(item.wifi_password_enc, env.WIFI_CREDENTIAL_ENCRYPTION_KEY, item.room_id);
+            } catch (decErr) {
+              if (decErr.code === 'ERR_WIFI_KEY_MISSING' || decErr.code === 'ERR_WIFI_KEY_INVALID') {
+                return new Response(JSON.stringify({
+                  error: 'ไม่สามารถสร้างข้อมูลบัตร Wi-Fi ได้เนื่องจากกุญแจความปลอดภัยไม่พร้อมใช้งาน',
+                  code: decErr.code
+                }), { status: 500, headers: secureHeaders });
+              }
+            }
+          }
+
+          roomMap.set(item.room_id, {
+            room_id: item.room_id,
+            room_name: item.room_name || `ห้อง ${item.room_id}`,
+            wifi_username: item.wifi_username || null,
+            wifi_password: plainWifiPassword,
+            is_configured: Boolean(item.wifi_username && plainWifiPassword)
+          });
+        }
+
+        const scheduleList = items.map(item => ({
+          room_name: item.room_name || `ห้อง ${item.room_id}`,
+          booking_date: item.booking_date,
+          start_time: item.start_time,
+          end_time: item.end_time,
+          time_slot: item.time_slot || (item.start_time && item.end_time ? `${item.start_time} - ${item.end_time}` : '')
+        }));
+
+        const cardPayload = {
+          booking_id: booking.id,
+          booking_number: booking.receipt_number || `BK-${String(booking.id).padStart(6, '0')}`,
+          customer_name: booking.customer_name || 'ลูกค้า',
+          rooms: Array.from(roomMap.values()),
+          schedules: scheduleList,
+          wifi: {
+            ssid: sharedSsid,
+            login_instructions: 'เชื่อมต่อเครือข่าย Wi-Fi และเปิดเว็บเบราว์เซอร์เพื่อเข้าสู่ระบบ MikroTik Hotspot ด้วยชื่อผู้ใช้และรหัสผ่านของห้อง'
+          },
+          beverage_perk: {
+            message: 'แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลดเครื่องดื่มตามเงื่อนไขของร้าน'
+          }
+        };
+
+        return new Response(JSON.stringify(cardPayload), { headers: secureHeaders });
       }
 
       if (pathname.startsWith('/api/bookings/') && (method === 'GET' || method === 'PUT' || method === 'DELETE')) {

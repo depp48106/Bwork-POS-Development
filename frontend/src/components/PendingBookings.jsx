@@ -34,7 +34,8 @@ import {
   ZoomOut,
   EyeOff,
   Copy,
-  Check
+  Check,
+  Wifi
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import { printReceipt } from '../utils/printReceiptHelper';
@@ -238,6 +239,13 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [unifiedEditTarget, setUnifiedEditTarget] = useState(null);
   const [unifiedActiveTab, setUnifiedActiveTab] = useState('customer'); // 'customer' | 'schedule' | 'details'
   const [returnToDetailAfterUnified, setReturnToDetailAfterUnified] = useState(false);
+
+  // Room Wi-Fi Customer Card Preview modal state
+  const [showWifiCardModal, setShowWifiCardModal] = useState(false);
+  const [wifiCardData, setWifiCardData] = useState(null);
+  const [wifiCardLoading, setWifiCardLoading] = useState(false);
+  const [wifiCardOriginModal, setWifiCardOriginModal] = useState(false);
+  const [wifiCopiedKey, setWifiCopiedKey] = useState(null);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -1150,6 +1158,59 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     }
   };
 
+  const handleOpenWifiCard = async (booking, fromDetail = false) => {
+    if (!booking) return;
+    if (fromDetail) {
+      setShowDetailModal(false);
+      setWifiCardOriginModal(true);
+    } else {
+      setWifiCardOriginModal(false);
+    }
+    setWifiCardLoading(true);
+    setWifiCardData(null);
+    setShowWifiCardModal(true);
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/api/bookings/${booking.id}/wifi-card`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'ไม่สามารถโหลดข้อมูลบัตร Wi-Fi ได้');
+      }
+      setWifiCardData(data);
+    } catch (err) {
+      sysAlert(err.message || 'เกิดข้อผิดพลาดในการโหลดบัตร Wi-Fi', 'error');
+      setShowWifiCardModal(false);
+      if (fromDetail) {
+        setShowDetailModal(true);
+      }
+    } finally {
+      setWifiCardLoading(false);
+    }
+  };
+
+  const handleCloseWifiCardModal = () => {
+    setShowWifiCardModal(false);
+    setWifiCardData(null);
+    if (wifiCardOriginModal) {
+      setShowDetailModal(true);
+      setWifiCardOriginModal(false);
+    }
+  };
+
+  const handleCopyWifiText = (text, key) => {
+    if (!text) return;
+    navigator.clipboard?.writeText(text);
+    setWifiCopiedKey(key);
+    setTimeout(() => {
+      setWifiCopiedKey(null);
+    }, 2000);
+  };
+
   const customerInfoDiff = useMemo(() => {
     if (!customerInfoTarget) return { hasChanged: false, changedFields: [], hasIdentityChange: false };
     const origName = (customerInfoTarget.customer_name || '').trim();
@@ -1396,6 +1457,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       // Fetch full details to ensure item structure
       const res = await fetch(`/api/bookings/${booking.id}`);
       const fullBooking = res.ok ? await res.json() : booking;
+
+      // Multi-item safety guard: block single-item reschedule for multi-item bookings
+      if (Array.isArray(fullBooking.items) && fullBooking.items.length > 1) {
+        if (fromDetail) {
+          setShowDetailModal(true);
+        }
+        await sysAlert('ระบบยังไม่รองรับการแก้ไขวัน/เวลาสำหรับการจองที่มีหลายห้องหรือหลายวันพร้อมกันในขณะนี้ (การแก้ไขข้อมูลผู้จองและรายละเอียดเพิ่มเติมยังสามารถทำได้ตามปกติ)');
+        return;
+      }
+
       setRescheduleTarget(fullBooking);
       setRescheduleDetails(typeof fullBooking.booking_details === 'string' ? fullBooking.booking_details : (typeof booking.booking_details === 'string' ? booking.booking_details : ''));
 
@@ -3326,30 +3397,56 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               การดำเนินการ (#{activeActionMenuBooking.id})
             </div>
 
-            {/* Primary Unified Edit: แก้ไขการจอง (active bookings only) */}
+            {/* 1. View Booking Details */}
+            <div
+              onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenBookingDetail(b); }}
+              className="action-menu-item"
+            >
+              <FileText size={14} style={{ color: 'var(--primary-color)' }} />
+              <span>ดูรายละเอียดการจอง</span>
+            </div>
+
+            {/* 2. Edit Schedule (แก้ไขวัน/เวลา) */}
             {activeActionMenuBooking.payment_status !== 'cancelled' && (
               <div
-                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenUnifiedEdit(b, 'schedule'); }}
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenReschedule(b); }}
                 className="action-menu-item"
-                style={{ fontWeight: 800, color: 'var(--primary-color)' }}
               >
-                <Edit3 size={14} style={{ color: 'var(--primary-color)' }} />
-                <span>แก้ไขการจอง</span>
+                <Calendar size={14} style={{ color: 'var(--primary-color)' }} />
+                <span>แก้ไขวัน/เวลา</span>
               </div>
             )}
 
-            {/* 2. View Operational Booking Detail (when not already primary action) */}
-            {activeActionMenuBooking.payment_status !== 'paid' &&
-             activeActionMenuBooking.payment_status !== 'internal_free' &&
-             activeActionMenuBooking.payment_status !== 'rejected' &&
-             activeActionMenuBooking.payment_status !== 'cancelled' &&
-             activeActionMenuBooking.slip_verify_status !== 'rejected' && (
+            {/* 3. Edit Customer Info (แก้ไขข้อมูลผู้จอง) */}
+            {activeActionMenuBooking.payment_status !== 'cancelled' && (
               <div
-                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenBookingDetail(b); }}
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenCustomerInfoEdit(b); }}
                 className="action-menu-item"
               >
-                <FileText size={14} style={{ color: 'var(--primary-color)' }} />
-                <span>ดูรายละเอียดการจอง</span>
+                <User size={14} style={{ color: 'var(--text-muted)' }} />
+                <span>แก้ไขข้อมูลผู้จอง</span>
+              </div>
+            )}
+
+            {/* 4. Edit Additional Details (แก้ไขรายละเอียดเพิ่มเติม) */}
+            {activeActionMenuBooking.payment_status !== 'cancelled' && (
+              <div
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenEditDetails(b); }}
+                className="action-menu-item"
+              >
+                <Edit3 size={14} style={{ color: 'var(--text-muted)' }} />
+                <span>แก้ไขรายละเอียดเพิ่มเติม</span>
+              </div>
+            )}
+
+            {/* 4.1 Customer Wi-Fi Card (บัตร Wi-Fi ลูกค้า) */}
+            {activeActionMenuBooking.payment_status !== 'cancelled' && (
+              <div
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenWifiCard(b); }}
+                className="action-menu-item"
+              >
+                <Wifi size={14} style={{ color: 'var(--text-muted)' }} />
+                <span>บัตร Wi-Fi ลูกค้า</span>
               </div>
             )}
 
@@ -3890,8 +3987,34 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
                     {/* 2. CUSTOMER SECTION */}
                     <div className="pb-detail-card">
-                      <div className="pb-detail-card-header">
+                      <div className="pb-detail-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span className="pb-detail-card-title">ข้อมูลผู้จอง</span>
+                        {!isCancelled && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowDetailModal(false);
+                              handleOpenCustomerInfoEdit(b, true);
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--primary-color)',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem',
+                              fontWeight: 700,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              padding: '2px 6px',
+                              borderRadius: '4px'
+                            }}
+                            aria-label="แก้ไขข้อมูลผู้จอง"
+                          >
+                            <Edit3 size={12} />
+                            <span>แก้ไข</span>
+                          </button>
+                        )}
                       </div>
                       <div className="pb-detail-content">
                         <div className="pb-detail-field-group">
@@ -3921,35 +4044,37 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               </span>
                             </div>
                           )}
-                          {b.booking_details && (
-                            <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span className="pb-detail-label">รายละเอียดเพิ่มเติม:</span>
-                                {!isCancelled && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setShowDetailModal(false);
-                                      handleOpenUnifiedEdit(b, 'details', true);
-                                    }}
-                                    style={{
-                                      background: 'none',
-                                      border: 'none',
-                                      color: 'var(--primary-color)',
-                                      cursor: 'pointer',
-                                      fontSize: '0.72rem',
-                                      fontWeight: 700,
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: '3px',
-                                      padding: 0
-                                    }}
-                                  >
-                                    <Edit3 size={11} />
-                                    <span>แก้ไข</span>
-                                  </button>
-                                )}
-                              </div>
+                          <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span className="pb-detail-label">รายละเอียดเพิ่มเติม:</span>
+                              {!isCancelled && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowDetailModal(false);
+                                    handleOpenEditDetails(b, true);
+                                  }}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--primary-color)',
+                                    cursor: 'pointer',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px'
+                                  }}
+                                  aria-label="แก้ไขรายละเอียดเพิ่มเติม"
+                                >
+                                  <Edit3 size={11} />
+                                  <span>{b.booking_details ? 'แก้ไข' : '+ เพิ่ม'}</span>
+                                </button>
+                              )}
+                            </div>
+                            {b.booking_details ? (
                               <span
                                 className="pb-detail-val"
                                 style={{
@@ -3963,8 +4088,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               >
                                 {b.booking_details}
                               </span>
-                            </div>
-                          )}
+                            ) : (
+                              <span className="pb-detail-val" style={{ color: 'var(--text-muted)', fontSize: '0.78rem', fontStyle: 'italic', marginTop: '2px', display: 'block' }}>
+                                - ไม่มีรายละเอียดเพิ่มเติม -
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -4378,20 +4507,32 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     ปิดหน้าต่าง
                   </button>
 
-                  {/* Primary Unified Edit: แก้ไขการจอง */}
+                  {/* Separate Edit: แก้ไขวัน/เวลา */}
                   {!isCancelled && (
                     <button
                       type="button"
                       className="pb-detail-btn-secondary"
                       onClick={() => {
                         setShowDetailModal(false);
-                        handleOpenUnifiedEdit(b, 'schedule', true); // Replaces handleOpenReschedule(b, true);
+                        handleOpenReschedule(b, true);
                       }}
-                      aria-label="แก้ไขการจอง"
-                      style={{ fontWeight: 800, borderColor: 'var(--primary-color)', color: 'var(--text-main)' }}
+                      aria-label="แก้ไขวันหรือเวลาการจอง"
                     >
-                      <Edit3 size={14} style={{ color: 'var(--primary-color)' }} />
-                      <span>แก้ไขการจอง</span>
+                      <Calendar size={14} style={{ color: 'var(--primary-color)' }} />
+                      <span>แก้ไขวัน/เวลา</span>
+                    </button>
+                  )}
+
+                  {/* Customer Wi-Fi Card */}
+                  {!isCancelled && (
+                    <button
+                      type="button"
+                      className="pb-detail-btn-secondary"
+                      onClick={() => handleOpenWifiCard(b, true)}
+                      aria-label="ดูบัตร Wi-Fi ลูกค้า"
+                    >
+                      <Wifi size={14} style={{ color: 'var(--primary-color)' }} />
+                      <span>บัตร Wi-Fi ลูกค้า</span>
                     </button>
                   )}
 
@@ -5890,10 +6031,18 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const origRoomFullName = origRoomObj?.name || unifiedEditTarget.items?.[0]?.room_name || unifiedEditTarget.room_name || (origRoomId ? ('ห้อง ' + origRoomId) : '-');
 
         const origItem = unifiedEditTarget.items?.[0] || unifiedEditTarget;
+        let origTimeFormatted = formatDate(origItem?.start_time);
+        if (origItem?.end_time) {
+          const eStr = String(origItem.end_time);
+          const endTimeOnly = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : eStr.includes(' ') ? eStr.split(' ')[1].substring(0, 5) : '';
+          if (endTimeOnly) {
+            origTimeFormatted += ' - ' + endTimeOnly + ' น.';
+          }
+        }
         const origStart = origItem?.start_time ? String(origItem.start_time).replace(' ', 'T').substring(0, 16) : '';
         const origEnd = origItem?.end_time ? String(origItem.end_time).replace(' ', 'T').substring(0, 16) : '';
-        const curNewStart = `${rescheduleDate}T${rescheduleStartHour}:${rescheduleStartMin}`;
-        const curNewEnd = `${rescheduleDate}T${rescheduleEndHour}:${rescheduleEndMin}`;
+        const curNewStart = `${rescheduleDate}T${rescheduleStartHour}:${rescheduleStartMinute}`;
+        const curNewEnd = `${rescheduleDate}T${rescheduleEndHour}:${rescheduleEndMinute}`;
         const isScheduleLogisticsChanged = (
           String(origItem?.room_id) !== String(rescheduleRoomId) ||
           origStart !== curNewStart ||
@@ -8214,6 +8363,364 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           </div>
         );
       })()}
+
+      {/* ========================================================= */}
+      {/*  ROOM WI-FI CUSTOMER CARD PREVIEW MODAL                   */}
+      {/* ========================================================= */}
+      {showWifiCardModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.85)',
+            backdropFilter: 'blur(10px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 14000,
+            padding: '20px'
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) handleCloseWifiCardModal();
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: '100%',
+              maxWidth: '500px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              padding: '24px',
+              borderRadius: '24px',
+              backgroundColor: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '18px',
+              position: 'relative'
+            }}
+          >
+            {/* Modal Header & Close */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: '38px',
+                    height: '38px',
+                    borderRadius: '12px',
+                    backgroundColor: 'rgba(2, 132, 199, 0.15)',
+                    color: 'var(--primary-color)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                >
+                  <Wifi size={20} />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                    บัตร Wi-Fi & สิทธิพิเศษสำหรับลูกค้า
+                  </h3>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Customer Pass & Wi-Fi Credentials
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseWifiCardModal}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  padding: '4px'
+                }}
+                aria-label="ปิดหน้าต่าง"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Loading State */}
+            {wifiCardLoading && (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', gap: '12px' }}>
+                <RefreshCw size={28} className="spin-animation" style={{ color: 'var(--primary-color)' }} />
+                <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontWeight: 600 }}>กำลังเตรียมข้อมูลบัตร Wi-Fi...</span>
+              </div>
+            )}
+
+            {/* Card Content (Screenshot-friendly Pass) */}
+            {!wifiCardLoading && wifiCardData && (
+              <div
+                id="wifi-customer-card"
+                style={{
+                  backgroundColor: 'var(--bg-main)',
+                  border: '1.5px solid var(--border-color)',
+                  borderRadius: '20px',
+                  padding: '20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '16px',
+                  boxShadow: 'inset 0 1px 2px rgba(255, 255, 255, 0.05)'
+                }}
+              >
+                {/* Pass Brand Bar */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ fontWeight: 900, fontSize: '1.1rem', letterSpacing: '0.5px', color: 'var(--primary-color)' }}>
+                      BWORK
+                    </div>
+                    <span style={{ fontSize: '0.72rem', backgroundColor: 'rgba(2, 132, 199, 0.12)', color: 'var(--primary-color)', padding: '2px 8px', borderRadius: '999px', fontWeight: 800 }}>
+                      MEETING PASS
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                    #{wifiCardData.booking_number}
+                  </div>
+                </div>
+
+                {/* Customer & Usage Info */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                    ผู้ใช้บริการ:
+                  </div>
+                  <div style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                    {wifiCardData.customer_name}
+                  </div>
+                </div>
+
+                {/* Schedules & Rooms */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                    ห้องและช่วงเวลาการจอง:
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {wifiCardData.schedules?.map((sch, sIdx) => (
+                      <div
+                        key={sIdx}
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          backgroundColor: 'var(--bg-card)',
+                          padding: '8px 12px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          fontSize: '0.82rem'
+                        }}
+                      >
+                        <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>
+                          {sch.room_name}
+                        </span>
+                        <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>
+                          {sch.booking_date ? formatDate(sch.booking_date) : ''} · {sch.time_slot || (sch.start_time && sch.end_time ? `${sch.start_time} - ${sch.end_time} น.` : '')}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Wi-Fi Credentials Section */}
+                <div
+                  style={{
+                    backgroundColor: 'rgba(2, 132, 199, 0.05)',
+                    border: '1.5px solid rgba(2, 132, 199, 0.25)',
+                    borderRadius: '16px',
+                    padding: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px'
+                  }}
+                >
+                  {/* SSID */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Wifi size={16} style={{ color: 'var(--primary-color)' }} />
+                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                        Wi-Fi SSID:
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--primary-color)', letterSpacing: '0.5px' }}>
+                        {wifiCardData.wifi?.ssid || 'BWORK_GUEST'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyWifiText(wifiCardData.wifi?.ssid || 'BWORK_GUEST', 'ssid')}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          color: wifiCopiedKey === 'ssid' ? '#10b981' : 'var(--text-muted)',
+                          padding: '2px',
+                          display: 'flex',
+                          alignItems: 'center'
+                        }}
+                        title="คัดลอก SSID"
+                      >
+                        {wifiCopiedKey === 'ssid' ? <Check size={14} /> : <Copy size={14} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Credentials per Room */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {wifiCardData.rooms?.map((rm) => (
+                      <div
+                        key={rm.room_id}
+                        style={{
+                          backgroundColor: 'var(--bg-card)',
+                          borderRadius: '12px',
+                          padding: '10px 12px',
+                          border: '1px solid var(--border-color)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '6px'
+                        }}
+                      >
+                        <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                          {rm.room_name}
+                        </div>
+                        {rm.is_configured ? (
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                            {/* Username */}
+                            <div style={{ backgroundColor: 'var(--bg-main)', padding: '6px 8px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                              <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block' }}>Username</span>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
+                                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', fontFamily: 'monospace' }}>
+                                  {rm.wifi_username}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyWifiText(rm.wifi_username, `user_${rm.room_id}`)}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    color: wifiCopiedKey === `user_${rm.room_id}` ? '#10b981' : 'var(--text-muted)',
+                                    padding: '2px',
+                                    display: 'flex',
+                                    alignItems: 'center'
+                                  }}
+                                  title="คัดลอก Username"
+                                >
+                                  {wifiCopiedKey === `user_${rm.room_id}` ? <Check size={12} /> : <Copy size={12} />}
+                                </button>
+                              </div>
+                            </div>
+                            {/* Password */}
+                            <div style={{ backgroundColor: 'var(--bg-main)', padding: '6px 8px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                              <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block' }}>Password</span>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
+                                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--primary-color)', fontFamily: 'monospace' }}>
+                                  {rm.wifi_password}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyWifiText(rm.wifi_password, `pass_${rm.room_id}`)}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    color: wifiCopiedKey === `pass_${rm.room_id}` ? '#10b981' : 'var(--text-muted)',
+                                    padding: '2px',
+                                    display: 'flex',
+                                    alignItems: 'center'
+                                  }}
+                                  title="คัดลอก Password"
+                                >
+                                  {wifiCopiedKey === `pass_${rm.room_id}` ? <Check size={12} /> : <Copy size={12} />}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic', padding: '4px 0' }}>
+                            ยังไม่ได้ตั้งค่าบัญชี Wi-Fi สำหรับห้องนี้ (กรุณาติดต่อเจ้าหน้าที่เคาน์เตอร์)
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Hotspot Instructions */}
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                    {wifiCardData.wifi?.login_instructions}
+                  </div>
+                </div>
+
+                {/* Beverage Perk Box (EXACT REQUIRED WORDING) */}
+                <div
+                  style={{
+                    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                    border: '1.5px dashed rgba(245, 158, 11, 0.4)',
+                    borderRadius: '14px',
+                    padding: '12px 14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px'
+                  }}
+                >
+                  <div
+                    style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '8px',
+                      backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                      color: '#d97706',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '1.1rem',
+                      flexShrink: 0
+                    }}
+                  >
+                    ☕
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 800, color: '#d97706', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                      สิทธิประโยชน์พิเศษ
+                    </div>
+                    <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                      {wifiCardData.beverage_perk?.message || 'แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลดเครื่องดื่มตามเงื่อนไขของร้าน'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Screenshot Hint */}
+                <div style={{ textAlign: 'center', fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                  📸 แคปหน้าจอนี้เพื่อบันทึกข้อมูลการเข้าใช้งาน Wi-Fi และแสดงรับสิทธิ์ส่วนลด
+                </div>
+              </div>
+            )}
+
+            {/* Modal Bottom Action Button */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{
+                  height: '40px',
+                  padding: '0 20px',
+                  borderRadius: '12px',
+                  fontWeight: 700,
+                  fontSize: '0.85rem',
+                  cursor: 'pointer'
+                }}
+                onClick={handleCloseWifiCardModal}
+              >
+                ปิดหน้าต่าง
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

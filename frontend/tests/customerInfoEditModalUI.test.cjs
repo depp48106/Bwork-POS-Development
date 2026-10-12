@@ -7,10 +7,11 @@ const jsxSource = fs.readFileSync(path.join(__dirname, '../src/components/Pendin
 
 test('Customer Information Editing Modal UI & Responsive Safety Contract', async (t) => {
   await t.test('1. Action Menu entry point integration in Table & Details modal', () => {
-    assert.ok(jsxSource.includes('handleOpenCustomerInfoEdit'), 'Provides handleOpenCustomerInfoEdit handler');
-    assert.ok(jsxSource.includes('handleOpenUnifiedEdit(b, \'schedule\')'), 'Table menu invokes Unified Editor with schedule');
-    assert.ok(jsxSource.includes('handleOpenUnifiedEdit(b, \'schedule\', true)'), 'Details modal invokes Unified Editor with fromDetail = true');
-    assert.ok(jsxSource.includes('แก้ไขการจอง'), 'Action label displays "แก้ไขการจอง"');
+    assert.ok(jsxSource.includes('handleOpenCustomerInfoEdit(b)'), 'Table menu invokes handleOpenCustomerInfoEdit');
+    assert.ok(jsxSource.includes('handleOpenCustomerInfoEdit(b, true)'), 'Details modal customer card invokes handleOpenCustomerInfoEdit with fromDetail = true');
+    assert.ok(jsxSource.includes('handleOpenReschedule(b, true)'), 'Details modal footer invokes handleOpenReschedule with fromDetail = true');
+    assert.ok(jsxSource.includes('แก้ไขข้อมูลผู้จอง'), 'Action menu displays "แก้ไขข้อมูลผู้จอง"');
+    assert.ok(jsxSource.includes('แก้ไขวัน/เวลา'), 'Action menu and footer display "แก้ไขวัน/เวลา"');
   });
 
   await t.test('2. Mobile (400px) responsiveness and layout wrapping', () => {

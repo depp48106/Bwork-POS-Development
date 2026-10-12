@@ -30,6 +30,14 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
     dbType: 'room' // 'room' or 'service'
   });
   const [showModal, setShowModal] = useState(false);
+  const [wifiForm, setWifiForm] = useState({
+    username: '',
+    password: '',
+    hasSavedPassword: false,
+    showPassword: false,
+    clearConfirmed: false,
+    loading: false
+  });
 
   // Category States
   const [statusFilter, setStatusFilter] = useState('active'); // 'active' or 'inactive'
@@ -314,8 +322,37 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
         body: JSON.stringify(payload)
       });
       if (res.ok) {
+        const responseData = await res.json().catch(() => ({}));
+        const targetRoomId = currentItemForm.id || responseData?.id || responseData?.room?.id;
+
+        // If saving a room, synchronize Wi-Fi credentials via dedicated protected endpoint
+        if (currentItemForm.dbType === 'room' && targetRoomId) {
+          try {
+            const token = localStorage.getItem('token');
+            if (wifiForm.clearConfirmed) {
+              await fetch(`/api/admin/rooms/${targetRoomId}/wifi`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ clear_credentials: true })
+              });
+            } else if (wifiForm.username !== undefined || wifiForm.password) {
+              await fetch(`/api/admin/rooms/${targetRoomId}/wifi`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({
+                  wifi_username: wifiForm.username,
+                  wifi_password: wifiForm.password
+                })
+              });
+            }
+          } catch (wifiErr) {
+            console.error('Failed to update room Wi-Fi credentials:', wifiErr);
+          }
+        }
+
         await sysAlert(currentItemForm.id ? 'แก้ไขข้อมูลคลังสำเร็จ' : 'เพิ่มรายการเข้าคลังเรียบร้อย');
         setShowModal(false);
+        setWifiForm({ username: '', password: '', hasSavedPassword: false, showPassword: false, clearConfirmed: false, loading: false });
         setItemForm({
           id: null,
           name: '',
@@ -349,7 +386,37 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
     }
   };
 
+  const fetchRoomWifi = async (roomId) => {
+    try {
+      setWifiForm(prev => ({ ...prev, loading: true }));
+      const token = localStorage.getItem('token');
+      const res = await fetch(`/api/admin/rooms/${roomId}/wifi`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setWifiForm({
+          username: data.wifi_username || '',
+          password: '',
+          hasSavedPassword: Boolean(data.has_password),
+          showPassword: false,
+          clearConfirmed: false,
+          loading: false
+        });
+      } else {
+        setWifiForm({ username: '', password: '', hasSavedPassword: false, showPassword: false, clearConfirmed: false, loading: false });
+      }
+    } catch (e) {
+      setWifiForm({ username: '', password: '', hasSavedPassword: false, showPassword: false, clearConfirmed: false, loading: false });
+    }
+  };
+
   const handleEdit = (item) => {
+    if (item.dbType === 'room') {
+      fetchRoomWifi(item.id);
+    } else {
+      setWifiForm({ username: '', password: '', hasSavedPassword: false, showPassword: false, clearConfirmed: false, loading: false });
+    }
     setItemForm({
       id: item.id,
       name: item.name,
@@ -1198,6 +1265,100 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                     <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
                       * เฉพาะพนักงาน Builtland (ไม่ส่งให้ลูกค้าทั่วไป)
                     </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Room Wi-Fi & Hotspot Credentials */}
+              {itemForm.dbType === 'room' && (
+                <div style={{
+                  padding: '16px',
+                  borderRadius: '12px',
+                  backgroundColor: 'rgba(59, 130, 246, 0.04)',
+                  border: '1px solid rgba(59, 130, 246, 0.2)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#2563eb', display: 'block' }}>
+                        การเชื่อมต่อ Wi-Fi & Hotspot ประจำห้อง
+                      </span>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        บัญชีผู้ใช้งานสำหรับระบบ MikroTik Hotspot (แยกต่างหากจากรหัสเปิดประตู)
+                      </span>
+                    </div>
+                    {wifiForm.hasSavedPassword && !wifiForm.clearConfirmed && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (await sysConfirm('คุณต้องการล้างข้อมูลการเชื่อมต่อ Wi-Fi ของห้องนี้ใช่หรือไม่?')) {
+                            setWifiForm(prev => ({ ...prev, clearConfirmed: true, username: '', password: '', hasSavedPassword: false }));
+                          }
+                        }}
+                        style={{
+                          fontSize: '0.75rem',
+                          color: '#ef4444',
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          textDecoration: 'underline'
+                        }}
+                      >
+                        ล้างข้อมูล Wi-Fi
+                      </button>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-main)', marginBottom: '4px', display: 'block' }}>
+                        ชื่อผู้ใช้ Wi-Fi (Hotspot Username)
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="เช่น room_101"
+                        value={wifiForm.username || ''}
+                        onChange={e => setWifiForm({ ...wifiForm, username: e.target.value, clearConfirmed: false })}
+                        style={{ height: '40px', fontSize: '0.875rem', padding: '0 12px', borderRadius: '10px' }}
+                      />
+                    </div>
+
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-main)', margin: 0 }}>
+                          รหัสผ่าน Wi-Fi (Hotspot Password)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setWifiForm(prev => ({ ...prev, showPassword: !prev.showPassword }))}
+                          style={{
+                            fontSize: '0.72rem',
+                            color: 'var(--primary-color)',
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {wifiForm.showPassword ? 'ซ่อน' : 'แสดง'}
+                        </button>
+                      </div>
+                      <input
+                        type={wifiForm.showPassword ? 'text' : 'password'}
+                        className="form-control"
+                        placeholder={wifiForm.hasSavedPassword ? 'เว้นว่างไว้หากไม่เปลี่ยนรหัสเดิม' : 'กรอกรหัสผ่าน Wi-Fi'}
+                        value={wifiForm.password || ''}
+                        onChange={e => setWifiForm({ ...wifiForm, password: e.target.value, clearConfirmed: false })}
+                        style={{ height: '40px', fontSize: '0.875rem', padding: '0 12px', borderRadius: '10px' }}
+                      />
+                      {wifiForm.hasSavedPassword && !wifiForm.password && (
+                        <span style={{ fontSize: '0.7rem', color: '#10b981', marginTop: '2px', display: 'block' }}>
+                          * มีรหัสผ่านเดิมบันทึกอยู่แล้ว เว้นว่างไว้หากไม่ต้องการเปลี่ยนแปลง
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}

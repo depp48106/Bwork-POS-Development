@@ -35,7 +35,8 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     payment_bank_name: '',
     payment_bank_account: '',
     payment_bank_account_name: '',
-    payment_window_minutes: '15'
+    payment_window_minutes: '15',
+    wifi_ssid: ''
   });
 
   // DB Backup logs & OneDrive Cloud
@@ -1960,6 +1961,23 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                 </div>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', display: 'block', lineHeight: 1.4 }}>
                   ระยะเวลาที่ระบบจะล็อกห้องพักอัตโนมัติหลังจากการใช้งานแต่ละรายการเสร็จสิ้น เพื่อให้แม่บ้านทำความสะอาดและจัดเตรียมห้องสำหรับคิวถัดไป (เช่น 30 นาที, 0 คือไม่เว้นเวลา)
+                </span>
+              </div>
+
+              <div className="form-group" style={{ margin: 0 }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  ชื่อสัญญาณ Wi-Fi สำหรับผู้มาติดต่อ (Guest Wi-Fi SSID)
+                </label>
+                <input
+                  type="text"
+                  className="form-control"
+                  style={{ width: '100%', height: '40px', borderRadius: '10px' }}
+                  placeholder="เช่น BWORK_GUEST"
+                  value={configs.wifi_ssid || ''}
+                  onChange={e => setConfigs({ ...configs, wifi_ssid: e.target.value })}
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', display: 'block', lineHeight: 1.4 }}>
+                  ชื่อเครือข่าย Wi-Fi ส่วนกลางของอาคารที่ลูกค้าใช้เชื่อมต่อเพื่อเข้าสู่หน้า MikroTik Hotspot Login
                 </span>
               </div>
 
