@@ -2025,6 +2025,46 @@ async function sendLineBookingReschedule(env, bookingId, oldStartTime, oldEndTim
   }
 }
 
+// Build text message for customer info updates (concise text, no reschedule banner)
+function buildCustomerInfoUpdateTextMessage(booking, newCustomerName, newContact) {
+  const code = booking?.receipt_number || `#BK-${String(booking?.id || 0).padStart(6, '0')}`;
+  let text = `แจ้งอัปเดตข้อมูลการจอง ${code}\n`;
+  text += `ชื่อผู้จอง: ${newCustomerName}\n`;
+  if (newContact) {
+    text += `เบอร์ติดต่อ: ${newContact}\n`;
+  }
+  text += `ข้อมูลการจองของท่านได้รับการอัปเดตเรียบร้อยแล้วค่ะ\nหากมีข้อสงสัย กรุณาติดต่อเจ้าหน้าที่ได้ทันทีค่ะ`;
+  return text;
+}
+
+async function sendLineBookingCustomerInfoUpdate(env, booking, newCustomerName, newContact) {
+  try {
+    if (!booking || !booking.line_user_id) return { sent: false, reason: 'no_line_recipient' };
+
+    const channelAccessToken = env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (!channelAccessToken) return { sent: false, reason: 'no_channel_access_token' };
+
+    const textContent = buildCustomerInfoUpdateTextMessage(booking, newCustomerName, newContact);
+
+    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${channelAccessToken}`
+      },
+      body: JSON.stringify({
+        to: booking.line_user_id,
+        messages: [{ type: 'text', text: textContent }]
+      })
+    });
+
+    return { sent: lineRes.ok, status: lineRes.status };
+  } catch (err) {
+    console.error('Error sending customer info update LINE message:', err);
+    return { sent: false, error: err.message };
+  }
+}
+
 function normalizeBookingDetails(input) {
   if (input === undefined || input === null) return { value: null };
   if (typeof input !== 'string') {
@@ -3599,6 +3639,226 @@ export default {
           message: 'บันทึกรายละเอียดเพิ่มเติมเรียบร้อยแล้ว',
           id: Number(bookingId),
           booking_details: normalized.value
+        }), { headers: corsHeaders });
+      }
+
+      // Customer information update endpoint (Safe allowlist, concurrency-safe, financial-isolated)
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/customer-info') && (method === 'PATCH' || method === 'PUT')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = parts[3];
+        if (!bookingId || isNaN(Number(bookingId))) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const existingBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!existingBooking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบรายการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        let body = {};
+        try {
+          body = await request.json();
+        } catch (e) {
+          return new Response(JSON.stringify({ error: 'รูปแบบข้อมูลไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const ALLOWED_KEYS = new Set([
+          'customer_name',
+          'contact',
+          'department',
+          'booking_details',
+          'send_line',
+          'send_line_notification',
+          'expected_values'
+        ]);
+
+        for (const key of Object.keys(body)) {
+          if (!ALLOWED_KEYS.has(key)) {
+            return new Response(JSON.stringify({ error: `ไม่อนุญาตให้แก้ไขข้อมูลที่ไม่ได้รับอนุญาต (${key})` }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        const {
+          customer_name,
+          contact,
+          department,
+          booking_details,
+          send_line,
+          send_line_notification,
+          expected_values
+        } = body;
+
+        if (
+          customer_name === undefined &&
+          contact === undefined &&
+          department === undefined &&
+          booking_details === undefined
+        ) {
+          return new Response(JSON.stringify({ error: 'ไม่มีข้อมูลที่ต้องการอัปเดต' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Validate customer_name
+        let finalCustomerName = existingBooking.customer_name;
+        if (customer_name !== undefined) {
+          if (typeof customer_name !== 'string') {
+            return new Response(JSON.stringify({ error: 'ชื่อผู้จองต้องเป็นข้อความ' }), { status: 400, headers: corsHeaders });
+          }
+          const trimmedName = customer_name.trim();
+          if (!trimmedName || trimmedName.length > 100) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุชื่อผู้จอง (ความยาว 1-100 ตัวอักษร)' }), { status: 400, headers: corsHeaders });
+          }
+          finalCustomerName = trimmedName;
+        }
+
+        // Validate contact
+        let finalContact = existingBooking.contact;
+        if (contact !== undefined) {
+          if (contact === null || contact === '') {
+            finalContact = null;
+          } else if (typeof contact === 'string') {
+            const trimmedContact = contact.trim();
+            if (trimmedContact.length > 50) {
+              return new Response(JSON.stringify({ error: 'เบอร์ติดต่อต้องมีความยาวไม่เกิน 50 ตัวอักษร' }), { status: 400, headers: corsHeaders });
+            }
+            finalContact = trimmedContact || null;
+          } else {
+            return new Response(JSON.stringify({ error: 'รูปแบบเบอร์ติดต่อไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        // Validate department
+        let finalDepartment = existingBooking.department;
+        if (department !== undefined) {
+          if (department === null || department === '') {
+            finalDepartment = null;
+          } else if (typeof department === 'string') {
+            const trimmedDept = department.trim();
+            if (trimmedDept.length > 100) {
+              return new Response(JSON.stringify({ error: 'แผนก/วัตถุประสงค์ต้องมีความยาวไม่เกิน 100 ตัวอักษร' }), { status: 400, headers: corsHeaders });
+            }
+            finalDepartment = trimmedDept || null;
+          } else {
+            return new Response(JSON.stringify({ error: 'รูปแบบแผนก/วัตถุประสงค์ไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        // Validate booking_details
+        let finalDetails = existingBooking.booking_details;
+        if (booking_details !== undefined) {
+          const norm = normalizeBookingDetails(booking_details);
+          if (norm.error) {
+            return new Response(JSON.stringify({ error: norm.error }), { status: 400, headers: corsHeaders });
+          }
+          finalDetails = norm.value;
+        }
+
+        const normalizeEmpty = val => (val === null || val === undefined ? '' : String(val).trim());
+
+        // Concurrency / optimistic conflict check
+        if (expected_values && typeof expected_values === 'object') {
+          const isConflict =
+            (expected_values.customer_name !== undefined && normalizeEmpty(expected_values.customer_name) !== normalizeEmpty(existingBooking.customer_name)) ||
+            (expected_values.contact !== undefined && normalizeEmpty(expected_values.contact) !== normalizeEmpty(existingBooking.contact)) ||
+            (expected_values.department !== undefined && normalizeEmpty(expected_values.department) !== normalizeEmpty(existingBooking.department)) ||
+            (expected_values.booking_details !== undefined && normalizeEmpty(expected_values.booking_details) !== normalizeEmpty(existingBooking.booking_details));
+
+          if (isConflict) {
+            return new Response(JSON.stringify({
+              error: 'ข้อมูลการจองได้รับการแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชหน้าจอเพื่อดูข้อมูลล่าสุด',
+              conflict: true
+            }), { status: 409, headers: corsHeaders });
+          }
+        }
+
+        // Compute diff
+        const changedFields = [];
+        if (normalizeEmpty(finalCustomerName) !== normalizeEmpty(existingBooking.customer_name)) changedFields.push('customer_name');
+        if (normalizeEmpty(finalContact) !== normalizeEmpty(existingBooking.contact)) changedFields.push('contact');
+        if (normalizeEmpty(finalDepartment) !== normalizeEmpty(existingBooking.department)) changedFields.push('department');
+        if (normalizeEmpty(finalDetails) !== normalizeEmpty(existingBooking.booking_details)) changedFields.push('booking_details');
+
+        if (changedFields.length === 0) {
+          const { results: currentItems } = await env.DB.prepare(
+            'SELECT bi.*, r.name as room_name FROM booking_items bi LEFT JOIN rooms r ON bi.room_id = r.id WHERE bi.booking_id = ?'
+          ).bind(bookingId).all();
+          existingBooking.items = currentItems || [];
+          return new Response(JSON.stringify({
+            success: true,
+            message: 'ไม่มีข้อมูลที่เปลี่ยนแปลง',
+            changed: false,
+            changed_fields: [],
+            line_notification: { sent: false, reason: 'no_changes' },
+            booking: existingBooking
+          }), { headers: corsHeaders });
+        }
+
+        // Safe atomic conditional database update - STRICTLY preserves financial, PIN, availability and status invariants
+        // and guarantees optimistic concurrency control against race conditions
+        const updateResult = await env.DB.prepare(
+          `UPDATE bookings
+           SET customer_name = ?,
+               contact = ?,
+               department = ?,
+               booking_details = ?
+           WHERE id = ?
+             AND customer_name = ?
+             AND COALESCE(contact, '') = ?
+             AND COALESCE(department, '') = ?
+             AND COALESCE(booking_details, '') = ?`
+        ).bind(
+          finalCustomerName, finalContact, finalDepartment, finalDetails,
+          bookingId,
+          existingBooking.customer_name,
+          existingBooking.contact || '',
+          existingBooking.department || '',
+          existingBooking.booking_details || ''
+        ).run();
+
+        const changes = updateResult?.meta?.changes ?? updateResult?.changes ?? 0;
+        if (changes === 0) {
+          const stillExists = await env.DB.prepare('SELECT id FROM bookings WHERE id = ?').bind(bookingId).first();
+          if (!stillExists) {
+            return new Response(JSON.stringify({ error: 'ไม่พบรายการจอง' }), { status: 404, headers: corsHeaders });
+          }
+          return new Response(JSON.stringify({
+            error: 'ข้อมูลการจองได้รับการแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชหน้าจอเพื่อดูข้อมูลล่าสุด',
+            conflict: true
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        const { results: updatedItems } = await env.DB.prepare(
+          'SELECT bi.*, r.name as room_name FROM booking_items bi LEFT JOIN rooms r ON bi.room_id = r.id WHERE bi.booking_id = ?'
+        ).bind(bookingId).all();
+        if (updatedBooking) {
+          updatedBooking.items = updatedItems || [];
+        }
+
+        // LINE Notification handling
+        const customerIdentityChanged = changedFields.includes('customer_name') || changedFields.includes('contact');
+        const wantLine = send_line !== false && send_line_notification !== false;
+        let lineOutcome = { sent: false };
+
+        if (!existingBooking.line_user_id) {
+          lineOutcome = { sent: false, reason: 'no_line_recipient' };
+        } else if (!customerIdentityChanged) {
+          lineOutcome = { sent: false, reason: 'no_customer_identity_change' };
+        } else if (!wantLine) {
+          lineOutcome = { sent: false, reason: 'disabled_by_user' };
+        } else {
+          lineOutcome = await sendLineBookingCustomerInfoUpdate(env, existingBooking, finalCustomerName, finalContact);
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'อัปเดตข้อมูลลูกค้าเรียบร้อยแล้ว' + (lineOutcome?.sent ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
+          changed: true,
+          changed_fields: changedFields,
+          line_notification: lineOutcome,
+          booking: updatedBooking
         }), { headers: corsHeaders });
       }
 

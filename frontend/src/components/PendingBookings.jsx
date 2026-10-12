@@ -220,6 +220,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [editDetailsLoading, setEditDetailsLoading] = useState(false);
   const [returnToDetailAfterEditDetails, setReturnToDetailAfterEditDetails] = useState(false);
 
+  // Customer Information Edit Modal state
+  const [showCustomerInfoModal, setShowCustomerInfoModal] = useState(false);
+  const [customerInfoTarget, setCustomerInfoTarget] = useState(null);
+  const [customerInfoName, setCustomerInfoName] = useState('');
+  const [customerInfoContact, setCustomerInfoContact] = useState('');
+  const [customerInfoDepartment, setCustomerInfoDepartment] = useState('');
+  const [customerInfoDetails, setCustomerInfoDetails] = useState('');
+  const [customerInfoSendLine, setCustomerInfoSendLine] = useState(true);
+  const [customerInfoLoading, setCustomerInfoLoading] = useState(false);
+  const [returnToDetailAfterCustomerInfo, setReturnToDetailAfterCustomerInfo] = useState(false);
+  // Pre-save Review Diff Modal state
+  const [showCustomerInfoDiffModal, setShowCustomerInfoDiffModal] = useState(false);
+
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 15;
@@ -1097,6 +1110,169 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
     } finally {
       setEditDetailsLoading(false);
+    }
+  };
+
+  // 1.2 Customer Information Edit (แก้ไขข้อมูลผู้จอง)
+  const handleOpenCustomerInfoEdit = (booking, fromDetail = false) => {
+    if (!booking) return;
+    setReturnToDetailAfterCustomerInfo(!!fromDetail);
+    setCustomerInfoTarget(booking);
+    setCustomerInfoName(booking.customer_name || '');
+    setCustomerInfoContact(booking.contact || '');
+    setCustomerInfoDepartment(booking.department || '');
+    setCustomerInfoDetails(typeof booking.booking_details === 'string' ? booking.booking_details : '');
+    setCustomerInfoSendLine(Boolean(booking.line_user_id));
+    setShowCustomerInfoModal(true);
+    setShowCustomerInfoDiffModal(false);
+  };
+
+  const handleCloseCustomerInfoModal = () => {
+    if (customerInfoLoading) return;
+    setShowCustomerInfoModal(false);
+    setShowCustomerInfoDiffModal(false);
+    setCustomerInfoTarget(null);
+    setCustomerInfoName('');
+    setCustomerInfoContact('');
+    setCustomerInfoDepartment('');
+    setCustomerInfoDetails('');
+    if (returnToDetailAfterCustomerInfo) {
+      setShowDetailModal(true);
+      setReturnToDetailAfterCustomerInfo(false);
+    }
+  };
+
+  const customerInfoDiff = useMemo(() => {
+    if (!customerInfoTarget) return { hasChanged: false, changedFields: [], hasIdentityChange: false };
+    const origName = (customerInfoTarget.customer_name || '').trim();
+    const origContact = (customerInfoTarget.contact || '').trim();
+    const origDept = (customerInfoTarget.department || '').trim();
+    const origDetails = (customerInfoTarget.booking_details || '').trim();
+
+    const newName = customerInfoName.trim();
+    const newContact = customerInfoContact.trim();
+    const newDept = customerInfoDepartment.trim();
+    const newDetails = customerInfoDetails.trim();
+
+    const changedFields = [];
+    if (newName !== origName) changedFields.push({ key: 'customer_name', label: 'ชื่อผู้จอง', oldVal: origName || '-', newVal: newName || '-' });
+    if (newContact !== origContact) changedFields.push({ key: 'contact', label: 'เบอร์ติดต่อ', oldVal: origContact || '-', newVal: newContact || '-' });
+    if (newDept !== origDept) changedFields.push({ key: 'department', label: 'แผนก/วัตถุประสงค์', oldVal: origDept || '-', newVal: newDept || '-' });
+    if (newDetails !== origDetails) changedFields.push({ key: 'booking_details', label: 'รายละเอียดเพิ่มเติม', oldVal: origDetails || '-', newVal: newDetails || '-' });
+
+    return {
+      hasChanged: changedFields.length > 0,
+      changedFields,
+      hasIdentityChange: changedFields.some(f => f.key === 'customer_name' || f.key === 'contact')
+    };
+  }, [customerInfoTarget, customerInfoName, customerInfoContact, customerInfoDepartment, customerInfoDetails]);
+
+  const handleReviewCustomerInfo = async () => {
+    if (!customerInfoTarget) return;
+    const trimmedName = customerInfoName.trim();
+    if (!trimmedName) {
+      if (sysAlert) await sysAlert('กรุณาระบุชื่อผู้จอง');
+      return;
+    }
+    if (trimmedName.length > 100) {
+      if (sysAlert) await sysAlert('ชื่อผู้จองต้องมีความยาวไม่เกิน 100 ตัวอักษร');
+      return;
+    }
+    if (customerInfoContact.trim().length > 50) {
+      if (sysAlert) await sysAlert('เบอร์ติดต่อต้องมีความยาวไม่เกิน 50 ตัวอักษร');
+      return;
+    }
+    if (customerInfoDepartment.trim().length > 100) {
+      if (sysAlert) await sysAlert('แผนก/วัตถุประสงค์ต้องมีความยาวไม่เกิน 100 ตัวอักษร');
+      return;
+    }
+    if (customerInfoDetails.length > 1000) {
+      if (sysAlert) await sysAlert('รายละเอียดเพิ่มเติมต้องมีความยาวไม่เกิน 1,000 ตัวอักษร');
+      return;
+    }
+    if (!customerInfoDiff.hasChanged) {
+      if (sysAlert) await sysAlert('ไม่มีข้อมูลที่เปลี่ยนแปลง');
+      return;
+    }
+    setShowCustomerInfoDiffModal(true);
+  };
+
+  const handleSaveCustomerInfo = async () => {
+    if (!customerInfoTarget) return;
+    setCustomerInfoLoading(true);
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const payload = {
+        customer_name: customerInfoName.trim(),
+        contact: customerInfoContact.trim() || null,
+        department: customerInfoDepartment.trim() || null,
+        booking_details: customerInfoDetails.trim() || null,
+        send_line: customerInfoSendLine,
+        expected_values: {
+          customer_name: customerInfoTarget.customer_name || '',
+          contact: customerInfoTarget.contact || '',
+          department: customerInfoTarget.department || '',
+          booking_details: customerInfoTarget.booking_details || ''
+        }
+      };
+
+      const res = await fetch(`/api/bookings/${customerInfoTarget.id}/customer-info`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.status === 409) {
+        if (sysAlert) await sysAlert('ข้อมูลการจองได้รับการแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชหน้าจอเพื่อดูข้อมูลล่าสุด');
+        setShowCustomerInfoDiffModal(false);
+        setShowCustomerInfoModal(false);
+        fetchBookings(true, false, true);
+        return;
+      }
+
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const updatedBookingData = data.booking || {
+          ...customerInfoTarget,
+          customer_name: payload.customer_name,
+          contact: payload.contact,
+          department: payload.department,
+          booking_details: payload.booking_details
+        };
+
+        setBookings(prev => prev.map(item => item.id === customerInfoTarget.id ? { ...item, ...updatedBookingData } : item));
+        let freshBooking = null;
+        if (selectedBooking && selectedBooking.id === customerInfoTarget.id) {
+          freshBooking = { ...selectedBooking, ...updatedBookingData };
+          setSelectedBooking(freshBooking);
+        }
+
+        setShowCustomerInfoDiffModal(false);
+        setShowCustomerInfoModal(false);
+        setCustomerInfoTarget(null);
+
+        if (returnToDetailAfterCustomerInfo) {
+          if (freshBooking) {
+            setSelectedBooking(freshBooking);
+          }
+          setShowDetailModal(true);
+          setReturnToDetailAfterCustomerInfo(false);
+        }
+
+        const successMsg = data.message || 'บันทึกข้อมูลผู้จองเรียบร้อยแล้ว';
+        if (sysAlert) await sysAlert(successMsg);
+        fetchBookings(true, false, true);
+      } else {
+        if (sysAlert) await sysAlert(data.error || 'เกิดข้อผิดพลาดในการบันทึกข้อมูลผู้จอง');
+      }
+    } catch (err) {
+      console.error('Failed to update customer info:', err);
+      if (sysAlert) await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setCustomerInfoLoading(false);
     }
   };
 
@@ -3054,6 +3230,17 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               </div>
             )}
 
+            {/* 1.2 Edit Customer Information (active bookings only) */}
+            {activeActionMenuBooking.payment_status !== 'cancelled' && (
+              <div
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenCustomerInfoEdit(b); }}
+                className="action-menu-item"
+              >
+                <User size={14} style={{ color: '#10b981' }} />
+                <span>แก้ไขข้อมูลผู้จอง</span>
+              </div>
+            )}
+
             {/* 2. View Operational Booking Detail (when not already primary action) */}
             {activeActionMenuBooking.payment_status !== 'paid' &&
              activeActionMenuBooking.payment_status !== 'internal_free' &&
@@ -4122,6 +4309,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     >
                       <FileText size={14} />
                       <span>{b.booking_details ? 'แก้ไขรายละเอียด' : '+ เพิ่มรายละเอียด'}</span>
+                    </button>
+                  )}
+
+                  {!isCancelled && (
+                    <button
+                      type="button"
+                      className="pb-detail-btn-secondary"
+                      onClick={() => {
+                        setShowDetailModal(false);
+                        handleOpenCustomerInfoEdit(b, true);
+                      }}
+                      aria-label="แก้ไขข้อมูลผู้จอง"
+                    >
+                      <User size={14} />
+                      <span>แก้ไขข้อมูลผู้จอง</span>
                     </button>
                   )}
 
@@ -5711,6 +5913,346 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 style={{ padding: '8px 20px', borderRadius: '10px', fontSize: '0.85rem', fontWeight: 700 }}
               >
                 {editDetailsLoading ? 'กำลังบันทึก...' : 'บันทึกข้อมูล'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/*  CUSTOMER INFORMATION EDIT MODAL (แก้ไขข้อมูลผู้จอง)         */}
+      {/* ========================================================= */}
+      {showCustomerInfoModal && customerInfoTarget && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.85)',
+          backdropFilter: 'blur(10px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 14000,
+          padding: '20px'
+        }}>
+          <div className="card" style={{
+            width: '100%',
+            maxWidth: '560px',
+            padding: '24px',
+            borderRadius: '20px',
+            backgroundColor: 'var(--bg-card)',
+            border: '1px solid rgba(16, 185, 129, 0.3)',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.4)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px',
+            position: 'relative',
+            maxHeight: '90vh',
+            overflowY: 'auto'
+          }}>
+            <button
+              style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+              onClick={handleCloseCustomerInfoModal}
+              disabled={customerInfoLoading}
+              aria-label="ปิดหน้าต่าง"
+            >
+              <X size={20} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <User size={22} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                  แก้ไขข้อมูลผู้จอง
+                </h3>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  ใบจอง #{customerInfoTarget.id} · แหล่งที่มา: <strong style={{ color: 'var(--text-main)' }}>{customerInfoTarget.booking_source || 'walk-in'}</strong>
+                </span>
+              </div>
+            </div>
+
+            {/* Invariant Safety Notice */}
+            <div style={{
+              padding: '10px 14px',
+              borderRadius: '10px',
+              backgroundColor: 'rgba(59, 130, 246, 0.08)',
+              border: '1px solid rgba(59, 130, 246, 0.2)',
+              fontSize: '0.8rem',
+              color: 'var(--text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <ShieldCheck size={16} style={{ color: '#3b82f6', flexShrink: 0 }} />
+              <span>การแก้ไขข้อมูลลูกค้านี้จะไม่เปลี่ยนแปลงวันเวลา ห้องประชุม ยอดเงิน หรือรหัสผ่านประตู (PIN)</span>
+            </div>
+
+            {/* Form Fields */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Customer Name */}
+              <div>
+                <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                  ชื่อผู้จอง <span style={{ color: '#ef4444' }}>*</span>
+                </label>
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="ระบุชื่อผู้จอง..."
+                  value={customerInfoName}
+                  maxLength={100}
+                  onChange={e => setCustomerInfoName(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                />
+              </div>
+
+              {/* Contact Phone & Department Grid (Responsive 1-col on mobile <= 440px, 2-col on desktop) */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                    เบอร์ติดต่อ
+                  </label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="เช่น 081-234-5678"
+                    value={customerInfoContact}
+                    maxLength={50}
+                    onChange={e => setCustomerInfoContact(e.target.value)}
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                    แผนก / วัตถุประสงค์
+                  </label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="เช่น การตลาด / ประชุมทีม"
+                    value={customerInfoDepartment}
+                    maxLength={100}
+                    onChange={e => setCustomerInfoDepartment(e.target.value)}
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                  />
+                </div>
+              </div>
+
+              {/* Booking Details / Notes */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                    รายละเอียดเพิ่มเติม / หมายเหตุลูกค้า
+                  </label>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 600, color: customerInfoDetails.length > 950 ? '#ef4444' : 'var(--text-muted)' }}>
+                    {customerInfoDetails.length}/1000
+                  </span>
+                </div>
+                <textarea
+                  className="form-control"
+                  rows={3}
+                  placeholder="เช่น ขอโปรเจกเตอร์, โต๊ะรูปตัวยู, น้ำดื่ม..."
+                  value={customerInfoDetails}
+                  maxLength={1000}
+                  onChange={e => setCustomerInfoDetails(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', resize: 'vertical' }}
+                />
+              </div>
+
+              {/* LINE OA Notification Toggle */}
+              <div style={{
+                padding: '12px',
+                borderRadius: '12px',
+                backgroundColor: customerInfoTarget.line_user_id ? 'rgba(16, 185, 129, 0.08)' : 'rgba(100, 116, 139, 0.08)',
+                border: customerInfoTarget.line_user_id ? '1px solid rgba(16, 185, 129, 0.25)' : '1px solid rgba(100, 116, 139, 0.2)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px'
+              }}>
+                <input
+                  type="checkbox"
+                  id="customerInfoSendLineCheck"
+                  checked={customerInfoSendLine && Boolean(customerInfoTarget.line_user_id)}
+                  disabled={!customerInfoTarget.line_user_id || customerInfoLoading}
+                  onChange={e => setCustomerInfoSendLine(e.target.checked)}
+                  style={{ width: '18px', height: '18px', accentColor: '#10b981', cursor: customerInfoTarget.line_user_id ? 'pointer' : 'not-allowed' }}
+                />
+                <label
+                  htmlFor="customerInfoSendLineCheck"
+                  style={{ fontSize: '0.82rem', color: customerInfoTarget.line_user_id ? 'var(--text-main)' : 'var(--text-muted)', cursor: customerInfoTarget.line_user_id ? 'pointer' : 'default', margin: 0, flex: 1 }}
+                >
+                  <div style={{ fontWeight: 700 }}>
+                    ส่งข้อความแจ้งเตือนให้ลูกค้าผ่าน LINE OA
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    {customerInfoTarget.line_user_id
+                      ? 'จะส่งข้อความสั้นยืนยันการอัปเดตข้อมูลผู้จองเมื่อชื่อหรือเบอร์ติดต่อมีการเปลี่ยนแปลง'
+                      : 'ไม่สามารถส่ง LINE ได้ (การจองนี้ไม่ได้จองผ่าน LINE OA)'}
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={customerInfoLoading}
+                onClick={handleCloseCustomerInfoModal}
+                style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={customerInfoLoading || !customerInfoDiff.hasChanged || !customerInfoName.trim()}
+                onClick={handleReviewCustomerInfo}
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: '10px',
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  backgroundColor: !customerInfoDiff.hasChanged ? 'var(--bg-muted, #475569)' : '#10b981',
+                  borderColor: !customerInfoDiff.hasChanged ? 'var(--bg-muted, #475569)' : '#10b981',
+                  cursor: !customerInfoDiff.hasChanged ? 'not-allowed' : 'pointer'
+                }}
+              >
+                ตรวจสอบและบันทึก
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/*  PRE-SAVE CHANGE REVIEW MODAL (สรุปการเปลี่ยนแปลงข้อมูล)     */}
+      {/* ========================================================= */}
+      {showCustomerInfoDiffModal && customerInfoTarget && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.9)',
+          backdropFilter: 'blur(12px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 14100,
+          padding: '20px'
+        }}>
+          <div className="card" style={{
+            width: '100%',
+            maxWidth: '520px',
+            padding: '24px',
+            borderRadius: '20px',
+            backgroundColor: 'var(--bg-card)',
+            border: '1px solid rgba(16, 185, 129, 0.4)',
+            boxShadow: '0 25px 50px rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <CheckCircle2 size={22} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                  ยืนยันการแก้ไขข้อมูลผู้จอง
+                </h3>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  ใบจอง #{customerInfoTarget.id}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+              กรุณาตรวจสอบความถูกต้องของข้อมูลที่มีการเปลี่ยนแปลง:
+            </div>
+
+            {/* Changed Fields Diff List */}
+            <div style={{
+              borderRadius: '12px',
+              border: '1px solid var(--border-color, rgba(125, 125, 125, 0.2))',
+              overflow: 'hidden',
+              backgroundColor: 'var(--bg-muted, rgba(125, 125, 125, 0.08))'
+            }}>
+              {customerInfoDiff.changedFields.map((field, idx) => (
+                <div
+                  key={field.key}
+                  style={{
+                    padding: '10px 14px',
+                    borderBottom: idx < customerInfoDiff.changedFields.length - 1 ? '1px solid var(--border-color, rgba(255, 255, 255, 0.08))' : 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
+                  }}
+                >
+                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                    {field.label}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem' }}>
+                    <span style={{ color: '#ef4444', textDecoration: 'line-through' }}>
+                      {field.oldVal}
+                    </span>
+                    <span style={{ color: 'var(--text-muted)' }}>&rarr;</span>
+                    <span style={{ color: '#10b981', fontWeight: 700 }}>
+                      {field.newVal}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* LINE Notification Summary */}
+            <div style={{
+              padding: '10px 14px',
+              borderRadius: '10px',
+              backgroundColor: customerInfoSendLine && customerInfoDiff.hasIdentityChange && customerInfoTarget.line_user_id
+                ? 'rgba(16, 185, 129, 0.1)'
+                : 'rgba(100, 116, 139, 0.1)',
+              fontSize: '0.8rem',
+              color: 'var(--text-main)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <Send size={16} style={{ color: customerInfoSendLine && customerInfoDiff.hasIdentityChange && customerInfoTarget.line_user_id ? '#10b981' : 'var(--text-muted)' }} />
+              <span>
+                {customerInfoTarget.line_user_id
+                  ? (customerInfoSendLine && customerInfoDiff.hasIdentityChange
+                      ? 'จะส่งข้อความแจ้งเตือนอัปเดตข้อมูลให้ลูกค้าทาง LINE OA'
+                      : 'ไม่ส่งข้อความ LINE OA')
+                  : 'ไม่มีการส่ง LINE (การจองนี้ไม่ได้เชื่อมต่อกับ LINE OA)'}
+              </span>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={customerInfoLoading}
+                onClick={() => setShowCustomerInfoDiffModal(false)}
+                style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+              >
+                กลับไปแก้ไข
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={customerInfoLoading}
+                onClick={handleSaveCustomerInfo}
+                style={{ padding: '8px 22px', borderRadius: '10px', fontSize: '0.85rem', fontWeight: 700, backgroundColor: '#10b981', borderColor: '#10b981' }}
+              >
+                {customerInfoLoading ? 'กำลังบันทึก...' : 'ยืนยันการบันทึก'}
               </button>
             </div>
           </div>

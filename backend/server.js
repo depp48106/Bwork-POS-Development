@@ -2362,6 +2362,271 @@ const handleUpdateBookingDetails = async (req, res) => {
 app.patch('/api/bookings/:id/details', handleUpdateBookingDetails);
 app.put('/api/bookings/:id/details', handleUpdateBookingDetails);
 
+// Build text message for customer info updates (concise text, no reschedule banner)
+function buildCustomerInfoUpdateTextMessage(booking, newCustomerName, newContact) {
+  const code = booking?.receipt_number || `#BK-${String(booking?.id || 0).padStart(6, '0')}`;
+  let text = `แจ้งอัปเดตข้อมูลการจอง ${code}\n`;
+  text += `ชื่อผู้จอง: ${newCustomerName}\n`;
+  if (newContact) {
+    text += `เบอร์ติดต่อ: ${newContact}\n`;
+  }
+  text += `ข้อมูลการจองของท่านได้รับการอัปเดตเรียบร้อยแล้วค่ะ\nหากมีข้อสงสัย กรุณาติดต่อเจ้าหน้าที่ได้ทันทีค่ะ`;
+  return text;
+}
+
+async function sendLineBookingCustomerInfoUpdateServer(booking, newCustomerName, newContact) {
+  try {
+    if (!booking || !booking.line_user_id) return { sent: false, reason: 'no_line_recipient' };
+
+    // In test environment or test mock flag, return mocked response
+    if (process.env.NODE_ENV === 'test' && !process.env.LIVE_LINE_TEST) {
+      return { sent: true, mocked: true };
+    }
+
+    const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+    const channelAccessToken = tokenSetting?.value || process.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (!channelAccessToken) return { sent: false, reason: 'no_channel_access_token' };
+
+    const textContent = buildCustomerInfoUpdateTextMessage(booking, newCustomerName, newContact);
+
+    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${channelAccessToken}`
+      },
+      body: JSON.stringify({
+        to: booking.line_user_id,
+        messages: [{ type: 'text', text: textContent }]
+      })
+    });
+
+    return { sent: lineRes.ok, status: lineRes.status };
+  } catch (err) {
+    console.error('Error sending customer info update LINE message:', err);
+    return { sent: false, error: err.message };
+  }
+}
+
+// Update booking customer information endpoint (Safe allowlist, concurrency-safe, financial-isolated)
+const handleUpdateCustomerInfo = async (req, res) => {
+  const { id } = req.params;
+  if (!id || isNaN(Number(id))) {
+    return res.status(400).json({ error: 'รหัสการจองไม่ถูกต้อง' });
+  }
+
+  const body = req.body || {};
+  const ALLOWED_KEYS = new Set([
+    'customer_name',
+    'contact',
+    'department',
+    'booking_details',
+    'send_line',
+    'send_line_notification',
+    'expected_values'
+  ]);
+
+  for (const key of Object.keys(body)) {
+    if (!ALLOWED_KEYS.has(key)) {
+      return res.status(400).json({ error: `ไม่อนุญาตให้แก้ไขข้อมูลที่ไม่ได้รับอนุญาต (${key})` });
+    }
+  }
+
+  try {
+    const existing = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'ไม่พบรายการจอง' });
+    }
+
+    const {
+      customer_name,
+      contact,
+      department,
+      booking_details,
+      send_line,
+      send_line_notification,
+      expected_values
+    } = body;
+
+    if (
+      customer_name === undefined &&
+      contact === undefined &&
+      department === undefined &&
+      booking_details === undefined
+    ) {
+      return res.status(400).json({ error: 'ไม่มีข้อมูลที่ต้องการอัปเดต' });
+    }
+
+    // Validate customer_name
+    let finalCustomerName = existing.customer_name;
+    if (customer_name !== undefined) {
+      if (typeof customer_name !== 'string') {
+        return res.status(400).json({ error: 'ชื่อผู้จองต้องเป็นข้อความ' });
+      }
+      const trimmedName = customer_name.trim();
+      if (!trimmedName || trimmedName.length > 100) {
+        return res.status(400).json({ error: 'กรุณาระบุชื่อผู้จอง (ความยาว 1-100 ตัวอักษร)' });
+      }
+      finalCustomerName = trimmedName;
+    }
+
+    // Validate contact
+    let finalContact = existing.contact;
+    if (contact !== undefined) {
+      if (contact === null || contact === '') {
+        finalContact = null;
+      } else if (typeof contact === 'string') {
+        const trimmedContact = contact.trim();
+        if (trimmedContact.length > 50) {
+          return res.status(400).json({ error: 'เบอร์ติดต่อต้องมีความยาวไม่เกิน 50 ตัวอักษร' });
+        }
+        finalContact = trimmedContact || null;
+      } else {
+        return res.status(400).json({ error: 'รูปแบบเบอร์ติดต่อไม่ถูกต้อง' });
+      }
+    }
+
+    // Validate department
+    let finalDepartment = existing.department;
+    if (department !== undefined) {
+      if (department === null || department === '') {
+        finalDepartment = null;
+      } else if (typeof department === 'string') {
+        const trimmedDept = department.trim();
+        if (trimmedDept.length > 100) {
+          return res.status(400).json({ error: 'แผนก/วัตถุประสงค์ต้องมีความยาวไม่เกิน 100 ตัวอักษร' });
+        }
+        finalDepartment = trimmedDept || null;
+      } else {
+        return res.status(400).json({ error: 'รูปแบบแผนก/วัตถุประสงค์ไม่ถูกต้อง' });
+      }
+    }
+
+    // Validate booking_details
+    let finalDetails = existing.booking_details;
+    if (booking_details !== undefined) {
+      const norm = normalizeBookingDetails(booking_details);
+      if (norm.error) {
+        return res.status(400).json({ error: norm.error });
+      }
+      finalDetails = norm.value;
+    }
+
+    const normalizeEmpty = val => (val === null || val === undefined ? '' : String(val).trim());
+
+    // Concurrency / optimistic conflict check
+    if (expected_values && typeof expected_values === 'object') {
+      const isConflict =
+        (expected_values.customer_name !== undefined && normalizeEmpty(expected_values.customer_name) !== normalizeEmpty(existing.customer_name)) ||
+        (expected_values.contact !== undefined && normalizeEmpty(expected_values.contact) !== normalizeEmpty(existing.contact)) ||
+        (expected_values.department !== undefined && normalizeEmpty(expected_values.department) !== normalizeEmpty(existing.department)) ||
+        (expected_values.booking_details !== undefined && normalizeEmpty(expected_values.booking_details) !== normalizeEmpty(existing.booking_details));
+
+      if (isConflict) {
+        return res.status(409).json({
+          error: 'ข้อมูลการจองได้รับการแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชหน้าจอเพื่อดูข้อมูลล่าสุด',
+          conflict: true
+        });
+      }
+    }
+
+    // Compute diff
+    const changedFields = [];
+    if (normalizeEmpty(finalCustomerName) !== normalizeEmpty(existing.customer_name)) changedFields.push('customer_name');
+    if (normalizeEmpty(finalContact) !== normalizeEmpty(existing.contact)) changedFields.push('contact');
+    if (normalizeEmpty(finalDepartment) !== normalizeEmpty(existing.department)) changedFields.push('department');
+    if (normalizeEmpty(finalDetails) !== normalizeEmpty(existing.booking_details)) changedFields.push('booking_details');
+
+    if (changedFields.length === 0) {
+      const currentItems = await dbQuery.all(
+        'SELECT bi.*, r.name as room_name FROM booking_items bi LEFT JOIN rooms r ON bi.room_id = r.id WHERE bi.booking_id = ?',
+        [id]
+      );
+      existing.items = currentItems || [];
+      return res.json({
+        success: true,
+        message: 'ไม่มีข้อมูลที่เปลี่ยนแปลง',
+        changed: false,
+        changed_fields: [],
+        line_notification: { sent: false, reason: 'no_changes' },
+        booking: existing
+      });
+    }
+
+    // Safe atomic conditional database update - STRICTLY preserves financial, PIN, availability and status invariants
+    // and guarantees optimistic concurrency control against race conditions
+    const updateResult = await dbQuery.run(
+      `UPDATE bookings
+       SET customer_name = ?,
+           contact = ?,
+           department = ?,
+           booking_details = ?
+       WHERE id = ?
+         AND customer_name = ?
+         AND COALESCE(contact, '') = ?
+         AND COALESCE(department, '') = ?
+         AND COALESCE(booking_details, '') = ?`,
+      [
+        finalCustomerName, finalContact, finalDepartment, finalDetails,
+        id,
+        existing.customer_name,
+        existing.contact || '',
+        existing.department || '',
+        existing.booking_details || ''
+      ]
+    );
+
+    if (updateResult.changes === 0) {
+      const stillExists = await dbQuery.get('SELECT id FROM bookings WHERE id = ?', [id]);
+      if (!stillExists) {
+        return res.status(404).json({ error: 'ไม่พบรายการจอง' });
+      }
+      return res.status(409).json({
+        error: 'ข้อมูลการจองได้รับการแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชหน้าจอเพื่อดูข้อมูลล่าสุด',
+        conflict: true
+      });
+    }
+
+    const updatedBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [id]);
+    const updatedItems = await dbQuery.all(
+      'SELECT bi.*, r.name as room_name FROM booking_items bi LEFT JOIN rooms r ON bi.room_id = r.id WHERE bi.booking_id = ?',
+      [id]
+    );
+    if (updatedBooking) {
+      updatedBooking.items = updatedItems || [];
+    }
+
+    // LINE Notification handling
+    const customerIdentityChanged = changedFields.includes('customer_name') || changedFields.includes('contact');
+    const wantLine = send_line !== false && send_line_notification !== false;
+    let lineOutcome = { sent: false };
+
+    if (!existing.line_user_id) {
+      lineOutcome = { sent: false, reason: 'no_line_recipient' };
+    } else if (!customerIdentityChanged) {
+      lineOutcome = { sent: false, reason: 'no_customer_identity_change' };
+    } else if (!wantLine) {
+      lineOutcome = { sent: false, reason: 'disabled_by_user' };
+    } else {
+      lineOutcome = await sendLineBookingCustomerInfoUpdateServer(existing, finalCustomerName, finalContact);
+    }
+
+    res.json({
+      success: true,
+      message: 'อัปเดตข้อมูลลูกค้าเรียบร้อยแล้ว' + (lineOutcome?.sent ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
+      changed: true,
+      changed_fields: changedFields,
+      line_notification: lineOutcome,
+      booking: updatedBooking
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+app.patch('/api/bookings/:id/customer-info', authenticateToken, handleUpdateCustomerInfo);
+app.put('/api/bookings/:id/customer-info', authenticateToken, handleUpdateCustomerInfo);
+
 // LINE OA Webhook endpoint
 app.post('/api/line/webhook', async (req, res) => {
   try {
