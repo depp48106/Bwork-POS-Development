@@ -16,6 +16,7 @@ import {
   ArrowUp,
   ArrowDown,
   ChevronDown,
+  ChevronLeft,
   Filter,
   Key,
   ShieldCheck,
@@ -195,6 +196,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   // Reschedule Modal state
   const [showRescheduleModal, setShowRescheduleModal] = useState(false);
   const [rescheduleTarget, setRescheduleTarget] = useState(null);
+  const [selectedRescheduleItemId, setSelectedRescheduleItemId] = useState(null);
   const [rescheduleRoomId, setRescheduleRoomId] = useState('');
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleStartHour, setRescheduleStartHour] = useState('09');
@@ -1451,6 +1453,57 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   };
 
   // 3. Reschedule Booking (แก้ไขวัน/เวลาการจอง)
+  const initRescheduleFields = (item, parentBooking = rescheduleTarget) => {
+    if (!item) return;
+    let initDate = new Date().toISOString().split('T')[0];
+    let initSHour = '09';
+    let initSMin = '00';
+    let initEHour = '10';
+    let initEMin = '00';
+    let bType = item.booking_type || 'hourly';
+    let bLayout = item.layout || 'standard';
+    let dailySlot = '08-17';
+
+    if (item.start_time) {
+      const sStr = String(item.start_time).replace(' ', 'T');
+      if (sStr.includes('T')) {
+        const [d, t] = sStr.split('T');
+        initDate = d;
+        const [h, m] = t.substring(0, 5).split(':');
+        initSHour = h || '09';
+        initSMin = m || '00';
+      }
+    }
+    if (item.end_time) {
+      const eStr = String(item.end_time).replace(' ', 'T');
+      if (eStr.includes('T')) {
+        const [, t] = eStr.split('T');
+        const [h, m] = t.substring(0, 5).split(':');
+        initEHour = h || '10';
+        initEMin = m || '00';
+      }
+    }
+
+    if (bType === 'halfday') {
+      dailySlot = initSHour === '13' ? '13-17' : '08-12';
+    } else if (bType === 'daily') {
+      dailySlot = initSHour === '09' ? '09-18' : '08-17';
+    }
+
+    const initRoomId = item.room_id || parentBooking?.room_id || (roomsList[0]?.id ? String(roomsList[0].id) : '');
+    setRescheduleRoomId(String(initRoomId));
+    setRescheduleDate(initDate);
+    setRescheduleStartHour(initSHour);
+    setRescheduleStartMinute(initSMin);
+    setRescheduleEndHour(initEHour);
+    setRescheduleEndMinute(initEMin);
+    setRescheduleBookingType(bType);
+    setRescheduleLayout(bLayout);
+    setRescheduleDailySlot(dailySlot);
+    setRescheduleReason('');
+    setRescheduleSendLine(Boolean(parentBooking?.line_user_id));
+  };
+
   const handleOpenReschedule = async (booking, fromDetail = false) => {
     if (!booking) return;
     setReturnToDetailAfterReschedule(!!fromDetail);
@@ -1459,67 +1512,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       const res = await fetch(`/api/bookings/${booking.id}`);
       const fullBooking = res.ok ? await res.json() : booking;
 
-      // Multi-item safety guard: block single-item reschedule for multi-item bookings
-      if (Array.isArray(fullBooking.items) && fullBooking.items.length > 1) {
-        if (fromDetail) {
-          setShowDetailModal(true);
-        }
-        await sysAlert('ระบบยังไม่รองรับการแก้ไขวัน/เวลาสำหรับการจองที่มีหลายห้องหรือหลายวันพร้อมกันในขณะนี้ (การแก้ไขข้อมูลผู้จองและรายละเอียดเพิ่มเติมยังสามารถทำได้ตามปกติ)');
-        return;
-      }
-
       setRescheduleTarget(fullBooking);
       setRescheduleDetails(typeof fullBooking.booking_details === 'string' ? fullBooking.booking_details : (typeof booking.booking_details === 'string' ? booking.booking_details : ''));
-
-      const item = fullBooking.items?.[0] || fullBooking;
-      let initDate = new Date().toISOString().split('T')[0];
-      let initSHour = '09';
-      let initSMin = '00';
-      let initEHour = '10';
-      let initEMin = '00';
-      let bType = item.booking_type || 'hourly';
-      let bLayout = item.layout || 'standard';
-      let dailySlot = '08-17';
-
-      if (item.start_time) {
-        const sStr = String(item.start_time).replace(' ', 'T');
-        if (sStr.includes('T')) {
-          const [d, t] = sStr.split('T');
-          initDate = d;
-          const [h, m] = t.substring(0, 5).split(':');
-          initSHour = h || '09';
-          initSMin = m || '00';
-        }
-      }
-      if (item.end_time) {
-        const eStr = String(item.end_time).replace(' ', 'T');
-        if (eStr.includes('T')) {
-          const [, t] = eStr.split('T');
-          const [h, m] = t.substring(0, 5).split(':');
-          initEHour = h || '10';
-          initEMin = m || '00';
-        }
-      }
-
-      if (bType === 'halfday') {
-        dailySlot = initSHour === '13' ? '13-17' : '08-12';
-      } else if (bType === 'daily') {
-        dailySlot = initSHour === '09' ? '09-18' : '08-17';
-      }
-
-      const initRoomId = item.room_id || fullBooking.room_id || (roomsList[0]?.id ? String(roomsList[0].id) : '');
-      setRescheduleRoomId(String(initRoomId));
-      setRescheduleDate(initDate);
-      setRescheduleStartHour(initSHour);
-      setRescheduleStartMinute(initSMin);
-      setRescheduleEndHour(initEHour);
-      setRescheduleEndMinute(initEMin);
-      setRescheduleBookingType(bType);
-      setRescheduleLayout(bLayout);
-      setRescheduleDailySlot(dailySlot);
       setRescheduleReason('');
-      setRescheduleSendLine(!!fullBooking.line_user_id);
-      setShowRescheduleModal(true);
+      setRescheduleSendLine(Boolean(fullBooking.line_user_id));
+
+      // Multi-item safety guard: handle multi-item bookings via item selection
+      if (Array.isArray(fullBooking.items) && fullBooking.items.length > 1) {
+        setSelectedRescheduleItemId(null);
+        setShowRescheduleModal(true);
+      } else {
+        const item = fullBooking.items?.[0] || fullBooking;
+        setSelectedRescheduleItemId(item.id || null);
+        initRescheduleFields(item, fullBooking);
+        setShowRescheduleModal(true);
+      }
     } catch (err) {
       console.error('Error opening reschedule modal:', err);
       if (fromDetail) setShowDetailModal(true);
@@ -1530,6 +1537,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const handleCloseRescheduleModal = () => {
     if (rescheduleLoading) return;
     setShowRescheduleModal(false);
+    setSelectedRescheduleItemId(null);
     setRescheduleTarget(null);
     setRescheduleDetails('');
     if (returnToDetailAfterReschedule) {
@@ -1542,10 +1550,37 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const reschedulePriceCalc = useMemo(() => {
     if (!rescheduleTarget) return { newTotal: 0, oldTotal: 0, diff: 0, isValid: true };
     const oldTotal = Number(rescheduleTarget.total_amount) || 0;
-    const roomId = rescheduleRoomId || rescheduleTarget.items?.[0]?.room_id || rescheduleTarget.room_id;
+    const items = rescheduleTarget.items || [];
+    const isMulti = items.length > 1;
+
+    // If multi-item and no item selected yet, return baseline
+    if (isMulti && !selectedRescheduleItemId) {
+      return {
+        newItemSubtotal: 0,
+        oldItemSubtotal: 0,
+        newGross: oldTotal,
+        newTotal: oldTotal,
+        oldTotal,
+        diff: 0,
+        paidAmount: Number(rescheduleTarget.paid_amount) || 0,
+        balanceAmount: Number(rescheduleTarget.balance_amount) || 0,
+        discountAmount: Number(rescheduleTarget.discount_amount) || 0,
+        discountType: rescheduleTarget.discount_type || 'none',
+        discountValue: Number(rescheduleTarget.discount_value) || 0,
+        financialStatus: rescheduleTarget.payment_status,
+        financialError: null,
+        isValid: true
+      };
+    }
+
+    const targetItem = selectedRescheduleItemId
+      ? (items.find(it => String(it.id) === String(selectedRescheduleItemId)) || items[0] || rescheduleTarget)
+      : (items[0] || rescheduleTarget);
+
+    const roomId = rescheduleRoomId || targetItem?.room_id || rescheduleTarget.room_id;
     const room = roomsList.find(r => String(r.id) === String(roomId)) || {};
 
-    let newGross = oldTotal;
+    let newGross = Number(targetItem?.subtotal || targetItem?.price || 0);
     let isValid = true;
 
     if (rescheduleBookingType === 'daily') {
@@ -1567,11 +1602,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const hourlyRate = rescheduleLayout === 'classroom'
           ? (room.classroom_hourly_rate || room.hourly_rate || 0)
           : (room.hourly_rate || 0);
-        newGross = totalHours * (hourlyRate || (oldTotal / (totalHours || 1)));
+        newGross = totalHours * (hourlyRate || ((Number(targetItem?.subtotal) || oldTotal) / (totalHours || 1)));
       }
     }
 
-    const otherItems = (rescheduleTarget.items || []).filter(it => it.id !== rescheduleTarget.items?.[0]?.id);
+    const otherItems = items.filter(it => String(it.id) !== String(targetItem?.id));
     const otherSubtotal = otherItems.reduce((sum, it) => sum + (Number(it.subtotal || it.price) || 0), 0);
     const totalGross = roundMoney(newGross + otherSubtotal);
 
@@ -1584,6 +1619,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     const diff = roundMoney(newTotal - oldTotal);
 
     return {
+      newItemSubtotal: newGross,
+      oldItemSubtotal: Number(targetItem?.subtotal || targetItem?.price || 0),
       newGross: totalGross,
       newTotal,
       oldTotal,
@@ -1597,14 +1634,26 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       financialError: fin.error,
       isValid: isValid && !fin.error
     };
-  }, [rescheduleTarget, rescheduleRoomId, rescheduleBookingType, rescheduleLayout, rescheduleDailySlot, rescheduleStartHour, rescheduleStartMinute, rescheduleEndHour, rescheduleEndMinute, roomsList]);
+  }, [rescheduleTarget, selectedRescheduleItemId, rescheduleRoomId, rescheduleBookingType, rescheduleLayout, rescheduleDailySlot, rescheduleStartHour, rescheduleStartMinute, rescheduleEndHour, rescheduleEndMinute, roomsList]);
 
   // Real-time Overlap Checker for Reschedule
   const rescheduleOverlapInfo = useMemo(() => {
     if (!showRescheduleModal || !rescheduleTarget || !rescheduleDate) {
       return { isValid: true, isOverlap: false, booking: null };
     }
-    const roomId = rescheduleRoomId || rescheduleTarget.items?.[0]?.room_id || rescheduleTarget.room_id;
+    const items = rescheduleTarget.items || [];
+    const isMulti = items.length > 1;
+
+    // If multi-item and no item selected yet
+    if (isMulti && !selectedRescheduleItemId) {
+      return { isValid: true, isOverlap: false, booking: null };
+    }
+
+    const targetItem = selectedRescheduleItemId
+      ? (items.find(it => String(it.id) === String(selectedRescheduleItemId)) || items[0] || rescheduleTarget)
+      : (items[0] || rescheduleTarget);
+
+    const roomId = rescheduleRoomId || targetItem?.room_id || rescheduleTarget.room_id;
     if (!roomId) return { isValid: true, isOverlap: false, booking: null };
 
     let sTime = null;
@@ -1636,6 +1685,23 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       return { isValid: false, isOverlap: false, booking: null };
     }
 
+    // Check overlap with other items within the same booking (for the same room)
+    if (isMulti) {
+      const internalOverlap = items.find(otherIt => {
+        if (String(otherIt.id) === String(targetItem?.id)) return false;
+        if (Number(otherIt.room_id) !== Number(roomId)) return false;
+        if (!otherIt.start_time || !otherIt.end_time) return false;
+        const sStr = String(otherIt.start_time).replace(' ', 'T').replace('Z', '');
+        const eStr = String(otherIt.end_time).replace(' ', 'T').replace('Z', '');
+        const bStart = new Date(sStr);
+        const bEnd = new Date(eStr);
+        return sTime < bEnd && eTime > bStart;
+      });
+      if (internalOverlap) {
+        return { isValid: true, isOverlap: true, booking: { customer_name: 'รายการอื่นในใบจองนี้' } };
+      }
+    }
+
     // Check overlap with other active bookings for the same room
     const foundOverlap = bookings.find(b => {
       if (String(b.id) === String(rescheduleTarget.id)) return false;
@@ -1656,15 +1722,20 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       return { isValid: true, isOverlap: true, booking: foundOverlap };
     }
     return { isValid: true, isOverlap: false, booking: null };
-  }, [showRescheduleModal, rescheduleTarget, rescheduleRoomId, rescheduleDate, rescheduleStartHour, rescheduleStartMinute, rescheduleEndHour, rescheduleEndMinute, rescheduleBookingType, rescheduleDailySlot, bookings]);
+  }, [showRescheduleModal, rescheduleTarget, selectedRescheduleItemId, rescheduleRoomId, rescheduleDate, rescheduleStartHour, rescheduleStartMinute, rescheduleEndHour, rescheduleEndMinute, rescheduleBookingType, rescheduleDailySlot, bookings]);
 
   // Submit Reschedule
   const submitRescheduleBooking = async () => {
-    if (!rescheduleTarget || !reschedulePriceCalc.isValid || rescheduleOverlapInfo.isOverlap) return;
-    if (rescheduleDetails && rescheduleDetails.length > 1000) {
-      await sysAlert('รายละเอียดเพิ่มเติมต้องมีความยาวไม่เกิน 1,000 ตัวอักษร');
+    if (!rescheduleTarget || !reschedulePriceCalc.isValid || rescheduleOverlapInfo.isOverlap || (reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount)) return;
+    const items = rescheduleTarget.items || [];
+    const isMulti = items.length > 1;
+    const targetItemId = selectedRescheduleItemId || (items.length === 1 ? items[0].id : undefined);
+
+    if (isMulti && !targetItemId) {
+      await sysAlert('กรุณาเลือกรายการห้องที่ต้องการแก้ไขวัน/เวลา');
       return;
     }
+
     setRescheduleLoading(true);
 
     let start_time = `${String(rescheduleStartHour).padStart(2, '0')}:${String(rescheduleStartMinute).padStart(2, '0')}`;
@@ -1681,6 +1752,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          booking_item_id: targetItemId,
           room_id: Number(rescheduleRoomId),
           date: rescheduleDate,
           start_time,
@@ -1689,8 +1761,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           layout: rescheduleLayout,
           total_amount: reschedulePriceCalc.newTotal,
           reason: rescheduleReason,
-          send_line: rescheduleSendLine,
-          booking_details: rescheduleDetails
+          send_line: rescheduleSendLine
         })
       });
 
@@ -1699,7 +1770,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const targetId = rescheduleTarget.id;
         const freshBooking = data.booking || {
           ...rescheduleTarget,
-          booking_details: rescheduleDetails.trim() || null,
+          booking_details: rescheduleTarget.booking_details,
           booking_date: rescheduleDate,
           start_time: `${rescheduleDate} ${start_time}:00`,
           end_time: `${rescheduleDate} ${end_time}:00`,
@@ -1725,6 +1796,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
         setShowRescheduleModal(false);
         setShowUnifiedEditModal(false);
+        setSelectedRescheduleItemId(null);
         setRescheduleTarget(null);
         setRescheduleDetails('');
 
@@ -1743,7 +1815,29 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         await sysAlert(data.message || 'เปลี่ยนแปลงวันและเวลาการจองสำเร็จแล้ว');
         fetchBookings(true, false, true);
       } else {
-        await sysAlert('' + (data.error || 'ไม่สามารถแก้ไขวัน/เวลาการจองได้'));
+        if (res.status === 409 || data.code === 'ERR_CONCURRENT_MODIFICATION') {
+          await sysAlert('ข้อมูลการจองมีการเปลี่ยนแปลงจากผู้ใช้อื่น กรุณาตรวจสอบข้อมูลล่าสุดและลองใหม่อีกครั้ง');
+          try {
+            const refreshRes = await fetch(`/api/bookings/${rescheduleTarget.id}`);
+            if (refreshRes.ok) {
+              const fresh = await refreshRes.json();
+              setRescheduleTarget(fresh);
+              setSelectedRescheduleItemId(null);
+              setBookings(prev => prev.map(item => item.id === fresh.id ? { ...item, ...fresh } : item));
+              if (selectedBooking && selectedBooking.id === fresh.id) {
+                setSelectedBooking(fresh);
+              }
+            }
+          } catch (e) {
+            console.error('Failed to reload fresh booking after 409:', e);
+          }
+        } else if (data.code === 'ERR_RESCHEDULE_BELOW_PAID') {
+          await sysAlert('ไม่สามารถลดเวลาการจองได้ เนื่องจากยอดใหม่ต่ำกว่ายอดเงินที่ลูกค้าชำระแล้ว');
+        } else if (data.code === 'ERR_ROOM_OVERLAP') {
+          await sysAlert(data.error || 'ห้องและช่วงเวลาที่เลือกใหม่นี้มีการจองซ้ำซ้อน');
+        } else {
+          await sysAlert('' + (data.error || 'ไม่สามารถแก้ไขวัน/เวลาการจองได้'));
+        }
       }
     } catch (err) {
       console.error(err);
@@ -7434,24 +7528,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       {/*  RESCHEDULE BOOKING MODAL (แก้ไขวัน/เวลาการจอง)             */}
       {/* ========================================================= */}
       {showRescheduleModal && rescheduleTarget && (() => {
-        const origRoomId = rescheduleTarget.items?.[0]?.room_id || rescheduleTarget.room_id;
+        const items = rescheduleTarget.items || [];
+        const isMulti = items.length > 1;
+        const isSelectingItem = isMulti && !selectedRescheduleItemId;
+        const targetItem = (selectedRescheduleItemId ? items.find(it => String(it.id) === String(selectedRescheduleItemId)) : null) || items[0] || rescheduleTarget;
+        const targetItemIdx = isMulti && selectedRescheduleItemId ? items.findIndex(it => String(it.id) === String(selectedRescheduleItemId)) : 0;
+        const origRoomId = targetItem?.room_id || rescheduleTarget.room_id;
         const origRoomObj = roomsList.find(r => String(r.id) === String(origRoomId));
-        const origRoomFullName = origRoomObj?.name || rescheduleTarget.items?.[0]?.room_name || rescheduleTarget.room_name || (origRoomId ? ('ห้อง ' + origRoomId) : '-');
-
-        const origItem = rescheduleTarget.items?.[0] || rescheduleTarget;
-        let origTimeFormatted = formatDate(origItem.start_time);
-        if (origItem.end_time) {
-          const eStr = String(origItem.end_time);
-          const endTimeOnly = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : eStr.includes(' ') ? eStr.split(' ')[1].substring(0, 5) : '';
-          if (endTimeOnly) {
-            origTimeFormatted += ' - ' + endTimeOnly + ' น.';
-          }
-        }
-
+        const origRoomFullName = origRoomObj?.name || targetItem?.room_name || rescheduleTarget.room_name || (origRoomId ? ('ห้อง ' + origRoomId) : '-');
+        const endTimeOnly = targetItem.end_time ? (String(targetItem.end_time).includes('T') ? String(targetItem.end_time).split('T')[1].substring(0, 5) : String(targetItem.end_time).split(' ')[1]?.substring(0, 5) || '') : '';
+        const origTimeFormatted = formatDate(targetItem.start_time) + (endTimeOnly ? (' - ' + endTimeOnly + ' น.') : '');
         const selectedRoomObj = roomsList.find(r => String(r.id) === String(rescheduleRoomId)) || roomsList[0];
 
         return (
           <div style={{
+            zIndex: 14000,
             position: 'fixed',
             top: 0,
             left: 0,
@@ -7462,12 +7553,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            zIndex: 14000,
             padding: '16px'
           }}>
             <div className="card" style={{
               width: '100%',
-              maxWidth: '580px',
+              maxWidth: isSelectingItem ? '660px' : '580px',
               padding: '24px',
               borderRadius: '20px',
               backgroundColor: 'var(--bg-card)',
@@ -7503,32 +7593,195 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 </div>
               </div>
 
-              {/* Current Booking Info Card */}
-              <div style={{
-                padding: '12px 16px',
-                borderRadius: '12px',
-                backgroundColor: 'var(--bg-hover)',
-                border: '1px solid var(--border-color)',
-                fontSize: '0.82rem',
-                display: 'grid',
-                gridTemplateColumns: '1.2fr 1fr',
-                gap: '8px'
-              }}>
-                <div>
-                  <span style={{ color: 'var(--text-muted)' }}>ห้องประชุมเดิม:</span>{' '}
-                  <strong style={{ color: 'var(--text-main)' }}>{origRoomFullName}</strong>
+              {isSelectingItem ? (
+                /* ---------------------------------------------------- */
+                /*  STAGE 1: ITEM SELECTOR (for Multi-Item Bookings)   */
+                /* ---------------------------------------------------- */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div style={{
+                    padding: '12px 16px',
+                    borderRadius: '12px',
+                    backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                    border: '1px solid rgba(37, 99, 235, 0.25)',
+                    fontSize: '0.85rem',
+                    color: 'var(--text-main)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
+                  }}>
+                    <strong style={{ color: 'var(--primary-color)' }}>
+                      การจองนี้มีหลายรายการ ({items.length} รายการ)
+                    </strong>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                      กรุณาเลือกรายการห้องที่ต้องการเปลี่ยนวัน/เวลา ระบบจะคำนวณยอดเงินและตรวจสอบความพร้อมของห้องทีละรายการเพื่อความถูกต้องและปลอดภัย
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {items.map((item, idx) => {
+                      const itemRoom = roomsList.find(r => String(r.id) === String(item.room_id));
+                      const itemRoomName = itemRoom?.name || item.room_name || `ห้อง #${item.room_id}`;
+                      let timeStr = formatDate(item.start_time);
+                      if (item.end_time) {
+                        const eStr = String(item.end_time);
+                        const et = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : eStr.includes(' ') ? eStr.split(' ')[1].substring(0, 5) : '';
+                        if (et) timeStr += ` - ${et} น.`;
+                      }
+
+                      return (
+                        <div
+                          key={item.id || idx}
+                          className="pb-resched-item-card"
+                          style={{
+                            padding: '14px 16px',
+                            borderRadius: '12px',
+                            backgroundColor: 'var(--bg-hover)',
+                            border: '1px solid var(--border-color)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            flexWrap: 'wrap',
+                            gap: '12px',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '220px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{
+                                padding: '2px 8px',
+                                borderRadius: '6px',
+                                backgroundColor: 'rgba(37, 99, 235, 0.12)',
+                                color: 'var(--primary-color)',
+                                fontSize: '0.72rem',
+                                fontWeight: 800
+                              }}>
+                                รายการที่ {idx + 1}
+                              </span>
+                              <strong style={{ fontSize: '0.95rem', color: 'var(--text-main)' }}>
+                                {itemRoomName}
+                              </strong>
+                            </div>
+                            <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                              วัน/เวลา: <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>{timeStr}</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                              <span>{item.booking_type === 'daily' ? 'รายวัน' : item.booking_type === 'halfday' ? 'รายครึ่งวัน' : 'รายชั่วโมง'}</span>
+                              <span>·</span>
+                              <span>{item.layout === 'classroom' ? 'Classroom' : 'Standard'}</span>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ยอดรายการนี้</div>
+                              <strong style={{ fontSize: '1rem', color: 'var(--text-main)' }}>
+                                ฿{formatMoney(item.subtotal || item.price || 0)}
+                              </strong>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              onClick={() => {
+                                setSelectedRescheduleItemId(item.id);
+                                initRescheduleFields(item, rescheduleTarget);
+                              }}
+                              style={{
+                                padding: '8px 16px',
+                                borderRadius: '10px',
+                                fontSize: '0.82rem',
+                                fontWeight: 800,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                cursor: 'pointer',
+                                whiteSpace: 'nowrap'
+                              }}
+                            >
+                              <Edit3 size={14} />
+                              <span>เลือกแก้ไข</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleCloseRescheduleModal}
+                      style={{ padding: '8px 18px', borderRadius: '10px', fontSize: '0.85rem' }}
+                    >
+                      ยกเลิก
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <span style={{ color: 'var(--text-muted)' }}>ยอดเดิม:</span>{' '}
-                  <strong style={{ color: '#10b981' }}>฿{Number(rescheduleTarget.total_amount || 0).toLocaleString()}</strong>
-                </div>
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>วัน/เวลาเดิม:</span>{' '}
-                  <span style={{ color: 'var(--text-main)', fontWeight: 700 }}>
-                    {origTimeFormatted}
-                  </span>
-                </div>
-              </div>
+              ) : (
+                /* ---------------------------------------------------- */
+                /*  STAGE 2: EDIT FORM (Single or Selected Item)        */
+                /* ---------------------------------------------------- */
+                <>
+                  {isMulti && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRescheduleItemId(null)}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'var(--primary-color)',
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          padding: '4px 0'
+                        }}
+                      >
+                        <ChevronLeft size={16} />
+                        <span>ย้อนกลับไปเลือกรายการอื่น</span>
+                      </button>
+                      <span style={{
+                        padding: '4px 10px',
+                        borderRadius: '6px',
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        color: 'var(--primary-color)',
+                        fontSize: '0.78rem',
+                        fontWeight: 800
+                      }}>
+                        กำลังแก้ไข: {origRoomFullName} (รายการที่ {targetItemIdx + 1})
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Current Booking Info Card */}
+                  <div style={{
+                    padding: '12px 16px',
+                    borderRadius: '12px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.82rem',
+                    display: 'grid',
+                    gridTemplateColumns: '1.2fr 1fr',
+                    gap: '8px'
+                  }}>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>ห้องประชุมเดิม:</span>{' '}
+                      <strong style={{ color: 'var(--text-main)' }}>{origRoomFullName}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>{isMulti ? 'ยอดเดิมรายการนี้:' : 'ยอดเดิม:'}</span>{' '}
+                      <strong style={{ color: '#10b981' }}>฿{Number((isMulti ? (targetItem?.subtotal || targetItem?.price) : rescheduleTarget.total_amount) || 0).toLocaleString()}</strong>
+                    </div>
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>วัน/เวลาเดิม:</span>{' '}
+                      <span style={{ color: 'var(--text-main)', fontWeight: 700 }}>
+                        {origTimeFormatted}
+                      </span>
+                    </div>
+                  </div>
 
               {/* Selection Row 1: Room & Date (Side by Side) */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
@@ -7963,13 +8216,29 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 flexDirection: 'column',
                 gap: '10px'
               }}>
+                {isMulti && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '6px', borderBottom: '1px dashed var(--border-color)' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      ยอดรายการนี้:
+                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem' }}>
+                      <span style={{ color: 'var(--text-muted)', textDecoration: 'line-through' }}>
+                        ฿{formatMoney(reschedulePriceCalc.oldItemSubtotal)}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)' }}>&rarr;</span>
+                      <strong style={{ color: 'var(--text-main)', fontWeight: 800 }}>
+                        ฿{formatMoney(reschedulePriceCalc.newItemSubtotal)}
+                      </strong>
+                    </div>
+                  </div>
+                )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                   <div>
                     <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                      ยอดเงินเดิม: ฿{formatMoney(reschedulePriceCalc.oldTotal)}
+                      {isMulti ? 'ยอดสุทธิทั้งใบจองเดิม:' : 'ยอดเงินเดิม:'} ฿{formatMoney(reschedulePriceCalc.oldTotal)}
                     </div>
                     <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
-                      ยอดสุทธิใหม่: <strong style={{ color: 'var(--primary-color)' }}>฿{formatMoney(reschedulePriceCalc.newTotal)}</strong>
+                      {isMulti ? 'ยอดสุทธิทั้งใบจองใหม่: ' : 'ยอดสุทธิใหม่: '}<strong style={{ color: 'var(--primary-color)' }}>฿{formatMoney(reschedulePriceCalc.newTotal)}</strong>
                     </div>
                   </div>
                   <div>
@@ -7979,7 +8248,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       </span>
                     ) : reschedulePriceCalc.diff < 0 ? (
                       <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(14, 165, 233, 0.15)', color: '#0ea5e9', fontWeight: 800, fontSize: '0.82rem' }}>
-                        -฿{formatMoney(Math.abs(reschedulePriceCalc.diff))} (คืนเงินส่วนต่าง)
+                        -฿{formatMoney(Math.abs(reschedulePriceCalc.diff))} (ยอดลดลง)
                       </span>
                     ) : (
                       <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 800, fontSize: '0.82rem' }}>
@@ -7987,6 +8256,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       </span>
                     )}
                   </div>
+                </div>
+
+                {/* Additional amount due indicator if price increased */}
+                {reschedulePriceCalc.diff > 0 && (
+                  <div style={{ fontSize: '0.8rem', color: '#f59e0b', fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>ยอดที่ต้องชำระเพิ่ม:</span>
+                    <span>฿{formatMoney(reschedulePriceCalc.diff)}</span>
+                  </div>
+                )}
+
+                {/* Estimate disclaimer notice */}
+                <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '2px' }}>
+                  * ยอดเงินที่แสดงเป็นการประมาณการเบื้องต้น — ยอดสุทธิยืนยันโดยระบบเมื่อบันทึก
                 </div>
 
                 {/* Detailed financial preview row */}
@@ -8035,6 +8317,25 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   </div>
                 </div>
 
+                {/* Blocking warning if new total is below paid amount */}
+                {Boolean(reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount) && (
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                    border: '1.5px solid #ef4444',
+                    color: '#ef4444',
+                    fontSize: '0.82rem',
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <AlertTriangle size={18} style={{ flexShrink: 0 }} />
+                    <span>ไม่อนุญาตให้บันทึก: ยอดรวมใหม่ (฿{formatMoney(reschedulePriceCalc.newTotal)}) ต่ำกว่ายอดเงินที่ลูกค้าชำระแล้ว (฿{formatMoney(reschedulePriceCalc.paidAmount)})</span>
+                  </div>
+                )}
+
                 {reschedulePriceCalc.financialError && (
                   <div style={{
                     padding: '8px 10px',
@@ -8052,42 +8353,6 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     <span>{reschedulePriceCalc.financialError}</span>
                   </div>
                 )}
-              </div>
-
-              {/* รายละเอียดเพิ่มเติม (Booking Details) */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
-                    รายละเอียดเพิ่มเติม (ไม่บังคับ)
-                  </label>
-                  <span style={{ fontSize: '0.72rem', fontWeight: 600, color: rescheduleDetails.length > 950 ? '#ef4444' : 'var(--text-muted)' }}>
-                    {rescheduleDetails.length}/1000
-                  </span>
-                </div>
-                <textarea
-                  rows={3}
-                  maxLength={1000}
-                  placeholder="เช่น รายละเอียดบริการเพิ่มเติม, ความต้องการของลูกค้า, หมายเหตุการจอง"
-                  value={rescheduleDetails}
-                  onChange={(e) => setRescheduleDetails(e.target.value)}
-                  style={{
-                    width: '100%',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)',
-                    backgroundColor: 'var(--bg-main)',
-                    padding: '8px 12px',
-                    fontSize: '0.85rem',
-                    color: 'var(--text-main)',
-                    outline: 'none',
-                    resize: 'vertical',
-                    boxSizing: 'border-box',
-                    fontFamily: 'inherit',
-                    lineHeight: 1.5
-                  }}
-                />
-                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                  * ข้อมูลนี้จะปรากฏบนใบเสร็จและบันทึกลงระบบพร้อมวัน/เวลา (ลบข้อความออกทั้งหมดหากต้องการลบ)
-                </span>
               </div>
 
               {/* Reason */}
@@ -8133,10 +8398,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     border: '1px solid var(--border-color)',
                     color: 'var(--text-main)'
                   }}
-                  onClick={handleCloseRescheduleModal}
+                  onClick={isMulti ? () => setSelectedRescheduleItemId(null) : handleCloseRescheduleModal}
                   disabled={rescheduleLoading}
                 >
-                  ยกเลิก
+                  {isMulti ? 'ย้อนกลับ' : 'ยกเลิก'}
                 </button>
                 <button
                   type="button"
@@ -8151,20 +8416,22 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     alignItems: 'center',
                     justifyContent: 'center',
                     gap: '6px',
-                    opacity: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading) ? 0.5 : 1,
-                    cursor: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading) ? 'not-allowed' : 'pointer'
+                    opacity: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || (reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount) || rescheduleLoading) ? 0.5 : 1,
+                    cursor: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || (reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount) || rescheduleLoading) ? 'not-allowed' : 'pointer'
                   }}
                   onClick={submitRescheduleBooking}
-                  disabled={rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading}
+                  disabled={rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || (reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount) || rescheduleLoading}
                 >
                   <CheckCircle2 size={16} />
                   <span>{rescheduleLoading ? 'กำลังบันทึก...' : 'บันทึกการเปลี่ยนแปลง'}</span>
                 </button>
               </div>
-            </div>
-          </div>
-        );
-      })()}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  })()}
 
       {/* TAX INVOICE DETAILS & PRINT MODAL */}
       {selectedTaxBooking && (() => {

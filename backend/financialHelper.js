@@ -220,7 +220,9 @@ function calculateRescheduleFinancials({
   const currentPaid = roundMoney(Math.max(0, Number(oldBooking.paid_amount || 0)));
 
   if (newTotalAmount < currentPaid) {
-    throw new Error(`ยอดสุทธิใหม่ (฿${newTotalAmount}) ต่ำกว่ายอดเงินที่ชำระไปแล้ว (฿${currentPaid}) ไม่สามารถเปลี่ยนเวลาได้`);
+    const err = new Error(`ยอดสุทธิใหม่ (฿${newTotalAmount}) ต่ำกว่ายอดเงินที่ชำระไปแล้ว (฿${currentPaid}) ไม่สามารถเปลี่ยนเวลาได้`);
+    err.code = 'ERR_RESCHEDULE_BELOW_PAID';
+    throw err;
   }
 
   const newBalanceAmount = roundMoney(newTotalAmount - currentPaid);

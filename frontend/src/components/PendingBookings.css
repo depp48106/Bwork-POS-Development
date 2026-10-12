@@ -2617,3 +2617,27 @@
     font-size: 0.84rem;
   }
 }
+
+/* ===================================================
+   MULTI-ITEM RESCHEDULE MODAL STYLES (PHASE EDIT-4C)
+   =================================================== */
+.pb-resched-item-card {
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pb-resched-item-card:hover {
+  border-color: var(--primary-color) !important;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12);
+}
+
+@media (max-width: 640px) {
+  .pb-resched-item-card {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 10px !important;
+  }
+  .pb-resched-item-card > div:last-child {
+    justify-content: space-between;
+    width: 100%;
+  }
+}

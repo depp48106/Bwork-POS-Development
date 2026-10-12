@@ -984,7 +984,7 @@ async function getCleaningBufferMinutes(query = dbQuery) {
 }
 
 // Helper: Check if a room has overlapping bookings or conflicts with cleaning buffer (cross-system safe)
-async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = null, creditQuery = dbQuery) {
+async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = null, creditQuery = dbQuery, excludeBookingItemId = null) {
   const normStart = normalizeToLocalISO(startISO);
   const normEnd = normalizeToLocalISO(endISO);
   const bufferMins = await getCleaningBufferMinutes(creditQuery);
@@ -1003,7 +1003,10 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
       AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
   `;
   const params = [roomId];
-  if (excludeBookingId) {
+  if (excludeBookingItemId) {
+    query += ' AND bi.id != ?';
+    params.push(excludeBookingItemId);
+  } else if (excludeBookingId) {
     query += ' AND b.id != ?';
     params.push(excludeBookingId);
   }
@@ -3042,12 +3045,17 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
   };
 }
 
-async function sendLineBookingRescheduleServer(bookingId, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal) {
+async function sendLineBookingRescheduleServer(bookingId, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal, bookingItemId = null) {
   try {
     const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     if (!booking || !booking.line_user_id) return null;
 
-    const item = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL LIMIT 1', [bookingId]);
+    let item;
+    if (bookingItemId) {
+      item = await dbQuery.get('SELECT * FROM booking_items WHERE id = ? AND booking_id = ?', [bookingItemId, bookingId]);
+    } else {
+      item = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL LIMIT 1', [bookingId]);
+    }
     const room = item?.room_id ? await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [item.room_id]) : null;
 
     const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
@@ -3079,7 +3087,7 @@ async function sendLineBookingRescheduleServer(bookingId, oldStartTime, oldEndTi
 const handleReschedule = async (req, res) => {
   try {
     const bookingId = req.params.id;
-    const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id, booking_details } = req.body;
+    const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id, booking_details, booking_item_id } = req.body;
 
     if (!date || !start_time || !end_time) {
       return res.status(400).json({ error: 'กรุณาระบุ วันที่, เวลาเริ่มต้น และเวลาสิ้นสุด ให้ครบถ้วน' });
@@ -3120,8 +3128,37 @@ const handleReschedule = async (req, res) => {
       }
     }
 
-    const currentItem = await dbQuery.get('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1', [bookingId]);
-    if (!currentItem) return res.status(404).json({ error: 'ไม่พบรายการห้องในการจองนี้' });
+    const allItems = await dbQuery.all('SELECT * FROM booking_items WHERE booking_id = ? ORDER BY id ASC', [bookingId]);
+    if (!allItems || allItems.length === 0) return res.status(404).json({ error: 'ไม่พบรายการห้องในการจองนี้' });
+
+    const primaryItem = allItems[0];
+    let currentItem = null;
+
+    if (allItems.length > 1) {
+      if (!booking_item_id) {
+        return res.status(400).json({
+          error: 'กรุณาระบุ booking_item_id สำหรับการจองที่มีหลายรายการ',
+          code: 'ERR_BOOKING_ITEM_ID_REQUIRED'
+        });
+      }
+      currentItem = allItems.find(it => String(it.id) === String(booking_item_id));
+      if (!currentItem) {
+        return res.status(400).json({
+          error: 'ไม่พบรายการที่ระบุในข้อมูลการจองนี้',
+          code: 'ERR_ITEM_NOT_FOUND'
+        });
+      }
+    } else {
+      if (booking_item_id !== undefined && booking_item_id !== null && String(allItems[0].id) !== String(booking_item_id)) {
+        return res.status(400).json({
+          error: 'ไม่พบรายการที่ระบุในข้อมูลการจองนี้',
+          code: 'ERR_ITEM_NOT_FOUND'
+        });
+      }
+      currentItem = allItems[0];
+    }
+
+    const isPrimaryItem = (primaryItem && currentItem.id === primaryItem.id);
 
     const targetRoomId = room_id || currentItem.room_id;
     const targetRoomObj = await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [targetRoomId]);
@@ -3131,10 +3168,14 @@ const handleReschedule = async (req, res) => {
     const newStartISO = `${date}T${cleanStart}`;
     const newEndISO = `${date}T${cleanEnd}`;
 
-    const overlapResult = await checkRoomOverlap(targetRoomId, newStartISO, newEndISO, bookingId);
+    // Overlap check (excludes ONLY the selected booking item ID)
+    const overlapResult = await checkRoomOverlap(targetRoomId, newStartISO, newEndISO, null, dbQuery, currentItem.id);
     if (overlapResult && overlapResult.hasOverlap) {
       const targetRoomName = targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`;
-      return res.status(400).json({ error: formatOverlapErrorMessage(targetRoomName, overlapResult) });
+      return res.status(400).json({
+        error: formatOverlapErrorMessage(targetRoomName, overlapResult),
+        code: 'ERR_ROOM_OVERLAP'
+      });
     }
 
     const oldStart = currentItem.start_time;
@@ -3150,14 +3191,14 @@ const handleReschedule = async (req, res) => {
       } else if (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim()) {
         newPinCode = targetRoomObj.pin_code.trim();
       } else {
-        newPinCode = booking.pin_code || await generateUniquePinCode();
+        newPinCode = currentItem.pin_code || booking.pin_code || await generateUniquePinCode();
       }
     } else {
       // General / Walk-in / Basecamp: Customer Access Code only
       if (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim()) {
         newPinCode = targetRoomObj.pin_code.trim();
       } else {
-        newPinCode = booking.pin_code || await generateUniquePinCode();
+        newPinCode = currentItem.pin_code || booking.pin_code || await generateUniquePinCode();
       }
     }
 
@@ -3183,20 +3224,56 @@ const handleReschedule = async (req, res) => {
     }
 
     // Query other items if multi-item booking
-    const otherItems = await dbQuery.all('SELECT * FROM booking_items WHERE booking_id = ? AND id != ?', [bookingId, currentItem.id]);
+    const otherItems = allItems.filter(it => it.id !== currentItem.id);
     const otherSubtotal = otherItems.reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
     const fullNewGross = roundMoney(otherSubtotal + itemSubtotal);
 
     // Compute new financials reapplying stored discount and preserving paid_amount
-    const newFin = calculateRescheduleFinancials({
-      oldBooking: booking,
-      newSubtotal: fullNewGross
-    });
+    let newFin;
+    try {
+      newFin = calculateRescheduleFinancials({
+        oldBooking: booking,
+        newSubtotal: fullNewGross
+      });
+    } catch (fErr) {
+      return res.status(400).json({
+        error: fErr.message,
+        code: fErr.code || (fErr.message.includes('ต่ำกว่ายอดเงินที่ชำระไปแล้ว') ? 'ERR_RESCHEDULE_BELOW_PAID' : 'ERR_FINANCIAL_CALCULATION')
+      });
+    }
 
     let updatedBooking = null;
     await dbQuery.transaction(async () => {
-      await dbQuery.run(
-        `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`,
+      // Concurrency verification inside transaction: both parent booking and targeted item
+      const freshBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+      if (!freshBooking || Number(freshBooking.subtotal_amount) !== Number(booking.subtotal_amount)) {
+        const staleErr = new Error('ข้อมูลการจองถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชและลองใหม่อีกครั้ง');
+        staleErr.status = 409;
+        staleErr.code = 'ERR_CONCURRENT_MODIFICATION';
+        throw staleErr;
+      }
+
+      const freshItem = await dbQuery.get('SELECT * FROM booking_items WHERE id = ? AND booking_id = ?', [currentItem.id, bookingId]);
+      if (!freshItem || freshItem.start_time !== currentItem.start_time || freshItem.end_time !== currentItem.end_time || String(freshItem.room_id) !== String(currentItem.room_id)) {
+        const staleErr = new Error('ข้อมูลการจองถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชและลองใหม่อีกครั้ง');
+        staleErr.status = 409;
+        staleErr.code = 'ERR_CONCURRENT_MODIFICATION';
+        throw staleErr;
+      }
+
+      // Recheck availability inside transaction
+      const overlapInTx = await checkRoomOverlap(targetRoomId, newStartISO, newEndISO, null, dbQuery, currentItem.id);
+      if (overlapInTx && overlapInTx.hasOverlap) {
+        const overlapErr = new Error(formatOverlapErrorMessage(targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`, overlapInTx));
+        overlapErr.status = 409;
+        overlapErr.code = 'ERR_ROOM_OVERLAP';
+        throw overlapErr;
+      }
+
+      const itemUpdateRes = await dbQuery.run(
+        `UPDATE booking_items
+         SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ?
+         WHERE id = ? AND booking_id = ? AND start_time = ?`,
         [
           targetRoomId,
           newStartISO,
@@ -3206,37 +3283,74 @@ const handleReschedule = async (req, res) => {
           bType,
           bLayout,
           newPinCode,
-          currentItem.id
+          currentItem.id,
+          bookingId,
+          currentItem.start_time
         ]
       );
+      if (itemUpdateRes.changes === 0) {
+        const staleErr = new Error('ข้อมูลการจองถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชและลองใหม่อีกครั้ง');
+        staleErr.status = 409;
+        staleErr.code = 'ERR_CONCURRENT_MODIFICATION';
+        throw staleErr;
+      }
 
-      await dbQuery.run(
-        `UPDATE bookings
-         SET pin_code = ?,
-             subtotal_amount = ?,
-             discount_type = ?,
-             discount_value = ?,
-             discount_amount = ?,
-             total_amount = ?,
-             paid_amount = ?,
-             balance_amount = ?,
-             payment_status = ?,
-             booking_details = COALESCE(?, booking_details)
-         WHERE id = ?`,
-        [
-          newPinCode,
-          newFin.subtotal_amount,
-          newFin.discount_type,
-          newFin.discount_value,
-          newFin.discount_amount,
-          newFin.total_amount,
-          newFin.paid_amount,
-          newFin.balance_amount,
-          newFin.payment_status,
-          updateDetails ? normalizedDetailsValue : null,
-          bookingId
-        ]
-      );
+      // Update bookings table: only overwrite bookings.pin_code if isPrimaryItem
+      if (isPrimaryItem) {
+        await dbQuery.run(
+          `UPDATE bookings
+           SET pin_code = ?,
+               subtotal_amount = ?,
+               discount_type = ?,
+               discount_value = ?,
+               discount_amount = ?,
+               total_amount = ?,
+               paid_amount = ?,
+               balance_amount = ?,
+               payment_status = ?,
+               booking_details = COALESCE(?, booking_details)
+           WHERE id = ?`,
+          [
+            newPinCode,
+            newFin.subtotal_amount,
+            newFin.discount_type,
+            newFin.discount_value,
+            newFin.discount_amount,
+            newFin.total_amount,
+            newFin.paid_amount,
+            newFin.balance_amount,
+            newFin.payment_status,
+            updateDetails ? normalizedDetailsValue : null,
+            bookingId
+          ]
+        );
+      } else {
+        await dbQuery.run(
+          `UPDATE bookings
+           SET subtotal_amount = ?,
+               discount_type = ?,
+               discount_value = ?,
+               discount_amount = ?,
+               total_amount = ?,
+               paid_amount = ?,
+               balance_amount = ?,
+               payment_status = ?,
+               booking_details = COALESCE(?, booking_details)
+           WHERE id = ?`,
+          [
+            newFin.subtotal_amount,
+            newFin.discount_type,
+            newFin.discount_value,
+            newFin.discount_amount,
+            newFin.total_amount,
+            newFin.paid_amount,
+            newFin.balance_amount,
+            newFin.payment_status,
+            updateDetails ? normalizedDetailsValue : null,
+            bookingId
+          ]
+        );
+      }
 
       updatedBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
       const updatedItems = await dbQuery.all(
@@ -3273,7 +3387,7 @@ const handleReschedule = async (req, res) => {
     } else if (send_line === false) {
       lineOutcome = { sent: false, reason: 'disabled_by_user' };
     } else {
-      lineData = await sendLineBookingRescheduleServer(bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount);
+      lineData = await sendLineBookingRescheduleServer(bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount, currentItem.id);
       lineOutcome = { sent: lineData?.success || false, status: lineData?.status };
     }
 
@@ -3282,11 +3396,14 @@ const handleReschedule = async (req, res) => {
       message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineOutcome?.sent ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
       line_sent: lineOutcome?.sent || false,
       line_notification: lineOutcome,
-      pin_code: newPinCode,
+      pin_code: updatedBooking?.pin_code || newPinCode,
       booking: updatedBooking
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (err.status === 409 || err.code === 'ERR_CONCURRENT_MODIFICATION' || err.code === 'ERR_ROOM_OVERLAP') {
+      return res.status(409).json({ error: err.message, code: err.code });
+    }
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 };
 

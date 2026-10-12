@@ -783,7 +783,7 @@ async function getCleaningBufferMinutes(env) {
   return 30;
 }
 
-async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId = null) {
+async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId = null, excludeBookingItemId = null) {
   const normStart = normalizeToLocalISO(startISO);
   const normEnd = normalizeToLocalISO(endISO);
   const bufferMins = await getCleaningBufferMinutes(env);
@@ -801,7 +801,10 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
       AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')
   `;
   const params = [roomId];
-  if (excludeBookingId) {
+  if (excludeBookingItemId) {
+    query += " AND bi.id != ?";
+    params.push(excludeBookingItemId);
+  } else if (excludeBookingId) {
     query += " AND b.id != ?";
     params.push(excludeBookingId);
   }
@@ -2100,12 +2103,17 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
   };
 }
 
-async function sendLineBookingReschedule(env, bookingId, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal) {
+async function sendLineBookingReschedule(env, bookingId, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal, bookingItemId = null) {
   try {
     const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
     if (!booking || !booking.line_user_id) return null;
 
-    const item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
+    let item;
+    if (bookingItemId) {
+      item = await env.DB.prepare('SELECT * FROM booking_items WHERE id = ? AND booking_id = ?').bind(bookingItemId, bookingId).first();
+    } else {
+      item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
+    }
     const room = item?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first() : null;
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
@@ -4388,7 +4396,7 @@ export default {
         const parts = pathname.split('/');
         const bookingId = parts[3];
         const body = await request.json();
-        const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id, booking_details } = body;
+        const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id, booking_details, booking_item_id } = body;
 
         if (!date || !start_time || !end_time) {
           return new Response(JSON.stringify({ error: 'กรุณาระบุ วันที่, เวลาเริ่มต้น และเวลาสิ้นสุด ให้ครบถ้วน' }), { status: 400, headers: corsHeaders });
@@ -4429,8 +4437,37 @@ export default {
           }
         }
 
-        const currentItem = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
-        if (!currentItem) return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องในการจองนี้' }), { status: 404, headers: corsHeaders });
+        const { results: allItems } = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? ORDER BY id ASC').bind(bookingId).all();
+        if (!allItems || allItems.length === 0) return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องในการจองนี้' }), { status: 404, headers: corsHeaders });
+
+        const primaryItem = allItems[0];
+        let currentItem = null;
+
+        if (allItems.length > 1) {
+          if (!booking_item_id) {
+            return new Response(JSON.stringify({
+              error: 'กรุณาระบุ booking_item_id สำหรับการจองที่มีหลายรายการ',
+              code: 'ERR_BOOKING_ITEM_ID_REQUIRED'
+            }), { status: 400, headers: corsHeaders });
+          }
+          currentItem = allItems.find(it => String(it.id) === String(booking_item_id));
+          if (!currentItem) {
+            return new Response(JSON.stringify({
+              error: 'ไม่พบรายการที่ระบุในข้อมูลการจองนี้',
+              code: 'ERR_ITEM_NOT_FOUND'
+            }), { status: 400, headers: corsHeaders });
+          }
+        } else {
+          if (booking_item_id !== undefined && booking_item_id !== null && String(allItems[0].id) !== String(booking_item_id)) {
+            return new Response(JSON.stringify({
+              error: 'ไม่พบรายการที่ระบุในข้อมูลการจองนี้',
+              code: 'ERR_ITEM_NOT_FOUND'
+            }), { status: 400, headers: corsHeaders });
+          }
+          currentItem = allItems[0];
+        }
+
+        const isPrimaryItem = (primaryItem && currentItem.id === primaryItem.id);
 
         const targetRoomId = room_id || currentItem.room_id;
         const targetRoomObj = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(targetRoomId).first();
@@ -4440,11 +4477,14 @@ export default {
         const newStartISO = `${date}T${cleanStart}`;
         const newEndISO = `${date}T${cleanEnd}`;
 
-        // Overlap check (exclude this booking)
-        const overlapResult = await checkRoomOverlap(env, targetRoomId, newStartISO, newEndISO, bookingId);
+        // Overlap check (excludes ONLY the selected booking item ID)
+        const overlapResult = await checkRoomOverlap(env, targetRoomId, newStartISO, newEndISO, null, currentItem.id);
         if (overlapResult.hasOverlap) {
           const targetRoomName = targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`;
-          return new Response(JSON.stringify({ error: formatOverlapErrorMessage(targetRoomName, overlapResult) }), { status: 400, headers: corsHeaders });
+          return new Response(JSON.stringify({
+            error: formatOverlapErrorMessage(targetRoomName, overlapResult),
+            code: 'ERR_ROOM_OVERLAP'
+          }), { status: 400, headers: corsHeaders });
         }
 
         const oldStart = currentItem.start_time;
@@ -4460,14 +4500,14 @@ export default {
           } else if (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim()) {
             newPinCode = targetRoomObj.pin_code.trim();
           } else {
-            newPinCode = booking.pin_code || await generateUniquePinCode(env);
+            newPinCode = currentItem.pin_code || booking.pin_code || await generateUniquePinCode(env);
           }
         } else {
           // General / Walk-in / Basecamp: Customer Access Code only
           if (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim()) {
             newPinCode = targetRoomObj.pin_code.trim();
           } else {
-            newPinCode = booking.pin_code || await generateUniquePinCode(env);
+            newPinCode = currentItem.pin_code || booking.pin_code || await generateUniquePinCode(env);
           }
         }
 
@@ -4493,8 +4533,8 @@ export default {
         }
 
         // Query other items if multi-item booking
-        const { results: otherItems } = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND id != ?').bind(bookingId, currentItem.id).all();
-        const otherSubtotal = (otherItems || []).reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
+        const otherItems = allItems.filter(it => it.id !== currentItem.id);
+        const otherSubtotal = otherItems.reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
         const fullNewGross = roundMoney(otherSubtotal + itemSubtotal);
 
         let newFin;
@@ -4504,27 +4544,43 @@ export default {
             newSubtotal: fullNewGross
           });
         } catch (fErr) {
-          return new Response(JSON.stringify({ error: fErr.message }), { status: 400, headers: corsHeaders });
+          return new Response(JSON.stringify({
+            error: fErr.message,
+            code: fErr.code || (fErr.message.includes('ต่ำกว่ายอดเงินที่ชำระไปแล้ว') ? 'ERR_RESCHEDULE_BELOW_PAID' : 'ERR_FINANCIAL_CALCULATION')
+          }), { status: 400, headers: corsHeaders });
         }
 
-        const statements = [
-          env.DB.prepare(
-            `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`
-          ).bind(
-            targetRoomId,
-            newStartISO,
-            newEndISO,
-            itemSubtotal,
-            itemPrice,
-            bType,
-            bLayout,
-            newPinCode,
-            currentItem.id
-          ),
-          env.DB.prepare(
-            `UPDATE bookings
+        const updateItemStmt = env.DB.prepare(
+          `UPDATE booking_items
+           SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ?
+           WHERE id = ? AND booking_id = ? AND start_time = ? AND end_time = ? AND room_id = ?
+             AND (SELECT subtotal_amount FROM bookings WHERE id = ?) = ?`
+        ).bind(
+          targetRoomId,
+          newStartISO,
+          newEndISO,
+          itemSubtotal,
+          itemPrice,
+          bType,
+          bLayout,
+          newPinCode,
+          currentItem.id,
+          bookingId,
+          currentItem.start_time,
+          currentItem.end_time,
+          currentItem.room_id,
+          bookingId,
+          booking.subtotal_amount
+        );
+
+        const updateBookingSql = isPrimaryItem
+          ? `UPDATE bookings
              SET pin_code = ?,
-                 subtotal_amount = ?,
+                 subtotal_amount = CASE
+                   WHEN subtotal_amount = ? AND (SELECT start_time FROM booking_items WHERE id = ?) = ?
+                   THEN ?
+                   ELSE json_extract('abort', '$.stale_concurrency')
+                 END,
                  discount_type = ?,
                  discount_value = ?,
                  discount_amount = ?,
@@ -4534,22 +4590,76 @@ export default {
                  payment_status = ?,
                  booking_details = COALESCE(?, booking_details)
              WHERE id = ?`
-          ).bind(
-            newPinCode,
-            newFin.subtotal_amount,
-            newFin.discount_type,
-            newFin.discount_value,
-            newFin.discount_amount,
-            newFin.total_amount,
-            newFin.paid_amount,
-            newFin.balance_amount,
-            newFin.payment_status,
-            updateDetails ? normalizedDetailsValue : null,
-            bookingId
-          )
-        ];
+          : `UPDATE bookings
+             SET subtotal_amount = CASE
+                   WHEN subtotal_amount = ? AND (SELECT start_time FROM booking_items WHERE id = ?) = ?
+                   THEN ?
+                   ELSE json_extract('abort', '$.stale_concurrency')
+                 END,
+                 discount_type = ?,
+                 discount_value = ?,
+                 discount_amount = ?,
+                 total_amount = ?,
+                 paid_amount = ?,
+                 balance_amount = ?,
+                 payment_status = ?,
+                 booking_details = COALESCE(?, booking_details)
+             WHERE id = ?`;
 
-        await env.DB.batch(statements);
+        const updateBookingStmt = isPrimaryItem
+          ? env.DB.prepare(updateBookingSql).bind(
+              newPinCode,
+              booking.subtotal_amount,
+              currentItem.id,
+              newStartISO,
+              newFin.subtotal_amount,
+              newFin.discount_type,
+              newFin.discount_value,
+              newFin.discount_amount,
+              newFin.total_amount,
+              newFin.paid_amount,
+              newFin.balance_amount,
+              newFin.payment_status,
+              updateDetails ? normalizedDetailsValue : null,
+              bookingId
+            )
+          : env.DB.prepare(updateBookingSql).bind(
+              booking.subtotal_amount,
+              currentItem.id,
+              newStartISO,
+              newFin.subtotal_amount,
+              newFin.discount_type,
+              newFin.discount_value,
+              newFin.discount_amount,
+              newFin.total_amount,
+              newFin.paid_amount,
+              newFin.balance_amount,
+              newFin.payment_status,
+              updateDetails ? normalizedDetailsValue : null,
+              bookingId
+            );
+
+        let batchResults;
+        try {
+          batchResults = await env.DB.batch([updateItemStmt, updateBookingStmt]);
+        } catch (bErr) {
+          if (bErr.message && (bErr.message.includes('stale') || bErr.message.includes('malformed JSON'))) {
+            return new Response(JSON.stringify({
+              error: 'ข้อมูลการจองถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชและลองใหม่อีกครั้ง',
+              code: 'ERR_CONCURRENT_MODIFICATION'
+            }), { status: 409, headers: corsHeaders });
+          }
+          throw bErr;
+        }
+
+        const itemChanges = batchResults[0]?.meta?.changes ?? batchResults[0]?.changes ?? 0;
+        const bookingChanges = batchResults[1]?.meta?.changes ?? batchResults[1]?.changes ?? 0;
+        if (itemChanges === 0 || bookingChanges === 0) {
+          return new Response(JSON.stringify({
+            error: 'ข้อมูลการจองถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชและลองใหม่อีกครั้ง',
+            code: 'ERR_CONCURRENT_MODIFICATION'
+          }), { status: 409, headers: corsHeaders });
+        }
 
         const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         const { results: updatedItems } = await env.DB.prepare(`
@@ -4584,7 +4694,7 @@ export default {
         } else if (send_line === false) {
           lineOutcome = { sent: false, reason: 'disabled_by_user' };
         } else {
-          lineData = await sendLineBookingReschedule(env, bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount);
+          lineData = await sendLineBookingReschedule(env, bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount, currentItem.id);
           lineOutcome = { sent: lineData?.success || false, status: lineData?.status };
         }
 
@@ -4593,7 +4703,7 @@ export default {
           message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineOutcome?.sent ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
           line_sent: lineOutcome?.sent || false,
           line_notification: lineOutcome,
-          pin_code: newPinCode,
+          pin_code: updatedBooking?.pin_code || newPinCode,
           booking: updatedBooking
         }), { headers: corsHeaders });
       }
