@@ -166,3 +166,127 @@ test('2. Atomic Reschedule: Updates Date/Time and Booking Details in a Single Tr
     db.close();
   }
 });
+
+test('3. LINE Notification Policy on Reschedule: Only Dispatches when Schedule Actually Changes', () => {
+  // Canonical normalizeToLocalISO matching server.js (line 760) & worker.js (line 610)
+  function normalizeToLocalISO(dateStr, timeStr) {
+    if (!dateStr) return '';
+    if (timeStr) {
+      let cleanTime = String(timeStr).trim();
+      if (cleanTime.length === 5) cleanTime += ':00';
+      const cleanDate = String(dateStr).trim().split('T')[0].split(' ')[0];
+      return `${cleanDate}T${cleanTime}`;
+    }
+    if (typeof dateStr === 'string') {
+      let s = dateStr.trim();
+      if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/.test(s)) {
+        s = s.replace(' ', 'T');
+        if (s.length === 16) s += ':00';
+        return s;
+      }
+      if (s.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(s)) {
+        const d = new Date(s);
+        if (!isNaN(d.getTime())) {
+          const bkkMs = d.getTime() + 7 * 60 * 60 * 1000;
+          const bkk = new Date(bkkMs);
+          const y = bkk.getUTCFullYear();
+          const m = String(bkk.getUTCMonth() + 1).padStart(2, '0');
+          const day = String(bkk.getUTCDate()).padStart(2, '0');
+          const h = String(bkk.getUTCHours()).padStart(2, '0');
+          const min = String(bkk.getUTCMinutes()).padStart(2, '0');
+          const sec = String(bkk.getUTCSeconds()).padStart(2, '0');
+          return `${y}-${m}-${day}T${h}:${min}:${sec}`;
+        }
+      }
+      if (s.includes('T')) {
+        const parts = s.split('T');
+        const timePart = parts[1].split('.')[0];
+        const cleanTime = timePart.length === 5 ? `${timePart}:00` : timePart;
+        return `${parts[0]}T${cleanTime}`;
+      }
+      if (s.includes(' ')) {
+        const parts = s.split(' ');
+        const timePart = parts[1].split('.')[0];
+        const cleanTime = timePart.length === 5 ? `${timePart}:00` : timePart;
+        return `${parts[0]}T${cleanTime}`;
+      }
+    }
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return String(dateStr);
+    const bkkMs = d.getTime() + 7 * 60 * 60 * 1000;
+    const bkk = new Date(bkkMs);
+    const y = bkk.getUTCFullYear();
+    const m = String(bkk.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(bkk.getUTCDate()).padStart(2, '0');
+    const h = String(bkk.getUTCHours()).padStart(2, '0');
+    const min = String(bkk.getUTCMinutes()).padStart(2, '0');
+    const sec = String(bkk.getUTCSeconds()).padStart(2, '0');
+    return `${y}-${m}-${day}T${h}:${min}:${sec}`;
+  }
+
+  // Schedule change detection using canonical Asia/Bangkok normalization
+  function detectScheduleChange(currentItem, targetRoomId, newStartISO, newEndISO) {
+    const normOldStart = normalizeToLocalISO(currentItem.start_time).substring(0, 16);
+    const normNewStart = normalizeToLocalISO(newStartISO).substring(0, 16);
+    const normOldEnd = normalizeToLocalISO(currentItem.end_time).substring(0, 16);
+    const normNewEnd = normalizeToLocalISO(newEndISO).substring(0, 16);
+
+    return (
+      String(currentItem.room_id) !== String(targetRoomId) ||
+      normOldStart !== normNewStart ||
+      normOldEnd !== normNewEnd
+    );
+  }
+
+  // 1. Timestamp Normalization equivalence tests (Asia/Bangkok canonical format)
+  const expectedStartPrefix = '2026-10-15T09:00';
+  const expectedEndPrefix = '2026-10-15T12:00';
+
+  // UTC format (Z)
+  assert.strictEqual(normalizeToLocalISO('2026-10-15T02:00:00.000Z').substring(0, 16), expectedStartPrefix);
+  assert.strictEqual(normalizeToLocalISO('2026-10-15T05:00:00.000Z').substring(0, 16), expectedEndPrefix);
+
+  // +07:00 format
+  assert.strictEqual(normalizeToLocalISO('2026-10-15T09:00:00+07:00').substring(0, 16), expectedStartPrefix);
+  assert.strictEqual(normalizeToLocalISO('2026-10-15T12:00:00+07:00').substring(0, 16), expectedEndPrefix);
+
+  // Local SQLite format (space-separated)
+  assert.strictEqual(normalizeToLocalISO('2026-10-15 09:00:00').substring(0, 16), expectedStartPrefix);
+  assert.strictEqual(normalizeToLocalISO('2026-10-15 12:00:00').substring(0, 16), expectedEndPrefix);
+
+  // Standard Local ISO (T-separated)
+  assert.strictEqual(normalizeToLocalISO('2026-10-15T09:00:00').substring(0, 16), expectedStartPrefix);
+  assert.strictEqual(normalizeToLocalISO('2026-10-15T12:00:00').substring(0, 16), expectedEndPrefix);
+
+  // 2. Schedule Change Detection across format representations
+  const baseItemLocal = {
+    room_id: 1,
+    start_time: '2026-10-15 09:00:00',
+    end_time: '2026-10-15 12:00:00'
+  };
+  const baseItemUTC = {
+    room_id: 1,
+    start_time: '2026-10-15T02:00:00.000Z',
+    end_time: '2026-10-15T05:00:00.000Z'
+  };
+  const baseItemT = {
+    room_id: 1,
+    start_time: '2026-10-15T09:00:00',
+    end_time: '2026-10-15T12:00:00'
+  };
+
+  // Resubmit identical schedule with different representation -> scheduleChanged MUST be false
+  assert.strictEqual(detectScheduleChange(baseItemLocal, 1, '2026-10-15T09:00:00', '2026-10-15T12:00:00'), false);
+  assert.strictEqual(detectScheduleChange(baseItemUTC, 1, '2026-10-15T09:00:00', '2026-10-15T12:00:00'), false);
+  assert.strictEqual(detectScheduleChange(baseItemT, 1, '2026-10-15 09:00:00', '2026-10-15 12:00:00'), false);
+
+  // 3. Genuine Schedule Changes -> scheduleChanged MUST be true
+  // Room changed
+  assert.strictEqual(detectScheduleChange(baseItemT, 2, '2026-10-15T09:00:00', '2026-10-15T12:00:00'), true);
+  // Date changed
+  assert.strictEqual(detectScheduleChange(baseItemT, 1, '2026-10-16T09:00:00', '2026-10-16T12:00:00'), true);
+  // Start time changed
+  assert.strictEqual(detectScheduleChange(baseItemT, 1, '2026-10-15T10:00:00', '2026-10-15T12:00:00'), true);
+  // End time changed
+  assert.strictEqual(detectScheduleChange(baseItemT, 1, '2026-10-15T09:00:00', '2026-10-15T13:00:00'), true);
+});

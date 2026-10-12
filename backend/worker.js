@@ -3837,24 +3837,12 @@ export default {
           updatedBooking.items = updatedItems || [];
         }
 
-        // LINE Notification handling
-        const customerIdentityChanged = changedFields.includes('customer_name') || changedFields.includes('contact');
-        const wantLine = send_line !== false && send_line_notification !== false;
-        let lineOutcome = { sent: false };
-
-        if (!existingBooking.line_user_id) {
-          lineOutcome = { sent: false, reason: 'no_line_recipient' };
-        } else if (!customerIdentityChanged) {
-          lineOutcome = { sent: false, reason: 'no_customer_identity_change' };
-        } else if (!wantLine) {
-          lineOutcome = { sent: false, reason: 'disabled_by_user' };
-        } else {
-          lineOutcome = await sendLineBookingCustomerInfoUpdate(env, existingBooking, finalCustomerName, finalContact);
-        }
+        // LINE Notification policy: Edits to customer information MUST NOT send LINE OA
+        const lineOutcome = { sent: false, reason: 'policy_disabled' };
 
         return new Response(JSON.stringify({
           success: true,
-          message: 'อัปเดตข้อมูลลูกค้าเรียบร้อยแล้ว' + (lineOutcome?.sent ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
+          message: 'อัปเดตข้อมูลลูกค้าเรียบร้อยแล้ว',
           changed: true,
           changed_fields: changedFields,
           line_notification: lineOutcome,
@@ -4347,15 +4335,36 @@ export default {
           updatedBooking.items = updatedItems || [];
         }
 
+        const normOldStart = normalizeToLocalISO(oldStart).substring(0, 16);
+        const normNewStart = normalizeToLocalISO(newStartISO).substring(0, 16);
+        const normOldEnd = normalizeToLocalISO(oldEnd).substring(0, 16);
+        const normNewEnd = normalizeToLocalISO(newEndISO).substring(0, 16);
+
+        const scheduleChanged = (
+          String(currentItem.room_id) !== String(targetRoomId) ||
+          normOldStart !== normNewStart ||
+          normOldEnd !== normNewEnd
+        );
+
+        let lineOutcome = { sent: false };
         let lineData = null;
-        if (send_line !== false && booking.line_user_id) {
+
+        if (!scheduleChanged) {
+          lineOutcome = { sent: false, reason: 'no_schedule_change' };
+        } else if (!booking.line_user_id) {
+          lineOutcome = { sent: false, reason: 'no_line_recipient' };
+        } else if (send_line === false) {
+          lineOutcome = { sent: false, reason: 'disabled_by_user' };
+        } else {
           lineData = await sendLineBookingReschedule(env, bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount);
+          lineOutcome = { sent: lineData?.success || false, status: lineData?.status };
         }
 
         return new Response(JSON.stringify({
           success: true,
-          message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
-          line_sent: lineData?.success || false,
+          message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineOutcome?.sent ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
+          line_sent: lineOutcome?.sent || false,
+          line_notification: lineOutcome,
           pin_code: newPinCode,
           booking: updatedBooking
         }), { headers: corsHeaders });

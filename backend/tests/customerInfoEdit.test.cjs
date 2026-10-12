@@ -355,18 +355,19 @@ test('BWORK-POS PHASE EDIT-2: Safe Customer Information Editing Test Suite', asy
     assert.strictEqual(res.body.conflict, true);
   });
 
-  // 9. LINE notification handling (mocked and no-line cases)
-  await t.test('9. LINE notification handling verifies delivery state and no-line-user fallback', async () => {
-    // 9a: Booking with LINE recipient
+  // 9. LINE notification policy enforcement (Edits to customer information MUST NOT send LINE OA)
+  await t.test('9. LINE notification policy: customer info edits do NOT send LINE OA even when send_line: true', async () => {
+    // 9a: Booking with LINE recipient and send_line: true
     const { req: r1, res: s1 } = mockReqRes(
       { id: testBookingId },
       { customer_name: 'คุณสมชาย ยืนยันไลน์', send_line: true }
     );
     await handleUpdateCustomerInfo(r1, s1);
     assert.strictEqual(s1.statusCode, 200);
-    assert.strictEqual(s1.body.line_notification.sent, true, 'Test mode returns mocked line notification sent: true');
+    assert.strictEqual(s1.body.line_notification.sent, false, 'Policy strictly disables LINE notification for customer info edits');
+    assert.strictEqual(s1.body.line_notification.reason, 'policy_disabled');
 
-    // 9b: Booking without LINE recipient
+    // 9b: Booking without LINE recipient and send_line: true
     const { req: r2, res: s2 } = mockReqRes(
       { id: multiRoomBookingId },
       { customer_name: 'บริษัท ไม่มีไลน์ จำกัด', send_line: true }
@@ -374,7 +375,7 @@ test('BWORK-POS PHASE EDIT-2: Safe Customer Information Editing Test Suite', asy
     await handleUpdateCustomerInfo(r2, s2);
     assert.strictEqual(s2.statusCode, 200);
     assert.strictEqual(s2.body.line_notification.sent, false);
-    assert.strictEqual(s2.body.line_notification.reason, 'no_line_recipient');
+    assert.strictEqual(s2.body.line_notification.reason, 'policy_disabled');
   });
 
   // 10. Duplicate request and retry safety

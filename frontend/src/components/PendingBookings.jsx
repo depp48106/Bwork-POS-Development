@@ -233,6 +233,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   // Pre-save Review Diff Modal state
   const [showCustomerInfoDiffModal, setShowCustomerInfoDiffModal] = useState(false);
 
+  // Unified Booking Editor (แก้ไขการจอง) state
+  const [showUnifiedEditModal, setShowUnifiedEditModal] = useState(false);
+  const [unifiedEditTarget, setUnifiedEditTarget] = useState(null);
+  const [unifiedActiveTab, setUnifiedActiveTab] = useState('customer'); // 'customer' | 'schedule' | 'details'
+  const [returnToDetailAfterUnified, setReturnToDetailAfterUnified] = useState(false);
+
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 15;
@@ -1090,14 +1096,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           setSelectedBooking(freshBooking);
         }
         setShowEditDetailsModal(false);
+        setShowUnifiedEditModal(false);
         setEditDetailsTarget(null);
         setEditDetailsText('');
-        if (returnToDetailAfterEditDetails) {
+        if (returnToDetailAfterEditDetails || returnToDetailAfterUnified) {
           if (freshBooking) {
             setSelectedBooking(freshBooking);
           }
           setShowDetailModal(true);
           setReturnToDetailAfterEditDetails(false);
+          setReturnToDetailAfterUnified(false);
         }
         await sysAlert('บันทึกรายละเอียดเพิ่มเติมเรียบร้อยแล้ว');
         fetchBookings(true, false, true);
@@ -1252,14 +1260,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
         setShowCustomerInfoDiffModal(false);
         setShowCustomerInfoModal(false);
+        setShowUnifiedEditModal(false);
         setCustomerInfoTarget(null);
 
-        if (returnToDetailAfterCustomerInfo) {
+        if (returnToDetailAfterCustomerInfo || returnToDetailAfterUnified) {
           if (freshBooking) {
             setSelectedBooking(freshBooking);
           }
           setShowDetailModal(true);
           setReturnToDetailAfterCustomerInfo(false);
+          setReturnToDetailAfterUnified(false);
         }
 
         const successMsg = data.message || 'บันทึกข้อมูลผู้จองเรียบร้อยแล้ว';
@@ -1273,6 +1283,108 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       if (sysAlert) await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
     } finally {
       setCustomerInfoLoading(false);
+    }
+  };
+
+  // 2.5 Unified Booking Editor (แก้ไขการจอง) Handlers
+  const handleOpenUnifiedEdit = async (booking, initialTab = 'schedule', fromDetail = false) => {
+    if (!booking) return;
+    setReturnToDetailAfterUnified(!!fromDetail);
+    setUnifiedActiveTab(initialTab);
+
+    // Initialize Section B (Customer Info)
+    setReturnToDetailAfterCustomerInfo(!!fromDetail);
+    setCustomerInfoTarget(booking);
+    setCustomerInfoName(booking.customer_name || '');
+    setCustomerInfoContact(booking.contact || '');
+    setCustomerInfoDepartment(booking.department || '');
+    setCustomerInfoDetails(typeof booking.booking_details === 'string' ? booking.booking_details : '');
+    setCustomerInfoSendLine(Boolean(booking.line_user_id));
+    setShowCustomerInfoDiffModal(false);
+
+    // Initialize Section C (Additional Details)
+    setReturnToDetailAfterEditDetails(!!fromDetail);
+    setEditDetailsTarget(booking);
+    setEditDetailsText(typeof booking.booking_details === 'string' ? booking.booking_details : '');
+
+    // Initialize Section B (Schedule)
+    try {
+      let fullBooking = booking;
+      if (!booking.items || booking.items.length === 0) {
+        const res = await fetch(`/api/bookings/${booking.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.booking) fullBooking = data.booking;
+        }
+      }
+      setRescheduleTarget(fullBooking);
+      setUnifiedEditTarget(fullBooking);
+
+      const item = fullBooking.items?.[0] || fullBooking;
+      let initDate = new Date().toISOString().split('T')[0];
+      let initSHour = '09';
+      let initSMin = '00';
+      let initEHour = '10';
+      let initEMin = '00';
+      let bType = item.booking_type || 'hourly';
+      let bLayout = item.layout || 'standard';
+      let dailySlot = '08-17';
+
+      if (item.start_time) {
+        const sStr = String(item.start_time).replace(' ', 'T');
+        if (sStr.includes('T')) {
+          const [d, t] = sStr.split('T');
+          initDate = d;
+          const [h, m] = t.substring(0, 5).split(':');
+          initSHour = h || '09';
+          initSMin = m || '00';
+        }
+      }
+      if (item.end_time) {
+        const eStr = String(item.end_time).replace(' ', 'T');
+        if (eStr.includes('T')) {
+          const [, t] = eStr.split('T');
+          const [h, m] = t.substring(0, 5).split(':');
+          initEHour = h || '10';
+          initEMin = m || '00';
+        }
+      }
+
+      if (bType === 'halfday') {
+        dailySlot = initSHour === '13' ? '13-17' : '08-12';
+      } else if (bType === 'daily') {
+        dailySlot = initSHour === '09' ? '09-18' : '08-17';
+      }
+
+      const initRoomId = item.room_id || fullBooking.room_id || (roomsList[0]?.id ? String(roomsList[0].id) : '');
+      setRescheduleRoomId(String(initRoomId));
+      setRescheduleDate(initDate);
+      setRescheduleStartHour(initSHour);
+      setRescheduleStartMinute(initSMin);
+      setRescheduleEndHour(initEHour);
+      setRescheduleEndMinute(initEMin);
+      setRescheduleBookingType(bType);
+      setRescheduleLayout(bLayout);
+      setRescheduleDailySlot(dailySlot);
+      setRescheduleReason('');
+      setRescheduleSendLine(Boolean(fullBooking.line_user_id));
+      setRescheduleDetails(typeof fullBooking.booking_details === 'string' ? fullBooking.booking_details : (typeof booking.booking_details === 'string' ? booking.booking_details : ''));
+      setReturnToDetailAfterReschedule(!!fromDetail);
+    } catch (err) {
+      console.error('Error initializing schedule in unified editor:', err);
+      setUnifiedEditTarget(booking);
+    }
+
+    setShowUnifiedEditModal(true);
+  };
+
+  const handleCloseUnifiedEditModal = () => {
+    if (customerInfoLoading || rescheduleLoading || editDetailsLoading) return;
+    setShowUnifiedEditModal(false);
+    setUnifiedEditTarget(null);
+    if (returnToDetailAfterUnified) {
+      setShowDetailModal(true);
+      setReturnToDetailAfterUnified(false);
     }
   };
 
@@ -1540,6 +1652,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         }
 
         setShowRescheduleModal(false);
+        setShowUnifiedEditModal(false);
         setRescheduleTarget(null);
         setRescheduleDetails('');
 
@@ -1548,6 +1661,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           setSelectedBooking(freshBooking);
           setShowDetailModal(true);
           setReturnToDetailAfterReschedule(false);
+        }
+        if (returnToDetailAfterUnified) {
+          setSelectedBooking(freshBooking);
+          setShowDetailModal(true);
+          setReturnToDetailAfterUnified(false);
         }
 
         await sysAlert(data.message || 'เปลี่ยนแปลงวันและเวลาการจองสำเร็จแล้ว');
@@ -3208,36 +3326,15 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               การดำเนินการ (#{activeActionMenuBooking.id})
             </div>
 
-            {/* 1. Reschedule (active bookings only) */}
+            {/* Primary Unified Edit: แก้ไขการจอง (active bookings only) */}
             {activeActionMenuBooking.payment_status !== 'cancelled' && (
               <div
-                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenReschedule(b); }}
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenUnifiedEdit(b, 'schedule'); }}
                 className="action-menu-item"
+                style={{ fontWeight: 800, color: 'var(--primary-color)' }}
               >
-                <Edit3 size={14} style={{ color: '#6366f1' }} />
-                <span>แก้ไขวัน/เวลาการจอง</span>
-              </div>
-            )}
-
-            {/* 1.1 Edit Booking Details (active bookings only) */}
-            {activeActionMenuBooking.payment_status !== 'cancelled' && (
-              <div
-                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenEditDetails(b); }}
-                className="action-menu-item"
-              >
-                <FileText size={14} style={{ color: '#0284c7' }} />
-                <span>แก้ไขรายละเอียดเพิ่มเติม</span>
-              </div>
-            )}
-
-            {/* 1.2 Edit Customer Information (active bookings only) */}
-            {activeActionMenuBooking.payment_status !== 'cancelled' && (
-              <div
-                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenCustomerInfoEdit(b); }}
-                className="action-menu-item"
-              >
-                <User size={14} style={{ color: '#10b981' }} />
-                <span>แก้ไขข้อมูลผู้จอง</span>
+                <Edit3 size={14} style={{ color: 'var(--primary-color)' }} />
+                <span>แก้ไขการจอง</span>
               </div>
             )}
 
@@ -3833,7 +3930,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                     type="button"
                                     onClick={() => {
                                       setShowDetailModal(false);
-                                      handleOpenEditDetails(b, true);
+                                      handleOpenUnifiedEdit(b, 'details', true);
                                     }}
                                     style={{
                                       background: 'none',
@@ -4281,49 +4378,20 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     ปิดหน้าต่าง
                   </button>
 
-                  {/* Operational contextual actions */}
+                  {/* Primary Unified Edit: แก้ไขการจอง */}
                   {!isCancelled && (
                     <button
                       type="button"
                       className="pb-detail-btn-secondary"
                       onClick={() => {
                         setShowDetailModal(false);
-                        handleOpenReschedule(b, true);
+                        handleOpenUnifiedEdit(b, 'schedule', true); // Replaces handleOpenReschedule(b, true);
                       }}
-                      aria-label="แก้ไขวันหรือเวลาการจอง"
+                      aria-label="แก้ไขการจอง"
+                      style={{ fontWeight: 800, borderColor: 'var(--primary-color)', color: 'var(--text-main)' }}
                     >
-                      <Edit3 size={14} />
-                      <span>แก้ไขวัน/เวลา</span>
-                    </button>
-                  )}
-
-                  {!isCancelled && (
-                    <button
-                      type="button"
-                      className="pb-detail-btn-secondary"
-                      onClick={() => {
-                        setShowDetailModal(false);
-                        handleOpenEditDetails(b, true);
-                      }}
-                      aria-label="แก้ไขรายละเอียดเพิ่มเติม"
-                    >
-                      <FileText size={14} />
-                      <span>{b.booking_details ? 'แก้ไขรายละเอียด' : '+ เพิ่มรายละเอียด'}</span>
-                    </button>
-                  )}
-
-                  {!isCancelled && (
-                    <button
-                      type="button"
-                      className="pb-detail-btn-secondary"
-                      onClick={() => {
-                        setShowDetailModal(false);
-                        handleOpenCustomerInfoEdit(b, true);
-                      }}
-                      aria-label="แก้ไขข้อมูลผู้จอง"
-                    >
-                      <User size={14} />
-                      <span>แก้ไขข้อมูลผู้จอง</span>
+                      <Edit3 size={14} style={{ color: 'var(--primary-color)' }} />
+                      <span>แก้ไขการจอง</span>
                     </button>
                   )}
 
@@ -5808,6 +5876,984 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       )}
 
       {/* ========================================================= */}
+      {/*  UNIFIED BOOKING EDITOR MODAL (แก้ไขการจอง)                  */}
+      {/*  Section A: ข้อมูลลูกค้า                                       */}
+      {/*  Section B: วัน / เวลา / ห้อง                                */}
+      {/*  Section C: รายละเอียดเพิ่มเติม                               */}
+      {/* ========================================================= */}
+      {showUnifiedEditModal && unifiedEditTarget && (() => {
+        const isMultiItem = Array.isArray(unifiedEditTarget.items) && unifiedEditTarget.items.length > 1;
+
+        // Schedule items info
+        const origRoomId = rescheduleRoomId || unifiedEditTarget.items?.[0]?.room_id || unifiedEditTarget.room_id;
+        const origRoomObj = roomsList.find(r => String(r.id) === String(origRoomId));
+        const origRoomFullName = origRoomObj?.name || unifiedEditTarget.items?.[0]?.room_name || unifiedEditTarget.room_name || (origRoomId ? ('ห้อง ' + origRoomId) : '-');
+
+        const origItem = unifiedEditTarget.items?.[0] || unifiedEditTarget;
+        const origStart = origItem?.start_time ? String(origItem.start_time).replace(' ', 'T').substring(0, 16) : '';
+        const origEnd = origItem?.end_time ? String(origItem.end_time).replace(' ', 'T').substring(0, 16) : '';
+        const curNewStart = `${rescheduleDate}T${rescheduleStartHour}:${rescheduleStartMin}`;
+        const curNewEnd = `${rescheduleDate}T${rescheduleEndHour}:${rescheduleEndMin}`;
+        const isScheduleLogisticsChanged = (
+          String(origItem?.room_id) !== String(rescheduleRoomId) ||
+          origStart !== curNewStart ||
+          origEnd !== curNewEnd
+        );
+        const hasLineRecipient = Boolean(unifiedEditTarget.line_user_id);
+
+        return (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.85)',
+            backdropFilter: 'blur(10px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 14000,
+            padding: '16px'
+          }}>
+            <div className="card" style={{
+              width: '100%',
+              maxWidth: '620px',
+              padding: '24px',
+              borderRadius: '20px',
+              backgroundColor: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+              position: 'relative',
+              maxHeight: '92vh',
+              overflowY: 'auto'
+            }}>
+              {/* Close Button */}
+              <button
+                style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
+                onClick={handleCloseUnifiedEditModal}
+                disabled={customerInfoLoading || rescheduleLoading || editDetailsLoading}
+                aria-label="ปิดหน้าต่าง"
+              >
+                <X size={20} />
+              </button>
+
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: '44px', height: '44px', borderRadius: '12px', backgroundColor: 'rgba(2, 132, 199, 0.15)', color: '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Edit3 size={22} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <span>แก้ไขการจอง</span>
+                    <span style={{ fontSize: '0.78rem', fontWeight: 700, padding: '2px 8px', borderRadius: '6px', backgroundColor: 'rgba(2, 132, 199, 0.12)', color: '#0284c7' }}>
+                      #{unifiedEditTarget.id}
+                    </span>
+                  </h3>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{unifiedEditTarget.customer_name || '-'}</strong> · แหล่งที่มา: <strong style={{ color: 'var(--text-main)' }}>{unifiedEditTarget.booking_source || 'walk-in'}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Segmented Section Navigation Tabs */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                gap: '6px',
+                padding: '4px',
+                borderRadius: '12px',
+                backgroundColor: 'var(--bg-hover)',
+                border: '1px solid var(--border-color)'
+              }}>
+                <button
+                  type="button"
+                  onClick={() => setUnifiedActiveTab('schedule')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '0.82rem',
+                    fontWeight: unifiedActiveTab === 'schedule' ? 800 : 600,
+                    cursor: 'pointer',
+                    backgroundColor: unifiedActiveTab === 'schedule' ? 'var(--primary-color)' : 'transparent',
+                    color: unifiedActiveTab === 'schedule' ? '#ffffff' : 'var(--text-muted)',
+                    boxShadow: unifiedActiveTab === 'schedule' ? '0 2px 6px rgba(0,0,0,0.15)' : 'none',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <Calendar size={15} />
+                  <span>A. วัน / เวลา / ห้อง</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUnifiedActiveTab('customer')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '0.82rem',
+                    fontWeight: unifiedActiveTab === 'customer' ? 800 : 600,
+                    cursor: 'pointer',
+                    backgroundColor: unifiedActiveTab === 'customer' ? 'var(--primary-color)' : 'transparent',
+                    color: unifiedActiveTab === 'customer' ? '#ffffff' : 'var(--text-muted)',
+                    boxShadow: unifiedActiveTab === 'customer' ? '0 2px 6px rgba(0,0,0,0.15)' : 'none',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <User size={15} />
+                  <span>B. ข้อมูลผู้จอง</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUnifiedActiveTab('details')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '0.82rem',
+                    fontWeight: unifiedActiveTab === 'details' ? 800 : 600,
+                    cursor: 'pointer',
+                    backgroundColor: unifiedActiveTab === 'details' ? 'var(--primary-color)' : 'transparent',
+                    color: unifiedActiveTab === 'details' ? '#ffffff' : 'var(--text-muted)',
+                    boxShadow: unifiedActiveTab === 'details' ? '0 2px 6px rgba(0,0,0,0.15)' : 'none',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <FileText size={15} />
+                  <span>C. รายละเอียดเพิ่มเติม</span>
+                </button>
+              </div>
+
+              {/* SECTION B: ข้อมูลผู้จอง (Customer Information) */}
+              {unifiedActiveTab === 'customer' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)'
+                  }}>
+                    💡 แก้ไขข้อมูลติดต่อของผู้จอง การแก้ไขส่วนนี้บันทึกผ่าน API ข้อมูลลูกค้าโดยเฉพาะ และจะไม่เปลี่ยนแปลงวัน/เวลาหรือราคา
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                      ชื่อผู้จอง <span style={{ color: '#ef4444' }}>* (จำเป็น)</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="เช่น คุณสมชาย ใจดี"
+                      value={customerInfoName}
+                      maxLength={100}
+                      onChange={e => setCustomerInfoName(e.target.value)}
+                      style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                    />
+                  </div>
+
+                  {/* Contact Phone & Department Grid (Responsive auto-fit) */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                        เบอร์ติดต่อ
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="เช่น 081-234-5678"
+                        value={customerInfoContact}
+                        maxLength={50}
+                        onChange={e => setCustomerInfoContact(e.target.value)}
+                        style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                        แผนก / วัตถุประสงค์
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="เช่น การตลาด / ประชุมทีม"
+                        value={customerInfoDepartment}
+                        maxLength={100}
+                        onChange={e => setCustomerInfoDepartment(e.target.value)}
+                        style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Pre-save review showing no-LINE notification */}
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <ShieldCheck size={16} style={{ color: '#10b981', flexShrink: 0 }} />
+                    <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
+                  </div>
+
+                  {/* Footer Action Buttons for Tab A */}
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleCloseUnifiedEditModal}
+                      disabled={customerInfoLoading}
+                      style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={handleReviewCustomerInfo}
+                      disabled={customerInfoLoading || !customerInfoDiff.hasChanged || !customerInfoName.trim()}
+                      style={{
+                        padding: '8px 20px',
+                        borderRadius: '10px',
+                        fontSize: '0.85rem',
+                        fontWeight: 700,
+                        backgroundColor: (!customerInfoDiff.hasChanged || !customerInfoName.trim()) ? 'var(--bg-muted, #475569)' : '#10b981',
+                        borderColor: (!customerInfoDiff.hasChanged || !customerInfoName.trim()) ? 'var(--bg-muted, #475569)' : '#10b981',
+                        cursor: (!customerInfoDiff.hasChanged || !customerInfoName.trim()) ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      ตรวจสอบและบันทึกข้อมูลลูกค้า
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* SECTION A: วัน / เวลา / ห้อง (Schedule) */}
+              {unifiedActiveTab === 'schedule' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {isMultiItem ? (
+                    /* Multi-Item Safety Guard */
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{
+                        padding: '14px 16px',
+                        borderRadius: '12px',
+                        backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                        border: '1px solid rgba(245, 158, 11, 0.3)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px'
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#f59e0b', fontWeight: 800, fontSize: '0.88rem' }}>
+                          <AlertTriangle size={18} style={{ flexShrink: 0 }} />
+                          <span>การจองหลายห้อง / หลายวัน (Multi-item Booking — {unifiedEditTarget.items.length} รายการ)</span>
+                        </div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                          เพื่อความถูกต้องของระบบและความปลอดภัยของรหัส PIN ทุกห้อง การแก้ไขวัน/เวลาสำหรับการจองแบบหลายรายการจะรองรับใน Phase ถัดไป (Phase EDIT-4) ขณะนี้ท่านสามารถตรวจสอบข้อมูลกำหนดการด้านล่างได้แบบอ่านอย่างเดียว
+                        </div>
+                        <div style={{ alignSelf: 'flex-start', padding: '2px 8px', borderRadius: '6px', backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#d97706', fontSize: '0.72rem', fontWeight: 700 }}>
+                          🔒 กำหนดการถูกล็อกเพื่อความปลอดภัย
+                        </div>
+                      </div>
+
+                      {/* Read-Only Items List */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                          รายการห้องและช่วงเวลาที่จองไว้:
+                        </div>
+                        {unifiedEditTarget.items.map((item, idx) => (
+                          <div
+                            key={item.id || idx}
+                            style={{
+                              padding: '12px 14px',
+                              borderRadius: '10px',
+                              backgroundColor: 'var(--bg-hover)',
+                              border: '1px solid var(--border-color)',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              flexWrap: 'wrap',
+                              gap: '8px',
+                              fontSize: '0.82rem'
+                            }}
+                          >
+                            <div>
+                              <div style={{ fontWeight: 800, color: 'var(--text-main)' }}>
+                                {item.room_name || `ห้อง #${item.room_id}`}
+                              </div>
+                              <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                                {formatDate(item.start_time)} {formatUsageDate(item.start_time, item.end_time)}
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{ padding: '2px 8px', borderRadius: '6px', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-color)', fontSize: '0.75rem', fontWeight: 600 }}>
+                                {item.layout === 'classroom' ? 'Classroom' : 'Standard'}
+                              </span>
+                              {item.pin_code && (
+                                <span style={{ padding: '2px 8px', borderRadius: '6px', backgroundColor: 'rgba(99, 102, 241, 0.12)', color: '#6366f1', fontSize: '0.75rem', fontWeight: 700 }}>
+                                  PIN: {item.pin_code}
+                                </span>
+                              )}
+                              <span style={{ fontWeight: 800, color: 'var(--text-main)' }}>
+                                ฿{formatMoney(item.subtotal || item.price || 0)}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleCloseUnifiedEditModal}
+                          style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+                        >
+                          ปิดหน้าต่าง
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Single-Item Reschedule Flow */
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      {/* Original Schedule Info */}
+                      <div style={{
+                        padding: '10px 14px',
+                        borderRadius: '10px',
+                        backgroundColor: 'var(--bg-hover)',
+                        border: '1px solid var(--border-color)',
+                        fontSize: '0.8rem',
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                        gap: '6px'
+                      }}>
+                        <div>
+                          <span style={{ color: 'var(--text-muted)' }}>ห้องเดิม:</span>{' '}
+                          <strong style={{ color: 'var(--text-main)' }}>{origRoomFullName}</strong>
+                        </div>
+                        <div>
+                          <span style={{ color: 'var(--text-muted)' }}>วัน/เวลาเดิม:</span>{' '}
+                          <strong style={{ color: 'var(--text-main)' }}>{origTimeFormatted}</strong>
+                        </div>
+                      </div>
+
+                      {/* Controls Row 1: Room & Date */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                        {/* Room Select Dropdown */}
+                        <div style={{ position: 'relative' }}>
+                          <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                            ห้องที่ต้องการเปลี่ยน
+                          </label>
+                          <div
+                            className="form-control"
+                            onClick={() => { setIsReschedRoomOpen(!isReschedRoomOpen); setIsReschedStartOpen(false); setIsReschedEndOpen(false); }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              height: '40px',
+                              borderRadius: '10px',
+                              cursor: 'pointer',
+                              backgroundColor: 'var(--bg-card)',
+                              border: '1px solid var(--border-color)',
+                              padding: '0 12px',
+                              fontWeight: 700,
+                              color: 'var(--text-main)'
+                            }}
+                          >
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {roomsList.find(r => String(r.id) === String(rescheduleRoomId))?.name || 'เลือกห้องประชุม'}
+                            </span>
+                            <ChevronDown size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                          </div>
+                          {isReschedRoomOpen && (
+                            <>
+                              <div onClick={() => setIsReschedRoomOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                              <div className="action-dropdown-menu" style={{
+                                position: 'absolute',
+                                top: 'calc(100% + 4px)',
+                                left: 0,
+                                right: 0,
+                                zIndex: 2000,
+                                maxHeight: '220px',
+                                overflowY: 'auto',
+                                borderRadius: '12px',
+                                padding: '4px'
+                              }}>
+                                {roomsList.map(r => {
+                                  const isSel = String(r.id) === String(rescheduleRoomId);
+                                  return (
+                                    <div
+                                      key={r.id}
+                                      onClick={() => {
+                                        setRescheduleRoomId(String(r.id));
+                                        setIsReschedRoomOpen(false);
+                                      }}
+                                      style={{
+                                        padding: '8px 12px',
+                                        borderRadius: '8px',
+                                        cursor: 'pointer',
+                                        fontSize: '0.85rem',
+                                        color: isSel ? 'var(--primary-color)' : 'var(--text-main)',
+                                        fontWeight: isSel ? 800 : 600,
+                                        backgroundColor: isSel ? 'var(--bg-hover)' : 'transparent',
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        gap: '8px'
+                                      }}
+                                    >
+                                      <span>{r.name}</span>
+                                      <span style={{ fontSize: '0.78rem', color: isSel ? 'var(--primary-color)' : 'var(--text-muted)', fontWeight: 700, flexShrink: 0 }}>
+                                        ฿{Number(r.hourly_rate || 0).toLocaleString()}/ชม.
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        {/* Date Picker */}
+                        <div>
+                          <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                            วันที่ต้องการเปลี่ยน
+                          </label>
+                          <CustomDatePicker
+                            value={rescheduleDate}
+                            onChange={setRescheduleDate}
+                            placeholder="เลือกวันที่"
+                            align="right"
+                            className="form-control"
+                            style={{
+                              height: '40px',
+                              borderRadius: '10px',
+                              fontSize: '0.85rem',
+                              fontWeight: 700,
+                              border: '1px solid var(--border-color)',
+                              background: 'var(--bg-card)',
+                              padding: '0 12px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              cursor: 'pointer',
+                              width: '100%'
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Booking Type Selector */}
+                      <div>
+                        <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                          รูปแบบการจอง
+                        </label>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                          {[
+                            { id: 'hourly', label: 'รายชั่วโมง' },
+                            { id: 'halfday', label: 'รายครึ่งวัน' },
+                            { id: 'daily', label: 'รายวัน' }
+                          ].map(type => {
+                            const isSel = rescheduleBookingType === type.id;
+                            return (
+                              <button
+                                key={type.id}
+                                type="button"
+                                onClick={() => {
+                                  setRescheduleBookingType(type.id);
+                                  if (type.id === 'halfday') setRescheduleDailySlot('08-12');
+                                  if (type.id === 'daily') setRescheduleDailySlot('08-17');
+                                }}
+                                style={{
+                                  padding: '9px 8px',
+                                  borderRadius: '10px',
+                                  fontSize: '0.82rem',
+                                  fontWeight: 800,
+                                  cursor: 'pointer',
+                                  border: isSel ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                  backgroundColor: isSel ? 'var(--primary-color)' : 'var(--bg-hover)',
+                                  color: isSel ? '#ffffff' : 'var(--text-muted)',
+                                  boxShadow: isSel ? '0 2px 8px rgba(37, 99, 235, 0.3)' : 'none',
+                                  transition: 'all 0.15s'
+                                }}
+                              >
+                                {type.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Time Slot Selector */}
+                      {rescheduleBookingType === 'hourly' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                          {/* Start Time */}
+                          <div style={{ position: 'relative' }}>
+                            <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                              เวลาเริ่มต้น
+                            </label>
+                            <div
+                              className="form-control"
+                              onClick={() => { setIsReschedStartOpen(!isReschedStartOpen); setIsReschedEndOpen(false); setIsReschedRoomOpen(false); }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                height: '40px',
+                                borderRadius: '10px',
+                                cursor: 'pointer',
+                                backgroundColor: 'var(--bg-card)',
+                                border: '1px solid var(--border-color)',
+                                padding: '0 12px',
+                                fontWeight: 700,
+                                color: 'var(--text-main)'
+                              }}
+                            >
+                              <span>{rescheduleStartHour}:{rescheduleStartMinute} น.</span>
+                              <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
+                            </div>
+                            {isReschedStartOpen && (
+                              <>
+                                <div onClick={() => setIsReschedStartOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                                <div className="action-dropdown-menu" style={{
+                                  position: 'absolute',
+                                  top: 'calc(100% + 4px)',
+                                  left: 0,
+                                  zIndex: 2000,
+                                  maxHeight: '180px',
+                                  overflowY: 'auto',
+                                  borderRadius: '12px',
+                                  padding: '4px',
+                                  width: '100%'
+                                }}>
+                                  {['08','09','10','11','12','13','14','15','16','17','18'].flatMap(h => ['00','30'].map(m => `${h}:${m}`)).filter(t => t <= '18:00').map(timeStr => {
+                                    const [h, m] = timeStr.split(':');
+                                    const isSel = rescheduleStartHour === h && rescheduleStartMinute === m;
+                                    return (
+                                      <div
+                                        key={timeStr}
+                                        onClick={() => {
+                                          setRescheduleStartHour(h);
+                                          setRescheduleStartMinute(m);
+                                          setIsReschedStartOpen(false);
+                                        }}
+                                        style={{
+                                          padding: '6px 12px',
+                                          borderRadius: '6px',
+                                          cursor: 'pointer',
+                                          fontSize: '0.82rem',
+                                          fontWeight: isSel ? 800 : 500,
+                                          color: isSel ? 'var(--primary-color)' : 'var(--text-main)',
+                                          backgroundColor: isSel ? 'var(--bg-hover)' : 'transparent'
+                                        }}
+                                      >
+                                        {timeStr} น.
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          {/* End Time */}
+                          <div style={{ position: 'relative' }}>
+                            <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                              เวลาสิ้นสุด
+                            </label>
+                            <div
+                              className="form-control"
+                              onClick={() => { setIsReschedEndOpen(!isReschedEndOpen); setIsReschedStartOpen(false); setIsReschedRoomOpen(false); }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                height: '40px',
+                                borderRadius: '10px',
+                                cursor: 'pointer',
+                                backgroundColor: 'var(--bg-card)',
+                                border: '1px solid var(--border-color)',
+                                padding: '0 12px',
+                                fontWeight: 700,
+                                color: 'var(--text-main)'
+                              }}
+                            >
+                              <span>{rescheduleEndHour}:{rescheduleEndMinute} น.</span>
+                              <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
+                            </div>
+                            {isReschedEndOpen && (
+                              <>
+                                <div onClick={() => setIsReschedEndOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                                <div className="action-dropdown-menu" style={{
+                                  position: 'absolute',
+                                  top: 'calc(100% + 4px)',
+                                  left: 0,
+                                  zIndex: 2000,
+                                  maxHeight: '180px',
+                                  overflowY: 'auto',
+                                  borderRadius: '12px',
+                                  padding: '4px',
+                                  width: '100%'
+                                }}>
+                                  {['08','09','10','11','12','13','14','15','16','17','18'].flatMap(h => ['00','30'].map(m => `${h}:${m}`)).filter(t => t <= '18:00').map(timeStr => {
+                                    const [h, m] = timeStr.split(':');
+                                    const isSel = rescheduleEndHour === h && rescheduleEndMinute === m;
+                                    return (
+                                      <div
+                                        key={timeStr}
+                                        onClick={() => {
+                                          setRescheduleEndHour(h);
+                                          setRescheduleEndMinute(m);
+                                          setIsReschedEndOpen(false);
+                                        }}
+                                        style={{
+                                          padding: '6px 12px',
+                                          borderRadius: '6px',
+                                          cursor: 'pointer',
+                                          fontSize: '0.82rem',
+                                          fontWeight: isSel ? 800 : 500,
+                                          color: isSel ? 'var(--primary-color)' : 'var(--text-main)',
+                                          backgroundColor: isSel ? 'var(--bg-hover)' : 'transparent'
+                                        }}
+                                      >
+                                        {timeStr} น.
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {rescheduleBookingType === 'halfday' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          {[
+                            { id: '08-12', label: 'ช่วงเช้า (08:00 - 12:00)' },
+                            { id: '13-17', label: 'ช่วงบ่าย (13:00 - 17:00)' }
+                          ].map(slot => (
+                            <button
+                              key={slot.id}
+                              type="button"
+                              onClick={() => setRescheduleDailySlot(slot.id)}
+                              style={{
+                                padding: '10px 8px',
+                                borderRadius: '10px',
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                border: rescheduleDailySlot === slot.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                backgroundColor: rescheduleDailySlot === slot.id ? 'var(--primary-color)' : 'var(--bg-hover)',
+                                color: rescheduleDailySlot === slot.id ? '#ffffff' : 'var(--text-muted)'
+                              }}
+                            >
+                              {slot.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {rescheduleBookingType === 'daily' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          {[
+                            { id: '08-17', label: 'เต็มวัน (08:00 - 17:00)' },
+                            { id: '09-18', label: 'เต็มวัน (09:00 - 18:00)' }
+                          ].map(slot => (
+                            <button
+                              key={slot.id}
+                              type="button"
+                              onClick={() => setRescheduleDailySlot(slot.id)}
+                              style={{
+                                padding: '10px 8px',
+                                borderRadius: '10px',
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                border: rescheduleDailySlot === slot.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                backgroundColor: rescheduleDailySlot === slot.id ? 'var(--primary-color)' : 'var(--bg-hover)',
+                                color: rescheduleDailySlot === slot.id ? '#ffffff' : 'var(--text-muted)'
+                              }}
+                            >
+                              {slot.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Layout Switcher */}
+                      <div>
+                        <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                          รูปแบบการจัดห้อง
+                        </label>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          {[
+                            { id: 'standard', label: 'Standard (ทั่วไป)' },
+                            { id: 'classroom', label: 'Classroom (โต๊ะสัมมนา)' }
+                          ].map(layout => (
+                            <button
+                              key={layout.id}
+                              type="button"
+                              onClick={() => setRescheduleLayout(layout.id)}
+                              style={{
+                                padding: '8px',
+                                borderRadius: '10px',
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                border: rescheduleLayout === layout.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                backgroundColor: rescheduleLayout === layout.id ? 'var(--primary-color)' : 'var(--bg-hover)',
+                                color: rescheduleLayout === layout.id ? '#ffffff' : 'var(--text-muted)'
+                              }}
+                            >
+                              {layout.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Price Calculation Card */}
+                      <div style={{
+                        padding: '12px 14px',
+                        borderRadius: '12px',
+                        backgroundColor: 'var(--bg-hover)',
+                        border: '1px solid var(--border-color)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px',
+                        fontSize: '0.82rem'
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-muted)' }}>ยอดรวมเดิม:</span>
+                          <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>฿{formatMoney(reschedulePriceCalc.oldTotal)}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-muted)' }}>ยอดรวมใหม่:</span>
+                          <span style={{ fontWeight: 800, color: 'var(--primary-color)', fontSize: '0.95rem' }}>฿{formatMoney(reschedulePriceCalc.newTotal)}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-muted)' }}>ส่วนต่าง:</span>
+                          <span style={{ fontWeight: 800, color: reschedulePriceCalc.diff > 0 ? '#ef4444' : reschedulePriceCalc.diff < 0 ? '#10b981' : 'var(--text-main)' }}>
+                            {reschedulePriceCalc.diff > 0 ? `+฿${formatMoney(reschedulePriceCalc.diff)}` : `฿${formatMoney(reschedulePriceCalc.diff)}`}
+                          </span>
+                        </div>
+                        {reschedulePriceCalc.financialError && (
+                          <div style={{ color: '#ef4444', fontSize: '0.78rem', fontWeight: 600 }}>
+                            ⚠️ {reschedulePriceCalc.financialError}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Conflict / Overlap Alert */}
+                      {rescheduleOverlapInfo.isOverlap && (
+                        <div style={{
+                          padding: '10px 14px',
+                          borderRadius: '10px',
+                          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                          border: '1px solid rgba(239, 68, 68, 0.3)',
+                          color: '#ef4444',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}>
+                          <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                          <span>ห้องนี้มีผู้จองแล้วในช่วงเวลาดังกล่าว กรุณาเลือกช่วงเวลาหรือห้องอื่น</span>
+                        </div>
+                      )}
+
+                      {/* Reschedule Reason */}
+                      <div>
+                        <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                          หมายเหตุการเปลี่ยนวัน/เวลา (บันทึกลงระบบ)
+                        </label>
+                        <input
+                          type="text"
+                          className="form-control"
+                          value={rescheduleReason}
+                          onChange={e => setRescheduleReason(e.target.value)}
+                          placeholder="เช่น ลูกค้าขอเปลี่ยนเวลา / สลับห้อง"
+                          style={{ borderRadius: '10px', fontSize: '0.85rem', height: '38px' }}
+                        />
+                      </div>
+
+                      {/* Pre-save LINE OA notification review */}
+                      <div style={{
+                        padding: '10px 14px',
+                        borderRadius: '10px',
+                        backgroundColor: (isScheduleLogisticsChanged && hasLineRecipient) ? 'rgba(2, 132, 199, 0.08)' : 'var(--bg-hover)',
+                        border: '1px solid ' + ((isScheduleLogisticsChanged && hasLineRecipient) ? 'rgba(2, 132, 199, 0.25)' : 'var(--border-color)'),
+                        fontSize: '0.82rem',
+                        color: (isScheduleLogisticsChanged && hasLineRecipient) ? '#0284c7' : 'var(--text-muted)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                      }}>
+                        {(isScheduleLogisticsChanged && hasLineRecipient) ? (
+                          <>
+                            <Send size={15} style={{ flexShrink: 0 }} />
+                            <span>ส่งแจ้งเตือนเปลี่ยนวัน/เวลาหรือห้องผ่าน LINE OA</span>
+                          </>
+                        ) : (
+                          <>
+                            <ShieldCheck size={15} style={{ flexShrink: 0 }} />
+                            <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Action Bar for Tab B */}
+                      <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '6px' }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleCloseUnifiedEditModal}
+                          disabled={rescheduleLoading}
+                          style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+                        >
+                          ยกเลิก
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={submitRescheduleBooking}
+                          disabled={rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading}
+                          style={{
+                            padding: '8px 20px',
+                            borderRadius: '10px',
+                            fontSize: '0.85rem',
+                            fontWeight: 700,
+                            opacity: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading) ? 0.5 : 1,
+                            cursor: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading) ? 'not-allowed' : 'pointer'
+                          }}
+                        >
+                          {rescheduleLoading ? 'กำลังบันทึก...' : 'บันทึกการเปลี่ยนวัน/เวลา'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB C: รายละเอียดเพิ่มเติม (Additional Details) */}
+              {unifiedActiveTab === 'details' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)'
+                  }}>
+                    📝 รายละเอียดเพิ่มเติมระบุความต้องการพิเศษของลูกค้า เช่น การจัดโต๊ะ อุปกรณ์ หรือหมายเหตุที่ต้องการให้แสดงบนเอกสารใบเสร็จ (ข้อมูลนี้ลูกค้าและพนักงานสามารถมองเห็นได้)
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
+                        รายละเอียดเพิ่มเติม / หมายเหตุการจอง
+                      </label>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 600, color: editDetailsText.length > 950 ? '#ef4444' : 'var(--text-muted)' }}>
+                        {editDetailsText.length}/1000
+                      </span>
+                    </div>
+                    <textarea
+                      rows={5}
+                      maxLength={1000}
+                      placeholder="เช่น ขอโปรเจกเตอร์, จัดโต๊ะรูปตัวยู, น้ำดื่ม..."
+                      value={editDetailsText}
+                      onChange={e => setEditDetailsText(e.target.value)}
+                      style={{
+                        width: '100%',
+                        borderRadius: '12px',
+                        border: '1px solid var(--border-color)',
+                        backgroundColor: 'var(--bg-main)',
+                        padding: '10px 14px',
+                        fontSize: '0.86rem',
+                        color: 'var(--text-main)',
+                        outline: 'none',
+                        resize: 'vertical',
+                        boxSizing: 'border-box',
+                        fontFamily: 'inherit',
+                        lineHeight: 1.5
+                      }}
+                    />
+                  {/* Pre-save review showing no-LINE notification */}
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <ShieldCheck size={16} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
+                    <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
+                  </div>
+                  </div>
+
+                  {/* Action Bar for Tab C */}
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleCloseUnifiedEditModal}
+                      disabled={editDetailsLoading}
+                      style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={handleSaveBookingDetails}
+                      disabled={editDetailsLoading || editDetailsText === (unifiedEditTarget?.booking_details || '')}
+                      style={{
+                        padding: '8px 20px',
+                        borderRadius: '10px',
+                        fontSize: '0.85rem',
+                        fontWeight: 700,
+                        backgroundColor: (editDetailsText === (unifiedEditTarget?.booking_details || '')) ? 'var(--bg-muted, #475569)' : 'var(--primary-color)',
+                        borderColor: (editDetailsText === (unifiedEditTarget?.booking_details || '')) ? 'var(--bg-muted, #475569)' : 'var(--primary-color)',
+                        cursor: (editDetailsText === (unifiedEditTarget?.booking_details || '')) ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      {editDetailsLoading ? 'กำลังบันทึก...' : 'บันทึกรายละเอียดเพิ่มเติม'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ========================================================= */}
       {/*  EDIT BOOKING DETAILS MODAL (แก้ไขรายละเอียดเพิ่มเติม)     */}
       {/* ========================================================= */}
       {showEditDetailsModal && editDetailsTarget && (
@@ -6062,37 +7108,20 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 />
               </div>
 
-              {/* LINE OA Notification Toggle */}
+              {/* LINE OA Notification Policy Notice */}
               <div style={{
-                padding: '12px',
+                padding: '12px 14px',
                 borderRadius: '12px',
-                backgroundColor: customerInfoTarget.line_user_id ? 'rgba(16, 185, 129, 0.08)' : 'rgba(100, 116, 139, 0.08)',
-                border: customerInfoTarget.line_user_id ? '1px solid rgba(16, 185, 129, 0.25)' : '1px solid rgba(100, 116, 139, 0.2)',
+                backgroundColor: 'var(--bg-hover)',
+                border: '1px solid var(--border-color)',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '12px'
+                gap: '8px',
+                fontSize: '0.82rem',
+                color: 'var(--text-muted)'
               }}>
-                <input
-                  type="checkbox"
-                  id="customerInfoSendLineCheck"
-                  checked={customerInfoSendLine && Boolean(customerInfoTarget.line_user_id)}
-                  disabled={!customerInfoTarget.line_user_id || customerInfoLoading}
-                  onChange={e => setCustomerInfoSendLine(e.target.checked)}
-                  style={{ width: '18px', height: '18px', accentColor: '#10b981', cursor: customerInfoTarget.line_user_id ? 'pointer' : 'not-allowed' }}
-                />
-                <label
-                  htmlFor="customerInfoSendLineCheck"
-                  style={{ fontSize: '0.82rem', color: customerInfoTarget.line_user_id ? 'var(--text-main)' : 'var(--text-muted)', cursor: customerInfoTarget.line_user_id ? 'pointer' : 'default', margin: 0, flex: 1 }}
-                >
-                  <div style={{ fontWeight: 700 }}>
-                    ส่งข้อความแจ้งเตือนให้ลูกค้าผ่าน LINE OA
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    {customerInfoTarget.line_user_id
-                      ? 'จะส่งข้อความสั้นยืนยันการอัปเดตข้อมูลผู้จองเมื่อชื่อหรือเบอร์ติดต่อมีการเปลี่ยนแปลง'
-                      : 'ไม่สามารถส่ง LINE ได้ (การจองนี้ไม่ได้จองผ่าน LINE OA)'}
-                  </div>
-                </label>
+                <ShieldCheck size={16} style={{ color: '#10b981', flexShrink: 0 }} />
+                <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
               </div>
             </div>
 
@@ -6211,27 +7240,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               ))}
             </div>
 
-            {/* LINE Notification Summary */}
+            {/* LINE Notification Policy Summary */}
             <div style={{
               padding: '10px 14px',
               borderRadius: '10px',
-              backgroundColor: customerInfoSendLine && customerInfoDiff.hasIdentityChange && customerInfoTarget.line_user_id
-                ? 'rgba(16, 185, 129, 0.1)'
-                : 'rgba(100, 116, 139, 0.1)',
+              backgroundColor: 'var(--bg-muted, rgba(125, 125, 125, 0.08))',
               fontSize: '0.8rem',
               color: 'var(--text-main)',
               display: 'flex',
               alignItems: 'center',
               gap: '8px'
             }}>
-              <Send size={16} style={{ color: customerInfoSendLine && customerInfoDiff.hasIdentityChange && customerInfoTarget.line_user_id ? '#10b981' : 'var(--text-muted)' }} />
-              <span>
-                {customerInfoTarget.line_user_id
-                  ? (customerInfoSendLine && customerInfoDiff.hasIdentityChange
-                      ? 'จะส่งข้อความแจ้งเตือนอัปเดตข้อมูลให้ลูกค้าทาง LINE OA'
-                      : 'ไม่ส่งข้อความ LINE OA')
-                  : 'ไม่มีการส่ง LINE (การจองนี้ไม่ได้เชื่อมต่อกับ LINE OA)'}
-              </span>
+              <ShieldCheck size={16} style={{ color: '#10b981', flexShrink: 0 }} />
+              <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
             </div>
 
             {/* Actions */}

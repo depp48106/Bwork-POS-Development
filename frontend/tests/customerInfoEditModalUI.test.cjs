@@ -7,9 +7,10 @@ const jsxSource = fs.readFileSync(path.join(__dirname, '../src/components/Pendin
 
 test('Customer Information Editing Modal UI & Responsive Safety Contract', async (t) => {
   await t.test('1. Action Menu entry point integration in Table & Details modal', () => {
-    assert.ok(jsxSource.includes('handleOpenCustomerInfoEdit(b)'), 'Dropdown action menu invokes handleOpenCustomerInfoEdit');
-    assert.ok(jsxSource.includes('handleOpenCustomerInfoEdit(b, true)'), 'Details modal invokes handleOpenCustomerInfoEdit with fromDetail = true');
-    assert.ok(jsxSource.includes('แก้ไขข้อมูลผู้จอง'), 'Action label displays "แก้ไขข้อมูลผู้จอง"');
+    assert.ok(jsxSource.includes('handleOpenCustomerInfoEdit'), 'Provides handleOpenCustomerInfoEdit handler');
+    assert.ok(jsxSource.includes('handleOpenUnifiedEdit(b, \'schedule\')'), 'Table menu invokes Unified Editor with schedule');
+    assert.ok(jsxSource.includes('handleOpenUnifiedEdit(b, \'schedule\', true)'), 'Details modal invokes Unified Editor with fromDetail = true');
+    assert.ok(jsxSource.includes('แก้ไขการจอง'), 'Action label displays "แก้ไขการจอง"');
   });
 
   await t.test('2. Mobile (400px) responsiveness and layout wrapping', () => {
@@ -55,18 +56,10 @@ test('Customer Information Editing Modal UI & Responsive Safety Contract', async
     );
   });
 
-  await t.test('7. LINE OA recipient binding and toggle state', () => {
+  await t.test('7. LINE OA policy: customer info edits do NOT send LINE OA and surface clear notice', () => {
     assert.ok(
-      jsxSource.includes('Boolean(booking.line_user_id)'),
-      'LINE checkbox initializes enabled ONLY if booking has a valid line_user_id'
-    );
-    assert.ok(
-      jsxSource.includes('!customerInfoTarget.line_user_id || customerInfoLoading'),
-      'Checkbox is disabled when line_user_id is missing or request is in-flight'
-    );
-    assert.ok(
-      jsxSource.includes('ไม่สามารถส่ง LINE ได้ (การจองนี้ไม่ได้จองผ่าน LINE OA)'),
-      'Surfaces clear notice when booking was created without LINE binding'
+      jsxSource.includes('บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA'),
+      'Surfaces clear notice that customer info edits do not dispatch LINE notifications'
     );
   });
 
