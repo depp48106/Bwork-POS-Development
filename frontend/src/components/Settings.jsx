@@ -36,7 +36,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     payment_bank_account: '',
     payment_bank_account_name: '',
     payment_window_minutes: '15',
-    wifi_ssid: ''
+    wifi_ssid: '@BWORK'
   });
 
   // DB Backup logs & OneDrive Cloud
@@ -1972,7 +1972,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                   type="text"
                   className="form-control"
                   style={{ width: '100%', height: '40px', borderRadius: '10px' }}
-                  placeholder="เช่น BWORK_GUEST"
+                  placeholder="เช่น @BWORK"
                   value={configs.wifi_ssid || ''}
                   onChange={e => setConfigs({ ...configs, wifi_ssid: e.target.value })}
                 />

@@ -2338,8 +2338,8 @@ export default {
           "SELECT * FROM users WHERE LOWER(username) = LOWER(?) AND password_hash = ?"
         ).bind(username, passHash).first();
 
-        // Fallback for default admin
-        if (!user && (username === 'admin' && password === 'admin123')) {
+        // Fallback for default admin (disabled in staging so dedicated Staging Admin password hash is enforced)
+        if (!user && !(env && env.ENVIRONMENT === 'staging') && (username === 'admin' && password === 'admin123')) {
           user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(username) = 'admin'").first();
         }
 
@@ -3734,6 +3734,9 @@ export default {
         if (!pinCode) {
           pinCode = await generateUniquePinCode(env);
           await env.DB.prepare('UPDATE bookings SET pin_code = ? WHERE id = ?').bind(pinCode, bookingId).run();
+          if (bItem) {
+            await env.DB.prepare('UPDATE booking_items SET pin_code = ? WHERE id = ?').bind(pinCode, bItem.id).run();
+          }
           booking.pin_code = pinCode;
         }
 
@@ -4181,6 +4184,19 @@ export default {
                 balance_amount = 0
             WHERE id = ?
           `).bind(paymentMethod, receiptNumber, pinCode, nowIso, bookingId).run();
+
+          if (pinCode) {
+            await env.DB.prepare(`
+              UPDATE booking_items
+              SET pin_code = ?
+              WHERE booking_id = ?
+                AND room_id IS NOT NULL
+                AND id = (
+                  SELECT MIN(bi2.id) FROM booking_items bi2
+                  WHERE bi2.booking_id = ? AND bi2.room_id IS NOT NULL
+                )
+            `).bind(pinCode, bookingId, bookingId).run();
+          }
 
           // Record payment transaction for balance if needed
           const remainingToPay = roundMoney(booking.total_amount - (booking.paid_amount || 0));
@@ -4738,7 +4754,7 @@ export default {
       // ----------------------------------------------------
       // 3.5 CUSTOMER WI-FI CARD DATA ENDPOINT
       // ----------------------------------------------------
-      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/wifi-card') && method === 'GET') {
+      if (pathname.startsWith('/api/bookings/') && (pathname.endsWith('/wifi-card') || pathname.endsWith('/confirmation-card')) && method === 'GET') {
         const secureHeaders = { ...corsHeaders, 'Cache-Control': 'private, no-store' };
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: secureHeaders });
@@ -4765,7 +4781,7 @@ export default {
         }
 
         const booking = await env.DB.prepare(
-          'SELECT id, receipt_number, customer_name, payment_status FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
+          'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
         ).bind(numericId, rawId, rawId, rawId).first();
 
         if (!booking) {
@@ -4777,30 +4793,92 @@ export default {
         }
 
         const ssidRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'wifi_ssid'").first();
-        const sharedSsid = (ssidRow?.value || '').trim() || 'BWORK_GUEST';
+        const rawSsid = (ssidRow?.value || '').trim();
+        const sharedSsid = rawSsid || '@BWORK';
+
+        const sanitizeRoomImageUrl = (rawUrl) => {
+          if (!rawUrl || typeof rawUrl !== 'string') return null;
+          const trimmed = rawUrl.trim();
+          if (!trimmed) return null;
+          if (/^(https?:|\/\/|javascript:|vbscript:|file:)/i.test(trimmed)) return null;
+          if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed;
+          if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(trimmed)) return trimmed;
+          return null;
+        };
+
+        const resolveConfirmationItemDoorPin = ({ item, booking: bkg, primaryRoomId, totalRoomItemsCount }) => {
+          const usesPin = roomUsesDoorPin({
+            id: item.room_id,
+            room_id: item.room_id,
+            name: item.room_name,
+            room_name: item.room_name,
+            pin_code: item.room_pin_code,
+            builtland_pin_code: item.room_builtland_pin_code
+          });
+          if (!usesPin) return { uses_door_pin: false, door_pin: null };
+
+          const currentBooking = bkg || booking;
+          const cleanPinStr = (val) => {
+            if (val === null || val === undefined) return null;
+            const s = String(val).trim();
+            return (s !== '' && s !== '-') ? s : null;
+          };
+
+          const isBuiltland = currentBooking.customer_type === 'builtland'
+            || currentBooking.billing_option === 'internal_free'
+            || currentBooking.payment_status === 'internal_free'
+            || currentBooking.is_internal_free === true;
+
+          const itemPin = cleanPinStr(item.pin_code);
+          const roomPin = cleanPinStr(item.room_pin_code);
+          const builtlandRoomPin = cleanPinStr(item.room_builtland_pin_code);
+          const bookingPin = cleanPinStr(currentBooking.pin_code);
+          const canFallbackToBookingPin = totalRoomItemsCount === 1 || Number(item.room_id) === Number(primaryRoomId);
+
+          const resolvedPin = isBuiltland
+            ? (builtlandRoomPin || roomPin || itemPin || (canFallbackToBookingPin ? bookingPin : null))
+            : (itemPin || (canFallbackToBookingPin ? bookingPin : null) || roomPin);
+
+          return { uses_door_pin: true, door_pin: resolvedPin };
+        };
 
         let items = [];
         try {
           const { results } = await env.DB.prepare(
             `SELECT bi.*,
-                    r.name as room_name, r.wifi_username, r.wifi_password_enc
+                    r.name as room_name,
+                    r.image_url as room_image_url,
+                    r.classroom_image_url as room_classroom_image_url,
+                    r.pin_code as room_pin_code,
+                    r.builtland_pin_code as room_builtland_pin_code,
+                    r.wifi_username,
+                    r.wifi_password_enc
              FROM booking_items bi
              LEFT JOIN rooms r ON bi.room_id = r.id
              WHERE bi.booking_id = ?
-             ORDER BY bi.start_time ASC`
+               AND bi.room_id IS NOT NULL
+               AND COALESCE(bi.checkin_status, '') != 'cancelled'
+             ORDER BY bi.start_time ASC, bi.id ASC`
           ).bind(booking.id).all();
           items = results || [];
         } catch (queryErr) {
           const { results } = await env.DB.prepare(
             `SELECT bi.*,
-                    r.name as room_name
+                    r.name as room_name,
+                    r.image_url as room_image_url,
+                    r.pin_code as room_pin_code,
+                    r.builtland_pin_code as room_builtland_pin_code
              FROM booking_items bi
              LEFT JOIN rooms r ON bi.room_id = r.id
              WHERE bi.booking_id = ?
-             ORDER BY bi.start_time ASC`
+               AND bi.room_id IS NOT NULL
+               AND COALESCE(bi.checkin_status, '') != 'cancelled'
+             ORDER BY bi.start_time ASC, bi.id ASC`
           ).bind(booking.id).all();
           items = results || [];
         }
+
+        const primaryRoomId = items.length > 0 ? items[0].room_id : null;
 
         const roomMap = new Map();
         for (const item of items) {
@@ -4820,41 +4898,119 @@ export default {
             }
           }
 
+          const preferredImage = item.layout === 'classroom'
+            ? (sanitizeRoomImageUrl(item.room_classroom_image_url) || sanitizeRoomImageUrl(item.room_image_url))
+            : (sanitizeRoomImageUrl(item.room_image_url) || sanitizeRoomImageUrl(item.room_classroom_image_url));
+
+          const pinInfo = resolveConfirmationItemDoorPin({
+            item,
+            booking,
+            primaryRoomId,
+            totalRoomItemsCount: items.length
+          });
+
           roomMap.set(item.room_id, {
             room_id: item.room_id,
             room_name: item.room_name || `ห้อง ${item.room_id}`,
+            image_url: preferredImage,
+            uses_door_pin: pinInfo.uses_door_pin,
+            door_pin: pinInfo.door_pin,
             wifi_username: item.wifi_username || null,
             wifi_password: plainWifiPassword,
             is_configured: Boolean(item.wifi_username && plainWifiPassword)
           });
         }
 
+        const extractTime = (str) => {
+          if (!str) return '';
+          if (str.includes('T')) return str.split('T')[1].slice(0, 5);
+          if (str.includes(' ') && str.length >= 16) return str.split(' ')[1].slice(0, 5);
+          return str.slice(0, 5);
+        };
+
         const scheduleList = items.map(item => {
-          const bDate = item.booking_date || (item.start_time ? String(item.start_time).slice(0, 10) : '');
-          const sTime = item.start_time ? (String(item.start_time).includes('T') ? String(item.start_time).slice(11, 16) : item.start_time) : '';
-          const eTime = item.end_time ? (String(item.end_time).includes('T') ? String(item.end_time).slice(11, 16) : item.end_time) : '';
+          const rawStart = item.start_time ? String(item.start_time).trim() : '';
+          const rawEnd = item.end_time ? String(item.end_time).trim() : '';
+          const bDate = item.booking_date || ((rawStart.includes('T') || rawStart.includes(' ')) ? rawStart.slice(0, 10) : '');
+          const sTime = extractTime(rawStart);
+          const eTime = extractTime(rawEnd);
           const slot = item.time_slot || ((sTime && eTime) ? `${sTime} - ${eTime}` : '');
+
+          const roomEntry = roomMap.get(item.room_id) || {};
+          const preferredItemImage = item.layout === 'classroom'
+            ? (sanitizeRoomImageUrl(item.room_classroom_image_url) || sanitizeRoomImageUrl(item.room_image_url))
+            : (sanitizeRoomImageUrl(item.room_image_url) || sanitizeRoomImageUrl(item.room_classroom_image_url));
+
+          const pinInfo = resolveConfirmationItemDoorPin({
+            item,
+            booking,
+            primaryRoomId,
+            totalRoomItemsCount: items.length
+          });
+
           return {
+            booking_item_id: item.id,
+            room_id: item.room_id,
             room_name: item.room_name || `ห้อง ${item.room_id}`,
+            room_image_url: preferredItemImage || roomEntry.image_url || null,
             booking_date: bDate,
             start_time: sTime,
             end_time: eTime,
-            time_slot: slot
+            time_slot: slot,
+            uses_door_pin: pinInfo.uses_door_pin,
+            door_pin: pinInfo.door_pin,
+            wifi_ssid: sharedSsid,
+            wifi_username: roomEntry.wifi_username || null,
+            wifi_password: roomEntry.wifi_password || null,
+            wifi_configured: Boolean(roomEntry.is_configured)
           };
         });
 
+        const distinctRooms = Array.from(roomMap.values());
+        const isMultiRoom = distinctRooms.length > 1;
+        const singleRoomImage = distinctRooms.length === 1 ? (distinctRooms[0].image_url || null) : null;
+        const customerPhone = (booking.contact !== null && booking.contact !== undefined && String(booking.contact).trim() !== '' && String(booking.contact).trim() !== '-')
+          ? String(booking.contact).trim()
+          : null;
+
         const cardPayload = {
+          document_title: 'ใบยืนยันการจองห้องประชุม',
+          document_subtitle: 'Meeting Room Booking Confirmation',
           booking_id: booking.id,
           booking_number: booking.receipt_number || `BK-${String(booking.id).padStart(6, '0')}`,
           customer_name: booking.customer_name || 'ลูกค้า',
-          rooms: Array.from(roomMap.values()),
+          customer_phone: customerPhone,
+          is_multi_room: isMultiRoom,
+          is_multi_item: scheduleList.length > 1,
+          banner_type: isMultiRoom ? 'brand' : (singleRoomImage ? 'room' : 'placeholder'),
+          banner_image_url: isMultiRoom ? '/Bworktower.jpg' : singleRoomImage,
+          rooms: distinctRooms,
           schedules: scheduleList,
+          items: scheduleList,
           wifi: {
             ssid: sharedSsid,
             login_instructions: 'เชื่อมต่อเครือข่าย Wi-Fi และเปิดเว็บเบราว์เซอร์เพื่อเข้าสู่ระบบ MikroTik Hotspot ด้วยชื่อผู้ใช้และรหัสผ่านของห้อง'
           },
           beverage_perk: {
-            message: 'แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลดเครื่องดื่มตามเงื่อนไขของร้าน'
+            heading: 'สิทธิประโยชน์สำหรับผู้ใช้บริการห้องประชุม',
+            message: 'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+            discount_percent: 20,
+            shop_name: 'koo.koo',
+            items: [
+              'Free WiFi',
+              'Free Co-working Space',
+              'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+              'ได้สิทธิจอดรถฟรี ตามการใช้งานห้องประชุม'
+            ]
+          },
+          benefits: {
+            heading: 'สิทธิประโยชน์สำหรับผู้ใช้บริการห้องประชุม',
+            items: [
+              'Free WiFi',
+              'Free Co-working Space',
+              'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+              'ได้สิทธิจอดรถฟรี ตามการใช้งานห้องประชุม'
+            ]
           }
         };
 
@@ -6217,6 +6373,10 @@ export default {
           }
         });
 
+        if (!map.wifi_ssid || !String(map.wifi_ssid).trim()) {
+          map.wifi_ssid = '@BWORK';
+        }
+
         return new Response(JSON.stringify({
           company_name: map.company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)',
           receipt_header: map.receipt_header || 'ใบเสร็จรับเงิน / ใบรับจองบริการ',
@@ -6226,6 +6386,7 @@ export default {
           payment_bank_account: map.payment_bank_account || map.bank_account || '329-1-38429-0',
           payment_bank_account_name: map.payment_bank_account_name || map.bank_account_name || 'บริษัท บิลท์ ฮาร์ท จำกัด',
           payment_deadline_hours: 24,
+          wifi_ssid: '@BWORK',
           ...map
         }), { headers: corsHeaders });
       }

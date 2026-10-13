@@ -123,7 +123,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Initialize database before starting server
-initDatabase().catch(err => {
+const dbInitPromise = initDatabase().catch(err => {
   console.error('Failed to initialize database:', err);
 });
 
@@ -1882,6 +1882,75 @@ app.get('/api/bookings/:id', async (req, res) => {
 // - Plaintext credentials revealed only for authorized active bookings
 // - Strict redaction: NEVER return door PIN, financial details, internal notes, or admin metadata
 // - Automatic LINE notifications are STRICTLY FORBIDDEN
+function sanitizeRoomImageUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  if (/^(https?:|\/\/|javascript:|vbscript:|file:)/i.test(trimmed)) {
+    return null;
+  }
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    return trimmed;
+  }
+  if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(trimmed)) {
+    return trimmed;
+  }
+  return null;
+}
+
+function resolveConfirmationItemDoorPin({ item, booking, primaryRoomId, totalRoomItemsCount }) {
+  const usesPin = roomUsesDoorPin({
+    id: item.room_id,
+    room_id: item.room_id,
+    name: item.room_name,
+    room_name: item.room_name,
+    pin_code: item.room_pin_code,
+    builtland_pin_code: item.room_builtland_pin_code
+  });
+  if (!usesPin) {
+    return { uses_door_pin: false, door_pin: null };
+  }
+
+  const cleanPinStr = (val) => {
+    if (val === null || val === undefined) return null;
+    const s = String(val).trim();
+    return (s !== '' && s !== '-') ? s : null;
+  };
+
+  const isBuiltland = booking.customer_type === 'builtland'
+    || booking.billing_option === 'internal_free'
+    || booking.payment_status === 'internal_free'
+    || booking.is_internal_free === true;
+
+  const itemPin = cleanPinStr(item.pin_code);
+  const roomPin = cleanPinStr(item.room_pin_code);
+  const builtlandRoomPin = cleanPinStr(item.room_builtland_pin_code);
+  const bookingPin = cleanPinStr(booking.pin_code);
+  const canFallbackToBookingPin = totalRoomItemsCount === 1 || Number(item.room_id) === Number(primaryRoomId);
+
+  let resolvedPin = null;
+  if (isBuiltland) {
+    // Canonical Internal Precedence:
+    // 1. Authoritative Room Builtland PIN
+    // 2. Room General PIN (fallback if builtland_pin_code is missing/empty)
+    // 3. Item-level PIN snapshot
+    // 4. Booking-level PIN snapshot (primary item only)
+    resolvedPin = builtlandRoomPin || roomPin || itemPin || (canFallbackToBookingPin ? bookingPin : null);
+  } else {
+    // Canonical General Precedence:
+    // 1. Item-specific PIN snapshot (matching room item)
+    // 2. Booking-level PIN snapshot (for single-room or primary room item)
+    // 3. Room Master General PIN fallback
+    // (NEVER uses builtlandRoomPin)
+    resolvedPin = itemPin || (canFallbackToBookingPin ? bookingPin : null) || roomPin;
+  }
+
+  return {
+    uses_door_pin: true,
+    door_pin: resolvedPin
+  };
+}
+
 async function handleGetBookingWifiCard(req, res) {
   res.setHeader('Cache-Control', 'private, no-store');
   const rawId = req.params.id;
@@ -1895,7 +1964,7 @@ async function handleGetBookingWifiCard(req, res) {
 
   try {
     const booking = await dbQuery.get(
-      'SELECT id, receipt_number, customer_name, payment_status FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
+      'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
       [numericId, rawId, rawId, rawId]
     );
 
@@ -1907,39 +1976,38 @@ async function handleGetBookingWifiCard(req, res) {
       return res.status(400).json({ error: 'รายการจองนี้ถูกยกเลิกแล้ว ไม่สามารถดูข้อมูลบัตร Wi-Fi ได้' });
     }
 
-    // Retrieve shared SSID from settings
+    // Retrieve shared SSID from settings (default to @BWORK if missing or empty; preserve any custom Admin value)
     const ssidRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'wifi_ssid'");
-    const sharedSsid = (ssidRow?.value || '').trim() || 'BWORK_GUEST';
+    const rawSsid = (ssidRow?.value || '').trim();
+    const sharedSsid = rawSsid || '@BWORK';
 
-    // Check if Wi-Fi credential columns exist in rooms table
+    // Check available columns in rooms table
     const tableInfo = await dbQuery.all('PRAGMA table_info(rooms)');
     const colNames = new Set((tableInfo || []).map(c => c.name));
-    const hasWifiCols = colNames.has('wifi_username') && colNames.has('wifi_password_enc');
+    const roomSelectCols = [
+      'r.name as room_name',
+      colNames.has('image_url') ? 'r.image_url as room_image_url' : 'NULL as room_image_url',
+      colNames.has('classroom_image_url') ? 'r.classroom_image_url as room_classroom_image_url' : 'NULL as room_classroom_image_url',
+      colNames.has('pin_code') ? 'r.pin_code as room_pin_code' : 'NULL as room_pin_code',
+      colNames.has('builtland_pin_code') ? 'r.builtland_pin_code as room_builtland_pin_code' : 'NULL as room_builtland_pin_code',
+      colNames.has('wifi_username') ? 'r.wifi_username' : 'NULL as wifi_username',
+      colNames.has('wifi_password_enc') ? 'r.wifi_password_enc' : 'NULL as wifi_password_enc'
+    ].join(', ');
 
-    let items = [];
-    if (hasWifiCols) {
-      items = await dbQuery.all(
-        `SELECT bi.*,
-                r.name as room_name, r.wifi_username, r.wifi_password_enc
-         FROM booking_items bi
-         LEFT JOIN rooms r ON bi.room_id = r.id
-         WHERE bi.booking_id = ?
-         ORDER BY bi.start_time ASC`,
-        [booking.id]
-      );
-    } else {
-      items = await dbQuery.all(
-        `SELECT bi.*,
-                r.name as room_name
-         FROM booking_items bi
-         LEFT JOIN rooms r ON bi.room_id = r.id
-         WHERE bi.booking_id = ?
-         ORDER BY bi.start_time ASC`,
-        [booking.id]
-      );
-    }
+    const items = await dbQuery.all(
+      `SELECT bi.*, ${roomSelectCols}
+       FROM booking_items bi
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE bi.booking_id = ?
+         AND bi.room_id IS NOT NULL
+         AND COALESCE(bi.checkin_status, '') != 'cancelled'
+       ORDER BY bi.start_time ASC, bi.id ASC`,
+      [booking.id]
+    );
 
-    // Group credentials per distinct room
+    const primaryRoomId = items.length > 0 ? items[0].room_id : null;
+
+    // Group credentials & metadata per distinct room
     const roomMap = new Map();
     for (const item of items) {
       if (!item.room_id || roomMap.has(item.room_id)) continue;
@@ -1960,41 +2028,119 @@ async function handleGetBookingWifiCard(req, res) {
         }
       }
 
+      const preferredImage = item.layout === 'classroom'
+        ? (sanitizeRoomImageUrl(item.room_classroom_image_url) || sanitizeRoomImageUrl(item.room_image_url))
+        : (sanitizeRoomImageUrl(item.room_image_url) || sanitizeRoomImageUrl(item.room_classroom_image_url));
+
+      const pinInfo = resolveConfirmationItemDoorPin({
+        item,
+        booking,
+        primaryRoomId,
+        totalRoomItemsCount: items.length
+      });
+
       roomMap.set(item.room_id, {
         room_id: item.room_id,
         room_name: item.room_name || `ห้อง ${item.room_id}`,
+        image_url: preferredImage,
+        uses_door_pin: pinInfo.uses_door_pin,
+        door_pin: pinInfo.door_pin,
         wifi_username: item.wifi_username || null,
         wifi_password: plainWifiPassword,
         is_configured: Boolean(item.wifi_username && plainWifiPassword)
       });
     }
 
+    const extractTime = (str) => {
+      if (!str) return '';
+      if (str.includes('T')) return str.split('T')[1].slice(0, 5);
+      if (str.includes(' ') && str.length >= 16) return str.split(' ')[1].slice(0, 5);
+      return str.slice(0, 5);
+    };
+
     const scheduleList = items.map(item => {
-      const bDate = item.booking_date || (item.start_time ? String(item.start_time).slice(0, 10) : '');
-      const sTime = item.start_time ? (String(item.start_time).includes('T') ? String(item.start_time).slice(11, 16) : item.start_time) : '';
-      const eTime = item.end_time ? (String(item.end_time).includes('T') ? String(item.end_time).slice(11, 16) : item.end_time) : '';
+      const rawStart = item.start_time ? String(item.start_time).trim() : '';
+      const rawEnd = item.end_time ? String(item.end_time).trim() : '';
+      const bDate = item.booking_date || ((rawStart.includes('T') || rawStart.includes(' ')) ? rawStart.slice(0, 10) : '');
+      const sTime = extractTime(rawStart);
+      const eTime = extractTime(rawEnd);
       const slot = item.time_slot || ((sTime && eTime) ? `${sTime} - ${eTime}` : '');
+
+      const roomEntry = roomMap.get(item.room_id) || {};
+      const preferredItemImage = item.layout === 'classroom'
+        ? (sanitizeRoomImageUrl(item.room_classroom_image_url) || sanitizeRoomImageUrl(item.room_image_url))
+        : (sanitizeRoomImageUrl(item.room_image_url) || sanitizeRoomImageUrl(item.room_classroom_image_url));
+
+      const pinInfo = resolveConfirmationItemDoorPin({
+        item,
+        booking,
+        primaryRoomId,
+        totalRoomItemsCount: items.length
+      });
+
       return {
+        booking_item_id: item.id,
+        room_id: item.room_id,
         room_name: item.room_name || `ห้อง ${item.room_id}`,
+        room_image_url: preferredItemImage || roomEntry.image_url || null,
         booking_date: bDate,
         start_time: sTime,
         end_time: eTime,
-        time_slot: slot
+        time_slot: slot,
+        uses_door_pin: pinInfo.uses_door_pin,
+        door_pin: pinInfo.door_pin,
+        wifi_ssid: sharedSsid,
+        wifi_username: roomEntry.wifi_username || null,
+        wifi_password: roomEntry.wifi_password || null,
+        wifi_configured: Boolean(roomEntry.is_configured)
       };
     });
 
+    const distinctRooms = Array.from(roomMap.values());
+    const isMultiRoom = distinctRooms.length > 1;
+    const singleRoomImage = distinctRooms.length === 1 ? (distinctRooms[0].image_url || null) : null;
+    const customerPhone = (booking.contact !== null && booking.contact !== undefined && String(booking.contact).trim() !== '' && String(booking.contact).trim() !== '-')
+      ? String(booking.contact).trim()
+      : null;
+
     const cardPayload = {
+      document_title: 'ใบยืนยันการจองห้องประชุม',
+      document_subtitle: 'Meeting Room Booking Confirmation',
       booking_id: booking.id,
       booking_number: booking.receipt_number || `BK-${String(booking.id).padStart(6, '0')}`,
       customer_name: booking.customer_name || 'ลูกค้า',
-      rooms: Array.from(roomMap.values()),
+      customer_phone: customerPhone,
+      is_multi_room: isMultiRoom,
+      is_multi_item: scheduleList.length > 1,
+      banner_type: isMultiRoom ? 'brand' : (singleRoomImage ? 'room' : 'placeholder'),
+      banner_image_url: isMultiRoom ? '/Bworktower.jpg' : singleRoomImage,
+      rooms: distinctRooms,
       schedules: scheduleList,
+      items: scheduleList,
       wifi: {
         ssid: sharedSsid,
         login_instructions: 'เชื่อมต่อเครือข่าย Wi-Fi และเปิดเว็บเบราว์เซอร์เพื่อเข้าสู่ระบบ MikroTik Hotspot ด้วยชื่อผู้ใช้และรหัสผ่านของห้อง'
       },
       beverage_perk: {
-        message: 'แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลดเครื่องดื่มตามเงื่อนไขของร้าน'
+        heading: 'สิทธิประโยชน์สำหรับผู้ใช้บริการห้องประชุม',
+        message: 'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+        discount_percent: 20,
+        shop_name: 'koo.koo',
+        items: [
+          'Free WiFi',
+          'Free Co-working Space',
+          'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+          'ได้สิทธิจอดรถฟรี ตามการใช้งานห้องประชุม'
+        ]
+      },
+      benefits: {
+        heading: 'สิทธิประโยชน์สำหรับผู้ใช้บริการห้องประชุม',
+        items: [
+          'Free WiFi',
+          'Free Co-working Space',
+          'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+          'ได้สิทธิจอดรถฟรี ตามการใช้งานห้องประชุม'
+        ]
       }
     };
 
@@ -2004,7 +2150,7 @@ async function handleGetBookingWifiCard(req, res) {
   }
 }
 
-app.get('/api/bookings/:id/wifi-card', requireAnyPermission('pos', 'pending', 'manage', 'admin-management'), handleGetBookingWifiCard);
+app.get(['/api/bookings/:id/wifi-card', '/api/bookings/:id/confirmation-card'], requireAnyPermission('pos', 'pending', 'manage', 'admin-management'), handleGetBookingWifiCard);
 
 app.delete('/api/bookings/:id', async (req, res) => {
   const { id } = req.params;
@@ -4093,6 +4239,9 @@ app.get('/api/settings', async (req, res) => {
         }
       }
     });
+    if (!settingsObj.wifi_ssid || !String(settingsObj.wifi_ssid).trim()) {
+      settingsObj.wifi_ssid = '@BWORK';
+    }
     res.json(settingsObj);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5671,19 +5820,35 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
         pinCode = await generateUniquePinCode();
       }
 
-      await commitVerifiedSlip(verifyResult, booking, dbQuery, () => dbQuery.run(
-        `UPDATE bookings
-         SET slip_image_url = ?,
-             payment_status = 'paid',
-             payment_method = 'transfer',
-             receipt_number = ?,
-             pin_code = ?,
-             slip_trans_ref = ?,
-             slip_verified_at = ?,
-             slip_verify_status = 'auto_approved'
-         WHERE id = ? AND total_amount = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')`,
-        [slipUrl, receiptNumber, pinCode, verifyResult.transRef, nowIso, targetBookingId, verifyResult.expectedAmount]
-      ));
+      await commitVerifiedSlip(verifyResult, booking, dbQuery, async () => {
+        const updateRes = await dbQuery.run(
+          `UPDATE bookings
+           SET slip_image_url = ?,
+               payment_status = 'paid',
+               payment_method = 'transfer',
+               receipt_number = ?,
+               pin_code = ?,
+               slip_trans_ref = ?,
+               slip_verified_at = ?,
+               slip_verify_status = 'auto_approved'
+           WHERE id = ? AND total_amount = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')`,
+          [slipUrl, receiptNumber, pinCode, verifyResult.transRef, nowIso, targetBookingId, verifyResult.expectedAmount]
+        );
+        if (pinCode) {
+          await dbQuery.run(
+            `UPDATE booking_items
+             SET pin_code = ?
+             WHERE booking_id = ?
+               AND room_id IS NOT NULL
+               AND id = (
+                 SELECT MIN(bi2.id) FROM booking_items bi2
+                 WHERE bi2.booking_id = ? AND bi2.room_id IS NOT NULL
+               )`,
+            [pinCode, targetBookingId, targetBookingId]
+          );
+        }
+        return updateRes;
+      });
 
       if (!verifyResult.autoApproved) {
         if (fs.existsSync(filePath)) {
@@ -5828,10 +5993,12 @@ app.get('*', (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server is running locally at http://localhost:${PORT}`);
-  console.log(`Open your browser to start using the system.`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server is running locally at http://localhost:${PORT}`);
+    console.log(`Open your browser to start using the system.`);
+  });
+}
 
 
 // Build LINE Door PIN Flex message (Sent by staff when customer arrives at counter)
@@ -6258,7 +6425,10 @@ async function checkAndCancelExpiredBookings() {
 }
 
 // Start background cron worker (Runs every 30 seconds)
-setInterval(checkAndCancelExpiredBookings, 30 * 1000);
+const autoCancelInterval = setInterval(checkAndCancelExpiredBookings, 30 * 1000);
+if (typeof autoCancelInterval.unref === 'function') {
+  autoCancelInterval.unref();
+}
 
 const buildLineBookingConfirmationFlex = buildLineConfirmationFlex;
 const buildLineBookingCancellationFlex = buildLineBookingCancelledFlex;
@@ -6266,6 +6436,10 @@ const buildLineBookingCancellationFlex = buildLineBookingCancelledFlex;
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     app,
+    dbInitPromise,
+    autoCancelInterval,
+    createToken,
+    handleGetBookingWifiCard,
     buildLineConfirmationFlex,
     buildLineBookingConfirmationFlex,
     buildLineDoorPinFlex,

@@ -37,10 +37,13 @@ import {
   Copy,
   Check,
   Wifi,
-  Coffee
+  Coffee,
+  Download,
+  Car,
+  Users
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
-import { printReceipt } from '../utils/printReceiptHelper';
+import { printReceipt, exportConfirmationCardAsJpg } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { API_BASE } from '../apiConfig';
@@ -249,6 +252,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [wifiCardLoading, setWifiCardLoading] = useState(false);
   const [wifiCardOriginModal, setWifiCardOriginModal] = useState(false);
   const [wifiCopiedKey, setWifiCopiedKey] = useState(null);
+  const [failedCardImages, setFailedCardImages] = useState({});
+  const [wifiCardExportingJpg, setWifiCardExportingJpg] = useState(false);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -1171,6 +1176,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     }
     setWifiCardLoading(true);
     setWifiCardData(null);
+    setFailedCardImages({});
     setShowWifiCardModal(true);
 
     try {
@@ -1182,11 +1188,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'ไม่สามารถโหลดข้อมูลบัตร Wi-Fi ได้');
+        throw new Error(data.error || 'ไม่สามารถโหลดข้อมูลใบยืนยันการจองได้');
       }
       setWifiCardData(data);
     } catch (err) {
-      sysAlert(err.message || 'เกิดข้อผิดพลาดในการโหลดบัตร Wi-Fi', 'error');
+      sysAlert(err.message || 'เกิดข้อผิดพลาดในการโหลดใบยืนยันการจอง', 'error');
       setShowWifiCardModal(false);
       if (fromDetail) {
         setShowDetailModal(true);
@@ -1199,6 +1205,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const handleCloseWifiCardModal = () => {
     setShowWifiCardModal(false);
     setWifiCardData(null);
+    setFailedCardImages({});
+    if (typeof document !== 'undefined' && document.body) {
+      document.body.classList.remove('printing-booking-confirmation');
+    }
     if (wifiCardOriginModal) {
       setShowDetailModal(true);
       setWifiCardOriginModal(false);
@@ -1212,6 +1222,51 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     setTimeout(() => {
       setWifiCopiedKey(null);
     }, 2000);
+  };
+
+  const handlePrintConfirmationCard = async () => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const cardEl = document.getElementById('wifi-customer-card');
+    if (cardEl) {
+      const imgs = Array.from(cardEl.querySelectorAll('img'));
+      await Promise.all(
+        imgs.map((img) => {
+          if (img.complete) return Promise.resolve();
+          return new Promise((resolve) => {
+            const timer = setTimeout(resolve, 1500);
+            img.addEventListener('load', () => { clearTimeout(timer); resolve(); }, { once: true });
+            img.addEventListener('error', () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+        })
+      );
+    }
+    document.body.classList.add('printing-booking-confirmation');
+    const cleanup = () => {
+      document.body.classList.remove('printing-booking-confirmation');
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    setTimeout(() => {
+      window.print();
+      setTimeout(cleanup, 800);
+    }, 60);
+  };
+
+  const handleExportConfirmationCardJpg = async () => {
+    if (typeof window === 'undefined' || typeof document === 'undefined' || wifiCardExportingJpg) return;
+    const cardEl = document.getElementById('wifi-customer-card');
+    if (!cardEl) return;
+    setWifiCardExportingJpg(true);
+    try {
+      const bookingRef = wifiCardData?.booking_number || wifiCardData?.booking_id || 'Booking';
+      await exportConfirmationCardAsJpg(cardEl, bookingRef);
+    } catch (err) {
+      if (sysAlert) {
+        await sysAlert(err.message || 'ไม่สามารถบันทึกไฟล์รูปภาพ JPG ได้', 'error');
+      }
+    } finally {
+      setWifiCardExportingJpg(false);
+    }
   };
 
   const customerInfoDiff = useMemo(() => {
@@ -3534,14 +3589,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               </div>
             )}
 
-            {/* 4.1 Customer Wi-Fi Card (บัตร Wi-Fi ลูกค้า) */}
+            {/* 4.1 Meeting Room Booking Confirmation Card (ใบยืนยันการจองห้องประชุม) */}
             {activeActionMenuBooking.payment_status !== 'cancelled' && (
               <div
                 onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenWifiCard(b); }}
                 className="action-menu-item"
               >
-                <Wifi size={14} style={{ color: 'var(--text-muted)' }} />
-                <span>บัตร Wi-Fi ลูกค้า</span>
+                <FileText size={14} style={{ color: 'var(--primary-color)' }} />
+                <span>ใบยืนยันการจอง / Wi-Fi</span>
               </div>
             )}
 
@@ -4618,16 +4673,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     </button>
                   )}
 
-                  {/* Customer Wi-Fi Card */}
+                  {/* Meeting Room Booking Confirmation Card */}
                   {!isCancelled && (
                     <button
                       type="button"
                       className="pb-detail-btn-secondary"
                       onClick={() => handleOpenWifiCard(b, true)}
-                      aria-label="ดูบัตร Wi-Fi ลูกค้า"
+                      aria-label="ดูใบยืนยันการจองห้องประชุม"
                     >
-                      <Wifi size={14} style={{ color: 'var(--primary-color)' }} />
-                      <span>บัตร Wi-Fi ลูกค้า</span>
+                      <FileText size={14} style={{ color: 'var(--primary-color)' }} />
+                      <span>ใบยืนยันการจอง / Wi-Fi</span>
                     </button>
                   )}
 
@@ -8633,362 +8688,1327 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       })()}
 
       {/* ========================================================= */}
-      {/*  ROOM WI-FI CUSTOMER CARD PREVIEW MODAL                   */}
+      {/*  MEETING ROOM BOOKING CONFIRMATION CARD MODAL             */}
       {/* ========================================================= */}
-      {showWifiCardModal && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(15, 23, 42, 0.85)',
-            backdropFilter: 'blur(10px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 14000,
-            padding: '20px'
-          }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) handleCloseWifiCardModal();
-          }}
-        >
+      {showWifiCardModal && (() => {
+        const sharedSsid = wifiCardData?.wifi?.ssid || settings?.wifi_ssid || '@BWORK';
+        const distinctRooms = Array.isArray(wifiCardData?.rooms) ? wifiCardData.rooms : [];
+        const scheduleItems = Array.isArray(wifiCardData?.items) && wifiCardData.items.length > 0
+          ? wifiCardData.items
+          : (Array.isArray(wifiCardData?.schedules) ? wifiCardData.schedules.map((s, idx) => {
+              const matchingRoom = distinctRooms.find(r => r.room_id === s.room_id || r.room_name === s.room_name) || distinctRooms[0] || {};
+              return {
+                ...s,
+                booking_item_id: s.booking_item_id || idx + 1,
+                room_id: s.room_id || matchingRoom.room_id,
+                room_image_url: s.room_image_url || matchingRoom.image_url || null,
+                uses_door_pin: s.uses_door_pin !== undefined ? s.uses_door_pin : (matchingRoom.uses_door_pin !== undefined ? matchingRoom.uses_door_pin : true),
+                door_pin: s.door_pin !== undefined ? s.door_pin : (matchingRoom.door_pin || null),
+                wifi_ssid: s.wifi_ssid || sharedSsid,
+                wifi_username: s.wifi_username !== undefined ? s.wifi_username : (matchingRoom.wifi_username || null),
+                wifi_password: s.wifi_password !== undefined ? s.wifi_password : (matchingRoom.wifi_password || null),
+                wifi_configured: s.wifi_configured !== undefined ? s.wifi_configured : Boolean(matchingRoom.is_configured)
+              };
+            }) : []);
+        const isMultiRoom = Boolean(wifiCardData?.is_multi_room || distinctRooms.length > 1);
+        const isMultiItem = scheduleItems.length > 1;
+        const singleRoomObj = distinctRooms[0] || scheduleItems[0] || {};
+        const singleRoomName = singleRoomObj.room_name || 'ห้องประชุม BWORK';
+        const rawSingleRoomImage = !isMultiRoom
+          ? (wifiCardData?.banner_image_url || singleRoomObj.image_url || singleRoomObj.room_image_url || null)
+          : null;
+        const hasValidSingleRoomImage = Boolean(rawSingleRoomImage && !failedCardImages[rawSingleRoomImage]);
+        const brandBannerUrl = '/Bworktower.jpg';
+        const hasValidBrandBanner = !failedCardImages[brandBannerUrl];
+        // Calculate room image focal position (normalized percentage 0-100, clamped safely, defaulting to 50% 50% Center)
+        const getRoomFocalPosition = (item) => {
+          const px = typeof item?.image_position_x === 'number' && !isNaN(item.image_position_x)
+            ? Math.max(0, Math.min(100, item.image_position_x))
+            : 50;
+          const py = typeof item?.image_position_y === 'number' && !isNaN(item.image_position_y)
+            ? Math.max(0, Math.min(100, item.image_position_y))
+            : 50;
+          return `${px}% ${py}%`;
+        };
+        const singleRoomFocal = getRoomFocalPosition(singleRoomObj);
+        const customerPhone = wifiCardData?.customer_phone && String(wifiCardData.customer_phone).trim() !== '' && String(wifiCardData.customer_phone).trim() !== '-'
+          ? String(wifiCardData.customer_phone).trim()
+          : null;
+        const formatConfirmationDateOnly = (dateStr) => {
+          if (!dateStr) return '-';
+          const clean = String(dateStr).trim().slice(0, 10);
+          const parts = clean.split('-').map(Number);
+          if (parts.length === 3 && !parts.some(isNaN)) {
+            const d = new Date(parts[0], parts[1] - 1, parts[2]);
+            return d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
+          }
+          return clean;
+        };
+
+        return (
           <div
-            className="card"
+            id="booking-confirmation-card-overlay"
             style={{
-              width: '100%',
-              maxWidth: '500px',
-              maxHeight: '90vh',
-              overflowY: 'auto',
-              padding: '24px',
-              borderRadius: '24px',
-              backgroundColor: 'var(--bg-card)',
-              border: '1px solid var(--border-color)',
-              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(15, 23, 42, 0.85)',
+              backdropFilter: 'blur(10px)',
               display: 'flex',
-              flexDirection: 'column',
-              gap: '18px',
-              position: 'relative'
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 14000,
+              padding: '16px'
+            }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) handleCloseWifiCardModal();
             }}
           >
-            {/* Modal Header & Close */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div
-                  style={{
-                    width: '38px',
-                    height: '38px',
-                    borderRadius: '12px',
-                    backgroundColor: 'rgba(2, 132, 199, 0.15)',
-                    color: 'var(--primary-color)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center'
-                  }}
-                >
-                  <Wifi size={20} />
-                </div>
-                <div>
-                  <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
-                    บัตร Wi-Fi & สิทธิพิเศษสำหรับลูกค้า
-                  </h3>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Customer Pass & Wi-Fi Credentials
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={handleCloseWifiCardModal}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--text-muted)',
-                  cursor: 'pointer',
-                  padding: '4px'
-                }}
-                aria-label="ปิดหน้าต่าง"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Loading State */}
-            {wifiCardLoading && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px 20px', gap: '12px' }}>
-                <RefreshCw size={28} className="spin-animation" style={{ color: 'var(--primary-color)' }} />
-                <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontWeight: 600 }}>กำลังเตรียมข้อมูลบัตร Wi-Fi...</span>
-              </div>
-            )}
-
-            {/* Card Content (Screenshot-friendly Pass) */}
-            {!wifiCardLoading && wifiCardData && (
+            <style>{`
+              @media print {
+                @page {
+                  size: A4 portrait;
+                  margin: 10mm;
+                }
+              }
+            `}</style>
+            <div
+              id="booking-confirmation-card-modal"
+              className="card"
+              style={{
+                width: '100%',
+                maxWidth: '640px',
+                maxHeight: '92vh',
+                overflowY: 'auto',
+                padding: '20px',
+                borderRadius: '24px',
+                backgroundColor: 'var(--bg-card)',
+                border: '1px solid var(--border-color)',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.55)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                position: 'relative'
+              }}
+            >
+              {/* Modal Top Toolbar (Hidden in Print) */}
               <div
-                id="wifi-customer-card"
+                className="no-print bwork-conf-modal-toolbar"
                 style={{
-                  backgroundColor: 'var(--bg-main)',
-                  border: '1.5px solid var(--border-color)',
-                  borderRadius: '20px',
-                  padding: '20px',
                   display: 'flex',
-                  flexDirection: 'column',
-                  gap: '16px',
-                  boxShadow: 'inset 0 1px 2px rgba(255, 255, 255, 0.05)'
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '12px',
+                  flexWrap: 'wrap',
+                  flexShrink: 0
                 }}
               >
-                {/* Pass Brand Bar */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <div style={{ fontWeight: 900, fontSize: '1.1rem', letterSpacing: '0.5px', color: 'var(--primary-color)' }}>
-                      BWORK
-                    </div>
-                    <span style={{ fontSize: '0.72rem', backgroundColor: 'rgba(2, 132, 199, 0.12)', color: 'var(--primary-color)', padding: '2px 8px', borderRadius: '999px', fontWeight: 800 }}>
-                      MEETING PASS
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)' }}>
-                    #{wifiCardData.booking_number}
-                  </div>
-                </div>
-
-                {/* Customer & Usage Info */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)' }}>
-                    ผู้ใช้บริการ:
-                  </div>
-                  <div style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                    {wifiCardData.customer_name}
-                  </div>
-                </div>
-
-                {/* Schedules & Rooms */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)' }}>
-                    ห้องและช่วงเวลาการจอง:
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {wifiCardData.schedules?.map((sch, sIdx) => (
-                      <div
-                        key={sIdx}
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          backgroundColor: 'var(--bg-card)',
-                          padding: '8px 12px',
-                          borderRadius: '10px',
-                          border: '1px solid var(--border-color)',
-                          fontSize: '0.82rem'
-                        }}
-                      >
-                        <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>
-                          {sch.room_name}
-                        </span>
-                        <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>
-                          {sch.booking_date ? formatDate(sch.booking_date) : ''} · {sch.time_slot || (sch.start_time && sch.end_time ? `${sch.start_time} - ${sch.end_time} น.` : '')}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Wi-Fi Credentials Section */}
-                <div
-                  style={{
-                    backgroundColor: 'rgba(2, 132, 199, 0.05)',
-                    border: '1.5px solid rgba(2, 132, 199, 0.25)',
-                    borderRadius: '16px',
-                    padding: '14px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '12px'
-                  }}
-                >
-                  {/* SSID */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Wifi size={16} style={{ color: 'var(--primary-color)' }} />
-                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)' }}>
-                        Wi-Fi SSID:
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--primary-color)', letterSpacing: '0.5px' }}>
-                        {wifiCardData.wifi?.ssid || 'BWORK_GUEST'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleCopyWifiText(wifiCardData.wifi?.ssid || 'BWORK_GUEST', 'ssid')}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          cursor: 'pointer',
-                          color: wifiCopiedKey === 'ssid' ? '#10b981' : 'var(--text-muted)',
-                          padding: '2px',
-                          display: 'flex',
-                          alignItems: 'center'
-                        }}
-                        title="คัดลอก SSID"
-                      >
-                        {wifiCopiedKey === 'ssid' ? <Check size={14} /> : <Copy size={14} />}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Credentials per Room */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {wifiCardData.rooms?.map((rm) => (
-                      <div
-                        key={rm.room_id}
-                        style={{
-                          backgroundColor: 'var(--bg-card)',
-                          borderRadius: '12px',
-                          padding: '10px 12px',
-                          border: '1px solid var(--border-color)',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '6px'
-                        }}
-                      >
-                        <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                          {rm.room_name}
-                        </div>
-                        {rm.is_configured ? (
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                            {/* Username */}
-                            <div style={{ backgroundColor: 'var(--bg-main)', padding: '6px 8px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                              <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block' }}>Username</span>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
-                                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', fontFamily: 'monospace' }}>
-                                  {rm.wifi_username}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyWifiText(rm.wifi_username, `user_${rm.room_id}`)}
-                                  style={{
-                                    background: 'none',
-                                    border: 'none',
-                                    cursor: 'pointer',
-                                    color: wifiCopiedKey === `user_${rm.room_id}` ? '#10b981' : 'var(--text-muted)',
-                                    padding: '2px',
-                                    display: 'flex',
-                                    alignItems: 'center'
-                                  }}
-                                  title="คัดลอก Username"
-                                >
-                                  {wifiCopiedKey === `user_${rm.room_id}` ? <Check size={12} /> : <Copy size={12} />}
-                                </button>
-                              </div>
-                            </div>
-                            {/* Password */}
-                            <div style={{ backgroundColor: 'var(--bg-main)', padding: '6px 8px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                              <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block' }}>Password</span>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
-                                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--primary-color)', fontFamily: 'monospace' }}>
-                                  {rm.wifi_password}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyWifiText(rm.wifi_password, `pass_${rm.room_id}`)}
-                                  style={{
-                                    background: 'none',
-                                    border: 'none',
-                                    cursor: 'pointer',
-                                    color: wifiCopiedKey === `pass_${rm.room_id}` ? '#10b981' : 'var(--text-muted)',
-                                    padding: '2px',
-                                    display: 'flex',
-                                    alignItems: 'center'
-                                  }}
-                                  title="คัดลอก Password"
-                                >
-                                  {wifiCopiedKey === `pass_${rm.room_id}` ? <Check size={12} /> : <Copy size={12} />}
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic', padding: '4px 0' }}>
-                            ยังไม่ได้ตั้งค่าบัญชี Wi-Fi สำหรับห้องนี้ (กรุณาติดต่อเจ้าหน้าที่เคาน์เตอร์)
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Hotspot Instructions */}
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                    {wifiCardData.wifi?.login_instructions}
-                  </div>
-                </div>
-
-                {/* Beverage Perk Box (EXACT REQUIRED WORDING) */}
-                <div
-                  style={{
-                    backgroundColor: 'rgba(245, 158, 11, 0.08)',
-                    border: '1.5px dashed rgba(245, 158, 11, 0.4)',
-                    borderRadius: '14px',
-                    padding: '12px 14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px'
-                  }}
-                >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                   <div
                     style={{
-                      width: '32px',
-                      height: '32px',
-                      borderRadius: '8px',
-                      backgroundColor: 'rgba(245, 158, 11, 0.15)',
-                      color: '#d97706',
+                      width: '38px',
+                      height: '38px',
+                      borderRadius: '12px',
+                      backgroundColor: 'rgba(2, 132, 199, 0.15)',
+                      color: 'var(--primary-color)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      fontSize: '1.1rem',
                       flexShrink: 0
                     }}
                   >
-                    <Coffee size={18} />
+                    <FileText size={20} />
                   </div>
                   <div>
-                    <div style={{ fontSize: '0.72rem', fontWeight: 800, color: '#d97706', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                      สิทธิประโยชน์พิเศษ
+                    <h3 style={{ fontSize: '1.08rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                      ใบยืนยันการจองห้องประชุม
+                    </h3>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  {!wifiCardLoading && wifiCardData && (
+                    <>
+                      <button
+                        id="btn-export-jpg-confirmation-card"
+                        type="button"
+                        disabled={wifiCardExportingJpg}
+                        onClick={handleExportConfirmationCardJpg}
+                        style={{
+                          height: '36px',
+                          padding: '0 13px',
+                          borderRadius: '10px',
+                          backgroundColor: '#047857',
+                          color: '#ffffff',
+                          border: 'none',
+                          fontWeight: 700,
+                          fontSize: '0.81rem',
+                          cursor: wifiCardExportingJpg ? 'wait' : 'pointer',
+                          opacity: wifiCardExportingJpg ? 0.75 : 1,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          boxShadow: '0 2px 8px rgba(4, 120, 87, 0.25)'
+                        }}
+                      >
+                        <Download size={15} />
+                        <span>{wifiCardExportingJpg ? 'กำลังบันทึก JPG...' : 'บันทึกเป็น JPG'}</span>
+                      </button>
+                      <button
+                        id="btn-print-confirmation-card"
+                        type="button"
+                        onClick={handlePrintConfirmationCard}
+                        style={{
+                          height: '36px',
+                          padding: '0 13px',
+                          borderRadius: '10px',
+                          backgroundColor: '#0f172a',
+                          color: '#ffffff',
+                          border: 'none',
+                          fontWeight: 700,
+                          fontSize: '0.81rem',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          boxShadow: '0 2px 8px rgba(15, 23, 42, 0.22)'
+                        }}
+                      >
+                        <Printer size={15} />
+                        <span>พิมพ์ / บันทึก PDF</span>
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="bwork-conf-close-btn"
+                    onClick={handleCloseWifiCardModal}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      cursor: 'pointer',
+                      padding: '6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                    aria-label="ปิดหน้าต่าง"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Loading State */}
+              {wifiCardLoading && (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '44px 20px', gap: '12px' }}>
+                  <RefreshCw size={28} className="spin-animation" style={{ color: 'var(--primary-color)' }} />
+                  <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontWeight: 600 }}>กำลังจัดเตรียมใบยืนยันการจองห้องประชุม...</span>
+                </div>
+              )}
+
+              {/* Printable / Viewable Confirmation Card Document */}
+              {!wifiCardLoading && wifiCardData && (
+                <div
+                  id="wifi-customer-card"
+                  style={{
+                    backgroundColor: '#ffffff',
+                    color: '#0f172a',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '16px',
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    flexShrink: 0,
+                    boxShadow: '0 4px 20px -2px rgba(15, 23, 42, 0.06)'
+                  }}
+                >
+                  {/* SECTION A: BWORK Brand Header & Document Title (Two-Row Layout) */}
+                  <div
+                    id="booking-confirmation-header"
+                    className="bwork-conf-avoid-break"
+                    style={{
+                      padding: '16px 22px 10px 22px',
+                      backgroundColor: '#ffffff',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      flexShrink: 0
+                    }}
+                  >
+                    {/* ROW 1: BWORK logo (Left) | ใบยืนยันการจองห้องประชุม (Right) */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '12px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                        {!failedCardImages['/BWORK-LOGO.png'] ? (
+                          <img
+                            src="/BWORK-LOGO.png"
+                            alt="BWORK"
+                            onError={() => setFailedCardImages(prev => ({ ...prev, ['/BWORK-LOGO.png']: true }))}
+                            style={{ height: '32px', width: 'auto', objectFit: 'contain', display: 'block' }}
+                          />
+                        ) : (
+                          <div style={{ fontWeight: 900, fontSize: '1.25rem', letterSpacing: '1px', color: '#0f172a' }}>
+                            BWORK
+                          </div>
+                        )}
+                      </div>
+                      <div
+                        className="confirmation-doc-title"
+                        style={{
+                          fontSize: '1.05rem',
+                          fontWeight: 800,
+                          color: '#0f172a',
+                          lineHeight: 1.25,
+                          textAlign: 'right',
+                          letterSpacing: '-0.2px'
+                        }}
+                      >
+                        ใบยืนยันการจองห้องประชุม
+                      </div>
                     </div>
-                    <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.4, whiteSpace: 'pre-line' }}>
-                      {(wifiCardData.beverage_perk?.message || 'แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลดเครื่องดื่มตามเงื่อนไขของร้าน').replace('แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลดเครื่องดื่ม', 'แสดงบัตรนี้เพื่อยืนยันสิทธิ์ส่วนลด\nเครื่องดื่ม')}
+
+                    {/* ROW 2: เลขที่การจอง #[booking_number] (Left) | ยืนยันแล้ว (Right) */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '10px'
+                      }}
+                    >
+                      <span
+                        className="confirmation-booking-ref"
+                        style={{
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          color: '#64748b',
+                          fontFamily: 'monospace',
+                          letterSpacing: '0.2px'
+                        }}
+                      >
+                        เลขที่การจอง #{wifiCardData.booking_number}
+                      </span>
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          backgroundColor: '#ecfdf5',
+                          color: '#047857',
+                          border: '1px solid #a7f3d0',
+                          padding: '2px 8px',
+                          borderRadius: '999px',
+                          fontSize: '0.7rem',
+                          fontWeight: 700,
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0
+                        }}
+                      >
+                        <CheckCircle2 size={11} />
+                        <span>ยืนยันแล้ว</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* SECTION B: Room / Brand Hero Banner */}
+                  <div
+                    id="booking-confirmation-banner"
+                    data-banner-mode={isMultiRoom ? 'multi-room-brand' : (hasValidSingleRoomImage ? 'single-room-image' : 'single-room-placeholder')}
+                    className="bwork-conf-avoid-break bwork-conf-hero-banner"
+                    style={{
+                      position: 'relative',
+                      width: '100%',
+                      minHeight: '142px',
+                      height: '142px',
+                      flexShrink: 0,
+                      backgroundColor: '#f8fafc',
+                      background: 'linear-gradient(135deg, #ffffff 0%, #f8fafc 40%, #f1f5f9 100%)',
+                      borderBottom: '1px solid #e2e8f0',
+                      overflow: 'hidden',
+                      display: 'flex',
+                      alignItems: 'stretch'
+                    }}
+                  >
+                    {isMultiRoom ? (
+                      /* Multi-room booking -> Neutral BWORK brand banner */
+                      <>
+                        <div
+                          className="bwork-conf-hero-image-wrap"
+                          style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: '54%',
+                            overflow: 'hidden'
+                          }}
+                        >
+                          {hasValidBrandBanner ? (
+                            <img
+                              src={brandBannerUrl}
+                              alt="BWORK Building Banner"
+                              onError={() => setFailedCardImages(prev => ({ ...prev, [brandBannerUrl]: true }))}
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                objectFit: 'cover',
+                                objectPosition: 'center',
+                                display: 'block'
+                              }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 60%, #047857 100%)'
+                              }}
+                            />
+                          )}
+                          <div
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              background: 'linear-gradient(to right, #ffffff 0%, rgba(255, 255, 255, 0.94) 14%, rgba(255, 255, 255, 0.45) 42%, rgba(255, 255, 255, 0) 100%)',
+                              pointerEvents: 'none'
+                            }}
+                          />
+                        </div>
+
+                        <div
+                          className="bwork-conf-hero-info"
+                          style={{
+                            position: 'relative',
+                            zIndex: 2,
+                            width: '56%',
+                            padding: '14px 22px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            gap: '5px'
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: '1.18rem',
+                              fontWeight: 800,
+                              color: '#0f172a',
+                              letterSpacing: '-0.2px',
+                              lineHeight: 1.3
+                            }}
+                          >
+                            BWORK MEETING & CO-WORKING SPACE
+                          </div>
+                          <div
+                            style={{
+                              fontSize: '0.8rem',
+                              color: '#475569',
+                              fontWeight: 600
+                            }}
+                          >
+                            {distinctRooms.map(r => r.room_name).join(' • ')} ({scheduleItems.length} รายการ)
+                          </div>
+                        </div>
+                      </>
+                    ) : hasValidSingleRoomImage ? (
+                      /* Single-room booking -> Actual room image from Room Management */
+                      <>
+                        <div
+                          className="bwork-conf-hero-image-wrap"
+                          style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: '54%',
+                            overflow: 'hidden'
+                          }}
+                        >
+                          <img
+                            src={rawSingleRoomImage}
+                            alt={singleRoomName}
+                            onError={() => setFailedCardImages(prev => ({ ...prev, [rawSingleRoomImage]: true }))}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'cover',
+                              objectPosition: singleRoomFocal,
+                              display: 'block'
+                            }}
+                          />
+                          <div
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              background: 'linear-gradient(to right, #ffffff 0%, rgba(255, 255, 255, 0.94) 14%, rgba(255, 255, 255, 0.45) 42%, rgba(255, 255, 255, 0) 100%)',
+                              pointerEvents: 'none'
+                            }}
+                          />
+                        </div>
+
+                        <div
+                          className="bwork-conf-hero-info"
+                          style={{
+                            position: 'relative',
+                            zIndex: 2,
+                            width: '56%',
+                            padding: '14px 22px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            gap: '5px'
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: '1.25rem',
+                              fontWeight: 800,
+                              color: '#0f172a',
+                              letterSpacing: '-0.2px',
+                              lineHeight: 1.3
+                            }}
+                          >
+                            {singleRoomName}
+                          </div>
+                          {scheduleItems.length === 1 && scheduleItems[0] && (
+                            <div
+                              style={{
+                                fontSize: '0.84rem',
+                                color: '#475569',
+                                fontWeight: 600,
+                                display: 'flex',
+                                alignItems: 'center',
+                                flexWrap: 'wrap',
+                                gap: '5px'
+                              }}
+                            >
+                              <span>{scheduleItems[0].booking_date ? formatConfirmationDateOnly(scheduleItems[0].booking_date) : ''}</span>
+                              {(scheduleItems[0].start_time && scheduleItems[0].end_time) || scheduleItems[0].time_slot ? (
+                                <>
+                                  <span style={{ color: '#94a3b8' }}>•</span>
+                                  <span>
+                                    {scheduleItems[0].start_time && scheduleItems[0].end_time
+                                      ? `เวลา ${scheduleItems[0].start_time} - ${scheduleItems[0].end_time} น.`
+                                      : `เวลา ${scheduleItems[0].time_slot}`}
+                                  </span>
+                                </>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      /* Single-room booking with missing room image -> Neutral BWORK branded placeholder */
+                      <>
+                        <div
+                          className="bwork-conf-hero-image-wrap"
+                          style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: '54%',
+                            background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 60%, #047857 100%)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: '12px'
+                          }}
+                        >
+                          <span
+                            data-no-room-image-label="true"
+                            style={{
+                              backgroundColor: 'rgba(15, 23, 42, 0.7)',
+                              border: '1px solid rgba(255, 255, 255, 0.25)',
+                              color: '#e2e8f0',
+                              fontSize: '0.68rem',
+                              fontWeight: 600,
+                              padding: '3px 10px',
+                              borderRadius: '999px',
+                              textAlign: 'center'
+                            }}
+                          >
+                            ไม่มีรูปภาพห้องประชุมที่ตั้งค่าไว้
+                          </span>
+                          <div
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              background: 'linear-gradient(to right, #ffffff 0%, rgba(255, 255, 255, 0.94) 14%, rgba(255, 255, 255, 0.35) 42%, rgba(255, 255, 255, 0) 100%)',
+                              pointerEvents: 'none'
+                            }}
+                          />
+                        </div>
+
+                        <div
+                          className="bwork-conf-hero-info"
+                          style={{
+                            position: 'relative',
+                            zIndex: 2,
+                            width: '56%',
+                            padding: '14px 22px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            gap: '5px'
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: '1.25rem',
+                              fontWeight: 800,
+                              color: '#0f172a',
+                              letterSpacing: '-0.2px',
+                              lineHeight: 1.3
+                            }}
+                          >
+                            {singleRoomName}
+                          </div>
+                          {scheduleItems.length === 1 && scheduleItems[0] && (
+                            <div
+                              style={{
+                                fontSize: '0.84rem',
+                                color: '#475569',
+                                fontWeight: 600,
+                                display: 'flex',
+                                alignItems: 'center',
+                                flexWrap: 'wrap',
+                                gap: '5px'
+                              }}
+                            >
+                              <span>{scheduleItems[0].booking_date ? formatConfirmationDateOnly(scheduleItems[0].booking_date) : ''}</span>
+                              {(scheduleItems[0].start_time && scheduleItems[0].end_time) || scheduleItems[0].time_slot ? (
+                                <>
+                                  <span style={{ color: '#94a3b8' }}>•</span>
+                                  <span>
+                                    {scheduleItems[0].start_time && scheduleItems[0].end_time
+                                      ? `เวลา ${scheduleItems[0].start_time} - ${scheduleItems[0].end_time} น.`
+                                      : `เวลา ${scheduleItems[0].time_slot}`}
+                                  </span>
+                                </>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Card Body Container */}
+                  <div className="bwork-conf-card-body" style={{ padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {/* SECTION C: Customer Information */}
+                    <div
+                      className="bwork-conf-avoid-break"
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px',
+                        paddingBottom: '12px',
+                        borderBottom: '1px solid #e2e8f0'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.82rem', color: '#64748b', minWidth: '95px', flexShrink: 0 }}>
+                          ชื่อผู้จอง:
+                        </span>
+                        <span
+                          id="confirmation-customer-name"
+                          style={{ fontSize: '0.92rem', fontWeight: 700, color: '#0f172a', wordBreak: 'break-word' }}
+                        >
+                          {wifiCardData.customer_name}
+                        </span>
+                      </div>
+
+                      {customerPhone && (
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '0.82rem', color: '#64748b', minWidth: '95px', flexShrink: 0 }}>
+                            เบอร์โทรศัพท์:
+                          </span>
+                          <span
+                            id="confirmation-customer-phone"
+                            style={{ fontSize: '0.92rem', fontWeight: 700, color: '#0f172a', fontFamily: 'monospace' }}
+                          >
+                            {customerPhone}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* SECTIONS D, E, F: Room Details as Simple Aligned Rows */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      {scheduleItems.map((sch, sIdx) => {
+                        const itemRoomImg = sch.room_image_url && !failedCardImages[sch.room_image_url]
+                          ? sch.room_image_url
+                          : null;
+                        const itemTimeText = (sch.start_time && sch.end_time)
+                          ? `${sch.start_time} - ${sch.end_time} น.`
+                          : (sch.time_slot || '-');
+                        const itemKey = sch.booking_item_id || `${sch.room_id}_${sIdx}`;
+                        const itemSsid = (sch.wifi_ssid || sharedSsid || '').trim();
+
+                        return (
+                          <div
+                            key={itemKey}
+                            data-booking-item-card={sIdx}
+                            className="bwork-conf-avoid-break bwork-conf-room-item-card"
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              paddingBottom: sIdx === scheduleItems.length - 1 ? '0' : '14px',
+                              borderBottom: sIdx === scheduleItems.length - 1 ? 'none' : '1px solid #e2e8f0'
+                            }}
+                          >
+                            {/* Room Title Header */}
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: '12px',
+                                paddingBottom: '8px',
+                                borderBottom: '1px solid #f1f5f9'
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                {isMultiRoom && (
+                                  itemRoomImg ? (
+                                    <img
+                                      src={itemRoomImg}
+                                      alt={sch.room_name}
+                                      onError={() => setFailedCardImages(prev => ({ ...prev, [sch.room_image_url]: true }))}
+                                      style={{
+                                        width: '56px',
+                                        height: '40px',
+                                        borderRadius: '6px',
+                                        objectFit: 'cover',
+                                        border: '1px solid #cbd5e1',
+                                        flexShrink: 0
+                                      }}
+                                    />
+                                  ) : (
+                                    <div
+                                      data-room-placeholder={sch.room_id}
+                                      style={{
+                                        width: '56px',
+                                        height: '40px',
+                                        borderRadius: '6px',
+                                        background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+                                        color: '#e2e8f0',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        textAlign: 'center',
+                                        fontSize: '0.56rem',
+                                        fontWeight: 600,
+                                        padding: '2px',
+                                        flexShrink: 0
+                                      }}
+                                    >
+                                      ไม่มีรูปห้อง
+                                    </div>
+                                  )
+                                )}
+                                <div>
+                                  {isMultiItem && (
+                                    <div
+                                      style={{
+                                        fontSize: '0.66rem',
+                                        fontWeight: 700,
+                                        color: '#64748b',
+                                        marginBottom: '1px'
+                                      }}
+                                    >
+                                      รายการที่ {sIdx + 1}
+                                    </div>
+                                  )}
+                                  <div
+                                    className="confirmation-item-room-name"
+                                    style={{ fontSize: '1.02rem', fontWeight: 800, color: '#0f172a' }}
+                                  >
+                                    {sch.room_name}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Row: วันที่ใช้งาน */}
+                            <div
+                              className="confirmation-detail-row"
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: '110px 1fr',
+                                alignItems: 'center',
+                                padding: '8px 0',
+                                borderBottom: '1px solid #f1f5f9',
+                                gap: '12px'
+                              }}
+                            >
+                              <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                วันที่ใช้งาน
+                              </span>
+                              <span
+                                className="confirmation-item-date"
+                                style={{ fontSize: '0.86rem', fontWeight: 600, color: '#0f172a' }}
+                              >
+                                {sch.booking_date ? formatConfirmationDateOnly(sch.booking_date) : '-'}
+                              </span>
+                            </div>
+
+                            {/* Row: เวลาใช้งาน */}
+                            <div
+                              className="confirmation-detail-row"
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: '110px 1fr',
+                                alignItems: 'center',
+                                padding: '8px 0',
+                                borderBottom: '1px solid #f1f5f9',
+                                gap: '12px'
+                              }}
+                            >
+                              <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                เวลาใช้งาน
+                              </span>
+                              <span
+                                className="confirmation-item-time"
+                                style={{ fontSize: '0.86rem', fontWeight: 600, color: '#0f172a' }}
+                              >
+                                เวลา {itemTimeText}
+                              </span>
+                            </div>
+
+                            {/* Row: รหัสเข้าห้อง (Door PIN) */}
+                            <div
+                              className="confirmation-item-pin-box"
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: '110px 1fr',
+                                alignItems: 'center',
+                                padding: '8px 0',
+                                borderBottom: '1px solid #f1f5f9',
+                                gap: '12px'
+                              }}
+                            >
+                              <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                รหัสเข้าห้อง
+                              </span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                {sch.uses_door_pin === false ? (
+                                  <span
+                                    className="confirmation-item-pin"
+                                    style={{ fontSize: '0.84rem', fontWeight: 600, color: '#334155' }}
+                                  >
+                                    ไม่ต้องใช้รหัสผ่านประตู (เข้าใช้งานได้โดยตรง)
+                                  </span>
+                                ) : sch.door_pin ? (
+                                  <>
+                                    <span
+                                      className="confirmation-item-pin"
+                                      style={{
+                                        fontSize: '1.08rem',
+                                        fontWeight: 900,
+                                        color: '#0f172a',
+                                        fontFamily: 'monospace',
+                                        letterSpacing: '1px'
+                                      }}
+                                    >
+                                      {sch.door_pin}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="no-print"
+                                      onClick={() => handleCopyWifiText(sch.door_pin, `pin_${itemKey}`)}
+                                      style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        padding: '2px 4px',
+                                        cursor: 'pointer',
+                                        color: wifiCopiedKey === `pin_${itemKey}` ? '#047857' : '#94a3b8',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '3px'
+                                      }}
+                                      title="คัดลอกรหัสเข้าห้อง"
+                                    >
+                                      {wifiCopiedKey === `pin_${itemKey}` ? <Check size={13} style={{ color: '#047857' }} /> : <Copy size={13} />}
+                                      {wifiCopiedKey === `pin_${itemKey}` && <span style={{ fontSize: '0.68rem', color: '#047857', fontWeight: 600 }}>คัดลอกแล้ว</span>}
+                                    </button>
+                                  </>
+                                ) : (
+                                  <span
+                                    className="confirmation-item-pin"
+                                    style={{ fontSize: '0.8rem', color: '#64748b', fontStyle: 'italic' }}
+                                  >
+                                    ยังไม่ได้กำหนดรหัสผ่านประตู (กรุณาติดต่อเจ้าหน้าที่เคาน์เตอร์)
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Wi-Fi Credential Rows Group */}
+                            <div className="confirmation-item-wifi-box" style={{ display: 'flex', flexDirection: 'column' }}>
+                              {/* Row: Wi-Fi Name */}
+                              <div
+                                className="confirmation-detail-row"
+                                style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: '110px 1fr',
+                                  alignItems: 'center',
+                                  padding: '8px 0',
+                                  borderBottom: '1px solid #f1f5f9',
+                                  gap: '12px'
+                                }}
+                              >
+                                <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                  Wi-Fi Name
+                                </span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <span
+                                    id={sIdx === 0 ? 'confirmation-wifi-ssid' : undefined}
+                                    className="confirmation-item-wifi-ssid"
+                                    style={{
+                                      fontSize: '0.86rem',
+                                      fontWeight: 700,
+                                      color: '#047857',
+                                      fontFamily: 'monospace'
+                                    }}
+                                  >
+                                    {itemSsid || 'ไม่ได้ระบุ'}
+                                  </span>
+                                  {itemSsid && (
+                                    <button
+                                      type="button"
+                                      className="no-print"
+                                      onClick={() => handleCopyWifiText(itemSsid, `ssid_${itemKey}`)}
+                                      style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        padding: '2px 4px',
+                                        cursor: 'pointer',
+                                        color: wifiCopiedKey === `ssid_${itemKey}` ? '#047857' : '#94a3b8',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '3px'
+                                      }}
+                                      title="คัดลอกชื่อ Wi-Fi"
+                                    >
+                                      {wifiCopiedKey === `ssid_${itemKey}` ? <Check size={13} style={{ color: '#047857' }} /> : <Copy size={13} />}
+                                      {wifiCopiedKey === `ssid_${itemKey}` && <span style={{ fontSize: '0.68rem', color: '#047857', fontWeight: 600 }}>คัดลอกแล้ว</span>}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {sch.wifi_configured && sch.wifi_username && sch.wifi_password ? (
+                                <>
+                                  {/* Row: Username */}
+                                  <div
+                                    className="confirmation-detail-row"
+                                    style={{
+                                      display: 'grid',
+                                      gridTemplateColumns: '110px 1fr',
+                                      alignItems: 'center',
+                                      padding: '8px 0',
+                                      borderBottom: '1px solid #f1f5f9',
+                                      gap: '12px'
+                                    }}
+                                  >
+                                    <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                      Username
+                                    </span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                      <span
+                                        className="confirmation-item-wifi-user"
+                                        style={{
+                                          fontSize: '0.86rem',
+                                          fontWeight: 700,
+                                          color: '#0f172a',
+                                          fontFamily: 'monospace'
+                                        }}
+                                      >
+                                        {sch.wifi_username}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="no-print"
+                                        onClick={() => handleCopyWifiText(sch.wifi_username, `user_${itemKey}`)}
+                                        style={{
+                                          background: 'none',
+                                          border: 'none',
+                                          padding: '2px 4px',
+                                          cursor: 'pointer',
+                                          color: wifiCopiedKey === `user_${itemKey}` ? '#047857' : '#94a3b8',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px'
+                                        }}
+                                        title="คัดลอก Username"
+                                      >
+                                        {wifiCopiedKey === `user_${itemKey}` ? <Check size={13} style={{ color: '#047857' }} /> : <Copy size={13} />}
+                                        {wifiCopiedKey === `user_${itemKey}` && <span style={{ fontSize: '0.68rem', color: '#047857', fontWeight: 600 }}>คัดลอกแล้ว</span>}
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Row: Password */}
+                                  <div
+                                    className="confirmation-detail-row"
+                                    style={{
+                                      display: 'grid',
+                                      gridTemplateColumns: '110px 1fr',
+                                      alignItems: 'center',
+                                      padding: '8px 0',
+                                      borderBottom: '1px solid #f1f5f9',
+                                      gap: '12px'
+                                    }}
+                                  >
+                                    <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                      Password
+                                    </span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                      <span
+                                        className="confirmation-item-wifi-pass"
+                                        style={{
+                                          fontSize: '0.86rem',
+                                          fontWeight: 700,
+                                          color: '#047857',
+                                          fontFamily: 'monospace'
+                                        }}
+                                      >
+                                        {sch.wifi_password}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="no-print"
+                                        onClick={() => handleCopyWifiText(sch.wifi_password, `pass_${itemKey}`)}
+                                        style={{
+                                          background: 'none',
+                                          border: 'none',
+                                          padding: '2px 4px',
+                                          cursor: 'pointer',
+                                          color: wifiCopiedKey === `pass_${itemKey}` ? '#047857' : '#94a3b8',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px'
+                                        }}
+                                        title="คัดลอก Password"
+                                      >
+                                        {wifiCopiedKey === `pass_${itemKey}` ? <Check size={13} style={{ color: '#047857' }} /> : <Copy size={13} />}
+                                        {wifiCopiedKey === `pass_${itemKey}` && <span style={{ fontSize: '0.68rem', color: '#047857', fontWeight: 600 }}>คัดลอกแล้ว</span>}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </>
+                              ) : (
+                                /* Unconfigured Wi-Fi notice */
+                                <div
+                                  style={{
+                                    padding: '8px 0',
+                                    borderBottom: '1px solid #f1f5f9'
+                                  }}
+                                >
+                                  <span
+                                    className="confirmation-item-wifi-unconfigured"
+                                    style={{
+                                      fontSize: '0.8rem',
+                                      color: '#64748b',
+                                      fontStyle: 'italic'
+                                    }}
+                                  >
+                                    ยังไม่ได้ตั้งค่าบัญชี Wi-Fi สำหรับห้องนี้ (กรุณาติดต่อเจ้าหน้าที่เคาน์เตอร์)
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* SECTION G: Benefits Box (Clean, Modern & Elegant) */}
+                    {(() => {
+                      const benefitsHeading = wifiCardData.benefits?.heading || wifiCardData.beverage_perk?.heading || 'สิทธิประโยชน์สำหรับผู้ใช้บริการห้องประชุม';
+                      const rawItems = (wifiCardData.benefits?.items && wifiCardData.benefits.items.length > 0)
+                        ? wifiCardData.benefits.items
+                        : ((wifiCardData.beverage_perk?.items && wifiCardData.beverage_perk.items.length > 0)
+                          ? wifiCardData.beverage_perk.items
+                          : [
+                              'Free WiFi',
+                              'Free Co-working Space',
+                              'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+                              'ได้สิทธิจอดรถฟรี ตามการใช้งานห้องประชุม'
+                            ]);
+
+                      const renderBenefitText = (text) => {
+                        if (text.includes('20%') && (text.includes('koo.koo') || text.includes('kookoocafe') || text.includes('koo'))) {
+                          const parts = [];
+                          let remainder = text;
+
+                          const p20Idx = remainder.indexOf('20%');
+                          if (p20Idx !== -1) {
+                            if (p20Idx > 0) parts.push({ type: 'text', content: remainder.slice(0, p20Idx) });
+                            parts.push({ type: 'highlight', content: '20%' });
+                            remainder = remainder.slice(p20Idx + 3);
+                          }
+
+                          const kooMatch = remainder.match(/koo\.koo|kookoocafe/i);
+                          if (kooMatch) {
+                            const kooIdx = remainder.indexOf(kooMatch[0]);
+                            if (kooIdx > 0) parts.push({ type: 'text', content: remainder.slice(0, kooIdx) });
+                            parts.push({ type: 'kookoo', content: 'koo.koo' });
+                            remainder = remainder.slice(kooIdx + kooMatch[0].length);
+                          }
+
+                          if (remainder) {
+                            parts.push({ type: 'text', content: remainder });
+                          }
+
+                          return (
+                            <span>
+                              {parts.map((p, pIdx) => {
+                                if (p.type === 'highlight') {
+                                  return (
+                                    <span
+                                      key={pIdx}
+                                      className="bwork-conf-perk-highlight"
+                                      style={{
+                                        display: 'inline-block',
+                                        backgroundColor: '#ecfdf5',
+                                        color: '#047857',
+                                        border: '1px solid #a7f3d0',
+                                        borderRadius: '4px',
+                                        padding: '0 4px',
+                                        fontWeight: 700,
+                                        fontSize: '0.74rem',
+                                        margin: '0 2px'
+                                      }}
+                                    >
+                                      20%
+                                    </span>
+                                  );
+                                }
+                                if (p.type === 'kookoo') {
+                                  return (
+                                    <span
+                                      key={pIdx}
+                                      className="bwork-conf-kookoo-tag"
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        backgroundColor: '#ffffff',
+                                        color: '#0f172a',
+                                        border: '1px solid #cbd5e1',
+                                        boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                                        borderRadius: '4px',
+                                        padding: '0 5px',
+                                        fontWeight: 700,
+                                        fontSize: '0.74rem',
+                                        fontFamily: "'Inter', sans-serif",
+                                        letterSpacing: '-0.01em',
+                                        margin: '0 2px'
+                                      }}
+                                    >
+                                      koo.koo
+                                    </span>
+                                  );
+                                }
+                                return <React.Fragment key={pIdx}>{p.content}</React.Fragment>;
+                              })}
+                            </span>
+                          );
+                        }
+                        return <span>{text}</span>;
+                      };
+
+                      const getBenefitIcon = (text) => {
+                        const lower = text.toLowerCase();
+                        if (lower.includes('wifi') || lower.includes('wi-fi')) {
+                          return <Wifi size={13} style={{ color: '#047857' }} />;
+                        }
+                        if (lower.includes('co-working') || lower.includes('coworking')) {
+                          return <Users size={13} style={{ color: '#047857' }} />;
+                        }
+                        if (lower.includes('koo') || text.includes('เครื่องดื่ม') || text.includes('ส่วนลด')) {
+                          return <Coffee size={13} style={{ color: '#047857' }} />;
+                        }
+                        if (text.includes('จอดรถ')) {
+                          return <Car size={13} style={{ color: '#047857' }} />;
+                        }
+                        return <Check size={13} style={{ color: '#047857' }} />;
+                      };
+
+                      return (
+                        <div
+                          id="booking-confirmation-benefits"
+                          className="bwork-conf-avoid-break bwork-conf-perk-banner bwork-conf-benefits-card"
+                          style={{
+                            backgroundColor: '#f8fafc',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '10px',
+                            padding: '10px 14px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '8px'
+                          }}
+                        >
+                          <div
+                            id="confirmation-beverage-perk-heading"
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              fontSize: '0.76rem',
+                              fontWeight: 700,
+                              color: '#0f172a',
+                              letterSpacing: '-0.01em',
+                              paddingBottom: '6px',
+                              borderBottom: '1px solid #f1f5f9'
+                            }}
+                          >
+                            <Sparkles size={13} style={{ color: '#047857' }} />
+                            <span>{benefitsHeading}</span>
+                          </div>
+
+                          <div
+                            id="confirmation-benefits-list"
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '6px'
+                            }}
+                          >
+                            {rawItems.map((itemText, idx) => {
+                              const isPerkMessage = idx === 2 || itemText.includes('20%');
+                              return (
+                                <div
+                                  key={idx}
+                                  data-benefit-item="true"
+                                  id={isPerkMessage ? 'confirmation-beverage-perk-message' : undefined}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    fontSize: '0.76rem',
+                                    fontWeight: 500,
+                                    color: '#334155',
+                                    lineHeight: 1.45
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      width: '20px',
+                                      height: '20px',
+                                      borderRadius: '6px',
+                                      backgroundColor: '#ecfdf5',
+                                      border: '1px solid #d1fae5',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      flexShrink: 0
+                                    }}
+                                  >
+                                    {getBenefitIcon(itemText)}
+                                  </span>
+                                  <div style={{ flex: 1 }}>
+                                    {renderBenefitText(itemText)}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Footer Note */}
+                    <div className="bwork-conf-footer-note" style={{ textAlign: 'center', fontSize: '0.70rem', color: '#64748b', borderTop: '1px solid #e2e8f0', paddingTop: '8px', marginTop: '2px' }}>
+                      สามารถแสดงเอกสารนี้บนหน้าจอโทรศัพท์ หรือพิมพ์เป็นเอกสารเพื่อยืนยันการเข้าใช้ห้องประชุมและรับสิทธิประโยชน์
                     </div>
                   </div>
                 </div>
+              )}
 
-                {/* Screenshot Hint */}
-                <div style={{ textAlign: 'center', fontSize: '0.7rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                  แคปหน้าจอนี้เพื่อบันทึกข้อมูลการเข้าใช้งาน Wi-Fi และแสดงรับสิทธิ์ส่วนลด
-                </div>
+              {/* Modal Bottom Action Buttons (Hidden in Print) */}
+              <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '2px', flexWrap: 'wrap' }}>
+                {!wifiCardLoading && wifiCardData && (
+                  <>
+                    <button
+                      id="btn-export-jpg-confirmation-card-bottom"
+                      type="button"
+                      disabled={wifiCardExportingJpg}
+                      onClick={handleExportConfirmationCardJpg}
+                      style={{
+                        height: '40px',
+                        padding: '0 16px',
+                        borderRadius: '12px',
+                        backgroundColor: '#047857',
+                        color: '#ffffff',
+                        border: 'none',
+                        fontWeight: 700,
+                        fontSize: '0.84rem',
+                        cursor: wifiCardExportingJpg ? 'wait' : 'pointer',
+                        opacity: wifiCardExportingJpg ? 0.75 : 1,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      <Download size={16} />
+                      <span>{wifiCardExportingJpg ? 'กำลังบันทึก JPG...' : 'บันทึกเป็น JPG'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{
+                        height: '40px',
+                        padding: '0 18px',
+                        borderRadius: '12px',
+                        backgroundColor: '#0f172a',
+                        color: '#ffffff',
+                        border: 'none',
+                        fontWeight: 700,
+                        fontSize: '0.84rem',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                      onClick={handlePrintConfirmationCard}
+                    >
+                      <Printer size={16} />
+                      <span>พิมพ์ / บันทึก PDF</span>
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{
+                    height: '40px',
+                    padding: '0 20px',
+                    borderRadius: '12px',
+                    fontWeight: 700,
+                    fontSize: '0.84rem',
+                    cursor: 'pointer'
+                  }}
+                  onClick={handleCloseWifiCardModal}
+                >
+                  ปิดหน้าต่าง
+                </button>
               </div>
-            )}
-
-            {/* Modal Bottom Action Button */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{
-                  height: '40px',
-                  padding: '0 20px',
-                  borderRadius: '12px',
-                  fontWeight: 700,
-                  fontSize: '0.85rem',
-                  cursor: 'pointer'
-                }}
-                onClick={handleCloseWifiCardModal}
-              >
-                ปิดหน้าต่าง
-              </button>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

@@ -613,6 +613,10 @@ async function initDatabase() {
     if (!checkBuffer) {
       await dbQuery.run("INSERT INTO settings (key, value) VALUES ('cleaning_buffer_minutes', '30')");
     }
+    const checkWifiSsid = await dbQuery.get("SELECT value FROM settings WHERE key = 'wifi_ssid'");
+    if (!checkWifiSsid || !String(checkWifiSsid.value || '').trim()) {
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('wifi_ssid', '@BWORK')");
+    }
   } catch (e) {}
 
   // Seed default roles if empty
