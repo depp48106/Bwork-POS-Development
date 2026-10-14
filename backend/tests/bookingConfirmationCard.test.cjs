@@ -464,10 +464,13 @@ test('BWORK-POS Meeting Room Booking Confirmation Card Suite', async (t) => {
     assert.ok(helperSource.includes('function sanitizeConfirmationCardFilename'), 'sanitizeConfirmationCardFilename must exist');
     assert.ok(helperSource.includes('exportConfirmationCardAsJpg'), 'exportConfirmationCardAsJpg must exist');
 
-    // 2. Buttons in PendingBookings
-    assert.ok(pendingSource.includes('id="btn-export-jpg-confirmation-card"'), 'Top บันทึกเป็น JPG button must exist');
-    assert.ok(pendingSource.includes('id="btn-export-jpg-confirmation-card-bottom"'), 'Bottom บันทึกเป็น JPG button must exist');
+    // 2. Buttons in PendingBookings - exactly one action group at the bottom
+    assert.ok(pendingSource.includes('id="btn-export-jpg-confirmation-card"'), 'Bottom บันทึกเป็น JPG button must exist');
+    assert.ok(!pendingSource.includes('id="btn-export-jpg-confirmation-card-bottom"'), 'Duplicate bottom ID must not exist');
     assert.ok(pendingSource.includes('id="btn-print-confirmation-card"'), 'Print / Save PDF button must be preserved');
+    assert.ok(pendingSource.includes('id="btn-close-confirmation-card"'), 'Close button must exist in bottom action group');
+    assert.ok(!pendingSource.includes('bwork-conf-modal-toolbar'), 'Top duplicate toolbar must be removed');
+    assert.ok(!pendingSource.includes('bwork-conf-close-btn'), 'Top duplicate close button must be removed');
 
     // 3. Standalone SSID banner removed and replaced by per-room Wi-Fi credentials
     assert.ok(!pendingSource.includes('สัญญาณ Wi-Fi (SSID):'), 'Standalone shared SSID banner above the list must be removed');

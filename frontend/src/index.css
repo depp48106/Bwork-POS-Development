@@ -3332,6 +3332,9 @@ select.form-control {
   #booking-confirmation-card-modal {
     padding: 10px !important;
     border-radius: 16px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
   }
 
   #wifi-customer-card {
@@ -3373,6 +3376,18 @@ select.form-control {
   #wifi-customer-card .confirmation-item-pin-box {
     grid-template-columns: 85px 1fr !important;
     gap: 8px !important;
+  }
+
+  .bwork-conf-bottom-actions {
+    width: 100% !important;
+    gap: 8px !important;
+    flex-direction: column !important;
+  }
+
+  .bwork-conf-bottom-actions button {
+    width: 100% !important;
+    justify-content: center !important;
+    text-align: center !important;
   }
 }
 

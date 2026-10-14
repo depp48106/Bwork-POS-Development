@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useCallback } from 'react';
 import {
   RefreshCw,
   Clock,
@@ -46,7 +46,6 @@ import ReceiptPrint from './ReceiptPrint';
 import { printReceipt, exportConfirmationCardAsJpg } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
-import { API_BASE } from '../apiConfig';
 import { analyzeSlipInBrowser } from '../utils/browserSlipVerifier';
 import { roomUsesDoorPin, resolveRoomPin } from '../utils/doorPinHelper';
 import { resolveRoomPinInfo, isInternalBooking, getRoomPinLabel } from '../utils/doorPinHelper';
@@ -65,7 +64,6 @@ import {
   getBookingTableSummary
 } from '../utils/bookingScheduleHelper';
 import './PendingBookings.css';
-
 const DATE_TYPE_OPTIONS = [
   { value: 'usage_date', label: 'วันที่ใช้งาน' },
   { value: 'created_at', label: 'วันที่ทำรายการ' }
@@ -8793,114 +8791,6 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 position: 'relative'
               }}
             >
-              {/* Modal Top Toolbar (Hidden in Print) */}
-              <div
-                className="no-print bwork-conf-modal-toolbar"
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  gap: '12px',
-                  flexWrap: 'wrap',
-                  flexShrink: 0
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div
-                    style={{
-                      width: '38px',
-                      height: '38px',
-                      borderRadius: '12px',
-                      backgroundColor: 'rgba(2, 132, 199, 0.15)',
-                      color: 'var(--primary-color)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0
-                    }}
-                  >
-                    <FileText size={20} />
-                  </div>
-                  <div>
-                    <h3 style={{ fontSize: '1.08rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
-                      ใบยืนยันการจองห้องประชุม
-                    </h3>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                  {!wifiCardLoading && wifiCardData && (
-                    <>
-                      <button
-                        id="btn-export-jpg-confirmation-card"
-                        type="button"
-                        disabled={wifiCardExportingJpg}
-                        onClick={handleExportConfirmationCardJpg}
-                        style={{
-                          height: '36px',
-                          padding: '0 13px',
-                          borderRadius: '10px',
-                          backgroundColor: '#047857',
-                          color: '#ffffff',
-                          border: 'none',
-                          fontWeight: 700,
-                          fontSize: '0.81rem',
-                          cursor: wifiCardExportingJpg ? 'wait' : 'pointer',
-                          opacity: wifiCardExportingJpg ? 0.75 : 1,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          boxShadow: '0 2px 8px rgba(4, 120, 87, 0.25)'
-                        }}
-                      >
-                        <Download size={15} />
-                        <span>{wifiCardExportingJpg ? 'กำลังบันทึก JPG...' : 'บันทึกเป็น JPG'}</span>
-                      </button>
-                      <button
-                        id="btn-print-confirmation-card"
-                        type="button"
-                        onClick={handlePrintConfirmationCard}
-                        style={{
-                          height: '36px',
-                          padding: '0 13px',
-                          borderRadius: '10px',
-                          backgroundColor: '#0f172a',
-                          color: '#ffffff',
-                          border: 'none',
-                          fontWeight: 700,
-                          fontSize: '0.81rem',
-                          cursor: 'pointer',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          boxShadow: '0 2px 8px rgba(15, 23, 42, 0.22)'
-                        }}
-                      >
-                        <Printer size={15} />
-                        <span>พิมพ์ / บันทึก PDF</span>
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    className="bwork-conf-close-btn"
-                    onClick={handleCloseWifiCardModal}
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      color: 'var(--text-muted)',
-                      cursor: 'pointer',
-                      padding: '6px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center'
-                    }}
-                    aria-label="ปิดหน้าต่าง"
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-              </div>
-
               {/* Loading State */}
               {wifiCardLoading && (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '44px 20px', gap: '12px' }}>
@@ -9938,11 +9828,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               )}
 
               {/* Modal Bottom Action Buttons (Hidden in Print) */}
-              <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '2px', flexWrap: 'wrap' }}>
+              <div
+                className="no-print bwork-conf-bottom-actions"
+                style={{
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  alignItems: 'center',
+                  gap: '10px',
+                  marginTop: '4px',
+                  flexWrap: 'wrap'
+                }}
+              >
                 {!wifiCardLoading && wifiCardData && (
                   <>
                     <button
-                      id="btn-export-jpg-confirmation-card-bottom"
+                      id="btn-export-jpg-confirmation-card"
                       type="button"
                       disabled={wifiCardExportingJpg}
                       onClick={handleExportConfirmationCardJpg}
@@ -9959,13 +9859,15 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                         opacity: wifiCardExportingJpg ? 0.75 : 1,
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: '6px'
+                        gap: '6px',
+                        boxShadow: '0 2px 8px rgba(4, 120, 87, 0.25)'
                       }}
                     >
                       <Download size={16} />
                       <span>{wifiCardExportingJpg ? 'กำลังบันทึก JPG...' : 'บันทึกเป็น JPG'}</span>
                     </button>
                     <button
+                      id="btn-print-confirmation-card"
                       type="button"
                       className="btn btn-primary"
                       style={{
@@ -9980,7 +9882,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                         cursor: 'pointer',
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: '6px'
+                        gap: '6px',
+                        boxShadow: '0 2px 8px rgba(15, 23, 42, 0.22)'
                       }}
                       onClick={handlePrintConfirmationCard}
                     >
@@ -9990,6 +9893,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   </>
                 )}
                 <button
+                  id="btn-close-confirmation-card"
                   type="button"
                   className="btn btn-secondary"
                   style={{
