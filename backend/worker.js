@@ -3148,6 +3148,20 @@ export default {
       // ----------------------------------------------------
       // BASECAMP QUOTA HUB ENDPOINTS
       // ----------------------------------------------------
+      if (pathname.startsWith('/api/basecamp')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) {
+          return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        }
+        const user = auth.user;
+        if (user && user.role !== 'admin') {
+          const perms = (user.permissions || '').split(',').map(p => p.trim());
+          if (!perms.some(p => ['pos', 'manage', 'pending', 'history'].includes(p))) {
+            return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงข้อมูลโควตา Basecamp' }), { status: 403, headers: corsHeaders });
+          }
+        }
+      }
+
       if (pathname === '/api/basecamp/quota' && method === 'GET') {
         const subType = url.searchParams.get('sub_type') || 'office';
         const unit = url.searchParams.get('unit') || '401';

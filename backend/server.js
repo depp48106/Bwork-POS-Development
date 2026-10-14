@@ -262,7 +262,7 @@ app.use('/api/quotations', authenticateToken, requireAnyPermission('quotations')
 app.use('/api/upload', authenticateToken, requireAnyPermission('manage', 'admin-management', 'admin-system', 'admin-quotation'));
 app.use('/api/backup', authenticateToken, requireAnyPermission('admin-management', 'admin-backup'));
 app.use('/api/admin', authenticateToken, requireAnyPermission('admin-management', 'admin-backup', 'admin-system'));
-app.use('/api/basecamp', authenticateToken, requireAnyPermission('pos', 'manage'));
+app.use('/api/basecamp', authenticateToken, requireAnyPermission('pos', 'manage', 'pending', 'history'));
 const { createHourCreditService } = require('./hourCredits/service');
 const { creditRouter, creditMutationGuard } = require('./hourCredits/routes');
 const hourCredits = createHourCreditService({ filename: dbPath, overlap: checkRoomOverlap, receipt: generateReceiptNumber, pin: generateUniquePinCode });

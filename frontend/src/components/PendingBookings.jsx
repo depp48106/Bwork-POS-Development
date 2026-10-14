@@ -46,6 +46,7 @@ import ReceiptPrint from './ReceiptPrint';
 import { printReceipt, exportConfirmationCardAsJpg } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
+import { API_BASE } from '../apiConfig';
 import { analyzeSlipInBrowser } from '../utils/browserSlipVerifier';
 import { roomUsesDoorPin, resolveRoomPin } from '../utils/doorPinHelper';
 import { resolveRoomPinInfo, isInternalBooking, getRoomPinLabel } from '../utils/doorPinHelper';
@@ -64,6 +65,22 @@ import {
   getBookingTableSummary
 } from '../utils/bookingScheduleHelper';
 import './PendingBookings.css';
+
+function formatThaiQuotaPeriod(targetMonthStr) {
+  if (!targetMonthStr || typeof targetMonthStr !== 'string') return '';
+  const [yStr, mStr] = targetMonthStr.split('-');
+  const y = parseInt(yStr, 10);
+  const m = parseInt(mStr, 10);
+  if (isNaN(y) || isNaN(m)) return targetMonthStr;
+  const THAI_MONTHS_FULL = [
+    'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+    'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'
+  ];
+  const thaiMonth = THAI_MONTHS_FULL[m - 1] || mStr;
+  const thaiYear = y + 543;
+  return `${thaiMonth} ${thaiYear}`;
+}
+
 const DATE_TYPE_OPTIONS = [
   { value: 'usage_date', label: 'วันที่ใช้งาน' },
   { value: 'created_at', label: 'วันที่ทำรายการ' }
@@ -140,6 +157,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [paymentTransactions, setPaymentTransactions] = useState([]);
   const [isLoadingPayments, setIsLoadingPayments] = useState(false);
   const activePaymentFetchBookingIdRef = useRef(null);
+
+  // Basecamp Quota State for Booking Details
+  const [basecampQuota, setBasecampQuota] = useState(null);
+  const [basecampQuotaLoading, setBasecampQuotaLoading] = useState(false);
+  const [basecampQuotaError, setBasecampQuotaError] = useState(null);
+  const activeBasecampQuotaBookingRef = useRef(null);
 
   // Reject Slip Modal states
   const [showRejectSlipModal, setShowRejectSlipModal] = useState(false);
@@ -553,6 +576,91 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       setPaymentTransactions([]);
     }
   }, [showDetailModal, selectedBooking?.id]);
+
+  const fetchBasecampQuota = useCallback(async (booking) => {
+    if (!booking || booking.customer_type !== 'basecamp') {
+      activeBasecampQuotaBookingRef.current = null;
+      setBasecampQuota(null);
+      setBasecampQuotaLoading(false);
+      setBasecampQuotaError(null);
+      return;
+    }
+
+    const subType = booking.basecamp_sub_type || 'office';
+    const unit = booking.basecamp_unit;
+    if (!unit) {
+      activeBasecampQuotaBookingRef.current = null;
+      setBasecampQuota(null);
+      setBasecampQuotaLoading(false);
+      setBasecampQuotaError('missing_unit');
+      return;
+    }
+
+    const bookingKey = `${booking.id}_${subType}_${unit}`;
+    activeBasecampQuotaBookingRef.current = bookingKey;
+    setBasecampQuotaLoading(true);
+    setBasecampQuotaError(null);
+
+    try {
+      const firstItem = booking.items?.[0] || {};
+      const serviceTimeStr = firstItem.start_time || booking.start_time || booking.booking_date || booking.created_at;
+      let month, year;
+      if (serviceTimeStr) {
+        const cleanStr = String(serviceTimeStr).replace(' ', 'T');
+        const [dPart] = cleanStr.split('T');
+        if (dPart && dPart.includes('-')) {
+          const parts = dPart.split('-');
+          if (parts.length >= 2) {
+            year = parseInt(parts[0], 10);
+            month = parseInt(parts[1], 10);
+          }
+        }
+      }
+      if (!month || !year || isNaN(month) || isNaN(year)) {
+        const now = new Date();
+        month = now.getMonth() + 1;
+        year = now.getFullYear();
+      }
+
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/api/basecamp/quota?sub_type=${encodeURIComponent(subType)}&unit=${encodeURIComponent(unit)}&month=${month}&year=${year}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (activeBasecampQuotaBookingRef.current === bookingKey) {
+        setBasecampQuota(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch Basecamp quota:', err);
+      if (activeBasecampQuotaBookingRef.current === bookingKey) {
+        setBasecampQuota(null);
+        setBasecampQuotaError(err.message || 'load_failed');
+      }
+    } finally {
+      if (activeBasecampQuotaBookingRef.current === bookingKey) {
+        setBasecampQuotaLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showDetailModal && selectedBooking?.id && selectedBooking?.customer_type === 'basecamp') {
+      fetchBasecampQuota(selectedBooking);
+    } else if (!showDetailModal) {
+      activeBasecampQuotaBookingRef.current = null;
+      setBasecampQuota(null);
+      setBasecampQuotaLoading(false);
+      setBasecampQuotaError(null);
+    }
+  }, [showDetailModal, selectedBooking?.id, selectedBooking?.customer_type, selectedBooking?.basecamp_unit, selectedBooking?.basecamp_sub_type, fetchBasecampQuota]);
 
   const handleOpenCollectBalance = (booking) => {
     if (!booking) return;
@@ -4245,6 +4353,125 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                         </div>
                       </div>
                     </div>
+
+                    {/* 2.5 BASECAMP QUOTA SECTION (Rendered ONLY for Basecamp bookings) */}
+                    {b.customer_type === 'basecamp' && (
+                      <div className="pb-detail-card pb-detail-basecamp-quota-card" id="pb-detail-basecamp-quota-card">
+                        <div className="pb-detail-card-header">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span className="pb-detail-card-title">โควตาการใช้งานห้องประชุม</span>
+                            <span className="pb-quota-badge">Basecamp Quota</span>
+                          </div>
+                          <button
+                            type="button"
+                            className="pb-quota-refresh-btn"
+                            onClick={() => fetchBasecampQuota(b)}
+                            disabled={basecampQuotaLoading}
+                            title="รีเฟรชข้อมูลโควตา"
+                            aria-label="รีเฟรชข้อมูลโควตา"
+                          >
+                            <RotateCcw size={12} className={basecampQuotaLoading ? 'spin' : ''} />
+                          </button>
+                        </div>
+
+                        <div className="pb-detail-content">
+                          <div className="pb-quota-header-info">
+                            <div className="pb-quota-account-row">
+                              <span className="pb-quota-account-name">
+                                Basecamp ({b.basecamp_sub_type === 'hotdesk' ? 'Hotdesk' : 'Office'} {b.basecamp_unit || '-'})
+                              </span>
+                              <span className="pb-quota-room-name">
+                                — {summary?.uniqueRoomsList?.length ? summary.uniqueRoomsList.join(', ') : roomName}
+                              </span>
+                            </div>
+                            {basecampQuota?.target_month && (
+                              <div className="pb-quota-period-tag">
+                                <span>รอบเดือน: {formatThaiQuotaPeriod(basecampQuota.target_month)}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Loading State */}
+                          {basecampQuotaLoading && !basecampQuota && (
+                            <div className="pb-quota-loading">
+                              <RotateCcw size={15} className="spin" />
+                              <span>กำลังโหลดข้อมูลโควตา...</span>
+                            </div>
+                          )}
+
+                          {/* Error / Missing Unit State */}
+                          {!basecampQuotaLoading && basecampQuotaError && (
+                            <div className="pb-quota-alert pb-quota-alert--error">
+                              <span>
+                                {basecampQuotaError === 'missing_unit'
+                                  ? 'ไม่พบข้อมูลยูนิต Basecamp ในรายการจองนี้ จึงไม่สามารถตรวจสอบโควตาได้'
+                                  : 'ไม่สามารถโหลดข้อมูลโควตาได้ กรุณาลองใหม่อีกครั้ง'}
+                              </span>
+                              {basecampQuotaError !== 'missing_unit' && (
+                                <button
+                                  type="button"
+                                  className="pb-quota-retry-btn"
+                                  onClick={() => fetchBasecampQuota(b)}
+                                >
+                                  ลองใหม่
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Authoritative Quota Display */}
+                          {basecampQuota && (
+                            <>
+                              <div className="pb-quota-stat-grid">
+                                <div className="pb-quota-stat-box">
+                                  <span className="pb-quota-stat-label">โควตาทั้งหมด</span>
+                                  <span className="pb-quota-stat-val">
+                                    <strong>{basecampQuota.max_quota}</strong> ชั่วโมง
+                                  </span>
+                                </div>
+                                <div className="pb-quota-stat-box">
+                                  <span className="pb-quota-stat-label">ใช้ไปแล้ว</span>
+                                  <span className="pb-quota-stat-val">
+                                    <strong>{basecampQuota.used_quota}</strong> ชั่วโมง
+                                  </span>
+                                </div>
+                                <div
+                                  className={`pb-quota-stat-box pb-quota-stat-box--remaining ${
+                                    basecampQuota.remaining_quota === 0
+                                      ? 'is-depleted'
+                                      : basecampQuota.remaining_quota <= 1
+                                      ? 'is-low'
+                                      : 'is-available'
+                                  }`}
+                                >
+                                  <span className="pb-quota-stat-label">คงเหลือ</span>
+                                  <span className="pb-quota-stat-val">
+                                    <strong>{basecampQuota.remaining_quota}</strong> ชั่วโมง
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* This Booking Usage Breakdown */}
+                              {Number(b.quota_hours_used) > 0 && (
+                                <div className="pb-quota-booking-consumed">
+                                  <span className="pb-quota-consumed-dot" />
+                                  <span>
+                                    การจองนี้ใช้โควตา: <strong>{b.quota_hours_used} ชั่วโมง</strong> (รวมอยู่ในยอดใช้ไปแล้ว)
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Multi-room clarification note */}
+                              {summary?.uniqueRoomCount > 1 && (
+                                <div className="pb-quota-pool-note">
+                                  <span>* สิทธิ์โควตาใช้งานร่วมกันทุกห้องประชุมในรอบเดือนเดียวกัน</span>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     {/* 3. ACCESS / PIN SECTION */}
                     <div className="pb-detail-card">

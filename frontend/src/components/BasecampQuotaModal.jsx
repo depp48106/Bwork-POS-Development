@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { API_BASE } from '../apiConfig';
 
 const THAI_MONTHS = [
   'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
@@ -24,7 +25,13 @@ export default function BasecampQuotaModal({ isOpen, onClose }) {
   const fetchOverview = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/basecamp/quota/overview?month=${selectedMonth}&year=${selectedYear}`);
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token') || localStorage.getItem('pos_token');
+      const res = await fetch(`${API_BASE}/api/basecamp/quota/overview?month=${selectedMonth}&year=${selectedYear}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
       const data = await res.json();
       if (res.ok && data.success) {
         const list = data.units || [];
@@ -54,7 +61,13 @@ export default function BasecampQuotaModal({ isOpen, onClose }) {
   useEffect(() => {
     if (selectedUnit && isOpen) {
       setHistoryLoading(true);
-      fetch(`/api/basecamp/quota/history?sub_type=${selectedUnit.sub_type}&unit=${selectedUnit.unit}&month=${selectedMonth}&year=${selectedYear}`)
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token') || localStorage.getItem('pos_token');
+      fetch(`${API_BASE}/api/basecamp/quota/history?sub_type=${selectedUnit.sub_type}&unit=${selectedUnit.unit}&month=${selectedMonth}&year=${selectedYear}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      })
         .then(res => res.json())
         .then(data => {
           if (data && data.success) {

@@ -47,6 +47,7 @@ import {
   getStartOfMonthBangkok
 } from '../utils/dashboardExport';
 import { normalizeBookingFinancials } from '../utils/financialUtils';
+import { API_BASE } from '../apiConfig';
 
 const CUSTOMER_TYPE_OPTIONS = [
   { value: 'all', label: 'ทุกประเภท' },
@@ -97,8 +98,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [selectedBooking, setSelectedBooking] = useState(null);
   const [selectedTaxBooking, setSelectedTaxBooking] = useState(null);
   const [viewingSlipBooking, setViewingSlipBooking] = useState(null);
-  const [taxCopied, setTaxCopied] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [basecampQuota, setBasecampQuota] = useState(null);
+  const [basecampQuotaLoading, setBasecampQuotaLoading] = useState(false);
+  const [basecampQuotaError, setBasecampQuotaError] = useState(null);
 
   // Dashboard Export Modal State
   const [showExportModal, setShowExportModal] = useState(false);
@@ -242,6 +245,69 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       sysAlert('ไม่สามารถโหลดรายละเอียดใบจองนี้ได้');
     }
   };
+
+  useEffect(() => {
+    if (showDetailsModal && selectedBooking?.customer_type === 'basecamp') {
+      const b = selectedBooking;
+      const subType = b.basecamp_sub_type || 'office';
+      const unit = b.basecamp_unit;
+      if (!unit) {
+        setBasecampQuota(null);
+        setBasecampQuotaLoading(false);
+        setBasecampQuotaError('missing_unit');
+        return;
+      }
+      setBasecampQuotaLoading(true);
+      setBasecampQuotaError(null);
+
+      const firstItem = b.items?.[0] || {};
+      const serviceTimeStr = firstItem.start_time || b.start_time || b.booking_date || b.created_at;
+      let month, year;
+      if (serviceTimeStr) {
+        const cleanStr = String(serviceTimeStr).replace(' ', 'T');
+        const [dPart] = cleanStr.split('T');
+        if (dPart && dPart.includes('-')) {
+          const parts = dPart.split('-');
+          if (parts.length >= 2) {
+            year = parseInt(parts[0], 10);
+            month = parseInt(parts[1], 10);
+          }
+        }
+      }
+      if (!month || !year || isNaN(month) || isNaN(year)) {
+        const now = new Date();
+        month = now.getMonth() + 1;
+        year = now.getFullYear();
+      }
+
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+      fetch(`${API_BASE}/api/basecamp/quota?sub_type=${encodeURIComponent(subType)}&unit=${encodeURIComponent(unit)}&month=${month}&year=${year}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      })
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then(data => {
+          setBasecampQuota(data);
+        })
+        .catch(err => {
+          console.error('Failed to load Basecamp quota:', err);
+          setBasecampQuota(null);
+          setBasecampQuotaError(err.message || 'load_failed');
+        })
+        .finally(() => {
+          setBasecampQuotaLoading(false);
+        });
+    } else if (!showDetailsModal) {
+      setBasecampQuota(null);
+      setBasecampQuotaLoading(false);
+      setBasecampQuotaError(null);
+    }
+  }, [showDetailsModal, selectedBooking?.id, selectedBooking?.customer_type, selectedBooking?.basecamp_unit, selectedBooking?.basecamp_sub_type]);
 
   const triggerPrint = () => {
     printReceipt('print-receipt-area');
@@ -2039,6 +2105,71 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
                     <span style={{ color: 'var(--text-muted)' }}>โควต้าฟรีที่ใช้:</span>
                     <strong style={{ color: '#10b981' }}>{selectedBooking.quota_hours_used} ชั่วโมง (ฟรี)</strong>
+                  </div>
+                )}
+                {selectedBooking.customer_type === 'basecamp' && (
+                  <div style={{
+                    marginTop: '4px',
+                    padding: '12px 14px',
+                    backgroundColor: 'rgba(168, 85, 247, 0.05)',
+                    borderRadius: '14px',
+                    border: '1px solid rgba(168, 85, 247, 0.2)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.80rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                        โควตาการใช้งานห้องประชุม
+                      </span>
+                      <span style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        color: '#9333ea',
+                        background: 'rgba(168, 85, 247, 0.12)',
+                        padding: '2px 6px',
+                        borderRadius: '999px',
+                        border: '1px solid rgba(168, 85, 247, 0.25)'
+                      }}>
+                        Basecamp Quota
+                      </span>
+                    </div>
+
+                    {basecampQuotaLoading && !basecampQuota && (
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center', padding: '6px' }}>
+                        กำลังโหลดข้อมูลโควตา...
+                      </div>
+                    )}
+
+                    {!basecampQuotaLoading && basecampQuotaError && (
+                      <div style={{ fontSize: '0.75rem', color: 'var(--danger-color)' }}>
+                        {basecampQuotaError === 'missing_unit'
+                          ? 'ไม่พบข้อมูลยูนิต Basecamp ในรายการจองนี้'
+                          : 'ไม่สามารถโหลดข้อมูลโควตาได้'}
+                      </div>
+                    )}
+
+                    {basecampQuota && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', textAlign: 'center' }}>
+                        <div style={{ backgroundColor: 'var(--bg-card)', padding: '6px 8px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>ทั้งหมด</div>
+                          <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)' }}>{basecampQuota.max_quota} ชม.</div>
+                        </div>
+                        <div style={{ backgroundColor: 'var(--bg-card)', padding: '6px 8px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>ใช้ไปแล้ว</div>
+                          <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)' }}>{basecampQuota.used_quota} ชม.</div>
+                        </div>
+                        <div style={{
+                          backgroundColor: basecampQuota.remaining_quota === 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                          padding: '6px 8px',
+                          borderRadius: '8px',
+                          border: `1px solid ${basecampQuota.remaining_quota === 0 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(34, 197, 94, 0.3)'}`
+                        }}>
+                          <div style={{ fontSize: '0.68rem', color: basecampQuota.remaining_quota === 0 ? '#ef4444' : '#16a34a', fontWeight: 600 }}>คงเหลือ</div>
+                          <div style={{ fontSize: '0.82rem', fontWeight: 800, color: basecampQuota.remaining_quota === 0 ? '#dc2626' : '#15803d' }}>{basecampQuota.remaining_quota} ชม.</div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
                 {selectedBooking.contact && (
