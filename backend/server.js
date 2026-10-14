@@ -301,25 +301,36 @@ app.post('/api/rooms', requireAnyPermission('manage'), async (req, res) => {
     name, capacity, hourly_rate, daily_rate, half_day_rate,
     has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
     description, status, image_url,
-    has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code
+    has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code,
+    image_position_x, image_position_y
   } = req.body;
 
   if (!name) {
     return res.status(400).json({ error: 'กรุณากรอกชื่อห้องประชุม' });
   }
+
+  const cleanPosX = (image_position_x !== undefined && image_position_x !== null && !isNaN(image_position_x))
+    ? Math.max(0, Math.min(100, Math.round(Number(image_position_x))))
+    : 50;
+  const cleanPosY = (image_position_y !== undefined && image_position_y !== null && !isNaN(image_position_y))
+    ? Math.max(0, Math.min(100, Math.round(Number(image_position_y))))
+    : 50;
+
   try {
     const result = await dbQuery.run(
       `INSERT INTO rooms (
         name, capacity, hourly_rate, daily_rate, half_day_rate,
         has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
         description, status, image_url,
-        has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code,
+        image_position_x, image_position_y
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name, capacity, hourly_rate, daily_rate || 0, half_day_rate || 0,
         has_classroom || 0, classroom_hourly_rate || 0, classroom_daily_rate || 0, classroom_capacity || 0, classroom_image_url || null,
         description || '', status || 'active', image_url || null,
-        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null, builtland_pin_code || null
+        has_hourly !== undefined ? has_hourly : 1, has_halfday || 0, has_daily || 0, pin_code || null, builtland_pin_code || null,
+        cleanPosX, cleanPosY
       ]
     );
     res.status(201).json({
@@ -332,7 +343,9 @@ app.post('/api/rooms', requireAnyPermission('manage'), async (req, res) => {
       description, status: status || 'active', image_url: image_url || null,
       has_hourly: has_hourly !== undefined ? has_hourly : 1, has_halfday: has_halfday || 0, has_daily: has_daily || 0,
       pin_code: pin_code || null,
-      builtland_pin_code: builtland_pin_code || null
+      builtland_pin_code: builtland_pin_code || null,
+      image_position_x: cleanPosX,
+      image_position_y: cleanPosY
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -345,13 +358,32 @@ app.put('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
     name, capacity, hourly_rate, daily_rate, half_day_rate,
     has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url,
     description, status, image_url,
-    has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code
+    has_hourly, has_halfday, has_daily, pin_code, builtland_pin_code,
+    image_position_x, image_position_y
   } = req.body;
 
   try {
     const existingRoom = await dbQuery.get('SELECT * FROM rooms WHERE id = ?', [roomId]);
     if (!existingRoom) {
       return res.status(404).json({ error: 'ไม่พบข้อมูลห้องประชุม' });
+    }
+
+    let cleanPosX;
+    if (image_position_x === undefined) {
+      cleanPosX = existingRoom.image_position_x !== undefined && existingRoom.image_position_x !== null ? existingRoom.image_position_x : 50;
+    } else if (image_position_x === null || isNaN(image_position_x)) {
+      cleanPosX = 50;
+    } else {
+      cleanPosX = Math.max(0, Math.min(100, Math.round(Number(image_position_x))));
+    }
+
+    let cleanPosY;
+    if (image_position_y === undefined) {
+      cleanPosY = existingRoom.image_position_y !== undefined && existingRoom.image_position_y !== null ? existingRoom.image_position_y : 50;
+    } else if (image_position_y === null || isNaN(image_position_y)) {
+      cleanPosY = 50;
+    } else {
+      cleanPosY = Math.max(0, Math.min(100, Math.round(Number(image_position_y))));
     }
 
     const isPinCapable = roomUsesDoorPin(existingRoom);
@@ -391,7 +423,8 @@ app.put('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
          SET name = ?, capacity = ?, hourly_rate = ?, daily_rate = ?, half_day_rate = ?,
              has_classroom = ?, classroom_hourly_rate = ?, classroom_daily_rate = ?, classroom_capacity = ?, classroom_image_url = ?,
              description = ?, status = ?, image_url = ?,
-             has_hourly = ?, has_halfday = ?, has_daily = ?, pin_code = ?, builtland_pin_code = ?
+             has_hourly = ?, has_halfday = ?, has_daily = ?, pin_code = ?, builtland_pin_code = ?,
+             image_position_x = ?, image_position_y = ?
          WHERE id = ?`,
         [
           name !== undefined ? name : existingRoom.name,
@@ -412,6 +445,8 @@ app.put('/api/rooms/:id', requireAnyPermission('manage'), async (req, res) => {
           has_daily !== undefined ? has_daily : (existingRoom.has_daily || 0),
           cleanPin,
           cleanBuiltlandPin,
+          cleanPosX,
+          cleanPosY,
           roomId
         ]
       );
@@ -1988,6 +2023,8 @@ async function handleGetBookingWifiCard(req, res) {
       'r.name as room_name',
       colNames.has('image_url') ? 'r.image_url as room_image_url' : 'NULL as room_image_url',
       colNames.has('classroom_image_url') ? 'r.classroom_image_url as room_classroom_image_url' : 'NULL as room_classroom_image_url',
+      colNames.has('image_position_x') ? 'r.image_position_x as room_image_position_x' : '50 as room_image_position_x',
+      colNames.has('image_position_y') ? 'r.image_position_y as room_image_position_y' : '50 as room_image_position_y',
       colNames.has('pin_code') ? 'r.pin_code as room_pin_code' : 'NULL as room_pin_code',
       colNames.has('builtland_pin_code') ? 'r.builtland_pin_code as room_builtland_pin_code' : 'NULL as room_builtland_pin_code',
       colNames.has('wifi_username') ? 'r.wifi_username' : 'NULL as wifi_username',
@@ -2039,10 +2076,19 @@ async function handleGetBookingWifiCard(req, res) {
         totalRoomItemsCount: items.length
       });
 
+      const posX = (typeof item.room_image_position_x === 'number' && !isNaN(item.room_image_position_x))
+        ? Math.max(0, Math.min(100, Math.round(item.room_image_position_x)))
+        : 50;
+      const posY = (typeof item.room_image_position_y === 'number' && !isNaN(item.room_image_position_y))
+        ? Math.max(0, Math.min(100, Math.round(item.room_image_position_y)))
+        : 50;
+
       roomMap.set(item.room_id, {
         room_id: item.room_id,
         room_name: item.room_name || `ห้อง ${item.room_id}`,
         image_url: preferredImage,
+        image_position_x: posX,
+        image_position_y: posY,
         uses_door_pin: pinInfo.uses_door_pin,
         door_pin: pinInfo.door_pin,
         wifi_username: item.wifi_username || null,
@@ -2083,6 +2129,8 @@ async function handleGetBookingWifiCard(req, res) {
         room_id: item.room_id,
         room_name: item.room_name || `ห้อง ${item.room_id}`,
         room_image_url: preferredItemImage || roomEntry.image_url || null,
+        image_position_x: roomEntry.image_position_x !== undefined ? roomEntry.image_position_x : 50,
+        image_position_y: roomEntry.image_position_y !== undefined ? roomEntry.image_position_y : 50,
         booking_date: bDate,
         start_time: sTime,
         end_time: eTime,
@@ -2114,6 +2162,8 @@ async function handleGetBookingWifiCard(req, res) {
       is_multi_item: scheduleList.length > 1,
       banner_type: isMultiRoom ? 'brand' : (singleRoomImage ? 'room' : 'placeholder'),
       banner_image_url: isMultiRoom ? '/Bworktower.jpg' : singleRoomImage,
+      single_room_focal_x: distinctRooms.length === 1 ? (distinctRooms[0].image_position_x ?? 50) : 50,
+      single_room_focal_y: distinctRooms.length === 1 ? (distinctRooms[0].image_position_y ?? 50) : 50,
       rooms: distinctRooms,
       schedules: scheduleList,
       items: scheduleList,

@@ -146,6 +146,8 @@ async function initDatabase() {
       category TEXT DEFAULT 'Meeting Room',
       pin_code TEXT,
       builtland_pin_code TEXT,
+      image_position_x INTEGER DEFAULT 50,
+      image_position_y INTEGER DEFAULT 50,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -349,6 +351,14 @@ async function initDatabase() {
     if (!roomCols.some(c => c.name === 'builtland_pin_code')) {
       await dbQuery.run("ALTER TABLE rooms ADD COLUMN builtland_pin_code TEXT");
       console.log('Migration: Added builtland_pin_code column to rooms table.');
+    }
+    if (!roomCols.some(c => c.name === 'image_position_x')) {
+      await dbQuery.run("ALTER TABLE rooms ADD COLUMN image_position_x INTEGER DEFAULT 50");
+      console.log('Migration: Added image_position_x column to rooms table.');
+    }
+    if (!roomCols.some(c => c.name === 'image_position_y')) {
+      await dbQuery.run("ALTER TABLE rooms ADD COLUMN image_position_y INTEGER DEFAULT 50");
+      console.log('Migration: Added image_position_y column to rooms table.');
     }
   } catch (e) {}
 

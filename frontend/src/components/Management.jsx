@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Home, Coffee, X, Search, Check, AlertCircle, Layers, ChevronDown } from 'lucide-react';
+import { Plus, Edit2, Trash2, Home, Coffee, X, Search, Check, AlertCircle, Layers, ChevronDown, Crosshair, RotateCcw, Sliders, KeyRound, Building2 } from 'lucide-react';
 import { API_BASE } from '../apiConfig';
 
 function ManagementPanel({ sysAlert, sysConfirm }) {
@@ -26,11 +26,14 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
     description: '',
     status: 'active',
     image_url: '',
+    image_position_x: 50,
+    image_position_y: 50,
     pin_code: '',
     builtland_pin_code: '',
     dbType: 'room' // 'room' or 'service'
   });
   const [showModal, setShowModal] = useState(false);
+  const [isFocalDragging, setIsFocalDragging] = useState(false);
   const [wifiForm, setWifiForm] = useState({
     username: '',
     password: '',
@@ -223,6 +226,8 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
             has_halfday: r.has_halfday,
             has_daily: r.has_daily,
             image_url: r.image_url || '',
+            image_position_x: r.image_position_x !== undefined && r.image_position_x !== null ? r.image_position_x : 50,
+            image_position_y: r.image_position_y !== undefined && r.image_position_y !== null ? r.image_position_y : 50,
             pin_code: r.pin_code || '',
             builtland_pin_code: r.builtland_pin_code || ''
           })),
@@ -313,6 +318,8 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
         description: currentItemForm.description,
         status: currentItemForm.status,
         image_url: currentItemForm.image_url || null,
+        image_position_x: typeof currentItemForm.image_position_x === 'number' ? Math.max(0, Math.min(100, Math.round(currentItemForm.image_position_x))) : 50,
+        image_position_y: typeof currentItemForm.image_position_y === 'number' ? Math.max(0, Math.min(100, Math.round(currentItemForm.image_position_y))) : 50,
         pin_code: currentItemForm.pin_code || null,
         builtland_pin_code: currentItemForm.builtland_pin_code || null,
         category: roomCategoryName
@@ -385,6 +392,8 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
           description: '',
           status: 'active',
           image_url: '',
+          image_position_x: 50,
+          image_position_y: 50,
           pin_code: '',
           builtland_pin_code: '',
           dbType: 'room',
@@ -449,6 +458,8 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
       description: item.description || '',
       status: item.status,
       image_url: item.image_url || '',
+      image_position_x: item.image_position_x !== undefined && item.image_position_x !== null ? item.image_position_x : 50,
+      image_position_y: item.image_position_y !== undefined && item.image_position_y !== null ? item.image_position_y : 50,
       pin_code: item.pin_code || '',
       builtland_pin_code: item.builtland_pin_code || '',
       dbType: item.dbType,
@@ -870,9 +881,13 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                                 backgroundColor: 'rgba(16, 185, 129, 0.12)', 
                                 color: '#10b981',
                                 border: '1px solid rgba(16, 185, 129, 0.25)',
-                                letterSpacing: '0.5px'
+                                letterSpacing: '0.5px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
                               }} title="รหัสผ่านสำหรับลูกค้าทั่วไป (LINE OA / Walk-in / Basecamp)">
-                                🔑 {item.pin_code}
+                                <KeyRound size={11} />
+                                {item.pin_code}
                               </span>
                             )}
                             {item.builtland_pin_code && (
@@ -885,9 +900,13 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                                 backgroundColor: 'rgba(249, 115, 22, 0.12)', 
                                 color: '#ea580c',
                                 border: '1px solid rgba(249, 115, 22, 0.25)',
-                                letterSpacing: '0.5px'
+                                letterSpacing: '0.5px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px'
                               }} title="รหัสผ่านเฉพาะพนักงาน Builtland">
-                                🏢 {item.builtland_pin_code}
+                                <Building2 size={11} />
+                                {item.builtland_pin_code}
                               </span>
                             )}
                             {!item.pin_code && !item.builtland_pin_code && (
@@ -1257,7 +1276,8 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                   <div className="form-group" style={{ margin: 0 }}>
                     <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span>🔑 รหัสเข้าห้องลูกค้าทั่วไป</span>
+                      <KeyRound size={14} style={{ color: '#10b981' }} />
+                      <span>รหัสเข้าห้องลูกค้าทั่วไป</span>
                     </label>
                     <input
                       type="text"
@@ -1273,7 +1293,8 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                   </div>
                   <div className="form-group" style={{ margin: 0 }}>
                     <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#ea580c', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span>🏢 รหัสเข้าห้อง Builtland</span>
+                      <Building2 size={14} style={{ color: '#ea580c' }} />
+                      <span>รหัสเข้าห้อง Builtland</span>
                     </label>
                     <input
                       type="text"
@@ -1465,6 +1486,215 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                   </div>
                 </div>
               </div>
+
+              {/* Room Image Focal Point Editor */}
+              {itemForm.dbType === 'room' && itemForm.image_url && (
+                <div
+                  className="room-image-focal-editor"
+                  style={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '12px',
+                    padding: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Crosshair size={16} style={{ color: 'var(--primary-color, #2563eb)' }} />
+                      <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                        จัดตำแหน่งจุดโฟกัสรูปห้องประชุม (Confirmation Card Focal Point)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setItemForm(prev => ({ ...prev, image_position_x: 50, image_position_y: 50 }))}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        background: 'transparent',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '6px',
+                        padding: '4px 8px',
+                        fontSize: '0.72rem',
+                        color: 'var(--text-muted)',
+                        cursor: 'pointer'
+                      }}
+                      title="รีเซ็ตให้อยู่ตรงกลาง (50% 50%)"
+                    >
+                      <RotateCcw size={12} />
+                      รีเซ็ตตรงกลาง
+                    </button>
+                  </div>
+
+                  {/* Interactive Visual Preview Box */}
+                  <div
+                    style={{
+                      position: 'relative',
+                      width: '100%',
+                      height: '160px',
+                      borderRadius: '10px',
+                      overflow: 'hidden',
+                      border: '1px solid var(--border-color)',
+                      backgroundColor: '#0f172a',
+                      cursor: 'crosshair',
+                      userSelect: 'none'
+                    }}
+                    onMouseDown={(e) => {
+                      setIsFocalDragging(true);
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const x = Math.round(Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100)));
+                      const y = Math.round(Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100)));
+                      setItemForm(prev => ({ ...prev, image_position_x: x, image_position_y: y }));
+                    }}
+                    onMouseMove={(e) => {
+                      if (!isFocalDragging) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const x = Math.round(Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100)));
+                      const y = Math.round(Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100)));
+                      setItemForm(prev => ({ ...prev, image_position_x: x, image_position_y: y }));
+                    }}
+                    onMouseUp={() => setIsFocalDragging(false)}
+                    onMouseLeave={() => setIsFocalDragging(false)}
+                    onTouchStart={(e) => {
+                      const touch = e.touches[0];
+                      if (!touch) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const x = Math.round(Math.max(0, Math.min(100, ((touch.clientX - rect.left) / rect.width) * 100)));
+                      const y = Math.round(Math.max(0, Math.min(100, ((touch.clientY - rect.top) / rect.height) * 100)));
+                      setItemForm(prev => ({ ...prev, image_position_x: x, image_position_y: y }));
+                    }}
+                    onTouchMove={(e) => {
+                      const touch = e.touches[0];
+                      if (!touch) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const x = Math.round(Math.max(0, Math.min(100, ((touch.clientX - rect.left) / rect.width) * 100)));
+                      const y = Math.round(Math.max(0, Math.min(100, ((touch.clientY - rect.top) / rect.height) * 100)));
+                      setItemForm(prev => ({ ...prev, image_position_x: x, image_position_y: y }));
+                    }}
+                  >
+                    {/* Background Room Photo with live focal positioning */}
+                    <img
+                      src={itemForm.image_url}
+                      alt="Room Preview"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover',
+                        objectPosition: `${itemForm.image_position_x ?? 50}% ${itemForm.image_position_y ?? 50}%`,
+                        display: 'block',
+                        pointerEvents: 'none'
+                      }}
+                    />
+
+                    {/* Gradient overlay mimicking confirmation card pass */}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        background: 'linear-gradient(to right, rgba(15, 23, 42, 0.6) 0%, rgba(15, 23, 42, 0.2) 30%, transparent 60%)',
+                        pointerEvents: 'none'
+                      }}
+                    />
+
+                    {/* Reticle / Focal Target Overlay */}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: `${itemForm.image_position_x ?? 50}%`,
+                        top: `${itemForm.image_position_y ?? 50}%`,
+                        transform: 'translate(-50%, -50%)',
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '50%',
+                        border: '2px solid #ffffff',
+                        backgroundColor: 'rgba(37, 99, 235, 0.45)',
+                        boxShadow: '0 0 0 1px rgba(0,0,0,0.6), 0 2px 10px rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        pointerEvents: 'none',
+                        transition: isFocalDragging ? 'none' : 'left 0.1s ease, top 0.1s ease'
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: '4px',
+                          height: '4px',
+                          borderRadius: '50%',
+                          backgroundColor: '#ffffff'
+                        }}
+                      />
+                      {/* Crosshair lines */}
+                      <div style={{ position: 'absolute', top: -6, bottom: -6, left: '50%', width: '1px', backgroundColor: 'rgba(255,255,255,0.7)', transform: 'translateX(-50%)' }} />
+                      <div style={{ position: 'absolute', left: -6, right: -6, top: '50%', height: '1px', backgroundColor: 'rgba(255,255,255,0.7)', transform: 'translateY(-50%)' }} />
+                    </div>
+
+                    {/* Coordinates Badge */}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: '8px',
+                        right: '8px',
+                        backgroundColor: 'rgba(15, 23, 42, 0.8)',
+                        backdropFilter: 'blur(4px)',
+                        border: '1px solid rgba(255,255,255,0.15)',
+                        borderRadius: '6px',
+                        padding: '2px 8px',
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        color: '#f8fafc',
+                        pointerEvents: 'none',
+                        letterSpacing: '0.02em'
+                      }}
+                    >
+                      {`X: ${itemForm.image_position_x ?? 50}% | Y: ${itemForm.image_position_y ?? 50}%`}
+                    </div>
+                  </div>
+
+                  {/* Sliders & Fine Controls */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>แนวนอน (X-Axis)</span>
+                        <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{itemForm.image_position_x ?? 50}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={itemForm.image_position_x ?? 50}
+                        onChange={(e) => setItemForm(prev => ({ ...prev, image_position_x: Number(e.target.value) }))}
+                        style={{ width: '100%', accentColor: 'var(--primary-color, #2563eb)', cursor: 'pointer' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>แนวตั้ง (Y-Axis)</span>
+                        <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{itemForm.image_position_y ?? 50}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={itemForm.image_position_y ?? 50}
+                        onChange={(e) => setItemForm(prev => ({ ...prev, image_position_y: Number(e.target.value) }))}
+                        style={{ width: '100%', accentColor: 'var(--primary-color, #2563eb)', cursor: 'pointer' }}
+                      />
+                    </div>
+                  </div>
+
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                    คลิกหรือลากจุดโฟกัสบนรูปภาพ หรือปรับแถบเลื่อน เพื่อจัดตำแหน่งจุดสำคัญของห้องประชุมให้อยู่ในมุมมองที่เหมาะสมบนใบยืนยันการจอง
+                  </span>
+                </div>
+              )}
 
               {/* Row 2: Name */}
               <div className="form-group" style={{ margin: 0 }}>

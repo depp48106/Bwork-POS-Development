@@ -8927,6 +8927,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 booking_item_id: s.booking_item_id || idx + 1,
                 room_id: s.room_id || matchingRoom.room_id,
                 room_image_url: s.room_image_url || matchingRoom.image_url || null,
+                image_position_x: s.image_position_x !== undefined ? s.image_position_x : (matchingRoom.image_position_x !== undefined ? matchingRoom.image_position_x : 50),
+                image_position_y: s.image_position_y !== undefined ? s.image_position_y : (matchingRoom.image_position_y !== undefined ? matchingRoom.image_position_y : 50),
                 uses_door_pin: s.uses_door_pin !== undefined ? s.uses_door_pin : (matchingRoom.uses_door_pin !== undefined ? matchingRoom.uses_door_pin : true),
                 door_pin: s.door_pin !== undefined ? s.door_pin : (matchingRoom.door_pin || null),
                 wifi_ssid: s.wifi_ssid || sharedSsid,
@@ -8947,12 +8949,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const hasValidBrandBanner = !failedCardImages[brandBannerUrl];
         // Calculate room image focal position (normalized percentage 0-100, clamped safely, defaulting to 50% 50% Center)
         const getRoomFocalPosition = (item) => {
-          const px = typeof item?.image_position_x === 'number' && !isNaN(item.image_position_x)
-            ? Math.max(0, Math.min(100, item.image_position_x))
-            : 50;
-          const py = typeof item?.image_position_y === 'number' && !isNaN(item.image_position_y)
-            ? Math.max(0, Math.min(100, item.image_position_y))
-            : 50;
+          const rawX = typeof item?.image_position_x === 'number' && !isNaN(item.image_position_x)
+            ? item.image_position_x
+            : (typeof wifiCardData?.single_room_focal_x === 'number' && !isNaN(wifiCardData.single_room_focal_x) ? wifiCardData.single_room_focal_x : 50);
+          const rawY = typeof item?.image_position_y === 'number' && !isNaN(item.image_position_y)
+            ? item.image_position_y
+            : (typeof wifiCardData?.single_room_focal_y === 'number' && !isNaN(wifiCardData.single_room_focal_y) ? wifiCardData.single_room_focal_y : 50);
+          const px = Math.max(0, Math.min(100, Math.round(rawX)));
+          const py = Math.max(0, Math.min(100, Math.round(rawY)));
           return `${px}% ${py}%`;
         };
         const singleRoomFocal = getRoomFocalPosition(singleRoomObj);

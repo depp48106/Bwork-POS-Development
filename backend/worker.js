@@ -2583,13 +2583,21 @@ export default {
           const classroomImageUrl = await saveUploadedFile(env, body.classroom_image_url, 'rooms');
 
 
+          const cleanPosX = (body.image_position_x !== undefined && body.image_position_x !== null && !isNaN(body.image_position_x))
+            ? Math.max(0, Math.min(100, Math.round(Number(body.image_position_x))))
+            : 50;
+          const cleanPosY = (body.image_position_y !== undefined && body.image_position_y !== null && !isNaN(body.image_position_y))
+            ? Math.max(0, Math.min(100, Math.round(Number(body.image_position_y))))
+            : 50;
+
           const ins = await env.DB.prepare(
-            `INSERT INTO rooms (name, capacity, hourly_rate, daily_rate, half_day_rate, has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url, description, image_url, category, pin_code, builtland_pin_code, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
+            `INSERT INTO rooms (name, capacity, hourly_rate, daily_rate, half_day_rate, has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url, description, image_url, category, pin_code, builtland_pin_code, image_position_x, image_position_y, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
           ).bind(
             body.name, body.capacity || 0, body.hourly_rate || 0, body.daily_rate || 0, body.half_day_rate || 0,
             body.has_classroom || 0, body.classroom_hourly_rate || 0, body.classroom_daily_rate || 0, body.classroom_capacity || 0,
-            classroomImageUrl || null, body.description || '', imageUrl || null, body.category || 'Meeting Room', body.pin_code || null, body.builtland_pin_code || null
+            classroomImageUrl || null, body.description || '', imageUrl || null, body.category || 'Meeting Room', body.pin_code || null, body.builtland_pin_code || null,
+            cleanPosX, cleanPosY
           ).run();
           return new Response(JSON.stringify({ success: true, id: ins.meta.last_row_id, message: 'บันทึกห้องสำเร็จ' }), { status: 201, headers: corsHeaders });
         }
@@ -2613,6 +2621,24 @@ export default {
           const existingRoom = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(roomId).first();
           if (!existingRoom) {
             return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลห้องประชุม' }), { status: 404, headers: corsHeaders });
+          }
+
+          let cleanPosX;
+          if (body.image_position_x === undefined) {
+            cleanPosX = existingRoom.image_position_x !== undefined && existingRoom.image_position_x !== null ? existingRoom.image_position_x : 50;
+          } else if (body.image_position_x === null || isNaN(body.image_position_x)) {
+            cleanPosX = 50;
+          } else {
+            cleanPosX = Math.max(0, Math.min(100, Math.round(Number(body.image_position_x))));
+          }
+
+          let cleanPosY;
+          if (body.image_position_y === undefined) {
+            cleanPosY = existingRoom.image_position_y !== undefined && existingRoom.image_position_y !== null ? existingRoom.image_position_y : 50;
+          } else if (body.image_position_y === null || isNaN(body.image_position_y)) {
+            cleanPosY = 50;
+          } else {
+            cleanPosY = Math.max(0, Math.min(100, Math.round(Number(body.image_position_y))));
           }
 
           const isPinCapable = roomUsesDoorPin(existingRoom);
@@ -2643,7 +2669,7 @@ export default {
           const effectiveBuiltlandPin = cleanBuiltlandPin || cleanPin;
 
           const updateRoomStmt = env.DB.prepare(
-            `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=?, builtland_pin_code=?, status=? WHERE id=?`
+            `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=?, builtland_pin_code=?, image_position_x=?, image_position_y=?, status=? WHERE id=?`
           ).bind(
             body.name !== undefined ? body.name : existingRoom.name,
             body.capacity !== undefined ? (body.capacity || 0) : existingRoom.capacity,
@@ -2660,6 +2686,8 @@ export default {
             body.category || existingRoom.category || 'Meeting Room',
             cleanPin,
             cleanBuiltlandPin,
+            cleanPosX,
+            cleanPosY,
             body.status || existingRoom.status || 'active',
             roomId
           );
@@ -4863,6 +4891,8 @@ export default {
                     r.name as room_name,
                     r.image_url as room_image_url,
                     r.classroom_image_url as room_classroom_image_url,
+                    r.image_position_x as room_image_position_x,
+                    r.image_position_y as room_image_position_y,
                     r.pin_code as room_pin_code,
                     r.builtland_pin_code as room_builtland_pin_code,
                     r.wifi_username,
@@ -4876,20 +4906,24 @@ export default {
           ).bind(booking.id).all();
           items = results || [];
         } catch (queryErr) {
-          const { results } = await env.DB.prepare(
-            `SELECT bi.*,
-                    r.name as room_name,
-                    r.image_url as room_image_url,
-                    r.pin_code as room_pin_code,
-                    r.builtland_pin_code as room_builtland_pin_code
-             FROM booking_items bi
-             LEFT JOIN rooms r ON bi.room_id = r.id
-             WHERE bi.booking_id = ?
-               AND bi.room_id IS NOT NULL
-               AND COALESCE(bi.checkin_status, '') != 'cancelled'
-             ORDER BY bi.start_time ASC, bi.id ASC`
-          ).bind(booking.id).all();
-          items = results || [];
+          try {
+            const { results } = await env.DB.prepare(
+              `SELECT bi.*,
+                      r.name as room_name,
+                      r.image_url as room_image_url,
+                      r.pin_code as room_pin_code,
+                      r.builtland_pin_code as room_builtland_pin_code
+               FROM booking_items bi
+               LEFT JOIN rooms r ON bi.room_id = r.id
+               WHERE bi.booking_id = ?
+                 AND bi.room_id IS NOT NULL
+                 AND COALESCE(bi.checkin_status, '') != 'cancelled'
+               ORDER BY bi.start_time ASC, bi.id ASC`
+            ).bind(booking.id).all();
+            items = results || [];
+          } catch (innerErr) {
+            items = [];
+          }
         }
 
         const primaryRoomId = items.length > 0 ? items[0].room_id : null;
@@ -4923,10 +4957,19 @@ export default {
             totalRoomItemsCount: items.length
           });
 
+          const posX = (typeof item.room_image_position_x === 'number' && !isNaN(item.room_image_position_x))
+            ? Math.max(0, Math.min(100, Math.round(item.room_image_position_x)))
+            : 50;
+          const posY = (typeof item.room_image_position_y === 'number' && !isNaN(item.room_image_position_y))
+            ? Math.max(0, Math.min(100, Math.round(item.room_image_position_y)))
+            : 50;
+
           roomMap.set(item.room_id, {
             room_id: item.room_id,
             room_name: item.room_name || `ห้อง ${item.room_id}`,
             image_url: preferredImage,
+            image_position_x: posX,
+            image_position_y: posY,
             uses_door_pin: pinInfo.uses_door_pin,
             door_pin: pinInfo.door_pin,
             wifi_username: item.wifi_username || null,
@@ -4967,6 +5010,8 @@ export default {
             room_id: item.room_id,
             room_name: item.room_name || `ห้อง ${item.room_id}`,
             room_image_url: preferredItemImage || roomEntry.image_url || null,
+            image_position_x: roomEntry.image_position_x !== undefined ? roomEntry.image_position_x : 50,
+            image_position_y: roomEntry.image_position_y !== undefined ? roomEntry.image_position_y : 50,
             booking_date: bDate,
             start_time: sTime,
             end_time: eTime,
@@ -4998,6 +5043,8 @@ export default {
           is_multi_item: scheduleList.length > 1,
           banner_type: isMultiRoom ? 'brand' : (singleRoomImage ? 'room' : 'placeholder'),
           banner_image_url: isMultiRoom ? '/Bworktower.jpg' : singleRoomImage,
+          single_room_focal_x: distinctRooms.length === 1 ? (distinctRooms[0].image_position_x ?? 50) : 50,
+          single_room_focal_y: distinctRooms.length === 1 ? (distinctRooms[0].image_position_y ?? 50) : 50,
           rooms: distinctRooms,
           schedules: scheduleList,
           items: scheduleList,
