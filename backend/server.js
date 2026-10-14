@@ -5061,7 +5061,8 @@ if (fs.existsSync(legacyUploadsDir)) {
 
 // Upload base64 image (admin and staff)
 app.post('/api/upload', async (req, res) => {
-  const { imageName, base64Data } = req.body;
+  const base64Data = req.body.base64Data || req.body.image || req.body.image_url;
+  const imageName = req.body.imageName || 'image.png';
   if (!base64Data) {
     return res.status(400).json({ error: 'กรุณาส่งข้อมูลรูปภาพ' });
   }

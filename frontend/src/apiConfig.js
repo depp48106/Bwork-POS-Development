@@ -8,6 +8,9 @@ export const API_BASE = (() => {
   }
   if (typeof window !== 'undefined') {
     const host = window.location.hostname;
+    if (host.includes('staging')) {
+      return 'https://bwork-pos-api-staging.ohnatza74185-ky.workers.dev';
+    }
     if (host.includes('pages.dev') || host.includes('workers.dev') || (host !== 'localhost' && host !== '127.0.0.1' && !host.startsWith('192.168.'))) {
       return 'https://bwork-pos-api.ohnatza74185-ky.workers.dev';
     }

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Edit2, Trash2, Home, Coffee, X, Search, Check, AlertCircle, Layers, ChevronDown } from 'lucide-react';
+import { API_BASE } from '../apiConfig';
 
 function ManagementPanel({ sysAlert, sysConfirm }) {
   // Inventory catalog States
@@ -106,10 +107,11 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
     }
 
     try {
+      const token = localStorage.getItem('token') || localStorage.getItem('pos_token') || '';
       if (editingCatName.old === roomCategoryName) {
-        const setRes = await fetch('/api/settings', {
+        const setRes = await fetch(`${API_BASE}/api/settings`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
           body: JSON.stringify({ room_category_name: cleanNewName })
         });
         if (setRes.ok) {
@@ -118,9 +120,9 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
         }
       }
 
-      const res = await fetch('/api/categories', {
+      const res = await fetch(`${API_BASE}/api/categories`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ oldName: editingCatName.old, newName: cleanNewName })
       });
       if (res.ok) {
@@ -145,8 +147,10 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
     if (!await sysConfirm(confirmMsg)) return;
 
     try {
-      const res = await fetch(`/api/categories/${encodeURIComponent(catName)}`, {
-        method: 'DELETE'
+      const token = localStorage.getItem('token') || localStorage.getItem('pos_token') || '';
+      const res = await fetch(`${API_BASE}/api/categories/${encodeURIComponent(catName)}`, {
+        method: 'DELETE',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
       });
       if (res.ok) {
         await sysAlert('ลบหมวดหมู่และสินค้าในหมวดหมู่เรียบร้อยแล้ว');
@@ -162,7 +166,10 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch('/api/settings');
+      const token = localStorage.getItem('token') || localStorage.getItem('pos_token') || '';
+      const res = await fetch(`${API_BASE}/api/settings`, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.room_category_name) {
@@ -187,8 +194,10 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
     setLoading(true);
     setSearchQuery('');
     try {
-      const roomsRes = await fetch('/api/rooms');
-      const servicesRes = await fetch('/api/services');
+      const token = localStorage.getItem('token') || localStorage.getItem('pos_token') || '';
+      const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+      const roomsRes = await fetch(`${API_BASE}/api/rooms`, { headers: { ...authHeaders } });
+      const servicesRes = await fetch(`${API_BASE}/api/services`, { headers: { ...authHeaders } });
       if (roomsRes.ok && servicesRes.ok) {
         const roomsData = await roomsRes.json();
         const servicesData = await servicesRes.json();
@@ -260,11 +269,15 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
       );
       if (!confirmChange) return;
 
-      const deleteUrl = currentItemForm.originalDbType === 'room' 
+      const deletePath = currentItemForm.originalDbType === 'room'
         ? `/api/rooms/${currentItemForm.id}` 
         : `/api/services/${currentItemForm.id}`;
+      const token = localStorage.getItem('token') || localStorage.getItem('pos_token') || '';
       
-      const deleteRes = await fetch(deleteUrl, { method: 'DELETE' });
+      const deleteRes = await fetch(`${API_BASE}${deletePath}`, {
+        method: 'DELETE',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+      });
       if (!deleteRes.ok) {
         const errorData = await deleteRes.json();
         await sysAlert(`ไม่สามารถย้ายประเภทได้: ${errorData.error || 'สินค้านี้ถูกใช้งานในระบบจองแล้ว'}`);
@@ -316,9 +329,14 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
     }
 
     try {
-      const res = await fetch(url, {
+      const token = localStorage.getItem('token') || localStorage.getItem('pos_token') || '';
+      const fullUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
+      const res = await fetch(fullUrl, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
         body: JSON.stringify(payload)
       });
       if (res.ok) {
@@ -328,17 +346,16 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
         // If saving a room, synchronize Wi-Fi credentials via dedicated protected endpoint
         if (currentItemForm.dbType === 'room' && targetRoomId) {
           try {
-            const token = localStorage.getItem('token');
             if (wifiForm.clearConfirmed) {
-              await fetch(`/api/admin/rooms/${targetRoomId}/wifi`, {
+              await fetch(`${API_BASE}/api/admin/rooms/${targetRoomId}/wifi`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                 body: JSON.stringify({ clear_credentials: true })
               });
             } else if (wifiForm.username !== undefined || wifiForm.password) {
-              await fetch(`/api/admin/rooms/${targetRoomId}/wifi`, {
+              await fetch(`${API_BASE}/api/admin/rooms/${targetRoomId}/wifi`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
                 body: JSON.stringify({
                   wifi_username: wifiForm.username,
                   wifi_password: wifiForm.password
@@ -389,9 +406,9 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
   const fetchRoomWifi = async (roomId) => {
     try {
       setWifiForm(prev => ({ ...prev, loading: true }));
-      const token = localStorage.getItem('token');
-      const res = await fetch(`/api/admin/rooms/${roomId}/wifi`, {
-        headers: { Authorization: `Bearer ${token}` }
+      const token = localStorage.getItem('token') || localStorage.getItem('pos_token') || '';
+      const res = await fetch(`${API_BASE}/api/admin/rooms/${roomId}/wifi`, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
       });
       if (res.ok) {
         const data = await res.json();
@@ -452,9 +469,13 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
       return;
     }
 
-    const url = item.dbType === 'room' ? `/api/rooms/${item.id}` : `/api/services/${item.id}`;
+    const path = item.dbType === 'room' ? `/api/rooms/${item.id}` : `/api/services/${item.id}`;
     try {
-      const res = await fetch(url, { method: 'DELETE' });
+      const token = localStorage.getItem('token') || localStorage.getItem('pos_token') || '';
+      const res = await fetch(`${API_BASE}${path}`, {
+        method: 'DELETE',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+      });
       if (res.ok) {
         await sysAlert('ลบรายการคลังสำเร็จ');
         fetchCatalog();
@@ -1393,12 +1414,17 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                           const reader = new FileReader();
                           reader.onload = async () => {
                             try {
-                              const res = await fetch('/api/upload', {
+                              const token = localStorage.getItem('token') || localStorage.getItem('pos_token') || '';
+                              const res = await fetch(`${API_BASE}/api/upload`, {
                                 method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                                },
                                 body: JSON.stringify({
                                   imageName: file.name,
-                                  base64Data: reader.result
+                                  base64Data: reader.result,
+                                  image: reader.result
                                 })
                               });
                               const data = await res.json();

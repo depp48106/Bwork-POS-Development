@@ -6602,7 +6602,11 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         const body = await request.json();
-        const savedUrl = await saveUploadedFile(env, body.image || body.image_url, 'uploads');
+        const rawImageData = body.base64Data || body.image || body.image_url;
+        if (!rawImageData) {
+          return new Response(JSON.stringify({ error: 'กรุณาส่งข้อมูลรูปภาพ' }), { status: 400, headers: corsHeaders });
+        }
+        const savedUrl = await saveUploadedFile(env, rawImageData, 'uploads');
         return new Response(JSON.stringify({ success: true, url: savedUrl || '/uploads/img_default.png' }), { headers: corsHeaders });
       }
 
