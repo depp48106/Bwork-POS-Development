@@ -87,7 +87,7 @@ const getUnifiedPaymentStatus = (ev) => {
   if (pStatus === 'rejected') {
     return {
       key: 'rejected',
-      label: 'ปฏิเสธสลิป',
+      label: 'สลิปถูกปฏิเสธ — รอหลักฐานใหม่',
       color: '#ef4444',
       bgLight: 'rgba(239, 68, 68, 0.12)',
       border: 'rgba(239, 68, 68, 0.35)',

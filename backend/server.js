@@ -1696,7 +1696,7 @@ app.get('/api/bookings', async (req, res) => {
 
       // Fetch latest slip verification details if available
       const slipRows = await dbQuery.all(
-        `SELECT booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, created_at as slip_verified_at
+        `SELECT booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, rejection_reason, created_at as slip_verified_at, created_at as rejection_time
          FROM slip_verifications
          WHERE booking_id IN (${placeholders})
          ORDER BY id DESC`,
@@ -1713,6 +1713,8 @@ app.get('/api/bookings', async (req, res) => {
           if (!b.slip_image_url) b.slip_image_url = s.slip_image_url;
           if (!b.slip_trans_ref) b.slip_trans_ref = s.trans_ref;
           if (!b.slip_verify_status) b.slip_verify_status = s.verification_status;
+          b.rejection_reason = s.rejection_reason || null;
+          b.rejection_time = s.rejection_time || null;
         }
         b.items = itemsByBookingId[b.id] || [];
         if (b.items.length > 0) {
@@ -1899,6 +1901,8 @@ app.get('/api/bookings/:id', async (req, res) => {
       if (!booking.slip_image_url) booking.slip_image_url = slipVerification.slip_image_url;
       if (!booking.slip_trans_ref) booking.slip_trans_ref = slipVerification.trans_ref;
       if (!booking.slip_verify_status) booking.slip_verify_status = slipVerification.verification_status;
+      booking.rejection_reason = slipVerification.rejection_reason || null;
+      booking.rejection_time = slipVerification.created_at || null;
     }
 
     res.json({ ...booking, slip_verification: slipVerification || null, items });
@@ -2336,8 +2340,18 @@ app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) =>
     displayReason = `${displayReason} (${sanitizedNote})`;
   }
 
+  const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
+  const nowIso = getBangkokLocalISO(new Date());
+
   try {
-    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [id]);
+    const booking = await dbQuery.get(
+      `SELECT b.*, r.name as room_name
+       FROM bookings b
+       LEFT JOIN booking_items bi ON bi.booking_id = b.id
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE b.id = ?`,
+      [id]
+    );
     if (!booking) {
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
     }
@@ -2379,12 +2393,69 @@ app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) =>
             booking_id, trans_ref, bank_code, bank_name, slip_image_url,
             is_auto_approved, confidence_score, raw_qr_data, verification_status,
             rejection_reason, created_at
-          ) VALUES (?, ?, '000', 'ธนาคาร', ?, 0, 0, '', 'rejected', ?, datetime('now', 'localtime'))`,
-          [id, booking.slip_trans_ref || `REJ_${id}_${Date.now()}`, booking.slip_image_url || 'uploaded', displayReason]
+          ) VALUES (?, ?, '000', 'ธนาคาร', ?, 0, 0, '', 'rejected', ?, ?)`,
+          [id, booking.slip_trans_ref || `REJ_${id}_${Date.now()}`, booking.slip_image_url || 'uploaded', displayReason, nowIso]
         );
       }
     } catch (svErr) {
       console.error('Audit update error on slip rejection:', svErr);
+    }
+
+    // Audit log in booking_history
+    try {
+      await dbQuery.run(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, 'reject_slip', ?, ?, ?)`,
+        [id, displayReason, staffName, nowIso]
+      );
+    } catch (hErr) {
+      console.warn('Booking history audit log error:', hErr.message);
+    }
+
+    // Calculate original payment deadline for eligibility check and LINE notification
+    const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
+    const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
+    const createdAtMs = new Date(String(booking.created_at).replace(' ', 'T')).getTime();
+    const deadlineMs = !isNaN(createdAtMs) ? createdAtMs + paymentWindowMinutes * 60 * 1000 : Date.now();
+    const isStillEligible = Date.now() < deadlineMs;
+    const paymentDeadlineIso = new Date(deadlineMs).toISOString();
+
+    // Push LINE Notification if eligible and not already notified
+    let lineNotified = false;
+    if (booking.line_user_id && process.env.DISABLE_LIVE_LINE !== 'true') {
+      try {
+        const prevNotif = await dbQuery.get(
+          "SELECT id FROM booking_history WHERE booking_id = ? AND action = 'line_reject_notified' AND details = ? LIMIT 1",
+          [id, displayReason]
+        );
+        if (!prevNotif) {
+          const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+          const channelAccessToken = tokenSetting?.value;
+          if (channelAccessToken) {
+            const flexReject = buildLineSlipRejectedFlex(booking, booking.room_name, displayReason, paymentDeadlineIso, isStillEligible);
+            await fetch('https://api.line.me/v2/bot/message/push', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${channelAccessToken}`
+              },
+              body: JSON.stringify({
+                to: booking.line_user_id,
+                messages: [flexReject]
+              })
+            });
+            lineNotified = true;
+            await dbQuery.run(
+              `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+               VALUES (?, 'line_reject_notified', ?, 'system', ?)`,
+              [id, displayReason, nowIso]
+            );
+          }
+        }
+      } catch (lineErr) {
+        console.warn('[Reject Slip] LINE notification delivery warning:', lineErr.message);
+        // Note: Delivery failure strictly does NOT undo slip rejection
+      }
     }
 
     res.json({
@@ -2392,7 +2463,12 @@ app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) =>
       message: 'ปฏิเสธสลิปการโอนเงินเรียบร้อยแล้ว (การจองยังคงอยู่เพื่อให้ลูกค้าแนบสลิปใหม่)',
       payment_status: 'rejected',
       slip_verify_status: 'rejected',
-      rejection_reason: displayReason
+      rejection_reason: displayReason,
+      rejected_by: staffName,
+      rejected_at: nowIso,
+      paymentDeadline: paymentDeadlineIso,
+      isStillEligible,
+      line_notified: lineNotified
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2730,7 +2806,7 @@ app.get('/api/bookings/:id/payments', authenticateToken, async (req, res) => {
 app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) => {
   try {
     const bookingId = req.params.id;
-    const { amount, payment_method } = req.body;
+    const { amount, payment_method, slip_image } = req.body;
 
     const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     if (!booking) {
@@ -2779,15 +2855,36 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
       receiptNumber = await generateReceiptNumber();
     }
 
+    // Process optional attached slip image for walk-in payments
+    let slipUrl = null;
+    if (slip_image) {
+      const matches = String(slip_image).match(/^data:(image\/(png|jpeg|jpg|webp));base64,(.+)$/);
+      if (!matches) {
+        return res.status(400).json({ error: 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง (PNG, JPG, WEBP)' });
+      }
+      const imageBuffer = Buffer.from(matches[3], 'base64');
+      if (imageBuffer.length > 10 * 1024 * 1024) {
+        return res.status(400).json({ error: 'ขนาดรูปภาพเกิน 10MB กรุณาอัปโหลดรูปที่มีขนาดเล็กลง' });
+      }
+      const ext = matches[2] === 'jpeg' ? 'jpg' : matches[2];
+      const slipDir = path.join(__dirname, 'uploads', 'slips');
+      if (!fs.existsSync(slipDir)) fs.mkdirSync(slipDir, { recursive: true });
+      const fileName = `walkin_BK${String(booking.id).padStart(6, '0')}_${Date.now()}.${ext}`;
+      fs.writeFileSync(path.join(slipDir, fileName), imageBuffer);
+      slipUrl = `/uploads/slips/${fileName}`;
+    }
+
     await dbQuery.transaction(async () => {
       // Concurrency check: enforce canonical remaining >= payAmount in UPDATE condition
       const updateRes = await dbQuery.run(
         `UPDATE bookings
-         SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?, receipt_number = COALESCE(receipt_number, ?)
+         SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?,
+             receipt_number = COALESCE(receipt_number, ?),
+             slip_image_url = COALESCE(slip_image_url, ?)
          WHERE id = ?
            AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free')
            AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?`,
-        [newPaid, newBalance, newStatus, method, receiptNumber, booking.id, payAmount]
+        [newPaid, newBalance, newStatus, method, receiptNumber, slipUrl, booking.id, payAmount]
       );
       if (updateRes.changes === 0) {
         const raceErr = new Error('ยอดคงเหลือถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง');
@@ -2797,9 +2894,9 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
 
       await dbQuery.run(
         `INSERT INTO payment_transactions
-         (booking_id, amount, payment_method, transaction_type, status, created_at)
-         VALUES (?, ?, ?, 'balance', 'completed', ?)`,
-        [booking.id, payAmount, method, nowIso]
+         (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
+         VALUES (?, ?, ?, ?, 'balance', 'completed', ?)`,
+        [booking.id, payAmount, method, slipUrl, nowIso]
       );
     });
 
@@ -2811,10 +2908,86 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
       balance_amount: newBalance,
       payment_status: newStatus,
       payment_method: method,
+      slip_url: slipUrl,
       booking: updatedBooking
     });
   } catch (err) {
     res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+// Dedicated endpoint to attach slip evidence to a payment transaction (Walk-in payment evidence)
+app.post(['/api/bookings/:id/payments/:paymentId/slip', '/api/bookings/:id/attach-slip'], authenticateToken, async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const paymentId = Number(req.params.paymentId || req.body.payment_id);
+    const { slip_image } = req.body;
+
+    if (!slip_image) {
+      return res.status(400).json({ error: 'กรุณาแนบไฟล์รูปภาพสลิป' });
+    }
+
+    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    // Find specific transaction or latest transaction for this booking
+    let transaction = null;
+    if (paymentId) {
+      transaction = await dbQuery.get('SELECT * FROM payment_transactions WHERE id = ? AND booking_id = ?', [paymentId, bookingId]);
+      if (!transaction) {
+        return res.status(404).json({ error: 'ไม่พบรายการธุรกรรมชำระเงินที่ระบุสำหรับการจองนี้' });
+      }
+    } else {
+      transaction = await dbQuery.get('SELECT * FROM payment_transactions WHERE booking_id = ? ORDER BY id DESC LIMIT 1', [bookingId]);
+    }
+
+    // Validate file format and size
+    const matches = String(slip_image).match(/^data:(image\/(png|jpeg|jpg|webp));base64,(.+)$/);
+    if (!matches) {
+      return res.status(400).json({ error: 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ PNG, JPG หรือ WEBP' });
+    }
+
+    const imageBuffer = Buffer.from(matches[3], 'base64');
+    if (imageBuffer.length > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: 'ขนาดรูปภาพเกิน 10MB กรุณาอัปโหลดรูปที่มีขนาดเล็กลง' });
+    }
+
+    const ext = matches[2] === 'jpeg' ? 'jpg' : matches[2];
+    const slipDir = path.join(__dirname, 'uploads', 'slips');
+    if (!fs.existsSync(slipDir)) fs.mkdirSync(slipDir, { recursive: true });
+    const fileName = `attach_BK${String(bookingId).padStart(6, '0')}_TX${transaction ? transaction.id : 0}_${Date.now()}.${ext}`;
+    fs.writeFileSync(path.join(slipDir, fileName), imageBuffer);
+    const slipUrl = `/uploads/slips/${fileName}`;
+
+    if (transaction) {
+      await dbQuery.run('UPDATE payment_transactions SET slip_url = ? WHERE id = ? AND booking_id = ?', [slipUrl, transaction.id, bookingId]);
+    }
+
+    if (!booking.slip_image_url) {
+      await dbQuery.run('UPDATE bookings SET slip_image_url = ? WHERE id = ?', [slipUrl, bookingId]);
+    }
+
+    const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
+    const nowIso = getBangkokLocalISO(new Date());
+    try {
+      await dbQuery.run(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, 'attach_slip', ?, ?, ?)`,
+        [bookingId, `แนบสลิปธุรกรรม #${transaction ? transaction.id : 'N/A'}: ${slipUrl}`, staffName, nowIso]
+      );
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      message: 'แนบหลักฐานสลิปการชำระเงินเรียบร้อยแล้ว',
+      slip_url: slipUrl,
+      payment_id: transaction ? transaction.id : null,
+      booking_id: bookingId
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -5760,11 +5933,23 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
       return res.status(409).json({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้ว ไม่สามารถแนบสลิปซ้ำได้' });
     }
 
-    if (booking.payment_status === 'cancelled') {
-      const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
-      const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
+    const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
+    const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
+    const paymentWindowMs = paymentWindowMinutes * 60 * 1000;
+    const createdAtMs = new Date(String(booking.created_at).replace(' ', 'T')).getTime();
+    const isExpiredByTime = !isNaN(createdAtMs) && (Date.now() - createdAtMs >= paymentWindowMs);
+
+    if (booking.payment_status === 'cancelled' || isExpiredByTime) {
+      if (booking.payment_status !== 'cancelled') {
+        const cancelReasonMsg = `ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (${paymentWindowMinutes} นาที)`;
+        await dbQuery.run(
+          "UPDATE bookings SET payment_status = 'cancelled', checkin_status = 'cancelled', cancellation_reason = ? WHERE id = ? AND payment_status NOT IN ('paid', 'reviewing')",
+          [cancelReasonMsg, targetBookingId]
+        );
+        await dbQuery.run("UPDATE booking_items SET checkin_status = 'cancelled' WHERE booking_id = ?", [targetBookingId]);
+      }
       return res.status(400).json({
-        error: `รายการจองนี้ถูกยกเลิกแล้ว เนื่องจากเกินกำหนดเวลาชำระเงิน ${paymentWindowMinutes} นาที กรุณาทำรายการจองใหม่`
+        error: `รายการจองนี้หมดเวลาชำระเงินแล้ว (${paymentWindowMinutes} นาที) ไม่สามารถแนบสลิปได้ กรุณาทำรายการจองใหม่`
       });
     }
 
@@ -6402,6 +6587,155 @@ function buildLineBookingCancelledFlex(booking, roomNameOrItem, reasonOrRoom, it
   };
 }
 
+function buildLineSlipRejectedFlex(booking, roomNameOrItem, displayReason, paymentDeadlineIso, isStillEligible) {
+  let roomName = (typeof roomNameOrItem === 'string' && roomNameOrItem) ? roomNameOrItem : (booking?.room_name || 'ห้องประชุม B-WORK');
+  const bookingCode = booking?.receipt_number || `#BK-${String(booking?.id || 0).padStart(6, '0')}`;
+  const reasonText = displayReason || 'สลิปการโอนเงินไม่ถูกต้อง';
+
+  let deadlineDisplay = '-';
+  if (paymentDeadlineIso) {
+    try {
+      const d = new Date(paymentDeadlineIso);
+      const bkkHours = d.getHours().toString().padStart(2, '0');
+      const bkkMinutes = d.getMinutes().toString().padStart(2, '0');
+      deadlineDisplay = `${formatThaiDateDisplay(paymentDeadlineIso)} เวลา ${bkkHours}:${bkkMinutes} น.`;
+    } catch (_) {
+      deadlineDisplay = String(paymentDeadlineIso);
+    }
+  }
+
+  const contactParam = encodeURIComponent(booking?.contact || '');
+  const resubmitUrl = `https://bwork-booking.pages.dev/confirm?booking_id=${booking?.id}&contact=${contactParam}`;
+
+  const bodyContents = [
+    {
+      type: 'text',
+      text: 'สลิปไม่ผ่านการตรวจสอบ',
+      size: 'xl',
+      weight: 'bold',
+      color: '#0f172a'
+    },
+    {
+      type: 'text',
+      text: isStillEligible ? 'กรุณาตรวจสอบและแนบสลิปใหม่ก่อนหมดเวลา' : 'รายการจองหมดเวลาชำระเงินแล้ว',
+      size: 'xs',
+      color: '#64748b',
+      margin: 'xs'
+    },
+    {
+      type: 'box',
+      layout: 'vertical',
+      margin: 'lg',
+      spacing: 'sm',
+      contents: [
+        {
+          type: 'box',
+          layout: 'baseline',
+          contents: [
+            { type: 'text', text: 'รหัสการจอง', color: '#64748b', size: 'sm', flex: 3 },
+            { type: 'text', text: bookingCode, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+          ]
+        },
+        {
+          type: 'box',
+          layout: 'baseline',
+          contents: [
+            { type: 'text', text: 'ห้องประชุม', color: '#64748b', size: 'sm', flex: 3 },
+            { type: 'text', text: roomName, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+          ]
+        }
+      ]
+    },
+    {
+      type: 'box',
+      layout: 'vertical',
+      margin: 'md',
+      paddingAll: '14px',
+      backgroundColor: '#fffbeb',
+      cornerRadius: '10px',
+      borderWidth: '1px',
+      borderColor: '#fde68a',
+      contents: [
+        { type: 'text', text: 'เหตุผลที่ปฏิเสธสลิป', size: 'xs', weight: 'bold', color: '#b45309' },
+        { type: 'text', text: reasonText, size: 'sm', weight: 'bold', color: '#b45309', margin: 'xs', wrap: true }
+      ]
+    }
+  ];
+
+  if (isStillEligible && deadlineDisplay !== '-') {
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'sm',
+      paddingAll: '12px',
+      backgroundColor: '#f8fafc',
+      cornerRadius: '8px',
+      borderWidth: '1px',
+      borderColor: '#e2e8f0',
+      contents: [
+        { type: 'text', text: 'กำหนดเวลาชำระเงินเดิม', size: 'xs', color: '#64748b' },
+        { type: 'text', text: deadlineDisplay, size: 'sm', weight: 'bold', color: '#0f172a', margin: 'xs' },
+        { type: 'text', text: 'ระบบไม่ขยายเวลาชำระเงิน กรุณาแนบสลิปใหม่ก่อนหมดเวลา', size: 'xxs', color: '#dc2626', margin: 'xs', wrap: true }
+      ]
+    });
+  }
+
+  const footerContents = [];
+  if (isStillEligible) {
+    footerContents.push({
+      type: 'button',
+      action: {
+        type: 'uri',
+        label: 'แนบสลิปใหม่',
+        uri: resubmitUrl
+      },
+      style: 'primary',
+      color: '#d97706',
+      height: 'md'
+    });
+  } else {
+    footerContents.push({
+      type: 'button',
+      action: {
+        type: 'uri',
+        label: 'จองห้องใหม่',
+        uri: 'https://bwork-booking.pages.dev'
+      },
+      style: 'primary',
+      color: '#64748b',
+      height: 'md'
+    });
+  }
+
+  return {
+    type: 'flex',
+    altText: `แจ้งผลการตรวจสอบสลิป - ${bookingCode}`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: {
+        type: 'image',
+        url: 'https://bwork-booking.pages.dev/line-banners/bwork-booking-cancel-banner.png',
+        size: 'full',
+        aspectRatio: '3:1',
+        aspectMode: 'cover'
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '20px',
+        contents: bodyContents
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: footerContents
+      }
+    }
+  };
+}
+
 // Background Worker: Automatically Cancel Expired Pending Bookings (based on payment_window_minutes) and Notify LINE OA
 async function checkAndCancelExpiredBookings() {
   try {
@@ -6415,9 +6749,11 @@ async function checkAndCancelExpiredBookings() {
       FROM bookings b
       LEFT JOIN booking_items bi ON bi.booking_id = b.id
       LEFT JOIN rooms r ON bi.room_id = r.id
-      WHERE (b.payment_status = 'pending' OR b.payment_status = 'unpaid' OR b.payment_status IS NULL)
-        AND (b.slip_image_url IS NULL OR b.slip_image_url = '')
-        AND b.booking_source = 'online'
+      WHERE (
+        ((b.payment_status = 'pending' OR b.payment_status = 'unpaid' OR b.payment_status IS NULL) AND (b.slip_image_url IS NULL OR b.slip_image_url = ''))
+        OR b.payment_status = 'rejected'
+      )
+      AND b.booking_source = 'online'
     `);
 
     const now = Date.now();
@@ -6431,41 +6767,48 @@ async function checkAndCancelExpiredBookings() {
       if (now - createdAtTime >= paymentWindowMs) {
         console.log(`[Auto-Cancel] Booking #${b.id} (${b.receipt_number || b.id}) expired after ${paymentWindowMinutes} minutes. Cancelling...`);
 
-        await dbQuery.run(`
+        const cancelResult = await dbQuery.run(`
           UPDATE bookings
           SET payment_status = 'cancelled',
               checkin_status = 'cancelled',
               cancellation_reason = ?
           WHERE id = ?
+            AND (
+              ((payment_status = 'pending' OR payment_status = 'unpaid' OR payment_status IS NULL) AND (slip_image_url IS NULL OR slip_image_url = ''))
+              OR payment_status = 'rejected'
+            )
+            AND booking_source = 'online'
         `, [cancelReasonMsg, b.id]);
 
-        await dbQuery.run(`
-          UPDATE booking_items
-          SET checkin_status = 'cancelled'
-          WHERE booking_id = ?
-        `, [b.id]);
+        if (cancelResult && cancelResult.changes === 1) {
+          await dbQuery.run(`
+            UPDATE booking_items
+            SET checkin_status = 'cancelled'
+            WHERE booking_id = ?
+          `, [b.id]);
 
-        // Push LINE Cancellation Notification
-        if (b.line_user_id) {
-          try {
-            const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
-            const channelAccessToken = tokenSetting?.value;
-            if (channelAccessToken) {
-              const flexCancel = buildLineBookingCancelledFlex(b, b.room_name, cancelReasonMsg);
-              await fetch('https://api.line.me/v2/bot/message/push', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${channelAccessToken}`
-                },
-                body: JSON.stringify({
-                  to: b.line_user_id,
-                  messages: [flexCancel]
-                })
-              });
+          // Push LINE Cancellation Notification
+          if (b.line_user_id) {
+            try {
+              const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+              const channelAccessToken = tokenSetting?.value;
+              if (channelAccessToken) {
+                const flexCancel = buildLineBookingCancelledFlex(b, b.room_name, cancelReasonMsg);
+                await fetch('https://api.line.me/v2/bot/message/push', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${channelAccessToken}`
+                  },
+                  body: JSON.stringify({
+                    to: b.line_user_id,
+                    messages: [flexCancel]
+                  })
+                });
+              }
+            } catch (lineErr) {
+              console.warn('[Auto-Cancel] LINE notification warning:', lineErr.message);
             }
-          } catch (lineErr) {
-            console.warn('[Auto-Cancel] LINE notification warning:', lineErr.message);
           }
         }
       }
@@ -6497,6 +6840,7 @@ if (typeof module !== 'undefined' && module.exports) {
     buildLineBookingRescheduleFlex,
     buildLineBookingCancelledFlex,
     buildLineBookingCancellationFlex,
+    buildLineSlipRejectedFlex,
     formatThaiDateDisplay,
     formatRescheduleTimeDisplay
   };

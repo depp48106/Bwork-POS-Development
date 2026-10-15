@@ -25,7 +25,8 @@ import {
   Phone,
   User,
   Copy,
-  Check
+  Check,
+  AlertCircle
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import ReceiptPrint from './ReceiptPrint';
@@ -1387,6 +1388,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         if (key === 'payment_status') {
                           const fin = normalizeBookingFinancials(b);
                           const isDep = fin ? fin.is_deposit : (b.payment_status === 'deposit');
+                          const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
                           const isUnpaid = fin ? fin.is_pending : (b.payment_status === 'pending' || b.payment_status === 'unpaid');
                           const isRev = fin ? fin.is_reviewing : (b.payment_status === 'reviewing');
 
@@ -1423,6 +1425,22 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                 }}>
                                   <CheckCircle2 size={11} />
                                   <span>สิทธิ์ภายใน</span>
+                                </span>
+                              ) : isRejected ? (
+                                <span style={{
+                                  padding: '2px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                                  color: '#dc2626',
+                                  border: '1px solid rgba(239, 68, 68, 0.25)',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}>
+                                  <AlertCircle size={11} />
+                                  <span>สลิปถูกปฏิเสธ — รอหลักฐานใหม่</span>
                                 </span>
                               ) : isDep ? (
                                 <span style={{
@@ -1698,6 +1716,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                       ) : b.payment_status === 'internal_free' ? (
                         <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(249, 115, 22, 0.12)', color: '#ea580c', fontWeight: 800 }}>
                           สิทธิ์ภายใน
+                        </span>
+                      ) : (fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected')) ? (
+                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(239, 68, 68, 0.12)', color: '#dc2626', fontWeight: 800 }}>
+                          สลิปถูกปฏิเสธ — รอหลักฐานใหม่
                         </span>
                       ) : fin?.is_deposit ? (
                         <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(245, 158, 11, 0.12)', color: '#d97706', fontWeight: 800 }}>
@@ -2039,6 +2061,34 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>
                       การจองนี้ถูกยกเลิกแล้ว ไม่มียอดค้างชำระและไม่มีการออกใบเสร็จรับเงิน
                     </span>
+                  </div>
+                </div>
+              ) : (selectedBooking.payment_status === 'rejected' || selectedBooking.slip_verify_status === 'rejected') ? (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  color: '#dc2626',
+                  fontWeight: '700',
+                  fontSize: '0.875rem',
+                  backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                  padding: '14px 18px',
+                  borderRadius: '16px',
+                  border: '1px solid rgba(239, 68, 68, 0.25)'
+                }}>
+                  <AlertCircle size={20} />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                    <span>สลิปถูกปฏิเสธ — รอหลักฐานใหม่</span>
+                    {selectedBooking.rejection_reason && (
+                      <span style={{ fontSize: '0.8rem', color: '#991b1b', fontWeight: 600 }}>
+                        <strong>เหตุผล:</strong> {selectedBooking.rejection_reason}
+                      </span>
+                    )}
+                    {selectedBooking.rejection_time && (
+                      <span style={{ fontSize: '0.72rem', color: '#7f1d1d' }}>
+                        เวลาที่ปฏิเสธ: {formatTransactionDateTime(selectedBooking.rejection_time)}
+                      </span>
+                    )}
                   </div>
                 </div>
               ) : selectedBooking.payment_status === 'internal_free' ? (

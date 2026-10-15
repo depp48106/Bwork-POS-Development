@@ -150,8 +150,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [collectBalanceBooking, setCollectBalanceBooking] = useState(null);
   const [collectBalanceAmount, setCollectBalanceAmount] = useState('');
   const [collectBalanceMethod, setCollectBalanceMethod] = useState('cash');
+  const [collectBalanceSlipBase64, setCollectBalanceSlipBase64] = useState(null);
+  const [collectBalanceSlipName, setCollectBalanceSlipName] = useState('');
   const [isCollectingBalance, setIsCollectingBalance] = useState(false);
   const [collectBalanceError, setCollectBalanceError] = useState(null);
+  const [attachingTxId, setAttachingTxId] = useState(null);
+  const attachTxFileInputRef = useRef(null);
 
   // Payment Transactions History for Detail Modal (Phase 4)
   const [paymentTransactions, setPaymentTransactions] = useState([]);
@@ -669,6 +673,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     setCollectBalanceBooking(fresh);
     setCollectBalanceAmount(String(fin.balance_amount || 0));
     setCollectBalanceMethod('cash');
+    setCollectBalanceSlipBase64(null);
+    setCollectBalanceSlipName('');
     setCollectBalanceError(null);
     setShowCollectBalanceModal(true);
   };
@@ -942,16 +948,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
     try {
       const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const payload = {
+        amount: amountNum,
+        payment_method: collectBalanceMethod
+      };
+      if (collectBalanceSlipBase64 && (collectBalanceMethod === 'transfer' || collectBalanceMethod === 'promptpay')) {
+        payload.slip_image = collectBalanceSlipBase64;
+      }
+
       const res = await fetch(`/api/bookings/${collectBalanceBooking.id}/pay-balance`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
-        body: JSON.stringify({
-          amount: amountNum,
-          payment_method: collectBalanceMethod
-        })
+        body: JSON.stringify(payload)
       });
 
       const data = await res.json();
@@ -996,6 +1007,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
         setShowCollectBalanceModal(false);
         setCollectBalanceBooking(null);
+        setCollectBalanceSlipBase64(null);
+        setCollectBalanceSlipName('');
 
         await sysAlert(data.message || 'บันทึกการชำระเงินสำเร็จแล้ว');
         fetchBookings(true, false, true);
@@ -1008,6 +1021,42 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     } finally {
       setIsCollectingBalance(false);
     }
+  };
+
+  // Staff attaches slip to a specific payment transaction (POST /api/bookings/:id/payments/:paymentId/slip)
+  const handleAttachSlipToTransaction = async (bookingId, paymentId, file) => {
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      if (sysAlert) await sysAlert('ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64Data = e.target.result;
+      try {
+        const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+        const res = await fetch(`/api/bookings/${bookingId}/payments/${paymentId}/slip`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({ slip_image: base64Data })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          if (sysAlert) await sysAlert('แนบสลิปหลักฐานเรียบร้อยแล้ว');
+          fetchPaymentTransactions(bookingId);
+          fetchBookings(true, false, true);
+        } else {
+          if (sysAlert) await sysAlert(data.error || 'เกิดข้อผิดพลาดในการแนบสลิป');
+        }
+      } catch (err) {
+        console.error('Error attaching slip to transaction:', err);
+        if (sysAlert) await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   // Legacy fallback payment handler (routes to submitCollectBalance if collectible)
@@ -3192,7 +3241,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           ) : isRejected ? (
                             <span className="pb-status-badge pb-status-rejected">
                               <AlertCircle size={11} />
-                              <span>สลิปไม่ผ่าน</span>
+                              <span>สลิปถูกปฏิเสธ — รอหลักฐานใหม่</span>
                             </span>
                           ) : fin?.is_deposit ? (
                             <span className="pb-status-badge pb-status-deposit">
@@ -3371,7 +3420,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       ) : isRejected ? (
                         <span className="pb-status-badge pb-status-rejected">
                           <AlertCircle size={11} />
-                          <span>สลิปไม่ผ่าน</span>
+                          <span>สลิปถูกปฏิเสธ — รอหลักฐานใหม่</span>
                         </span>
                       ) : fin?.is_deposit ? (
                         <span className="pb-status-badge pb-status-deposit">
@@ -4002,7 +4051,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           statusText = 'ยกเลิกการจอง';
           statusBadgeClass = 'pb-status-badge--cancelled';
         } else if (isRejected) {
-          statusText = 'สลิปถูกปฏิเสธ';
+          statusText = 'สลิปถูกปฏิเสธ — รอหลักฐานใหม่';
           statusBadgeClass = 'pb-status-badge--rejected';
         } else if (isReviewing) {
           statusText = 'รอตรวจสลิป';
@@ -4045,6 +4094,35 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
               {/* BODY: 2-COLUMN GRID */}
               <div className="pb-detail-modal-body">
+                {/* Rejection Banner */}
+                {isRejected && (
+                  <div style={{
+                    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                    border: '1.5px solid #ef4444',
+                    borderRadius: '12px',
+                    padding: '12px 16px',
+                    marginBottom: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <AlertCircle size={18} color="#dc2626" />
+                      <span style={{ fontWeight: 800, color: '#dc2626', fontSize: '0.88rem' }}>
+                        สลิปถูกปฏิเสธ — รอหลักฐานใหม่
+                      </span>
+                    </div>
+                    {b.rejection_reason && (
+                      <div style={{ fontSize: '0.82rem', color: '#991b1b', fontWeight: 600 }}>
+                        <strong>เหตุผลที่ปฏิเสธ:</strong> {b.rejection_reason}
+                      </div>
+                    )}
+                    <div style={{ fontSize: '0.74rem', color: '#7f1d1d', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                      {b.rejection_time && <span>เวลาที่ปฏิเสธ: {formatCreatedDateTime(b.rejection_time)}</span>}
+                      {b.rejected_by && <span>เจ้าหน้าที่ผู้ตรวจสอบ: {b.rejected_by}</span>}
+                    </div>
+                  </div>
+                )}
                 <div className="pb-detail-grid">
                   {/* LEFT COLUMN */}
                   <div className="pb-detail-col">
@@ -4735,7 +4813,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                       {formatCreatedDateTime(tx.payment_time || tx.created_at)}
                                     </div>
                                   </div>
-                                  <div style={{ textAlign: 'right' }}>
+                                  <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px' }}>
                                     <div style={{ fontWeight: 800, color: '#16a34a', fontSize: '0.86rem' }}>
                                       +฿{formatMoney(tx.amount)}
                                     </div>
@@ -4744,9 +4822,78 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                         #{tx.receipt_number}
                                       </div>
                                     )}
+                                    {tx.slip_url ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setViewingSlipBooking({
+                                            ...b,
+                                            slip_image_url: tx.slip_url,
+                                            receipt_number: tx.receipt_number || b.receipt_number
+                                          });
+                                        }}
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px',
+                                          padding: '2px 8px',
+                                          borderRadius: '6px',
+                                          backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                          color: 'var(--primary-color)',
+                                          border: '1px solid rgba(37, 99, 235, 0.25)',
+                                          fontSize: '0.7rem',
+                                          fontWeight: 700,
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        <Eye size={10} />
+                                        <span>ดูสลิป</span>
+                                      </button>
+                                    ) : (tx.payment_method === 'transfer' || tx.payment_method === 'promptpay') ? (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setAttachingTxId(tx.id);
+                                          attachTxFileInputRef.current?.click();
+                                        }}
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px',
+                                          padding: '2px 8px',
+                                          borderRadius: '6px',
+                                          backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                                          color: '#d97706',
+                                          border: '1px solid rgba(245, 158, 11, 0.3)',
+                                          fontSize: '0.7rem',
+                                          fontWeight: 700,
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        <Plus size={10} />
+                                        <span>แนบสลิป</span>
+                                      </button>
+                                    ) : null}
                                   </div>
                                 </div>
                               ))}
+                              {/* Hidden File Input for attaching slip to specific transaction */}
+                              <input
+                                type="file"
+                                ref={attachTxFileInputRef}
+                                accept="image/png,image/jpeg,image/jpg"
+                                style={{ display: 'none' }}
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file && attachingTxId) {
+                                    handleAttachSlipToTransaction(b.id, attachingTxId, file);
+                                  }
+                                  e.target.value = '';
+                                  setAttachingTxId(null);
+                                }}
+                              />
                             </div>
                           ) : (
                             <div className="pb-detail-empty-note">
@@ -5233,6 +5380,40 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 </div>
               </div>
 
+              {/* Optional Walk-in Transfer Slip Attachment */}
+              {collectBalanceMethod === 'transfer' && (
+                <div style={{ marginTop: '4px' }}>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                    แนบสลิปหลักฐานการโอน (ตัวเลือกเพิ่มเติม, ไม่เกิน 10MB)
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      if (file.size > 10 * 1024 * 1024) {
+                        setCollectBalanceError('ไฟล์รูปภาพมีขนาดเกิน 10MB กรุณาเลือกไฟล์ใหม่');
+                        e.target.value = '';
+                        return;
+                      }
+                      const reader = new FileReader();
+                      reader.onload = (ev) => {
+                        setCollectBalanceSlipBase64(ev.target.result);
+                        setCollectBalanceSlipName(file.name);
+                      };
+                      reader.readAsDataURL(file);
+                    }}
+                    style={{ fontSize: '0.8rem', width: '100%' }}
+                  />
+                  {collectBalanceSlipName && (
+                    <div style={{ fontSize: '0.74rem', color: '#16a34a', marginTop: '4px', fontWeight: 600 }}>
+                      ✓ เลือกไฟล์: {collectBalanceSlipName}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Error Banner */}
               {collectBalanceError && (
                 <div
@@ -5263,6 +5444,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   onClick={() => {
                     setShowCollectBalanceModal(false);
                     setCollectBalanceBooking(null);
+                    setCollectBalanceSlipBase64(null);
+                    setCollectBalanceSlipName('');
                     setCollectBalanceError(null);
                   }}
                   disabled={isCollectingBalance}

@@ -675,50 +675,61 @@ test('TC20: CustomDatePicker filter blocks rejected booking dates', () => {
   assert.equal(filterBooking({ payment_status: 'paid' }), true, 'paid is retained as occupied');
 });
 
-// 21. rejected bypasses expired UI
-test('TC21: ConfirmPage logic ensures isRejected takes priority over isExpired', () => {
+// 21. Confirmed Business Policy: Expiration takes precedence when deadline passes
+test('TC21: ConfirmPage logic ensures expired rejected bookings do NOT allow upload', () => {
   const computeDisplayState = (booking, isExpired) => {
     const isRejected = booking?.payment_status === 'rejected' || booking?.slip_verify_status === 'rejected';
+    if (isExpired) {
+      return { showRejectionBox: isRejected, showExpiredBox: true, allowUpload: false };
+    }
     if (isRejected) {
       return { showRejectionBox: true, showExpiredBox: false, allowUpload: true };
-    }
-    if (isExpired) {
-      return { showRejectionBox: false, showExpiredBox: true, allowUpload: false };
     }
     return { showRejectionBox: false, showExpiredBox: false, allowUpload: true };
   };
 
   const rejectedBooking = { payment_status: 'rejected', slip_verify_status: 'rejected' };
-  // Even if isExpired is true (timer ran out), isRejected must take precedence!
-  const state = computeDisplayState(rejectedBooking, true);
-  assert.equal(state.showRejectionBox, true);
-  assert.equal(state.showExpiredBox, false);
-  assert.equal(state.allowUpload, true);
+  // If isExpired is false (within deadline), customer can resubmit
+  const activeState = computeDisplayState(rejectedBooking, false);
+  assert.equal(activeState.showRejectionBox, true);
+  assert.equal(activeState.showExpiredBox, false);
+  assert.equal(activeState.allowUpload, true);
+
+  // When isExpired is true (deadline passed), upload is forbidden per confirmed policy
+  const expiredState = computeDisplayState(rejectedBooking, true);
+  assert.equal(expiredState.showExpiredBox, true);
+  assert.equal(expiredState.allowUpload, false);
 });
 
-// 22. Cron leaves rejected untouched
-test('TC22: cancelExpiredBookings cron leaves rejected bookings untouched', async () => {
+// 22. Confirmed Business Policy: cancelExpiredBookings cancels expired rejected bookings, but preserves unexpired rejected bookings
+test('TC22: cancelExpiredBookings cancels expired rejected bookings while preserving unexpired rejected bookings', async () => {
   const { query, env } = createTestDb();
   await initSchema(query);
   await query.run("INSERT INTO settings (key, value) VALUES ('payment_window_minutes', '15')");
 
   const baseTime = 1756890000000;
-  const expiredCreatedAt = new Date(baseTime - 30 * 60 * 1000).toISOString(); // 30 mins ago
+  const expiredCreatedAt = new Date(baseTime - 30 * 60 * 1000).toISOString(); // 30 mins ago (expired)
+  const unexpiredCreatedAt = new Date(baseTime - 5 * 60 * 1000).toISOString(); // 5 mins ago (eligible)
 
-  // 1 pending expired booking, 1 rejected expired booking
+  // 1 pending expired, 1 rejected expired, 1 rejected unexpired
   await query.run(`INSERT INTO bookings (id, customer_name, total_amount, payment_status, booking_source, created_at) VALUES (1, 'Pending Expired', 500, 'pending', 'online', ?)`, [expiredCreatedAt]);
   await query.run(`INSERT INTO bookings (id, customer_name, total_amount, payment_status, booking_source, created_at) VALUES (2, 'Rejected Expired', 500, 'rejected', 'online', ?)`, [expiredCreatedAt]);
+  await query.run(`INSERT INTO bookings (id, customer_name, total_amount, payment_status, booking_source, created_at) VALUES (3, 'Rejected Active', 500, 'rejected', 'online', ?)`, [unexpiredCreatedAt]);
 
   const res = await cancelExpiredBookings(env, { nowMs: baseTime });
-  assert.equal(res.cancelled, 1);
+  assert.equal(res.cancelled, 2, 'Both pending and rejected bookings that exceeded deadline must be cancelled');
 
-  // Booking 1 (pending) was cancelled
+  // Booking 1 (pending expired) was cancelled
   const b1 = await query.get('SELECT payment_status FROM bookings WHERE id = 1');
   assert.equal(b1.payment_status, 'cancelled');
 
-  // Booking 2 (rejected) remains rejected
+  // Booking 2 (rejected expired) was cancelled
   const b2 = await query.get('SELECT payment_status FROM bookings WHERE id = 2');
-  assert.equal(b2.payment_status, 'rejected', 'Rejected booking must NOT be cancelled by cron');
+  assert.equal(b2.payment_status, 'cancelled');
+
+  // Booking 3 (rejected unexpired, 5 mins old) remains rejected and alive
+  const b3 = await query.get('SELECT payment_status FROM bookings WHERE id = 3');
+  assert.equal(b3.payment_status, 'rejected', 'Unexpired rejected booking must NOT be cancelled before deadline');
 });
 
 // 23. reject sends no PIN
