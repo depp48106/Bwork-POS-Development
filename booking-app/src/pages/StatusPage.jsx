@@ -90,7 +90,7 @@ export default function StatusPage() {
           gap: '4px'
         }}>
           <AlertCircle size={13} />
-          <span>สลิปไม่ผ่าน (กรุณาแนบใหม่)</span>
+          <span>สลิปถูกปฏิเสธ — รอหลักฐานใหม่</span>
         </span>
       );
     }
@@ -261,8 +261,9 @@ export default function StatusPage() {
             const isCancelled = item.payment_status === 'cancelled';
             const isRejected = item.payment_status === 'rejected';
             const isPending = !isPaid && !isCancelled && !isRejected && (item.payment_status === 'pending' || item.payment_status === 'unpaid' || !item.payment_status);
-            const timeLeft = isPending ? calcPaymentTimeLeft(item, 15, Date.now()) : null;
-            const isExpiredLocally = isPending && Boolean(timeLeft?.isExpired);
+            const winMins = item.payment_window_minutes || 15;
+            const timeLeft = (isPending || isRejected) ? calcPaymentTimeLeft(item, winMins, Date.now()) : null;
+            const isExpiredLocally = (isPending || isRejected) && Boolean(timeLeft?.isExpired);
 
             const usageDateStr = item.usage_date || (item.items && item.items[0]?.start_time?.split('T')[0]) || item.created_at?.split(' ')[0];
             const startTimeStr = item.start_time || (item.items && item.items[0]?.start_time?.includes('T') ? item.items[0].start_time.split('T')[1].substring(0, 5) : '08:00');
@@ -451,7 +452,9 @@ export default function StatusPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        sessionStorage.setItem(`bwork_booking_access_${item.id}`, JSON.stringify({ contact: phone }));
+                        try {
+                          sessionStorage.setItem(`bwork_booking_access_${item.id}`, JSON.stringify({ contact: phone }));
+                        } catch (e) {}
                         navigate(`/confirm?id=${item.id}&code=${encodeURIComponent(bookingCode)}`);
                       }}
                       style={{
@@ -489,45 +492,53 @@ export default function StatusPage() {
                 {isRejected && (
                   <div style={{ marginTop: '14px' }}>
                     <div style={{
-                      backgroundColor: 'rgba(245, 158, 11, 0.08)',
-                      border: '1px solid rgba(245, 158, 11, 0.3)',
+                      backgroundColor: isExpiredLocally ? 'rgba(239, 68, 68, 0.08)' : 'rgba(245, 158, 11, 0.08)',
+                      border: `1px solid ${isExpiredLocally ? 'rgba(239, 68, 68, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
                       borderRadius: '10px',
                       padding: '10px 14px',
                       fontSize: '0.82rem',
-                      color: '#b45309',
+                      color: isExpiredLocally ? '#b91c1c' : '#b45309',
                       marginBottom: '10px'
                     }}>
                       <strong>สลิปการโอนเงินไม่ผ่านการตรวจสอบ:</strong>
-                      <div style={{ marginTop: '2px', color: '#92400e' }}>
+                      <div style={{ marginTop: '2px', color: isExpiredLocally ? '#991b1b' : '#92400e' }}>
                         {item.rejection_reason || 'กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'}
                       </div>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          sessionStorage.setItem(`bwork_booking_access_${item.id}`, JSON.stringify({ contact: phone }));
-                          navigate(`/confirm?id=${item.id}&code=${encodeURIComponent(bookingCode)}`);
-                        }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          padding: '9px 18px',
-                          borderRadius: '10px',
-                          backgroundColor: '#d97706',
-                          color: '#ffffff',
-                          border: 'none',
-                          fontSize: '0.84rem',
-                          fontWeight: 800,
-                          cursor: 'pointer',
-                          boxShadow: '0 2px 6px rgba(217, 119, 6, 0.3)',
-                          transition: 'all 0.15s ease'
-                        }}
-                      >
-                        <Upload size={15} />
-                        <span>อัปโหลดสลิปใหม่</span>
-                      </button>
+                      {isExpiredLocally ? (
+                        <span style={{ fontSize: '0.8rem', color: '#ef4444', fontWeight: 700 }}>
+                          หมดเวลาชำระเงินแล้ว (กรุณาทำรายการจองใหม่)
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            try {
+                              sessionStorage.setItem(`bwork_booking_access_${item.id}`, JSON.stringify({ contact: phone }));
+                            } catch (e) {}
+                            navigate(`/confirm?id=${item.id}&code=${encodeURIComponent(bookingCode)}`);
+                          }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            padding: '9px 18px',
+                            borderRadius: '10px',
+                            backgroundColor: '#d97706',
+                            color: '#ffffff',
+                            border: 'none',
+                            fontSize: '0.84rem',
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                            boxShadow: '0 2px 6px rgba(217, 119, 6, 0.3)',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <Upload size={15} />
+                          <span>อัปโหลดสลิปใหม่</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}

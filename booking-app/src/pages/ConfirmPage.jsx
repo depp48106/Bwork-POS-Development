@@ -19,6 +19,12 @@ export default function ConfirmPage() {
 
   const [booking, setBooking] = useState(() => {
     try {
+      if (location.state?.booking) {
+        const parsed = location.state.booking;
+        if (!bookingId || String(parsed?.id) === String(bookingId) || String(parsed?.booking_id) === String(bookingId) || String(parsed?.bookingId) === String(bookingId)) {
+          return parsed;
+        }
+      }
       const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -85,7 +91,6 @@ export default function ConfirmPage() {
       const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
       const parsed = raw ? JSON.parse(raw) : null;
       if (parsed) {
-        if (parsed.payment_status === 'rejected' || parsed.slip_verify_status === 'rejected') return false;
         if (parsed.payment_status === 'cancelled') return true;
         const win = parsed.payment_window_minutes || 15;
         const { isExpired: exp } = calcPaymentTimeLeft(parsed, win, Date.now());
@@ -103,12 +108,14 @@ export default function ConfirmPage() {
 
   // Dynamic Countdown Timer based on paymentDeadline as Source of Truth
   useEffect(() => {
-    if (!booking || uploadSuccess || booking.payment_status === 'paid' || isRejected) return;
+    if (!booking || uploadSuccess || booking.payment_status === 'paid') return;
 
     if (booking.payment_status === 'cancelled') {
       setIsExpired(true);
       setTimeLeftSeconds(0);
-      localStorage.removeItem('bwork_pending_booking');
+      try {
+        localStorage.removeItem('bwork_pending_booking');
+      } catch (e) {}
       return;
     }
 
@@ -123,7 +130,9 @@ export default function ConfirmPage() {
 
       if (expired) {
         setIsExpired(true);
-        localStorage.removeItem('bwork_pending_booking');
+        try {
+          localStorage.removeItem('bwork_pending_booking');
+        } catch (e) {}
         return false;
       }
       return true;
@@ -150,15 +159,23 @@ export default function ConfirmPage() {
     }
 
     let storedBooking = null;
-    try {
-      const raw = sessionStorage.getItem('completed_booking_result');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (String(parsed?.id) === String(bookingId) || String(parsed?.booking_id) === String(bookingId) || String(parsed?.bookingId) === String(bookingId)) {
-          storedBooking = parsed;
-        }
+    if (location.state?.booking) {
+      const parsed = location.state.booking;
+      if (String(parsed?.id) === String(bookingId) || String(parsed?.booking_id) === String(bookingId) || String(parsed?.bookingId) === String(bookingId)) {
+        storedBooking = parsed;
       }
-    } catch (e) {}
+    }
+    if (!storedBooking) {
+      try {
+        const raw = sessionStorage.getItem('completed_booking_result');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (String(parsed?.id) === String(bookingId) || String(parsed?.booking_id) === String(bookingId) || String(parsed?.bookingId) === String(bookingId)) {
+            storedBooking = parsed;
+          }
+        }
+      } catch (e) {}
+    }
 
     let pendingBooking = null;
     try {
@@ -230,12 +247,12 @@ export default function ConfirmPage() {
         setPaymentWindowMinutes(winMins);
 
         const { remainingSeconds, isExpired: exp } = calcPaymentTimeLeft(data, winMins, Date.now());
-        if (data.payment_status === 'rejected' || data.slip_verify_status === 'rejected') {
-          setIsExpired(false);
-        } else if (data.payment_status === 'cancelled') {
+        if (data.payment_status === 'cancelled') {
           setIsExpired(true);
           setTimeLeftSeconds(0);
-          localStorage.removeItem('bwork_pending_booking');
+          try {
+            localStorage.removeItem('bwork_pending_booking');
+          } catch (e) {}
         } else {
           setIsExpired(exp);
           setTimeLeftSeconds(remainingSeconds);
@@ -498,7 +515,9 @@ export default function ConfirmPage() {
       }
 
       if (res.ok && data.success) {
-        localStorage.removeItem('bwork_pending_booking');
+        try {
+          localStorage.removeItem('bwork_pending_booking');
+        } catch (e) {}
         setUploadResultData({ ...data, is_resubmission: isRejected });
         setBooking(prev => ({
           ...prev,
@@ -900,31 +919,57 @@ export default function ConfirmPage() {
           </div>
 
           {/* REJECTED ALERT OR 15-MINUTE COUNTDOWN TIMER BOX */}
-          {isRejected ? (
+          {isRejected && isExpired ? (
             <div style={{
-              backgroundColor: 'rgba(245, 158, 11, 0.08)',
-              border: '1.5px solid #f59e0b',
+              backgroundColor: 'rgba(239, 68, 68, 0.08)',
+              border: '1.5px solid #ef4444',
               borderRadius: '14px',
               padding: '16px 20px',
+              textAlign: 'center',
               display: 'flex',
               flexDirection: 'column',
+              alignItems: 'center',
               gap: '8px'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <AlertCircle size={24} style={{ color: '#d97706', flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontWeight: 900, fontSize: '1.05rem', color: '#b45309' }}>
-                    สลิปการโอนเงินไม่ผ่านการตรวจสอบ กรุณาแนบสลิปใหม่
-                  </div>
-                  {booking?.rejection_reason && (
-                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#92400e', marginTop: '3px' }}>
-                      เหตุผล: {booking.rejection_reason}
-                    </div>
-                  )}
-                </div>
+              <AlertCircle size={28} color="#ef4444" />
+              <div style={{ fontWeight: 900, fontSize: '1rem', color: '#dc2626' }}>
+                {booking?.payment_status === 'cancelled'
+                  ? 'รายการจองนี้ถูกยกเลิกแล้ว (เนื่องจากเกินกำหนดเวลาชำระเงิน)'
+                  : `หมดเวลาชำระเงิน (${paymentWindowMinutes || 15} นาที)`}
               </div>
-              <div style={{ fontSize: '0.82rem', color: '#78350f', marginTop: '2px' }}>
-                การจองของท่านยังคงอยู่ กรุณาตรวจสอบและอัปโหลดสลิปที่ถูกต้องอีกครั้ง
+              {booking?.rejection_reason && (
+                <div style={{
+                  backgroundColor: 'rgba(239, 68, 68, 0.05)',
+                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  borderRadius: '8px',
+                  padding: '6px 14px',
+                  fontSize: '0.84rem',
+                  color: '#b91c1c',
+                  fontWeight: 700
+                }}>
+                  สลิปเดิมไม่ผ่าน: {booking.rejection_reason}
+                </div>
+              )}
+              <div style={{ fontSize: '0.82rem', color: '#64748b', maxWidth: '420px' }}>
+                รายการจองหมดเวลาชำระเงินแล้ว ระบบไม่สามารถรับการแนบสลิปใหม่ได้ กรุณาทำรายการจองใหม่อีกครั้งครับ
+              </div>
+              <div style={{ display: 'flex', gap: '10px', marginTop: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => navigate('/status')}
+                  className="btn-secondary"
+                  style={{ padding: '8px 18px', width: 'auto', fontSize: '0.86rem' }}
+                >
+                  ดูสถานะการจอง
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/')}
+                  className="btn-primary"
+                  style={{ padding: '8px 20px', width: 'auto', fontSize: '0.86rem' }}
+                >
+                  ทำรายการจองใหม่
+                </button>
               </div>
             </div>
           ) : isExpired ? (
@@ -970,36 +1015,70 @@ export default function ConfirmPage() {
               </div>
             </div>
           ) : (
-            <div style={{
-              backgroundColor: timeLeftSeconds < 5 * 60 ? 'rgba(239, 68, 68, 0.08)' : 'rgba(37, 99, 235, 0.08)',
-              border: `1.5px solid ${timeLeftSeconds < 5 * 60 ? '#ef4444' : 'rgba(37, 99, 235, 0.3)'}`,
-              borderRadius: '14px',
-              padding: '12px 18px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              flexWrap: 'wrap',
-              gap: '10px'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <Clock size={20} color={timeLeftSeconds < 5 * 60 ? '#ef4444' : 'var(--primary)'} />
-                <div style={{ fontSize: '0.84rem', color: 'var(--text-main)' }}>
-                  <strong>{timeLeftSeconds < 5 * 60 ? 'ใกล้หมดเวลาชำระเงิน:' : 'กำหนดเวลาชำระเงิน:'}</strong> กรุณาชำระและแนบสลิปก่อนหมดเวลา
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {isRejected && (
+                <div style={{
+                  backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                  border: '1.5px solid #f59e0b',
+                  borderRadius: '14px',
+                  padding: '16px 20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <AlertCircle size={24} style={{ color: '#d97706', flexShrink: 0 }} />
+                    <div>
+                      <div style={{ display: 'inline-block', backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#b45309', padding: '2px 8px', borderRadius: '6px', fontSize: '0.78rem', fontWeight: 800, marginBottom: '4px' }}>
+                        สลิปถูกปฏิเสธ — รอหลักฐานใหม่
+                      </div>
+                      <div style={{ fontWeight: 900, fontSize: '1.05rem', color: '#b45309' }}>
+                        สลิปการโอนเงินไม่ผ่านการตรวจสอบ กรุณาแนบสลิปใหม่
+                      </div>
+                      {booking?.rejection_reason && (
+                        <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#92400e', marginTop: '3px' }}>
+                          เหตุผล: {booking.rejection_reason}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: '#78350f', marginTop: '2px' }}>
+                    การจองของท่านยังคงอยู่ กรุณาอัปโหลดสลิปที่ถูกต้องภายในเวลาที่กำหนด (ระบบไม่ขยายเวลาชำระเงิน)
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div style={{
-                fontFamily: 'monospace',
-                fontSize: '1.25rem',
-                fontWeight: 900,
-                color: timeLeftSeconds < 5 * 60 ? '#dc2626' : 'var(--primary)',
-                backgroundColor: '#ffffff',
-                padding: '4px 12px',
-                borderRadius: '8px',
-                border: '1px solid var(--border)',
-                letterSpacing: '1px'
+                backgroundColor: timeLeftSeconds < 5 * 60 ? 'rgba(239, 68, 68, 0.08)' : 'rgba(37, 99, 235, 0.08)',
+                border: `1.5px solid ${timeLeftSeconds < 5 * 60 ? '#ef4444' : 'rgba(37, 99, 235, 0.3)'}`,
+                borderRadius: '14px',
+                padding: '12px 18px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '10px'
               }}>
-                {`${Math.floor(timeLeftSeconds / 60).toString().padStart(2, '0')}:${(timeLeftSeconds % 60).toString().padStart(2, '0')}`}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <Clock size={20} color={timeLeftSeconds < 5 * 60 ? '#ef4444' : 'var(--primary)'} />
+                  <div style={{ fontSize: '0.84rem', color: 'var(--text-main)' }}>
+                    <strong>{timeLeftSeconds < 5 * 60 ? 'ใกล้หมดเวลาชำระเงิน:' : 'กำหนดเวลาชำระเงิน:'}</strong> กรุณาชำระและแนบสลิปก่อนหมดเวลา
+                  </div>
+                </div>
+
+                <div style={{
+                  fontFamily: 'monospace',
+                  fontSize: '1.25rem',
+                  fontWeight: 900,
+                  color: timeLeftSeconds < 5 * 60 ? '#dc2626' : 'var(--primary)',
+                  backgroundColor: '#ffffff',
+                  padding: '4px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border)',
+                  letterSpacing: '1px'
+                }}>
+                  {`${Math.floor(timeLeftSeconds / 60).toString().padStart(2, '0')}:${(timeLeftSeconds % 60).toString().padStart(2, '0')}`}
+                </div>
               </div>
             </div>
           )}

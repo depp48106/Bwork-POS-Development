@@ -435,10 +435,14 @@ export default function RoomListPage() {
     const isClassroom = layout === 'classroom';
     const sel = getRoomSelection(room);
 
+    // CRITICAL: Strip huge Base64 data URIs before storing in sessionStorage to avoid QuotaExceededError
+    const rawImage = isClassroom && room.classroom_image_url ? room.classroom_image_url : room.image_url;
+    const safeImage = (typeof rawImage === 'string' && rawImage.startsWith('data:')) ? '' : rawImage;
+
     const bookingPayload = {
       room_id: room.id,
       room_name: room.name,
-      image_url: isClassroom && room.classroom_image_url ? room.classroom_image_url : room.image_url,
+      image_url: safeImage,
       date: dateStr,
       start_time: sel.startTime,
       end_time: sel.endTime,
@@ -457,8 +461,12 @@ export default function RoomListPage() {
       total_amount: sel.totalPrice
     };
 
-    sessionStorage.setItem('current_booking_payload', JSON.stringify(bookingPayload));
-    navigate('/form');
+    try {
+      sessionStorage.setItem('current_booking_payload', JSON.stringify(bookingPayload));
+    } catch (storageErr) {
+      console.warn('[Storage] sessionStorage current_booking_payload failed (non-blocking):', storageErr);
+    }
+    navigate('/form', { state: bookingPayload });
   };
 
   // Render a Single Room Card with its dynamic rate options & time controls
