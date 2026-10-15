@@ -2433,7 +2433,7 @@ app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) =>
           const channelAccessToken = tokenSetting?.value;
           if (channelAccessToken) {
             const flexReject = buildLineSlipRejectedFlex(booking, booking.room_name, displayReason, paymentDeadlineIso, isStillEligible);
-            await fetch('https://api.line.me/v2/bot/message/push', {
+            const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -2444,12 +2444,16 @@ app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) =>
                 messages: [flexReject]
               })
             });
-            lineNotified = true;
-            await dbQuery.run(
-              `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
-               VALUES (?, 'line_reject_notified', ?, 'system', ?)`,
-              [id, displayReason, nowIso]
-            );
+            if (lineRes.ok) {
+              lineNotified = true;
+              await dbQuery.run(
+                `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+                 VALUES (?, 'line_reject_notified', ?, 'system', ?)`,
+                [id, displayReason, nowIso]
+              );
+            } else {
+              console.warn(`[Reject Slip] LINE push rejected with HTTP ${lineRes.status}:`, await lineRes.text().catch(() => ''));
+            }
           }
         }
       } catch (lineErr) {

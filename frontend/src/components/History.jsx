@@ -47,7 +47,12 @@ import {
   getDateOffsetBangkok,
   getStartOfMonthBangkok
 } from '../utils/dashboardExport';
-import { normalizeBookingFinancials } from '../utils/financialUtils';
+import {
+  normalizeBookingFinancials,
+  formatMoney,
+  getPaymentMethodLabel,
+  getTransactionTypeLabel
+} from '../utils/financialUtils';
 import { API_BASE } from '../apiConfig';
 
 const CUSTOMER_TYPE_OPTIONS = [
@@ -103,6 +108,9 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [basecampQuota, setBasecampQuota] = useState(null);
   const [basecampQuotaLoading, setBasecampQuotaLoading] = useState(false);
   const [basecampQuotaError, setBasecampQuotaError] = useState(null);
+  const [paymentTransactions, setPaymentTransactions] = useState([]);
+  const [isLoadingPayments, setIsLoadingPayments] = useState(false);
+  const activePaymentFetchIdRef = useRef(null);
 
   // Dashboard Export Modal State
   const [showExportModal, setShowExportModal] = useState(false);
@@ -309,6 +317,54 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       setBasecampQuotaError(null);
     }
   }, [showDetailsModal, selectedBooking?.id, selectedBooking?.customer_type, selectedBooking?.basecamp_unit, selectedBooking?.basecamp_sub_type]);
+
+  // Payment transactions synchronization for History Detail Modal (P3)
+  const fetchPaymentTransactions = async (bookingId) => {
+    if (!bookingId) {
+      setPaymentTransactions([]);
+      return;
+    }
+    activePaymentFetchIdRef.current = bookingId;
+    setIsLoadingPayments(true);
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const res = await fetch(`/api/bookings/${bookingId}/payments`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (activePaymentFetchIdRef.current === bookingId) {
+          setPaymentTransactions(data.payments || []);
+        }
+      } else {
+        if (activePaymentFetchIdRef.current === bookingId) {
+          setPaymentTransactions([]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch payment transactions in History:', err);
+      if (activePaymentFetchIdRef.current === bookingId) {
+        setPaymentTransactions([]);
+      }
+    } finally {
+      if (activePaymentFetchIdRef.current === bookingId) {
+        setIsLoadingPayments(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const targetId = (showDetailsModal && selectedBooking?.id) || viewingSlipBooking?.id;
+    if (targetId) {
+      fetchPaymentTransactions(targetId);
+    } else {
+      activePaymentFetchIdRef.current = null;
+      setPaymentTransactions([]);
+    }
+  }, [showDetailsModal, selectedBooking?.id, viewingSlipBooking?.id]);
 
   const triggerPrint = () => {
     printReceipt('print-receipt-area');
@@ -2276,40 +2332,122 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   );
                 })()}
 
-                {selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' && (
-                  <div style={{ marginTop: '4px', padding: '10px 12px', backgroundColor: 'rgba(14, 165, 233, 0.08)', borderRadius: '12px', border: '1px solid rgba(14, 165, 233, 0.25)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0284c7', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                        <Eye size={13} /> สลิปโอนเงินที่แนบมา:
-                      </span>
-                      {selectedBooking.slip_trans_ref && (
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                          Ref: {selectedBooking.slip_trans_ref}
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <a href={selectedBooking.slip_image_url} target="_blank" rel="noreferrer" title="คลิกเพื่อดูรูปสลิปขนาดเต็ม">
-                        <img
-                          src={selectedBooking.slip_image_url}
-                          alt="สลิปการชำระเงิน"
-                          style={{ maxHeight: '130px', maxWidth: '100%', borderRadius: '8px', border: '1px solid var(--border-color)', objectFit: 'contain', cursor: 'zoom-in', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-                        />
-                      </a>
-                    </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <a
-                        href={selectedBooking.slip_image_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ fontSize: '0.76rem', color: 'var(--primary-color)', textDecoration: 'none', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                      >
-                        <ExternalLink size={12} />
-                        <span>เปิดดูรูปภาพสลิปขนาดเต็ม (Full Size)</span>
-                      </a>
-                    </div>
+                {/* Payment Transactions & Historical Evidence (P3) */}
+                <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <FileText size={13} style={{ color: 'var(--primary-color)' }} /> รายการธุรกรรมและหลักฐานสลิป:
+                    </span>
+                    {isLoadingPayments && (
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>กำลังโหลด...</span>
+                    )}
                   </div>
-                )}
+
+                  {paymentTransactions && paymentTransactions.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {paymentTransactions.map((tx) => (
+                        <div
+                          key={tx.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '8px 10px',
+                            borderRadius: '8px',
+                            background: 'var(--bg-hover)',
+                            border: '1px solid var(--border-color)',
+                            fontSize: '0.78rem'
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span>{getTransactionTypeLabel ? getTransactionTypeLabel(tx.transaction_type) : tx.transaction_type}</span>
+                              <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(37, 99, 235, 0.12)', color: 'var(--primary-color)', fontWeight: 600 }}>
+                                {getPaymentMethodLabel ? getPaymentMethodLabel(tx.payment_method) : tx.payment_method}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                              {formatTransactionDateTime(tx.payment_time || tx.created_at)}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px' }}>
+                            <div style={{ fontWeight: 800, color: '#16a34a', fontSize: '0.86rem' }}>
+                              +฿{formatMoney(tx.amount)}
+                            </div>
+                            {tx.receipt_number && (
+                              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                #{tx.receipt_number}
+                              </div>
+                            )}
+                            {tx.slip_url && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setViewingSlipBooking({
+                                    ...selectedBooking,
+                                    slip_image_url: tx.slip_url,
+                                    receipt_number: tx.receipt_number || selectedBooking.receipt_number,
+                                    active_transaction_id: tx.id
+                                  });
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                  padding: '2px 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                  color: 'var(--primary-color)',
+                                  border: '1px solid rgba(37, 99, 235, 0.25)',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <Eye size={10} />
+                                <span>ดูสลิป #{tx.id}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' ? (
+                    <div style={{ marginTop: '4px', padding: '10px 12px', backgroundColor: 'rgba(14, 165, 233, 0.08)', borderRadius: '12px', border: '1px solid rgba(14, 165, 233, 0.25)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0284c7', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <Eye size={13} /> สลิปโอนเงินที่แนบมา:
+                        </span>
+                        {selectedBooking.slip_trans_ref && (
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                            Ref: {selectedBooking.slip_trans_ref}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ textAlign: 'center' }}>
+                        <a href={selectedBooking.slip_image_url} target="_blank" rel="noreferrer" title="คลิกเพื่อดูรูปสลิปขนาดเต็ม">
+                          <img
+                            src={selectedBooking.slip_image_url}
+                            alt="สลิปการชำระเงิน"
+                            style={{ maxHeight: '130px', maxWidth: '100%', borderRadius: '8px', border: '1px solid var(--border-color)', objectFit: 'contain', cursor: 'zoom-in', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                          />
+                        </a>
+                      </div>
+                      <div style={{ textAlign: 'center' }}>
+                        <a
+                          href={selectedBooking.slip_image_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ fontSize: '0.76rem', color: 'var(--primary-color)', textDecoration: 'none', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                        >
+                          <ExternalLink size={12} />
+                          <span>เปิดดูรูปภาพสลิปขนาดเต็ม (Full Size)</span>
+                        </a>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
               {/* Booking Actions */}
@@ -2652,6 +2790,40 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 <X size={18} />
               </button>
             </div>
+
+            {/* Multiple Transaction Slips Selector (P3) */}
+            {paymentTransactions && paymentTransactions.filter(t => t.slip_url).length > 1 && (
+              <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px' }}>
+                {paymentTransactions.filter(t => t.slip_url).map((tx, idx) => {
+                  const isActive = viewingSlipBooking.slip_image_url === tx.slip_url;
+                  return (
+                    <button
+                      key={tx.id}
+                      type="button"
+                      onClick={() => setViewingSlipBooking(prev => ({
+                        ...prev,
+                        slip_image_url: tx.slip_url,
+                        receipt_number: tx.receipt_number || prev.receipt_number,
+                        active_transaction_id: tx.id
+                      }))}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '8px',
+                        fontSize: '0.74rem',
+                        fontWeight: 700,
+                        backgroundColor: isActive ? 'var(--primary-color)' : 'var(--bg-hover)',
+                        color: isActive ? '#ffffff' : 'var(--text-main)',
+                        border: '1px solid ' + (isActive ? 'var(--primary-color)' : 'var(--border-color)'),
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      สลิป #{idx + 1} (+฿{formatMoney(tx.amount)})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Slip Image Container */}
             <div style={{

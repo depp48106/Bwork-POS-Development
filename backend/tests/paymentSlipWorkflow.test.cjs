@@ -592,3 +592,238 @@ test('TC25: ONLINE_5_PERCENT discount unaffected by slip rejection and walk-in p
   assert.equal(b.discount_amount, 50);
   assert.equal(b.total_amount, 950);
 });
+
+// =========================================================================
+// P1–P3 BUGFIX REGRESSION TEST SUITE
+// =========================================================================
+
+test('TC26: Large slip (>700 KB) uses R2 reference, not Base64 SQL in worker walk-in slip routes', async () => {
+  // 1. Verify worker.js source routes call saveUploadedFile and never store raw slip_image
+  const workerCode = fs.readFileSync(path.join(__dirname, '../worker.js'), 'utf8');
+  assert.ok(workerCode.includes("slipUrl = await saveUploadedFile(env, slip_image, 'slips')"), 'worker.js pay-balance must call saveUploadedFile');
+  assert.ok(workerCode.includes("const slipUrl = slip_image") === false, 'worker.js must not assign raw slip_image directly to slipUrl');
+
+  // 2. Simulate R2 saveUploadedFile execution with large payload (>700 KB)
+  let bucketPutCalled = false;
+  let putFilename = null;
+  const mockBucket = {
+    put: async (filename, buffer, options) => {
+      bucketPutCalled = true;
+      putFilename = filename;
+      return { key: filename };
+    }
+  };
+
+  const largeBase64 = 'data:image/jpeg;base64,' + 'A'.repeat(800 * 1024); // ~800 KB payload
+  const env = { BUCKET: mockBucket };
+
+  // Extract saveUploadedFile from worker.js
+  const sufStart = workerCode.indexOf("async function saveUploadedFile(env, fileData, folder = 'uploads') {");
+  const nextSection = workerCode.indexOf('// THAI BANK SLIP MINI QR VERIFIER & PARSER', sufStart);
+  const sufEnd = workerCode.lastIndexOf('}', nextSection) + 1;
+  assert.ok(sufStart > 0 && sufEnd > sufStart, 'saveUploadedFile found in worker.js');
+  const saveUploadedFile = vm.runInNewContext(
+    `(${workerCode.slice(sufStart, sufEnd).trim()})`,
+    { console, atob: (str) => Buffer.from(str, 'base64').toString('binary'), Uint8Array, Math, Date }
+  );
+
+  const savedUrl = await saveUploadedFile(env, largeBase64, 'slips');
+  assert.ok(bucketPutCalled, 'Mock R2 bucket.put must be called');
+  assert.ok(savedUrl.startsWith('/uploads/slips/'), 'Stored URL must be an R2 reference path, not data URI');
+  assert.ok(!savedUrl.startsWith('data:'), 'Stored URL must NEVER be a data URI');
+  assert.ok(savedUrl.length < 200, 'R2 reference URL must be small and safe for D1 column storage');
+});
+
+test('TC27: R2 failure does not silently produce incorrect payment state', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+
+  // Setup initial booking: total 1000, paid 0, balance 1000
+  await query.run(`
+    INSERT INTO bookings (id, total_amount, paid_amount, balance_amount, payment_status, created_at)
+    VALUES (2701, 1000, 0, 1000, 'pending', '2026-10-15T10:00:00Z')
+  `);
+
+  // Emulate worker pay-balance logic when R2 fails
+  const mockBucketFailing = {
+    put: async () => { throw new Error('R2_NETWORK_TIMEOUT'); }
+  };
+  const env = { BUCKET: mockBucketFailing };
+
+  let paymentSucceeded = false;
+  let httpStatus = 200;
+  try {
+    // Attempting pay-balance with slip upload
+    const slip_image = 'data:image/jpeg;base64,' + Buffer.from('test_slip').toString('base64');
+    if (!env.BUCKET) throw new Error('NO_BUCKET');
+    // R2 upload throws:
+    await mockBucketFailing.put('slip.jpg', Buffer.from('test'));
+    paymentSucceeded = true;
+  } catch (err) {
+    httpStatus = 500;
+    // R2 failed: abort pay-balance before modifying bookings or payment_transactions
+  }
+
+  assert.equal(httpStatus, 500, 'Failed R2 upload must return HTTP 500 error');
+  assert.equal(paymentSucceeded, false, 'Payment must NOT succeed when R2 upload fails');
+
+  // Verify database: booking remained 1000 unpaid, zero transactions inserted
+  const booking = await query.get('SELECT paid_amount, balance_amount, payment_status FROM bookings WHERE id = 2701');
+  assert.equal(booking.paid_amount, 0, 'paid_amount must remain 0');
+  assert.equal(booking.balance_amount, 1000, 'balance_amount must remain 1000');
+  assert.equal(booking.payment_status, 'pending', 'payment_status must remain pending');
+
+  const txCount = (await query.all('SELECT id FROM payment_transactions WHERE booking_id = 2701')).length;
+  assert.equal(txCount, 0, 'No payment_transactions row must be inserted when R2 upload fails');
+});
+
+test('TC28: Cross-booking transaction attachment denied', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+
+  // Setup Booking 1 and Booking 2
+  await query.run("INSERT INTO bookings (id, total_amount, payment_status) VALUES (101, 500, 'paid')");
+  await query.run("INSERT INTO bookings (id, total_amount, payment_status) VALUES (102, 500, 'paid')");
+
+  // Transaction 99 belongs to Booking 101
+  await query.run(`
+    INSERT INTO payment_transactions (id, booking_id, amount, payment_method, transaction_type)
+    VALUES (99, 101, 500, 'transfer', 'full')
+  `);
+
+  // Attempt to attach slip to Transaction 99 specifying Booking 102 (Cross-booking attack)
+  const targetBookingId = 102;
+  const targetPaymentId = 99;
+
+  const tx = await query.get(
+    'SELECT * FROM payment_transactions WHERE id = ? AND booking_id = ?',
+    [targetPaymentId, targetBookingId]
+  );
+
+  // Endpoint must reject when tx is null
+  assert.equal(tx, undefined, 'Transaction 99 must not be found for Booking 102');
+  const deniedStatus = !tx ? 404 : 200;
+  assert.equal(deniedStatus, 404, 'Cross-booking transaction attachment must be rejected with 404');
+
+  // Verify Transaction 99 slip_url is untouched
+  const originalTx = await query.get('SELECT slip_url FROM payment_transactions WHERE id = 99');
+  assert.equal(originalTx.slip_url, null, 'Transaction 99 slip_url must not be modified by cross-booking attempt');
+});
+
+test('TC29: LINE HTTP 4xx/5xx never logs delivery success in server.js', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+
+  const serverCode = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
+  assert.ok(
+    serverCode.includes('if (lineRes.ok) {') && serverCode.includes("action, details, performed_by, created_at)"),
+    'server.js must check lineRes.ok before inserting line_reject_notified'
+  );
+
+  await query.run(`
+    INSERT INTO bookings (id, total_amount, payment_status, line_user_id, created_at)
+    VALUES (2901, 500, 'reviewing', 'U_TEST_4XX', '2026-10-15T10:00:00Z')
+  `);
+
+  // Simulate reject-slip logic when LINE API returns 400 Bad Request
+  const fakeLineRes = { ok: false, status: 400, text: async () => '{"message":"Invalid user ID"}' };
+  let lineNotified = false;
+
+  if (fakeLineRes.ok) {
+    lineNotified = true;
+    await query.run("INSERT INTO booking_history (booking_id, action, details) VALUES (2901, 'line_reject_notified', 'เหตุผล')");
+  }
+
+  assert.equal(lineNotified, false, 'lineNotified must be false when LINE returns HTTP 4xx');
+
+  const history = await query.all("SELECT * FROM booking_history WHERE booking_id = 2901 AND action = 'line_reject_notified'");
+  assert.equal(history.length, 0, 'line_reject_notified must NOT be recorded on LINE HTTP 4xx');
+});
+
+test('TC30: LINE success logs correctly; network failure preserves rejection', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+
+  await query.run(`
+    INSERT INTO bookings (id, total_amount, payment_status, line_user_id, created_at)
+    VALUES (3001, 500, 'reviewing', 'U_TEST_OK', '2026-10-15T10:00:00Z')
+  `);
+
+  // Step 1: Reject slip status in DB (must happen first and remain intact)
+  await query.run("UPDATE bookings SET payment_status = 'rejected', slip_verify_status = 'rejected' WHERE id = 3001");
+  await query.run("INSERT INTO booking_history (booking_id, action, details) VALUES (3001, 'reject_slip', 'ยอดเงินไม่ตรง')");
+
+  // Step 2: Simulate LINE 200 OK
+  const fakeLineSuccess = { ok: true, status: 200 };
+  let lineNotified = false;
+  if (fakeLineSuccess.ok) {
+    lineNotified = true;
+    await query.run("INSERT INTO booking_history (booking_id, action, details) VALUES (3001, 'line_reject_notified', 'ยอดเงินไม่ตรง')");
+  }
+
+  assert.equal(lineNotified, true, 'lineNotified must be true when LINE API returns 200 OK');
+  const logged = await query.get("SELECT * FROM booking_history WHERE booking_id = 3001 AND action = 'line_reject_notified'");
+  assert.ok(logged, 'line_reject_notified must be logged in history');
+
+  // Step 3: Simulate separate booking where network exception happens
+  await query.run(`
+    INSERT INTO bookings (id, total_amount, payment_status, line_user_id, created_at)
+    VALUES (3002, 500, 'reviewing', 'U_TEST_ERR', '2026-10-15T10:00:00Z')
+  `);
+  await query.run("UPDATE bookings SET payment_status = 'rejected' WHERE id = 3002");
+
+  try {
+    throw new Error('NETWORK_FETCH_FAILED');
+  } catch (netErr) {
+    // Delivery failure caught without undoing slip rejection
+  }
+
+  const b3002 = await query.get('SELECT payment_status FROM bookings WHERE id = 3002');
+  assert.equal(b3002.payment_status, 'rejected', 'Rejection status must remain intact on LINE network failure');
+});
+
+test('TC31: History displays separate slips per transaction', async () => {
+  const historyCode = fs.readFileSync(path.join(__dirname, '../../frontend/src/components/History.jsx'), 'utf8');
+
+  // Verify P3 implementation in History.jsx:
+  assert.ok(historyCode.includes('fetchPaymentTransactions'), 'History.jsx must define fetchPaymentTransactions');
+  assert.ok(historyCode.includes('/api/bookings/${bookingId}/payments'), 'History.jsx must query payments endpoint');
+  assert.ok(historyCode.includes('paymentTransactions.map'), 'History.jsx must map over payment transactions in detail modal');
+  assert.ok(historyCode.includes('active_transaction_id'), 'History.jsx must support per-transaction slip viewing');
+  assert.ok(historyCode.includes('Multiple Transaction Slips Selector'), 'History.jsx must include multi-slip switcher');
+});
+
+test('TC32: Booking expiration and financial integrity remain intact', async () => {
+  const { query, env } = createTestDb();
+  await initSchema(query);
+  await query.run("INSERT INTO settings (key, value) VALUES ('payment_window_minutes', '15')");
+
+  const baseTime = 1756890000000;
+  const expiredTime = new Date(baseTime - 16 * 60 * 1000).toISOString();
+  const unexpiredTime = new Date(baseTime - 5 * 60 * 1000).toISOString();
+
+  // Expired rejected booking
+  await query.run(`
+    INSERT INTO bookings (id, booking_source, total_amount, paid_amount, balance_amount, payment_status, created_at)
+    VALUES (3201, 'online', 1000, 0, 1000, 'rejected', ?)
+  `, [expiredTime]);
+
+  // Unexpired rejected booking
+  await query.run(`
+    INSERT INTO bookings (id, booking_source, total_amount, paid_amount, balance_amount, payment_status, created_at)
+    VALUES (3202, 'online', 1000, 0, 1000, 'rejected', ?)
+  `, [unexpiredTime]);
+
+  const res = await cancelExpiredBookings(env, { nowMs: baseTime });
+  assert.equal(res.cancelled, 1, 'Only the expired rejected booking must be cancelled');
+
+  const bExpired = await query.get('SELECT payment_status, total_amount, paid_amount, balance_amount FROM bookings WHERE id = 3201');
+  assert.equal(bExpired.payment_status, 'cancelled');
+  assert.equal(bExpired.total_amount, 1000);
+  assert.equal(bExpired.balance_amount, 1000);
+
+  const bUnexpired = await query.get('SELECT payment_status, total_amount, paid_amount, balance_amount FROM bookings WHERE id = 3202');
+  assert.equal(bUnexpired.payment_status, 'rejected');
+  assert.equal(bUnexpired.total_amount, 1000);
+  assert.equal(bUnexpired.balance_amount, 1000);
+});

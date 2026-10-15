@@ -4664,11 +4664,23 @@ export default {
 
         let slipUrl = null;
         if (slip_image) {
-          if (typeof slip_image === 'string' && slip_image.length > 10 * 1024 * 1024 * 1.37) {
+          if (typeof slip_image !== 'string' || !slip_image.startsWith('data:image/')) {
+            return new Response(JSON.stringify({ error: 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ PNG, JPG หรือ WEBP' }), { status: 400, headers: corsHeaders });
+          }
+          if (slip_image.length > 10 * 1024 * 1024 * 1.37) {
             return new Response(JSON.stringify({ error: 'ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)' }), { status: 400, headers: corsHeaders });
           }
-          if (typeof slip_image === 'string' && slip_image.startsWith('data:image/')) {
-            slipUrl = slip_image;
+          if (!env.BUCKET) {
+            return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
+          }
+          try {
+            slipUrl = await saveUploadedFile(env, slip_image, 'slips');
+            if (!slipUrl || slipUrl.startsWith('data:')) {
+              return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้ การชำระเงินไม่ถูกบันทึก' }), { status: 500, headers: corsHeaders });
+            }
+          } catch (r2Err) {
+            console.error('[Pay-Balance] R2 upload error in worker:', r2Err);
+            return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
           }
         }
 
@@ -4751,7 +4763,21 @@ export default {
           return new Response(JSON.stringify({ error: 'ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)' }), { status: 400, headers: corsHeaders });
         }
 
-        const slipUrl = slip_image;
+        if (!env.BUCKET) {
+          return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
+        }
+
+        let slipUrl = null;
+        try {
+          slipUrl = await saveUploadedFile(env, slip_image, 'slips');
+          if (!slipUrl || slipUrl.startsWith('data:')) {
+            return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้' }), { status: 500, headers: corsHeaders });
+          }
+        } catch (r2Err) {
+          console.error('[Attach Slip] R2 upload error in worker:', r2Err);
+          return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
+        }
+
         if (transaction) {
           await env.DB.prepare('UPDATE payment_transactions SET slip_url = ? WHERE id = ? AND booking_id = ?').bind(slipUrl, transaction.id, bookingId).run();
         }
