@@ -11,6 +11,7 @@ import PendingBookings from './components/PendingBookings';
 import Quotations from './components/Quotations';
 import BasecampQuotaModal from './components/BasecampQuotaModal';
 import HourCredits from './components/HourCredits';
+import CustomerManagement from './components/CustomerManagement';
 import { creditNavigationLabel } from './utils/hourCreditUI';
 import LinePreview from './components/LinePreview';
 import { useLiveNotifications } from './hooks/useLiveNotifications';
@@ -108,6 +109,9 @@ function App() {
     }
     if (tabKey === 'hour-credits') {
       return perms.includes('pos');
+    }
+    if (tabKey === 'customers') {
+      return perms.includes('pos') || perms.includes('manage') || perms.includes('history') || perms.includes('customers') || perms.includes('admin-management');
     }
     // If checking a settings sub-tab, grant it if they have the main 'admin-management' permission
     if (['manage', 'admin-users', 'admin-system', 'admin-promotion', 'admin-promotions', 'admin-quotation', 'admin-backup', 'admin-dooraccess'].includes(tabKey)) {
@@ -751,6 +755,16 @@ function App() {
                 <span>Hour Credits</span>
               </button>
             )}
+            {hasPermission('customers') && (
+              <button
+                type="button"
+                className={`top-menu-item ${activeTab === 'customers' ? 'active' : ''}`}
+                onClick={() => setActiveTab('customers')}
+              >
+                <Users size={15} />
+                <span>จัดการลูกค้า</span>
+              </button>
+            )}
           </nav>
 
           {/* Hamburger Menu Toggle (Only visible on mobile screens) */}
@@ -967,6 +981,14 @@ function App() {
                   <span>Hour Credits</span>
                 </button>
               )}
+              {hasPermission('customers') && (
+                <div className={`menu-card ${activeTab === 'customers' ? 'active' : ''}`} onClick={() => setActiveTab('customers')}>
+                  <div className="menu-card-icon-wrapper">
+                    <Users size={20} />
+                  </div>
+                  <span>จัดการลูกค้า</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1045,6 +1067,13 @@ function App() {
         {activeTab === 'history' && <HistoryLog settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
         {activeTab === 'hour-credits' && hasPermission('pos') && <HourCredits sysConfirm={customConfirm}/>}
         {activeTab === 'quotations' && <Quotations user={user} settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} quotationCartData={quotationCartData} clearQuotationCartData={() => setQuotationCartData(null)} onNavigate={setActiveTab} />}
+        {activeTab === 'customers' && hasPermission('customers') && (
+          <CustomerManagement
+            user={user}
+            sysAlert={customAlert}
+            sysConfirm={customConfirm}
+          />
+        )}
         
         {activeTab === 'settings' && hasPermission('admin-management') && (
           <div style={{

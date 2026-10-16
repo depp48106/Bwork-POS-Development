@@ -123,6 +123,9 @@ export function formatCustomerType(b) {
     const detail = (sub || unit) ? ` (${(sub + unit).trim()})` : '';
     return `Basecamp${detail}`;
   }
+  if (cType === 'shop') {
+    return 'ร้านค้าพันธมิตร (Shop)';
+  }
   if (cType === 'walkin' || b.booking_source === 'walk-in') {
     return 'Walk-in';
   }
@@ -287,6 +290,9 @@ export function formatBillingOption(b) {
   if (b.customer_type === 'basecamp' || b.billing_option === 'quota' || b.billing_option === 'quota_partial') {
     return 'โควต้า Basecamp';
   }
+  if (b.customer_type === 'shop') {
+    return 'โควต้า Shop';
+  }
   return 'ปกติ';
 }
 
@@ -330,7 +336,8 @@ export const EXPORT_CUSTOMER_TYPE_OPTIONS = [
   { value: 'all', label: 'ทั้งหมด' },
   { value: 'general', label: 'ลูกค้าทั่วไป' },
   { value: 'builtland', label: 'บิลท์ แลนด์' },
-  { value: 'basecamp', label: 'ผู้เช่ารายเดือน' }
+  { value: 'basecamp', label: 'ผู้เช่ารายเดือน' },
+  { value: 'shop', label: 'ร้านค้าพันธมิตร' }
 ];
 
 /**
@@ -356,9 +363,10 @@ export function getStartOfMonthBangkok() {
 
 /**
  * Customer Type Filter Matcher
- * - GENERAL: normal/general, includes LINE OA and Walk-in/POS general customers, excludes Builtland, excludes Basecamp
+ * - GENERAL: normal/general, includes LINE OA and Walk-in/POS general customers, excludes Builtland, excludes Basecamp, excludes Shop
  * - BUILTLAND: customer_type === 'builtland'
  * - BASECAMP: customer_type === 'basecamp'
+ * - SHOP: customer_type === 'shop'
  * - ALL: no customer-type restriction
  */
 export function matchesCustomerTypeFilter(b, customerType = 'all') {
@@ -369,6 +377,7 @@ export function matchesCustomerTypeFilter(b, customerType = 'all') {
 
   const isBuiltland = rawType === 'builtland' || cType === 'builtland';
   const isBasecamp = rawType === 'basecamp' || cType === 'basecamp';
+  const isShop = rawType === 'shop' || cType === 'shop';
 
   if (customerType === 'builtland') {
     return isBuiltland;
@@ -376,9 +385,12 @@ export function matchesCustomerTypeFilter(b, customerType = 'all') {
   if (customerType === 'basecamp') {
     return isBasecamp;
   }
+  if (customerType === 'shop') {
+    return isShop;
+  }
   if (customerType === 'general') {
-    // Exclude Builtland and Basecamp; include all regular/general customers
-    if (isBuiltland || isBasecamp) return false;
+    // Exclude Builtland, Basecamp, and Shop; include all regular/general customers
+    if (isBuiltland || isBasecamp || isShop) return false;
     return true;
   }
 

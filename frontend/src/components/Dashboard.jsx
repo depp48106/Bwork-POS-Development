@@ -18,6 +18,7 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
   const [todayBookings, setTodayBookings] = useState([]);
   const [rooms, setRooms] = useState([]);
   const [reviewingCount, setReviewingCount] = useState(0);
+  const [contractAlerts, setContractAlerts] = useState({ counts: { total_alerts: 0, expiring_30d: 0, expiring_15d: 0, expiring_7d: 0, expired: 0 }, alerts: [] });
 
   // Status & Control States
   const [loading, setLoading] = useState(true);
@@ -91,10 +92,14 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
       const now = new Date();
       const isoLocal = now.toISOString();
 
-      // Parallel fetch for alerts and current room occupancy
-      const [alertsRes, occupancyRes] = await Promise.all([
+      const token = localStorage.getItem('token') || '';
+      const authHeader = token ? { 'Authorization': `Bearer ${token}` } : {};
+
+      // Parallel fetch for alerts, current room occupancy, and contract alerts
+      const [alertsRes, occupancyRes, contractAlertsRes] = await Promise.all([
         fetch('/api/bookings/upcoming-alerts'),
-        fetch(`/api/rooms/occupancy?current_time=${encodeURIComponent(isoLocal)}`)
+        fetch(`/api/rooms/occupancy?current_time=${encodeURIComponent(isoLocal)}`),
+        fetch('/api/customers/contracts/alerts', { headers: authHeader }).catch(() => null)
       ]);
 
       if (!alertsRes.ok || !occupancyRes.ok) {
@@ -103,6 +108,16 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
 
       const alertsData = await alertsRes.json();
       const occupancyData = await occupancyRes.json();
+      if (contractAlertsRes && contractAlertsRes.ok) {
+        try {
+          const cData = await contractAlertsRes.json();
+          if (cData && cData.success) {
+            setContractAlerts(cData);
+          }
+        } catch (e) {
+          console.error('[Dashboard] Error parsing contract alerts:', e);
+        }
+      }
 
       // Data is applied immediately
       setUpcomingAlerts(Array.isArray(alertsData.upcoming) ? alertsData.upcoming : []);
@@ -526,6 +541,21 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
           <span className="op-summary-label">การจองวันนี้</span>
           <span className="op-summary-val">{(activeData.todayBookings || []).length}</span>
         </div>
+
+        {/* สัญญาใกล้หมด */}
+        {contractAlerts?.counts?.total_alerts > 0 && (
+          <div
+            className="op-summary-item accent-amber"
+            style={{ cursor: canAccess('customers') ? 'pointer' : 'default' }}
+            onClick={() => canAccess('customers') && onNavigate && onNavigate('customers')}
+            title="คลิกเพื่อเปิดหน้าจัดการลูกค้าและสัญญา"
+          >
+            <span className="op-summary-label">สัญญาใกล้หมด</span>
+            <span className="op-summary-val" style={{ color: '#ea580c' }}>
+              {contractAlerts.counts.total_alerts}
+            </span>
+          </div>
+        )}
       </section>
 
       {/* ===================================================
@@ -776,6 +806,84 @@ function Dashboard({ user, hasPermission, onNavigate, sysAlert, sysConfirm }) {
               </div>
             )}
           </section>
+
+          {/* CONTRACT EXPIRY ALERTS SECTION */}
+          {contractAlerts?.alerts && contractAlerts.alerts.length > 0 && (
+            <section className="op-card-section op-contract-alerts-section">
+              <div className="op-section-header">
+                <div className="op-section-title-wrap">
+                  <h2 className="op-section-title">Contract Alerts</h2>
+                  <span className="op-section-sub">แจ้งเตือนสัญญา</span>
+                  <span className="op-badge-count amber">{contractAlerts.counts?.total_alerts || 0}</span>
+                </div>
+                {canAccess('customers') && (
+                  <button
+                    type="button"
+                    className="op-section-hint"
+                    style={{ background: 'none', border: 'none', color: 'var(--primary-color)', cursor: 'pointer', fontWeight: 700 }}
+                    onClick={() => onNavigate && onNavigate('customers')}
+                  >
+                    จัดการลูกค้า &rarr;
+                  </button>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+                {contractAlerts.alerts.slice(0, 4).map(alert => (
+                  <div
+                    key={alert.contract_id}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '10px 12px',
+                      borderRadius: '10px',
+                      backgroundColor: alert.alert_tier === 'expired'
+                        ? 'rgba(239, 68, 68, 0.08)'
+                        : alert.alert_tier === 'today' || alert.alert_tier === '7d'
+                        ? 'rgba(245, 158, 11, 0.08)'
+                        : 'var(--bg-main)',
+                      border: alert.alert_tier === 'expired'
+                        ? '1px solid rgba(239, 68, 68, 0.3)'
+                        : alert.alert_tier === 'today' || alert.alert_tier === '7d'
+                        ? '1px solid rgba(245, 158, 11, 0.3)'
+                        : '1px solid var(--border-color)'
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 800, fontSize: '0.82rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span>{alert.customer_name}</span>
+                        <span style={{
+                          fontSize: '0.66rem',
+                          padding: '1px 6px',
+                          borderRadius: '4px',
+                          backgroundColor: alert.customer_type === 'shop' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(147, 51, 234, 0.15)',
+                          color: alert.customer_type === 'shop' ? '#059669' : '#9333ea',
+                          fontWeight: 700
+                        }}>
+                          {alert.customer_type === 'shop' ? 'Shop' : `Basecamp ${alert.basecamp_unit || ''}`}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        หมดอายุ: {alert.end_date} ({alert.days_remaining < 0 ? `หมดอายุแล้ว ${Math.abs(alert.days_remaining)} วัน` : alert.days_remaining === 0 ? 'หมดอายุวันนี้' : `เหลือ ${alert.days_remaining} วัน`})
+                      </div>
+                    </div>
+                    {canAccess('customers') && (
+                      <button
+                        type="button"
+                        className="op-action-btn op-btn-action-primary"
+                        onClick={() => onNavigate && onNavigate('customers')}
+                        style={{ height: '30px', fontSize: '0.72rem', padding: '0 8px' }}
+                      >
+                        <span>ดู</span>
+                        <ArrowRight size={12} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* SECONDARY RIGHT: BOOKING WORKSPACE (Direct POS Shortcuts - guarded by POS permission) */}
           {canAccessPos && (

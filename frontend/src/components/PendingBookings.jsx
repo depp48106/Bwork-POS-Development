@@ -3070,7 +3070,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
                   const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
 
-                  const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
+                  const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : (b.customer_type === 'shop' ? 'Shop' : 'ทั่วไป'));
                   const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
                   const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
@@ -3378,7 +3378,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
               const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
 
-              const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
+              const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : (b.customer_type === 'shop' ? 'Shop' : 'ทั่วไป'));
               const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
               const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
@@ -4019,7 +4019,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
         const customerName = b.customer_name || b.contact_name || '-';
         const contactPhone = b.contact || b.phone || '-';
-        const custTypeLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
+        const custTypeLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : (b.customer_type === 'shop' ? 'Shop (ร้านค้าพันธมิตร)' : 'ทั่วไป'));
         const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : (b.booking_source === 'pos' ? 'POS' : (b.booking_source || 'Walk-in'));
         const paymentMethodLabel = getPaymentMethodLabel(b.payment_method);
 
@@ -4546,6 +4546,54 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                 </div>
                               )}
                             </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 2.6 SHOP QUOTA SECTION (Rendered ONLY for Shop bookings) */}
+                    {b.customer_type === 'shop' && (
+                      <div className="pb-detail-card pb-detail-basecamp-quota-card" style={{ borderColor: 'rgba(5, 150, 105, 0.3)' }}>
+                        <div className="pb-detail-card-header">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span className="pb-detail-card-title">โควตาการใช้งานห้องประชุม</span>
+                            <span className="pb-quota-badge" style={{ backgroundColor: 'rgba(5, 150, 105, 0.12)', color: '#059669', border: '1px solid rgba(5, 150, 105, 0.3)' }}>
+                              Shop Quota
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="pb-detail-content">
+                          <div className="pb-quota-header-info">
+                            <div className="pb-quota-account-row">
+                              <span className="pb-quota-account-name" style={{ color: '#059669' }}>
+                                ร้านค้าพันธมิตร (Shop): {b.customer_name || '-'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="pb-quota-stat-grid" style={{ marginTop: '10px' }}>
+                            <div className="pb-quota-stat-box">
+                              <span className="pb-quota-stat-label">โควตาร้านค้า</span>
+                              <span className="pb-quota-stat-val">
+                                <strong>4</strong> ชั่วโมง/เดือน
+                              </span>
+                            </div>
+                            <div className="pb-quota-stat-box">
+                              <span className="pb-quota-stat-label">การจองนี้ตัดโควตา</span>
+                              <span className="pb-quota-stat-val" style={{ color: '#059669' }}>
+                                <strong>{b.quota_hours_used || 0}</strong> ชั่วโมง
+                              </span>
+                            </div>
+                          </div>
+
+                          {Number(b.quota_hours_used) > 0 && (
+                            <div className="pb-quota-booking-consumed" style={{ backgroundColor: 'rgba(5, 150, 105, 0.08)', borderColor: 'rgba(5, 150, 105, 0.25)', color: '#059669', marginTop: '10px' }}>
+                              <span className="pb-quota-consumed-dot" style={{ backgroundColor: '#059669' }} />
+                              <span>
+                                รายการนี้ใช้สิทธิ์โควต้าร้านค้า <strong>{b.quota_hours_used} ชั่วโมง</strong>
+                              </span>
+                            </div>
                           )}
                         </div>
                       </div>

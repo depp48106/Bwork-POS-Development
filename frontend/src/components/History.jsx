@@ -2200,9 +2200,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 {selectedBooking.customer_type && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
                     <span style={{ color: 'var(--text-muted)' }}>ประเภทลูกค้า:</span>
-                    <strong style={{ color: selectedBooking.customer_type === 'builtland' ? '#fb923c' : selectedBooking.customer_type === 'basecamp' ? '#c084fc' : '#60a5fa' }}>
+                    <strong style={{ color: selectedBooking.customer_type === 'builtland' ? '#fb923c' : selectedBooking.customer_type === 'basecamp' ? '#c084fc' : selectedBooking.customer_type === 'shop' ? '#10b981' : '#60a5fa' }}>
                       {selectedBooking.customer_type === 'builtland' ? 'พนักงาน Builtland' :
                        selectedBooking.customer_type === 'basecamp' ? `ผู้เช่า Basecamp (${selectedBooking.basecamp_sub_type === 'hotdesk' ? 'Hotdesk ' : 'Office '}${selectedBooking.basecamp_unit || ''})` :
+                       selectedBooking.customer_type === 'shop' ? 'ร้านค้าพันธมิตร (Shop)' :
                        selectedBooking.customer_type === 'online' ? 'จองออนไลน์' : 'ลูกค้า Walk-in'}
                     </strong>
                   </div>
@@ -2274,6 +2275,40 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                           <div style={{ fontSize: '0.68rem', color: basecampQuota.remaining_quota === 0 ? '#ef4444' : '#16a34a', fontWeight: 600 }}>คงเหลือ</div>
                           <div style={{ fontSize: '0.82rem', fontWeight: 800, color: basecampQuota.remaining_quota === 0 ? '#dc2626' : '#15803d' }}>{basecampQuota.remaining_quota} ชม.</div>
                         </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {selectedBooking.customer_type === 'shop' && (
+                  <div style={{
+                    marginTop: '4px',
+                    padding: '12px 14px',
+                    backgroundColor: 'rgba(5, 150, 105, 0.05)',
+                    borderRadius: '14px',
+                    border: '1px solid rgba(5, 150, 105, 0.2)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.80rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                        สิทธิ์โควตาร้านค้าพันธมิตร (Shop)
+                      </span>
+                      <span style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        color: '#059669',
+                        background: 'rgba(5, 150, 105, 0.12)',
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(5, 150, 105, 0.25)'
+                      }}>
+                        4 ชม./เดือน
+                      </span>
+                    </div>
+                    {Number(selectedBooking.quota_hours_used) > 0 && (
+                      <div style={{ fontSize: '0.78rem', color: '#059669', fontWeight: 600 }}>
+                        การจองนี้ตัดโควตา: {selectedBooking.quota_hours_used} ชั่วโมง
                       </div>
                     )}
                   </div>

@@ -145,7 +145,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     name: '',
     department: '',
     contact: '',
-    customer_type: 'walkin', // 'walkin', 'builtland', 'basecamp'
+    customer_type: 'walkin', // 'walkin', 'builtland', 'basecamp', 'shop'
+    customer_id: null,
+    contract_id: null,
     basecamp_sub_type: 'office', // 'office', 'hotdesk'
     basecamp_unit: '401', // Office 401-414, Hotdesk 419-422, 427-430
     internal_department: 'ฝ่ายการเงินและบัญชี',
@@ -155,6 +157,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [bookingDetails, setBookingDetails] = useState('');
 
   const [basecampQuota, setBasecampQuota] = useState({ max_quota: 4, used_quota: 0, remaining_quota: 4 });
+  const [shopQuota, setShopQuota] = useState({ max_quota: 4, used_quota: 0, remaining_quota: 4, contract_eligible: true });
+  const [registeredShops, setRegisteredShops] = useState([]);
+  const [registeredBasecamps, setRegisteredBasecamps] = useState([]);
 
   const BASECAMP_OFFICE_UNITS = ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'];
   const BASECAMP_HOTDESK_UNITS = ['419', '420', '421', '422', '427', '428', '429', '430'];
@@ -403,15 +408,36 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   };
 
 
-  // Fetch Basecamp Quota when unit/subtype changes
+  // Fetch registered customers (Shop and Basecamp) on mount
   useEffect(() => {
+    const token = localStorage.getItem('token') || '';
+    const authHeader = token ? { 'Authorization': `Bearer ${token}` } : {};
+    fetch('/api/customers?status=active', { headers: authHeader })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.customers) {
+          setRegisteredShops(data.customers.filter(c => c.customer_type === 'shop'));
+          setRegisteredBasecamps(data.customers.filter(c => c.customer_type === 'basecamp'));
+        }
+      })
+      .catch(err => console.error('Failed to load registered customers in POS:', err));
+  }, []);
+
+  // Fetch Basecamp or Shop Quota when unit/customer changes
+  useEffect(() => {
+    const curMonth = roomSchedule.date ? roomSchedule.date.substring(5, 7) : String(new Date().getMonth() + 1).padStart(2, '0');
+    const curYear = roomSchedule.date ? roomSchedule.date.substring(0, 4) : String(new Date().getFullYear());
+    const targetDate = roomSchedule.date || '';
+
     if (customer.customer_type === 'basecamp') {
       const subType = customer.basecamp_sub_type || 'office';
       const unit = customer.basecamp_unit || (subType === 'office' ? '401' : '419');
-      const curMonth = roomSchedule.date ? roomSchedule.date.substring(5, 7) : String(new Date().getMonth() + 1).padStart(2, '0');
-      const curYear = roomSchedule.date ? roomSchedule.date.substring(0, 4) : String(new Date().getFullYear());
 
-      fetch(`/api/basecamp/quota?sub_type=${subType}&unit=${unit}&month=${curMonth}&year=${curYear}`)
+      const url = customer.customer_id
+        ? `/api/customers/${customer.customer_id}/quota?month=${curMonth}&year=${curYear}&date=${targetDate}`
+        : `/api/basecamp/quota?sub_type=${subType}&unit=${unit}&month=${curMonth}&year=${curYear}`;
+
+      fetch(url)
         .then(res => res.json())
         .then(data => {
           if (data && !data.error) {
@@ -419,8 +445,21 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           }
         })
         .catch(err => console.error('Failed to fetch quota:', err));
+    } else if (customer.customer_type === 'shop') {
+      if (customer.customer_id) {
+        fetch(`/api/customers/${customer.customer_id}/quota?month=${curMonth}&year=${curYear}&date=${targetDate}`)
+          .then(res => res.json())
+          .then(data => {
+            if (data && !data.error) {
+              setShopQuota(data);
+            }
+          })
+          .catch(err => console.error('Failed to fetch shop quota:', err));
+      } else {
+        setShopQuota({ max_quota: 4, used_quota: 0, remaining_quota: 0, contract_eligible: false });
+      }
     }
-  }, [customer.customer_type, customer.basecamp_sub_type, customer.basecamp_unit, roomSchedule.date]);
+  }, [customer.customer_type, customer.customer_id, customer.basecamp_sub_type, customer.basecamp_unit, roomSchedule.date]);
 
   // Service selection modal
   const [showServicePicker, setShowServicePicker] = useState(false);
@@ -988,16 +1027,47 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   };
 
   const handleCustomerTypeChange = (newType) => {
+    let newCustomerId = null;
+    let newContractId = null;
+    let newName = '';
+    let newContact = '';
+    let newSubType = 'office';
+    let newUnit = '401';
+
+    if (newType === 'shop') {
+      const firstShop = registeredShops[0];
+      if (firstShop) {
+        newCustomerId = firstShop.id;
+        newContractId = firstShop.active_contract?.id || null;
+        newName = firstShop.name;
+        newContact = firstShop.phone || firstShop.contact_name || '';
+      }
+    } else if (newType === 'basecamp') {
+      const matched = registeredBasecamps.find(b => b.basecamp_unit === '401');
+      if (matched) {
+        newCustomerId = matched.id;
+        newContractId = matched.active_contract?.id || null;
+        newName = matched.name;
+        newContact = matched.phone || matched.contact_name || '';
+      }
+    }
+
     setCustomer(prev => ({
       ...prev,
       customer_type: newType,
+      customer_id: newCustomerId,
+      contract_id: newContractId,
+      name: newName,
+      contact: newContact,
+      basecamp_sub_type: newSubType,
+      basecamp_unit: newUnit,
       billing_option: newType === 'builtland' ? 'internal_free' : 'paid'
     }));
     resetQuickFinancials();
     resetCartFinancials();
-    if (newType === 'builtland' || newType === 'basecamp') {
-      setPaymentMethod('');
-      setCartPaymentMethod('');
+    if (newType === 'builtland' || newType === 'basecamp' || newType === 'shop') {
+      setPaymentMethod('cash');
+      setCartPaymentMethod('cash');
     } else {
       setPaymentMethod('cash');
       setCartPaymentMethod('cash');
@@ -1239,8 +1309,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
     const isBuiltland = customer.customer_type === 'builtland';
     const isBasecamp = customer.customer_type === 'basecamp';
+    const isShop = customer.customer_type === 'shop';
 
-    if (!isBuiltland && !isBasecamp) {
+    if (!isBuiltland && !isBasecamp && !isShop) {
       if (quickFinancialPreview.discount_error) {
         sysAlert(quickFinancialPreview.discount_error);
         return;
@@ -1265,12 +1336,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       const effectiveDiscountValue = isBuiltland ? 0 : quickFinancialPreview.discount_value;
       const effectiveDepositAmount = (isBuiltland || quickPaymentMode !== 'deposit') ? 0 : (Number(quickDepositAmount) || 0);
 
-      const effectivePaymentMethod = (isBuiltland || isBasecamp || effectivePaymentMode === 'unpaid' || quickFinancialPreview.total_amount === 0)
-        ? ''
+      const effectivePaymentMethod = (isBuiltland || isBasecamp || isShop || effectivePaymentMode === 'unpaid' || quickFinancialPreview.total_amount === 0)
+        ? (paymentMethod || 'cash')
         : paymentMethod;
 
       const payload = {
         customer_name: customer.name,
+        customer_id: customer.customer_id || null,
+        contract_id: customer.contract_id || null,
         department: customer.department || '',
         contact: customer.contact || '',
         booking_details: bookingDetails.trim() || null,
@@ -1380,8 +1453,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
     const isBuiltland = customer.customer_type === 'builtland';
     const isBasecamp = customer.customer_type === 'basecamp';
+    const isShop = customer.customer_type === 'shop';
 
-    if (!isBuiltland && !isBasecamp) {
+    if (!isBuiltland && !isBasecamp && !isShop) {
       if (cartFinancialPreview.discount_error) {
         sysAlert(cartFinancialPreview.discount_error);
         return;
@@ -1403,12 +1477,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       const effectiveDiscountValue = isBuiltland ? 0 : cartFinancialPreview.discount_value;
       const effectiveDepositAmount = (isBuiltland || cartPaymentMode !== 'deposit') ? 0 : (Number(cartDepositAmount) || 0);
 
-      const effectivePaymentMethod = (isBuiltland || isBasecamp || effectivePaymentMode === 'unpaid' || cartFinancialPreview.total_amount === 0)
-        ? ''
+      const effectivePaymentMethod = (isBuiltland || isBasecamp || isShop || effectivePaymentMode === 'unpaid' || cartFinancialPreview.total_amount === 0)
+        ? (cartPaymentMethod || 'cash')
         : (cartPaymentMethod || 'cash');
 
       const payload = {
         customer_name: customer.name,
+        customer_id: customer.customer_id || null,
+        contract_id: customer.contract_id || null,
         department: customer.department || '',
         contact: customer.contact || '',
         booking_details: bookingDetails.trim() || null,
@@ -3658,6 +3734,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                             <span style={{ color: '#ea580c', fontSize: '0.88rem' }}>฿0 (สิทธิ์ Builtland)</span>
                           ) : customer.customer_type === 'basecamp' ? (
                             <span style={{ color: '#9333ea', fontSize: '0.88rem' }}>โควต้า Basecamp</span>
+                          ) : customer.customer_type === 'shop' ? (
+                            <span style={{ color: '#059669', fontSize: '0.88rem' }}>โควต้า Shop</span>
                           ) : (
                             `฿${Number(estSubtotal).toLocaleString()}`
                           )}
@@ -3687,10 +3765,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     ประเภทลูกค้า (Customer Type) <span style={{ color: 'var(--danger-color)' }}>*</span>
                   </label>
 
-                  {/* 3-Way Segmented Switcher */}
+                  {/* 4-Way Segmented Switcher */}
                   <div style={{
                     display: 'grid',
-                    gridTemplateColumns: '1fr 1fr 1fr',
+                    gridTemplateColumns: '1fr 1fr 1fr 1fr',
                     gap: '6px',
                     backgroundColor: 'var(--bg-main)',
                     padding: '4px',
@@ -3771,6 +3849,31 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       <span>Basecamp</span>
                       <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'basecamp' ? 0.95 : 0.7 }}>ผู้เช่าชั้น 4</span>
                     </button>
+
+                    {/* 4. Shop */}
+                    <button
+                      type="button"
+                      onClick={() => handleCustomerTypeChange('shop')}
+                      style={{
+                        padding: '10px 4px',
+                        borderRadius: '9px',
+                        border: customer.customer_type === 'shop' ? '1px solid #059669' : '1px solid transparent',
+                        backgroundColor: customer.customer_type === 'shop' ? '#059669' : 'transparent',
+                        color: customer.customer_type === 'shop' ? '#ffffff' : 'var(--text-muted)',
+                        fontWeight: customer.customer_type === 'shop' ? 800 : 600,
+                        fontSize: '0.78rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '2px',
+                        transition: 'all 0.15s ease',
+                        boxShadow: customer.customer_type === 'shop' ? '0 2px 8px rgba(5,150,105,0.3)' : 'none'
+                      }}
+                    >
+                      <span>Shop</span>
+                      <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'shop' ? 0.95 : 0.7 }}>ร้านค้า</span>
+                    </button>
                   </div>
                 </div>
 
@@ -3835,7 +3938,16 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       </label>
                       <CustomSelect
                         value={customer.basecamp_unit || (customer.basecamp_sub_type === 'office' ? '401' : '419')}
-                        onChange={val => setCustomer({ ...customer, basecamp_unit: val })}
+                        onChange={val => {
+                          const matched = registeredBasecamps.find(b => b.basecamp_unit === val);
+                          setCustomer(prev => ({
+                            ...prev,
+                            basecamp_unit: val,
+                            customer_id: matched ? matched.id : null,
+                            contract_id: matched?.active_contract?.id || null,
+                            name: matched ? matched.name : prev.name
+                          }));
+                        }}
                         options={customer.basecamp_sub_type === 'office' ? (
                           BASECAMP_OFFICE_UNITS.map(u => ({
                             value: u,
@@ -3917,6 +4029,122 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       fontWeight: 700
                     }}>
                       ระบบจะทำการตัดชั่วโมงโควต้าให้อัตโนมัติเมื่อกดยืนยันการจอง
+                    </div>
+                  </div>
+                )}
+
+                {/* --- CASE D: SHOP (Partner / Merchant) --- */}
+                {customer.customer_type === 'shop' && (
+                  <div style={{
+                    backgroundColor: 'var(--bg-main)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '14px',
+                    padding: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px'
+                  }}>
+                    {/* Shop Selection Dropdown */}
+                    <div>
+                      <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                        เลือกร้านค้าพันธมิตร (Shop) <span style={{ color: 'var(--danger-color)' }}>*</span>
+                      </label>
+                      <CustomSelect
+                        value={customer.customer_id ? String(customer.customer_id) : (registeredShops[0]?.id ? String(registeredShops[0].id) : '')}
+                        onChange={val => {
+                          const s = registeredShops.find(item => String(item.id) === String(val));
+                          if (s) {
+                            setCustomer(prev => ({
+                              ...prev,
+                              customer_id: s.id,
+                              contract_id: s.active_contract?.id || null,
+                              name: s.name,
+                              contact: s.phone || s.contact_name || ''
+                            }));
+                          }
+                        }}
+                        options={registeredShops.map(s => ({
+                          value: String(s.id),
+                          label: `${s.name}${s.category ? ` (${s.category})` : ''}`
+                        }))}
+                        placeholder="-- เลือกร้านค้าพันธมิตร --"
+                      />
+                    </div>
+
+                    {/* Monthly Quota & Contract Status Info Card */}
+                    <div style={{
+                      padding: '10px 14px',
+                      backgroundColor: 'var(--bg-card)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '10px',
+                      fontSize: '0.78rem',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}>
+                      <div>
+                        <div style={{ fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span>สิทธิ์โควต้าประจำเดือน: 4 ชม./เดือน</span>
+                          {shopQuota.contract_eligible === false && (
+                            <span style={{ fontSize: '0.7rem', color: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', padding: '2px 6px', borderRadius: '4px' }}>
+                              (สัญญาสิ้นสุดก่อนวันใช้งาน)
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          ใช้ไปแล้ว {shopQuota.used_quota || 0} ชม. | คงเหลือ {shopQuota.remaining_quota || 0} ชม.
+                        </div>
+                      </div>
+                      <span style={{
+                        fontWeight: 800,
+                        fontSize: '0.76rem',
+                        color: (shopQuota.contract_eligible && (shopQuota.remaining_quota || 0) > 0) ? '#10b981' : '#ef4444',
+                        backgroundColor: (shopQuota.contract_eligible && (shopQuota.remaining_quota || 0) > 0) ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                        border: (shopQuota.contract_eligible && (shopQuota.remaining_quota || 0) > 0) ? '1px solid rgba(16, 185, 129, 0.25)' : '1px solid rgba(239, 68, 68, 0.25)',
+                        padding: '4px 10px',
+                        borderRadius: '6px'
+                      }}>
+                        {!shopQuota.contract_eligible
+                          ? 'หมดสัญญา (คิดราคาเต็ม)'
+                          : ((shopQuota.remaining_quota || 0) > 0 ? `เหลือ ${shopQuota.remaining_quota} ชม.` : 'โควต้าหมดแล้ว')}
+                      </span>
+                    </div>
+
+                    {/* Shop Contact / Rep Name */}
+                    <div>
+                      <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                        ชื่อผู้ติดต่อ / ตัวแทนร้านค้า
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="ชื่อตัวแทนผู้มาใช้งานหรือติดต่อ"
+                        value={customer.contact}
+                        onChange={e => setCustomer({ ...customer, contact: e.target.value })}
+                        style={{
+                          width: '100%',
+                          height: '40px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          backgroundColor: 'var(--bg-card)',
+                          padding: '0 12px',
+                          fontSize: '0.84rem',
+                          color: 'var(--text-main)',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+
+                    {/* Auto-Deduct Quota Notice */}
+                    <div style={{
+                      backgroundColor: 'rgba(5, 150, 105, 0.08)',
+                      border: '1px solid rgba(5, 150, 105, 0.25)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      fontSize: '0.74rem',
+                      color: '#059669',
+                      fontWeight: 700
+                    }}>
+                      ระบบจะทำการตัดชั่วโมงโควต้าของร้านค้าให้อัตโนมัติ (หากวันใช้งานอยู่ในอายุสัญญา)
                     </div>
                   </div>
                 )}
@@ -4446,6 +4674,22 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   }}>
                     <CheckCircle2 size={16} style={{ color: '#ea580c', flexShrink: 0 }} />
                     <span>สิทธิ์การใช้งานภายใน Builtland: ฟรี ไม่คิดค่าบริการ (บันทึกเป็นการใช้งานภายใน)</span>
+                  </div>
+                ) : customer.customer_type === 'shop' ? (
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '12px',
+                    backgroundColor: 'rgba(5, 150, 105, 0.08)',
+                    border: '1px solid rgba(5, 150, 105, 0.25)',
+                    color: '#059669',
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <CheckCircle2 size={16} style={{ color: '#059669', flexShrink: 0 }} />
+                    <span>สิทธิ์ร้านค้าพันธมิตร (Shop): ตัดชั่วโมงโควต้าประจำเดือนอัตโนมัติ (4 ชม./เดือน)</span>
                   </div>
                 ) : (
                   <div style={{
