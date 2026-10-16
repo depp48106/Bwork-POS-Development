@@ -1,0 +1,593 @@
+/**
+ * customerContracts/routes.js
+ * Express routes for Customer, Shop, Contract & Quota Management
+ */
+
+const express = require('express');
+const {
+  getBangkokDateToday,
+  calculateDaysDifference,
+  evaluateContractStatus,
+  calculateCustomerQuota,
+  getContractAlerts
+} = require('./service');
+
+function createCustomerRouter(dbQuery) {
+  const router = express.Router();
+
+  // Helper to record audit log
+  async function recordAuditLog({ customerId, contractId, action, details, performedBy }) {
+    try {
+      await dbQuery.run(
+        `INSERT INTO customer_audit_logs (customer_id, contract_id, action, details, performed_by)
+         VALUES (?, ?, ?, ?, ?)`,
+        [customerId || null, contractId || null, action, JSON.stringify(details || {}), performedBy || 'system']
+      );
+    } catch (e) {
+      console.warn('[CustomerAudit] Failed to write log:', e.message);
+    }
+  }
+
+  // 1. GET /api/customers/contracts/alerts
+  router.get('/contracts/alerts', async (req, res) => {
+    try {
+      const today = req.query.date || getBangkokDateToday();
+      const result = await getContractAlerts(dbQuery, today);
+      res.json({
+        success: true,
+        ...result
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] alerts error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2. GET /api/customers
+  router.get('/', async (req, res) => {
+    const { type, status, q, month, year } = req.query;
+    try {
+      let sql = 'SELECT * FROM customers WHERE 1=1';
+      const params = [];
+
+      if (type && type !== 'all') {
+        sql += ' AND customer_type = ?';
+        params.push(type);
+      }
+      if (status && status !== 'all') {
+        sql += ' AND status = ?';
+        params.push(status);
+      }
+      if (q && q.trim()) {
+        sql += ' AND (name LIKE ? OR contact_name LIKE ? OR phone LIKE ? OR basecamp_unit LIKE ?)';
+        const queryTerm = `%${q.trim()}%`;
+        params.push(queryTerm, queryTerm, queryTerm, queryTerm);
+      }
+
+      sql += ' ORDER BY CASE customer_type WHEN \'basecamp\' THEN 0 ELSE 1 END, basecamp_unit ASC, name ASC';
+      const customers = await dbQuery.all(sql, params);
+
+      // Fetch active contracts and quota for each customer
+      const enriched = await Promise.all(customers.map(async (c) => {
+        const contracts = await dbQuery.all(
+          `SELECT * FROM customer_contracts
+           WHERE customer_id = ?
+           ORDER BY CASE WHEN status IN ('ACTIVE', 'EXPIRING') THEN 0 ELSE 1 END, end_date DESC`,
+          [c.id]
+        );
+        const activeContract = contracts && contracts.length > 0 ? contracts[0] : null;
+        if (activeContract) {
+          const evalRes = evaluateContractStatus(activeContract);
+          activeContract.evaluated_status = evalRes.status;
+          activeContract.days_left = evalRes.days_left;
+          activeContract.urgency = evalRes.urgency;
+        }
+
+        const quota = await calculateCustomerQuota(dbQuery, {
+          customerId: c.id,
+          month,
+          year
+        });
+
+        return {
+          ...c,
+          active_contract: activeContract,
+          contracts: contracts || [],
+          quota
+        };
+      }));
+
+      res.json({
+        success: true,
+        customers: enriched
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] list error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 3. GET /api/customers/:id
+  router.get('/:id', async (req, res) => {
+    const customerId = parseInt(req.params.id, 10);
+    const { month, year } = req.query;
+    try {
+      const customer = await dbQuery.get('SELECT * FROM customers WHERE id = ?', [customerId]);
+      if (!customer) {
+        return res.status(404).json({ error: 'Customer not found' });
+      }
+
+      const contracts = await dbQuery.all(
+        'SELECT * FROM customer_contracts WHERE customer_id = ? ORDER BY start_date DESC, id DESC',
+        [customerId]
+      );
+
+      const evaluatedContracts = (contracts || []).map(ctr => {
+        const evalRes = evaluateContractStatus(ctr);
+        return {
+          ...ctr,
+          evaluated_status: evalRes.status,
+          days_left: evalRes.days_left,
+          urgency: evalRes.urgency
+        };
+      });
+
+      const auditLogs = await dbQuery.all(
+        'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50',
+        [customerId]
+      );
+
+      const quota = await calculateCustomerQuota(dbQuery, {
+        customerId,
+        month,
+        year
+      });
+
+      res.json({
+        success: true,
+        customer: {
+          ...customer,
+          contracts: evaluatedContracts,
+          audit_logs: auditLogs || [],
+          quota
+        }
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] get detail error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 4. GET /api/customers/:id/quota
+  router.get('/:id/quota', async (req, res) => {
+    const customerId = parseInt(req.params.id, 10);
+    const { month, year, date } = req.query;
+    try {
+      const quota = await calculateCustomerQuota(dbQuery, {
+        customerId,
+        serviceDate: date,
+        month,
+        year
+      });
+      res.json({
+        success: true,
+        ...quota
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] get quota error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 5. POST /api/customers
+  router.post('/', async (req, res) => {
+    const {
+      customer_type,
+      name,
+      contact_name,
+      phone,
+      email,
+      tax_id,
+      address,
+      basecamp_sub_type,
+      basecamp_unit,
+      start_date,
+      end_date,
+      monthly_quota_hours,
+      contract_number,
+      notes
+    } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'ชื่อลูกค้าหรือชื่อร้านค้าจำเป็นต้องระบุ' });
+    }
+    const cleanType = customer_type === 'shop' ? 'shop' : 'basecamp';
+
+    try {
+      // Check unit uniqueness for active basecamp customer
+      if (cleanType === 'basecamp' && basecamp_unit) {
+        const existingActive = await dbQuery.get(
+          `SELECT id, name FROM customers
+           WHERE customer_type = 'basecamp' AND basecamp_unit = ? AND status = 'active'`,
+          [basecamp_unit]
+        );
+        if (existingActive) {
+          return res.status(400).json({
+            error: `ยูนิต ${basecamp_unit} มีผู้เช่าที่ใช้งานอยู่แล้ว (${existingActive.name}) กรุณาใช้ฟังก์ชันเปลี่ยนผู้เช่าหรือปิดสถานะผู้เช่าเดิมก่อน`
+          });
+        }
+      }
+
+      const insertRes = await dbQuery.run(
+        `INSERT INTO customers
+         (customer_type, name, contact_name, phone, email, tax_id, address, basecamp_sub_type, basecamp_unit, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [
+          cleanType,
+          name.trim(),
+          contact_name ? contact_name.trim() : null,
+          phone ? phone.trim() : null,
+          email ? email.trim() : null,
+          tax_id ? tax_id.trim() : null,
+          address ? address.trim() : null,
+          cleanType === 'basecamp' ? (basecamp_sub_type || 'office') : null,
+          cleanType === 'basecamp' ? (basecamp_unit || null) : null
+        ]
+      );
+      const customerId = insertRes.id;
+
+      let contractId = null;
+      let effectiveContractNumber = null;
+
+      // Create initial contract if start_date and end_date provided
+      if (start_date && end_date) {
+        const defaultQuota = cleanType === 'shop' ? 4.0 : (basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
+        const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
+        effectiveContractNumber = contract_number && contract_number.trim()
+          ? contract_number.trim()
+          : (cleanType === 'basecamp'
+              ? `CTR-BC-${basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
+              : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
+
+        const ctrRes = await dbQuery.run(
+          `INSERT INTO customer_contracts
+           (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          [customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null]
+        );
+        contractId = ctrRes.id;
+      }
+
+      const performedBy = req.user?.username || 'staff';
+      await recordAuditLog({
+        customerId,
+        contractId,
+        action: 'CREATE_CUSTOMER',
+        details: {
+          customer_type: cleanType,
+          name,
+          basecamp_unit,
+          contract_number: effectiveContractNumber,
+          start_date,
+          end_date
+        },
+        performedBy
+      });
+
+      res.status(201).json({
+        success: true,
+        customer_id: customerId,
+        contract_id: contractId,
+        message: 'สร้างข้อมูลลูกค้าเรียบร้อยแล้ว'
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] create error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 6. PUT /api/customers/:id
+  router.put('/:id', async (req, res) => {
+    const customerId = parseInt(req.params.id, 10);
+    const {
+      name,
+      contact_name,
+      phone,
+      email,
+      tax_id,
+      address,
+      basecamp_sub_type,
+      basecamp_unit
+    } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'ชื่อลูกค้าหรือร้านค้าจำเป็นต้องระบุ' });
+    }
+
+    try {
+      const existing = await dbQuery.get('SELECT * FROM customers WHERE id = ?', [customerId]);
+      if (!existing) {
+        return res.status(404).json({ error: 'Customer not found' });
+      }
+
+      await dbQuery.run(
+        `UPDATE customers
+         SET name = ?,
+             contact_name = ?,
+             phone = ?,
+             email = ?,
+             tax_id = ?,
+             address = ?,
+             basecamp_sub_type = ?,
+             basecamp_unit = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [
+          name.trim(),
+          contact_name !== undefined ? contact_name : existing.contact_name,
+          phone !== undefined ? phone : existing.phone,
+          email !== undefined ? email : existing.email,
+          tax_id !== undefined ? tax_id : existing.tax_id,
+          address !== undefined ? address : existing.address,
+          existing.customer_type === 'basecamp' ? (basecamp_sub_type || existing.basecamp_sub_type) : null,
+          existing.customer_type === 'basecamp' ? (basecamp_unit || existing.basecamp_unit) : null,
+          customerId
+        ]
+      );
+
+      const performedBy = req.user?.username || 'staff';
+      await recordAuditLog({
+        customerId,
+        action: 'UPDATE_CUSTOMER',
+        details: {
+          previous: { name: existing.name, contact_name: existing.contact_name, phone: existing.phone },
+          updated: { name, contact_name, phone }
+        },
+        performedBy
+      });
+
+      res.json({
+        success: true,
+        message: 'บันทึกการแก้ไขข้อมูลลูกค้าเรียบร้อยแล้ว'
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] update error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 7. PATCH /api/customers/:id/status
+  router.patch('/:id/status', async (req, res) => {
+    const customerId = parseInt(req.params.id, 10);
+    const { status } = req.body;
+    if (!['active', 'inactive'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    try {
+      await dbQuery.run(
+        'UPDATE customers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [status, customerId]
+      );
+
+      const performedBy = req.user?.username || 'staff';
+      await recordAuditLog({
+        customerId,
+        action: 'UPDATE_STATUS',
+        details: { status },
+        performedBy
+      });
+
+      res.json({
+        success: true,
+        message: `เปลี่ยนสถานะเป็น ${status} เรียบร้อยแล้ว`
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] status error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 8. POST /api/customers/:id/contracts (Create or Renew contract)
+  router.post('/:id/contracts', async (req, res) => {
+    const customerId = parseInt(req.params.id, 10);
+    const {
+      contract_number,
+      start_date,
+      end_date,
+      monthly_quota_hours,
+      notes
+    } = req.body;
+
+    if (!start_date || !end_date) {
+      return res.status(400).json({ error: 'วันเริ่มสัญญาและวันสิ้นสุดสัญญาจำเป็นต้องระบุ' });
+    }
+
+    try {
+      const customer = await dbQuery.get('SELECT * FROM customers WHERE id = ?', [customerId]);
+      if (!customer) {
+        return res.status(404).json({ error: 'Customer not found' });
+      }
+
+      const defaultQuota = customer.customer_type === 'shop'
+        ? 4.0
+        : (customer.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
+      const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
+
+      const effectiveContractNumber = contract_number && contract_number.trim()
+        ? contract_number.trim()
+        : (customer.customer_type === 'basecamp'
+            ? `CTR-BC-${customer.basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
+            : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
+
+      const ctrRes = await dbQuery.run(
+        `INSERT INTO customer_contracts
+         (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null]
+      );
+
+      const performedBy = req.user?.username || 'staff';
+      await recordAuditLog({
+        customerId,
+        contractId: ctrRes.id,
+        action: 'RENEW_CONTRACT',
+        details: {
+          contract_number: effectiveContractNumber,
+          start_date,
+          end_date,
+          monthly_quota_hours: quotaVal,
+          notes
+        },
+        performedBy
+      });
+
+      res.status(201).json({
+        success: true,
+        contract_id: ctrRes.id,
+        message: 'บันทึกสัญญาใหม่/ต่อสัญญาเรียบร้อยแล้ว'
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] create contract error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 9. PATCH /api/customers/contracts/:contractId/terminate
+  router.patch('/contracts/:contractId/terminate', async (req, res) => {
+    const contractId = parseInt(req.params.contractId, 10);
+    const { termination_date, reason } = req.body;
+    const effectiveTerminationDate = termination_date || getBangkokDateToday();
+
+    try {
+      const contract = await dbQuery.get('SELECT * FROM customer_contracts WHERE id = ?', [contractId]);
+      if (!contract) {
+        return res.status(404).json({ error: 'Contract not found' });
+      }
+
+      const updatedNotes = contract.notes
+        ? `${contract.notes}\n[TERMINATED ${effectiveTerminationDate}]: ${reason || 'ยกเลิกสัญญาก่อนกำหนด'}`
+        : `[TERMINATED ${effectiveTerminationDate}]: ${reason || 'ยกเลิกสัญญาก่อนกำหนด'}`;
+
+      await dbQuery.run(
+        `UPDATE customer_contracts
+         SET status = 'TERMINATED',
+             end_date = ?,
+             notes = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [effectiveTerminationDate, updatedNotes, contractId]
+      );
+
+      const performedBy = req.user?.username || 'staff';
+      await recordAuditLog({
+        customerId: contract.customer_id,
+        contractId,
+        action: 'TERMINATE_CONTRACT',
+        details: { termination_date: effectiveTerminationDate, reason },
+        performedBy
+      });
+
+      res.json({
+        success: true,
+        message: 'ยกเลิกสัญญาเรียบร้อยแล้ว'
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] terminate contract error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 10. POST /api/customers/transfer-unit (Basecamp tenant change)
+  router.post('/transfer-unit', async (req, res) => {
+    const {
+      basecamp_unit,
+      new_tenant,
+      new_contract
+    } = req.body;
+
+    if (!basecamp_unit || !new_tenant || !new_tenant.name) {
+      return res.status(400).json({ error: 'กรุณาระบุเลขยูนิตและข้อมูลผู้เช่ารายใหม่' });
+    }
+
+    try {
+      // 1. Deactivate old active tenant on this unit
+      const oldTenants = await dbQuery.all(
+        `SELECT id, name FROM customers
+         WHERE customer_type = 'basecamp' AND basecamp_unit = ? AND status = 'active'`,
+        [basecamp_unit]
+      );
+
+      for (const old of (oldTenants || [])) {
+        await dbQuery.run("UPDATE customers SET status = 'inactive', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [old.id]);
+        await dbQuery.run(
+          "UPDATE customer_contracts SET status = 'TERMINATED', updated_at = CURRENT_TIMESTAMP WHERE customer_id = ? AND status IN ('ACTIVE', 'EXPIRING')",
+          [old.id]
+        );
+      }
+
+      // 2. Create new tenant
+      const subType = new_tenant.basecamp_sub_type || (['419', '420', '421', '422', '427', '428', '429', '430'].includes(basecamp_unit) ? 'hotdesk' : 'office');
+      const insRes = await dbQuery.run(
+        `INSERT INTO customers
+         (customer_type, name, contact_name, phone, email, tax_id, address, basecamp_sub_type, basecamp_unit, status, created_at, updated_at)
+         VALUES ('basecamp', ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [
+          new_tenant.name.trim(),
+          new_tenant.contact_name ? new_tenant.contact_name.trim() : null,
+          new_tenant.phone ? new_tenant.phone.trim() : null,
+          new_tenant.email ? new_tenant.email.trim() : null,
+          new_tenant.tax_id ? new_tenant.tax_id.trim() : null,
+          new_tenant.address ? new_tenant.address.trim() : null,
+          subType,
+          basecamp_unit
+        ]
+      );
+      const newCustomerId = insRes.id;
+
+      // 3. Create contract for new tenant
+      let newContractId = null;
+      if (new_contract && new_contract.start_date && new_contract.end_date) {
+        const quotaVal = new_contract.monthly_quota_hours !== undefined
+          ? Number(new_contract.monthly_quota_hours)
+          : (subType === 'hotdesk' ? 2.0 : 4.0);
+        const ctrNum = new_contract.contract_number || `CTR-BC-${basecamp_unit}-${new_contract.start_date.slice(0, 7).replace('-', '')}`;
+
+        const ctrRes = await dbQuery.run(
+          `INSERT INTO customer_contracts
+           (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          [newCustomerId, ctrNum, new_contract.start_date, new_contract.end_date, quotaVal, new_contract.notes || null]
+        );
+        newContractId = ctrRes.id;
+      }
+
+      const performedBy = req.user?.username || 'staff';
+      await recordAuditLog({
+        customerId: newCustomerId,
+        contractId: newContractId,
+        action: 'TRANSFER_UNIT',
+        details: {
+          basecamp_unit,
+          previous_tenants: oldTenants ? oldTenants.map(t => ({ id: t.id, name: t.name })) : [],
+          new_tenant_name: new_tenant.name
+        },
+        performedBy
+      });
+
+      res.status(201).json({
+        success: true,
+        customer_id: newCustomerId,
+        contract_id: newContractId,
+        message: `เปลี่ยนผู้เช่ายูนิต ${basecamp_unit} เรียบร้อยแล้ว ประวัติของผู้เช่าเดิมถูกแยกเก็บอย่างปลอดภัย`
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] transfer error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  return router;
+}
+
+module.exports = { createCustomerRouter };

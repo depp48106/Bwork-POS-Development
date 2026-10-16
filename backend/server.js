@@ -263,6 +263,10 @@ app.use('/api/upload', authenticateToken, requireAnyPermission('manage', 'admin-
 app.use('/api/backup', authenticateToken, requireAnyPermission('admin-management', 'admin-backup'));
 app.use('/api/admin', authenticateToken, requireAnyPermission('admin-management', 'admin-backup', 'admin-system'));
 app.use('/api/basecamp', authenticateToken, requireAnyPermission('pos', 'manage', 'pending', 'history'));
+const { createCustomerRouter } = require('./customerContracts/routes');
+const { calculateCustomerQuota } = require('./customerContracts/service');
+app.use('/api/customers', authenticateToken, requireAnyPermission('pos', 'manage', 'pending', 'history', 'dashboard', 'admin-management'), createCustomerRouter(dbQuery));
+
 const { createHourCreditService } = require('./hourCredits/service');
 const { creditRouter, creditMutationGuard } = require('./hourCredits/routes');
 const hourCredits = createHourCreditService({ filename: dbPath, overlap: checkRoomOverlap, receipt: generateReceiptNumber, pin: generateUniquePinCode });
@@ -1221,51 +1225,113 @@ app.post('/api/bookings', async (req, res) => {
       let grossSubtotal = Math.round(serverTotal * 100) / 100;
       let quotaHoursUsed = 0;
       let effectiveBillingOption = billing_option || 'paid';
+      const customerId = req.body.customer_id ? parseInt(req.body.customer_id, 10) : null;
+      let contractId = req.body.contract_id ? parseInt(req.body.contract_id, 10) : null;
 
-      if (customer_type === 'basecamp') {
-        const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
+      if (customer_type === 'shop') {
         const firstItemDate = items[0]?.start_time || getBangkokLocalISO(new Date());
-        const dObj = new Date(firstItemDate);
-        const targetMonthStr = `${dObj.getFullYear()}-${String(dObj.getMonth() + 1).padStart(2, '0')}`;
+        let remainingQuota = 0;
+        let contractEligible = true;
 
-        const quotaRow = await dbQuery.get(
-          `SELECT COALESCE(SUM(b.quota_hours_used), 0) AS used_hours
-           FROM bookings b
-           WHERE b.customer_type = 'basecamp'
-             AND b.basecamp_sub_type = ?
-             AND b.basecamp_unit = ?
-             AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
-             AND (
-               EXISTS (
-                 SELECT 1 FROM booking_items bi
-                 WHERE bi.booking_id = b.id
-                   AND strftime('%Y-%m', bi.start_time) = ?
-               )
-               OR (
-                 NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
-                 AND strftime('%Y-%m', b.created_at) = ?
-               )
-             )`,
-          [basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr]
-        );
-        const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
-        const remainingQuota = Math.max(0, maxQuota - usedQuota);
-
-        quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
-        const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
-
-        if (totalBookingHours > 0) {
-          grossSubtotal = Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100;
+        if (customerId) {
+          const quotaCalc = await calculateCustomerQuota(dbQuery, {
+            customerId,
+            customerType: 'shop',
+            serviceDate: firstItemDate
+          });
+          remainingQuota = quotaCalc.remaining_quota;
+          contractEligible = quotaCalc.contract_eligible;
+          if (quotaCalc.contract && !contractId) {
+            contractId = quotaCalc.contract.id;
+          }
         } else {
-          grossSubtotal = 0;
+          contractEligible = false;
         }
 
-        if (quotaHoursUsed > 0 && grossSubtotal === 0) {
-          effectiveBillingOption = 'quota';
-        } else if (quotaHoursUsed > 0 && grossSubtotal > 0) {
-          effectiveBillingOption = 'quota_partial';
+        if (!contractEligible) {
+          quotaHoursUsed = 0;
+          grossSubtotal = Math.round(serverTotal * 100) / 100;
+          effectiveBillingOption = 'paid';
         } else {
+          quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
+          const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+          grossSubtotal = totalBookingHours > 0
+            ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
+            : 0;
+
+          if (quotaHoursUsed > 0 && grossSubtotal === 0) {
+            effectiveBillingOption = 'quota';
+          } else if (quotaHoursUsed > 0 && grossSubtotal > 0) {
+            effectiveBillingOption = 'quota_partial';
+          } else {
+            effectiveBillingOption = 'standard';
+          }
+        }
+      } else if (customer_type === 'basecamp') {
+        const firstItemDate = items[0]?.start_time || getBangkokLocalISO(new Date());
+        let remainingQuota = 0;
+        let contractEligible = true;
+
+        if (customerId) {
+          const quotaCalc = await calculateCustomerQuota(dbQuery, {
+            customerId,
+            customerType: 'basecamp',
+            basecampSubType: basecamp_sub_type,
+            basecampUnit: basecamp_unit,
+            serviceDate: firstItemDate
+          });
+          remainingQuota = quotaCalc.remaining_quota;
+          contractEligible = quotaCalc.contract_eligible;
+          if (quotaCalc.contract && !contractId) {
+            contractId = quotaCalc.contract.id;
+          }
+        } else {
+          const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
+          const dObj = new Date(firstItemDate);
+          const targetMonthStr = `${dObj.getFullYear()}-${String(dObj.getMonth() + 1).padStart(2, '0')}`;
+
+          const quotaRow = await dbQuery.get(
+            `SELECT COALESCE(SUM(b.quota_hours_used), 0) AS used_hours
+             FROM bookings b
+             WHERE b.customer_type = 'basecamp'
+               AND b.basecamp_sub_type = ?
+               AND b.basecamp_unit = ?
+               AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM booking_items bi
+                   WHERE bi.booking_id = b.id
+                     AND strftime('%Y-%m', bi.start_time) = ?
+                 )
+                 OR (
+                   NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+                   AND strftime('%Y-%m', b.created_at) = ?
+                 )
+               )`,
+            [basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr]
+          );
+          const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
+          remainingQuota = Math.max(0, maxQuota - usedQuota);
+        }
+
+        if (!contractEligible) {
+          quotaHoursUsed = 0;
+          grossSubtotal = Math.round(serverTotal * 100) / 100;
           effectiveBillingOption = 'standard';
+        } else {
+          quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
+          const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+          grossSubtotal = totalBookingHours > 0
+            ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
+            : 0;
+
+          if (quotaHoursUsed > 0 && grossSubtotal === 0) {
+            effectiveBillingOption = 'quota';
+          } else if (quotaHoursUsed > 0 && grossSubtotal > 0) {
+            effectiveBillingOption = 'quota_partial';
+          } else {
+            effectiveBillingOption = 'standard';
+          }
         }
       } else if (customer_type === 'builtland') {
         grossSubtotal = 0;
@@ -1305,7 +1371,7 @@ app.post('/api/bookings', async (req, res) => {
             pinCode = await generateUniquePinCode();
           }
         } else {
-          // General / Walk-in / Basecamp: Customer Access Code only
+          // General / Walk-in / Basecamp / Shop: Customer Access Code only
           if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
             pinCode = roomDb.pin_code.trim();
           } else {
@@ -1326,8 +1392,8 @@ app.post('/api/bookings', async (req, res) => {
           subtotal_amount, discount_type, discount_value, discount_amount,
           total_amount, paid_amount, balance_amount, payment_status, payment_method,
           receipt_number, pin_code, line_user_id, guest_count, checkin_status, booking_source, booking_channel,
-          customer_type, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, booking_details, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          customer_type, customer_id, contract_id, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, booking_details, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customer_name,
           department || internal_department || '',
@@ -1349,6 +1415,8 @@ app.post('/api/bookings', async (req, res) => {
           'walk-in',
           req.body.booking_channel || 'pos_web',
           customer_type || 'walkin',
+          customerId,
+          contractId,
           basecamp_sub_type || null,
           basecamp_unit || null,
           internal_department || null,

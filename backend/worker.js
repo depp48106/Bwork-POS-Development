@@ -3530,6 +3530,738 @@ export default {
         }
       }
 
+      // ----------------------------------------------------
+      // CUSTOMER, SHOP & CONTRACT MANAGEMENT HELPERS
+      // ----------------------------------------------------
+      function calculateWorkerDaysDiff(targetDateStr, baseDateStr) {
+        if (!targetDateStr) return 0;
+        const target = new Date(`${targetDateStr}T00:00:00+07:00`);
+        const base = new Date(`${baseDateStr}T00:00:00+07:00`);
+        const diffMs = target.getTime() - base.getTime();
+        return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+      }
+
+      function evaluateWorkerContractStatus(contract, baseDateStr) {
+        if (!contract) return null;
+        const today = baseDateStr || getBangkokLocalISO(new Date()).slice(0, 10);
+        if (contract.status === 'TERMINATED') {
+          return {
+            status: 'TERMINATED',
+            days_left: calculateWorkerDaysDiff(contract.end_date, today),
+            urgency: 'terminated',
+            is_active_or_expiring: false
+          };
+        }
+
+        const daysLeft = calculateWorkerDaysDiff(contract.end_date, today);
+        let status = 'ACTIVE';
+        let urgency = 'normal';
+
+        if (daysLeft < 0) {
+          status = 'EXPIRED';
+          urgency = 'expired';
+        } else if (daysLeft <= 7) {
+          status = 'EXPIRING';
+          urgency = 'danger';
+        } else if (daysLeft <= 15) {
+          status = 'EXPIRING';
+          urgency = 'warning';
+        } else if (daysLeft <= 30) {
+          status = 'EXPIRING';
+          urgency = 'info';
+        }
+
+        return {
+          status,
+          days_left: daysLeft,
+          urgency,
+          is_active_or_expiring: status === 'ACTIVE' || status === 'EXPIRING'
+        };
+      }
+
+      function verifyWorkerContractEligibility(contract, serviceDateStr) {
+        if (!contract) return { eligible: false, reason: 'NO_CONTRACT' };
+        if (contract.status === 'TERMINATED') return { eligible: false, reason: 'CONTRACT_TERMINATED' };
+        const today = getBangkokLocalISO(new Date()).slice(0, 10);
+        const serviceDate = serviceDateStr ? serviceDateStr.slice(0, 10) : today;
+        if (contract.start_date && serviceDate < contract.start_date) {
+          return { eligible: false, reason: 'SERVICE_DATE_BEFORE_CONTRACT_START' };
+        }
+        if (contract.end_date && serviceDate > contract.end_date) {
+          return { eligible: false, reason: 'SERVICE_DATE_AFTER_CONTRACT_EXPIRATION' };
+        }
+        return { eligible: true };
+      }
+
+      async function recordWorkerCustomerAudit(env, { customerId, contractId, action, details, performedBy }) {
+        try {
+          await env.DB.prepare(
+            `INSERT INTO customer_audit_logs (customer_id, contract_id, action, details, performed_by)
+             VALUES (?, ?, ?, ?, ?)`
+          ).bind(customerId || null, contractId || null, action, JSON.stringify(details || {}), performedBy || 'system').run();
+        } catch (e) {
+          console.warn('[WorkerCustomerAudit] Failed to write log:', e.message);
+        }
+      }
+
+      async function calculateWorkerCustomerQuota(env, { customerId, customerType, basecampSubType, basecampUnit, serviceDate, month, year }) {
+        const today = getBangkokLocalISO(new Date()).slice(0, 10);
+        const targetDate = serviceDate ? serviceDate.slice(0, 10) : today;
+        const targetYear = year ? String(year) : targetDate.slice(0, 4);
+        const targetMonth = month ? String(month).padStart(2, '0') : targetDate.slice(5, 7);
+        const targetMonthStr = `${targetYear}-${targetMonth}`;
+
+        let customer = null;
+        let activeContract = null;
+        let maxQuota = 0;
+
+        if (customerId) {
+          customer = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
+          const { results: contracts } = await env.DB.prepare(
+            `SELECT * FROM customer_contracts
+             WHERE customer_id = ?
+             ORDER BY CASE WHEN status IN ('ACTIVE', 'EXPIRING') THEN 0 ELSE 1 END, end_date DESC`
+          ).bind(customerId).all();
+
+          if (contracts && contracts.length > 0) {
+            activeContract = contracts[0];
+            const evaluation = evaluateWorkerContractStatus(activeContract, targetDate);
+            activeContract.evaluated_status = evaluation.status;
+            activeContract.days_left = evaluation.days_left;
+            activeContract.urgency = evaluation.urgency;
+          }
+        }
+
+        const effectiveType = customer ? customer.customer_type : (customerType || 'walkin');
+        const effectiveSubType = customer ? customer.basecamp_sub_type : basecampSubType;
+        const effectiveUnit = customer ? customer.basecamp_unit : basecampUnit;
+
+        if (effectiveType === 'shop') {
+          maxQuota = activeContract ? Number(activeContract.monthly_quota_hours || 4.0) : 4.0;
+        } else if (effectiveType === 'basecamp') {
+          if (activeContract && activeContract.monthly_quota_hours) {
+            maxQuota = Number(activeContract.monthly_quota_hours);
+          } else {
+            maxQuota = effectiveSubType === 'office' ? 4.0 : 2.0;
+          }
+        } else {
+          maxQuota = 0;
+        }
+
+        let contractEligible = true;
+        let ineligibilityReason = null;
+        if (activeContract) {
+          const eligibility = verifyWorkerContractEligibility(activeContract, targetDate);
+          if (!eligibility.eligible) {
+            contractEligible = false;
+            ineligibilityReason = eligibility.reason;
+          }
+        } else if (effectiveType === 'shop') {
+          contractEligible = false;
+          ineligibilityReason = 'NO_CONTRACT';
+        }
+
+        let usedQuota = 0;
+        let bookingCount = 0;
+
+        if (customer && customer.id) {
+          const row = await env.DB.prepare(
+            `SELECT COALESCE(SUM(b.quota_hours_used), 0) AS used_hours, COUNT(DISTINCT b.id) AS booking_count
+             FROM bookings b
+             WHERE b.customer_id = ?
+               AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+               AND (
+                 EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id AND strftime('%Y-%m', bi.start_time) = ?)
+                 OR (NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id) AND strftime('%Y-%m', b.created_at) = ?)
+               )`
+          ).bind(customer.id, targetMonthStr, targetMonthStr).first();
+          usedQuota = row ? Number(row.used_hours) : 0;
+          bookingCount = row ? Number(row.booking_count) : 0;
+        } else if (effectiveType === 'basecamp' && effectiveSubType && effectiveUnit) {
+          const row = await env.DB.prepare(
+            `SELECT COALESCE(SUM(b.quota_hours_used), 0) AS used_hours, COUNT(DISTINCT b.id) AS booking_count
+             FROM bookings b
+             WHERE b.customer_type = 'basecamp'
+               AND b.basecamp_sub_type = ?
+               AND b.basecamp_unit = ?
+               AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+               AND (
+                 EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id AND strftime('%Y-%m', bi.start_time) = ?)
+                 OR (NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id) AND strftime('%Y-%m', b.created_at) = ?)
+               )`
+          ).bind(effectiveSubType, effectiveUnit, targetMonthStr, targetMonthStr).first();
+          usedQuota = row ? Number(row.used_hours) : 0;
+          bookingCount = row ? Number(row.booking_count) : 0;
+        }
+
+        const effectiveMaxQuota = contractEligible ? maxQuota : 0;
+        const remainingQuota = Math.max(0, effectiveMaxQuota - usedQuota);
+
+        return {
+          customer_id: customer ? customer.id : null,
+          customer_name: customer ? customer.name : null,
+          customer_type: effectiveType,
+          basecamp_sub_type: effectiveSubType,
+          basecamp_unit: effectiveUnit,
+          target_month: targetMonthStr,
+          service_date: targetDate,
+          max_quota: maxQuota,
+          used_quota: usedQuota,
+          remaining_quota: remainingQuota,
+          booking_count: bookingCount,
+          contract: activeContract,
+          contract_eligible: contractEligible,
+          ineligibility_reason: ineligibilityReason
+        };
+      }
+
+      // ----------------------------------------------------
+      // CUSTOMER, SHOP & CONTRACT MANAGEMENT ENDPOINTS
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/customers')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) {
+          return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        }
+        const user = auth.user;
+        if (user && user.role !== 'admin') {
+          const perms = (user.permissions || '').split(',').map(p => p.trim());
+          if (!perms.some(p => ['pos', 'manage', 'pending', 'history', 'dashboard', 'admin-management'].includes(p))) {
+            return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงข้อมูลลูกค้า' }), { status: 403, headers: corsHeaders });
+          }
+        }
+      }
+
+      // 1. GET /api/customers/contracts/alerts
+      if (pathname === '/api/customers/contracts/alerts' && method === 'GET') {
+        try {
+          const today = url.searchParams.get('date') || getBangkokLocalISO(new Date()).slice(0, 10);
+          const { results: rows } = await env.DB.prepare(`
+            SELECT ctr.id AS contract_id, ctr.contract_number, ctr.start_date, ctr.end_date,
+                   ctr.monthly_quota_hours, ctr.status AS db_status, ctr.notes,
+                   c.id AS customer_id, c.name AS customer_name, c.customer_type,
+                   c.basecamp_sub_type, c.basecamp_unit, c.contact_name, c.phone, c.email
+            FROM customer_contracts ctr
+            JOIN customers c ON ctr.customer_id = c.id
+            WHERE ctr.status != 'TERMINATED'
+            ORDER BY ctr.end_date ASC
+          `).all();
+
+          const alerts = [];
+          const summary = {
+            expiring_30_days: 0,
+            expiring_15_days: 0,
+            expiring_7_days: 0,
+            expired: 0,
+            total_active: 0
+          };
+
+          for (const row of rows || []) {
+            const evaluation = evaluateWorkerContractStatus(row, today);
+            const item = {
+              ...row,
+              days_left: evaluation.days_left,
+              status: evaluation.status,
+              urgency: evaluation.urgency
+            };
+
+            if (item.status === 'EXPIRED') {
+              summary.expired++;
+              alerts.push(item);
+            } else if (item.status === 'EXPIRING') {
+              if (item.days_left <= 7) summary.expiring_7_days++;
+              else if (item.days_left <= 15) summary.expiring_15_days++;
+              else summary.expiring_30_days++;
+              alerts.push(item);
+            } else {
+              summary.total_active++;
+            }
+          }
+
+          return new Response(JSON.stringify({
+            success: true,
+            base_date: today,
+            summary,
+            alerts
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 2. GET /api/customers
+      if (pathname === '/api/customers' && method === 'GET') {
+        const type = url.searchParams.get('type');
+        const status = url.searchParams.get('status');
+        const q = url.searchParams.get('q');
+        const month = url.searchParams.get('month');
+        const year = url.searchParams.get('year');
+
+        try {
+          let sql = 'SELECT * FROM customers WHERE 1=1';
+          const params = [];
+          if (type && type !== 'all') {
+            sql += ' AND customer_type = ?';
+            params.push(type);
+          }
+          if (status && status !== 'all') {
+            sql += ' AND status = ?';
+            params.push(status);
+          }
+          if (q && q.trim()) {
+            sql += ' AND (name LIKE ? OR contact_name LIKE ? OR phone LIKE ? OR basecamp_unit LIKE ?)';
+            const term = `%${q.trim()}%`;
+            params.push(term, term, term, term);
+          }
+          sql += ' ORDER BY CASE customer_type WHEN \'basecamp\' THEN 0 ELSE 1 END, basecamp_unit ASC, name ASC';
+
+          const { results: customers } = await env.DB.prepare(sql).bind(...params).all();
+
+          const enriched = await Promise.all((customers || []).map(async (c) => {
+            const { results: contracts } = await env.DB.prepare(
+              `SELECT * FROM customer_contracts
+               WHERE customer_id = ?
+               ORDER BY CASE WHEN status IN ('ACTIVE', 'EXPIRING') THEN 0 ELSE 1 END, end_date DESC`
+            ).bind(c.id).all();
+
+            const activeContract = contracts && contracts.length > 0 ? contracts[0] : null;
+            if (activeContract) {
+              const evalRes = evaluateWorkerContractStatus(activeContract);
+              activeContract.evaluated_status = evalRes.status;
+              activeContract.days_left = evalRes.days_left;
+              activeContract.urgency = evalRes.urgency;
+            }
+
+            const quota = await calculateWorkerCustomerQuota(env, {
+              customerId: c.id,
+              month,
+              year
+            });
+
+            return {
+              ...c,
+              active_contract: activeContract,
+              contracts: contracts || [],
+              quota
+            };
+          }));
+
+          return new Response(JSON.stringify({ success: true, customers: enriched }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 3. POST /api/customers
+      if (pathname === '/api/customers' && method === 'POST') {
+        try {
+          const body = await request.json();
+          const {
+            customer_type,
+            name,
+            contact_name,
+            phone,
+            email,
+            tax_id,
+            address,
+            basecamp_sub_type,
+            basecamp_unit,
+            start_date,
+            end_date,
+            monthly_quota_hours,
+            contract_number,
+            notes
+          } = body;
+
+          if (!name || !name.trim()) {
+            return new Response(JSON.stringify({ error: 'ชื่อลูกค้าหรือชื่อร้านค้าจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+          const cleanType = customer_type === 'shop' ? 'shop' : 'basecamp';
+
+          if (cleanType === 'basecamp' && basecamp_unit) {
+            const existingActive = await env.DB.prepare(
+              `SELECT id, name FROM customers
+               WHERE customer_type = 'basecamp' AND basecamp_unit = ? AND status = 'active'`
+            ).bind(basecamp_unit).first();
+            if (existingActive) {
+              return new Response(JSON.stringify({
+                error: `ยูนิต ${basecamp_unit} มีผู้เช่าที่ใช้งานอยู่แล้ว (${existingActive.name}) กรุณาใช้ฟังก์ชันเปลี่ยนผู้เช่าหรือปิดสถานะผู้เช่าเดิมก่อน`
+              }), { status: 400, headers: corsHeaders });
+            }
+          }
+
+          const insertRes = await env.DB.prepare(
+            `INSERT INTO customers
+             (customer_type, name, contact_name, phone, email, tax_id, address, basecamp_sub_type, basecamp_unit, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+          ).bind(
+            cleanType,
+            name.trim(),
+            contact_name ? contact_name.trim() : null,
+            phone ? phone.trim() : null,
+            email ? email.trim() : null,
+            tax_id ? tax_id.trim() : null,
+            address ? address.trim() : null,
+            cleanType === 'basecamp' ? (basecamp_sub_type || 'office') : null,
+            cleanType === 'basecamp' ? (basecamp_unit || null) : null
+          ).run();
+
+          const customerId = insertRes.meta?.last_row_id;
+          let contractId = null;
+          let effectiveContractNumber = null;
+
+          if (start_date && end_date) {
+            const defaultQuota = cleanType === 'shop' ? 4.0 : (basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
+            const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
+            effectiveContractNumber = contract_number && contract_number.trim()
+              ? contract_number.trim()
+              : (cleanType === 'basecamp'
+                  ? `CTR-BC-${basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
+                  : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
+
+            const ctrRes = await env.DB.prepare(
+              `INSERT INTO customer_contracts
+               (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+            ).bind(customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null).run();
+            contractId = ctrRes.meta?.last_row_id;
+          }
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId,
+            contractId,
+            action: 'CREATE_CUSTOMER',
+            details: { customer_type: cleanType, name, basecamp_unit, contract_number: effectiveContractNumber, start_date, end_date },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            customer_id: customerId,
+            contract_id: contractId,
+            message: 'สร้างข้อมูลลูกค้าเรียบร้อยแล้ว'
+          }), { status: 201, headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 4. POST /api/customers/transfer-unit
+      if (pathname === '/api/customers/transfer-unit' && method === 'POST') {
+        try {
+          const body = await request.json();
+          const { basecamp_unit, new_tenant, new_contract } = body;
+          if (!basecamp_unit || !new_tenant || !new_tenant.name) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเลขยูนิตและข้อมูลผู้เช่ารายใหม่' }), { status: 400, headers: corsHeaders });
+          }
+
+          const { results: oldTenants } = await env.DB.prepare(
+            `SELECT id, name FROM customers
+             WHERE customer_type = 'basecamp' AND basecamp_unit = ? AND status = 'active'`
+          ).bind(basecamp_unit).all();
+
+          for (const old of (oldTenants || [])) {
+            await env.DB.prepare("UPDATE customers SET status = 'inactive', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(old.id).run();
+            await env.DB.prepare("UPDATE customer_contracts SET status = 'TERMINATED', updated_at = CURRENT_TIMESTAMP WHERE customer_id = ? AND status IN ('ACTIVE', 'EXPIRING')").bind(old.id).run();
+          }
+
+          const subType = new_tenant.basecamp_sub_type || (['419', '420', '421', '422', '427', '428', '429', '430'].includes(basecamp_unit) ? 'hotdesk' : 'office');
+          const insRes = await env.DB.prepare(
+            `INSERT INTO customers
+             (customer_type, name, contact_name, phone, email, tax_id, address, basecamp_sub_type, basecamp_unit, status, created_at, updated_at)
+             VALUES ('basecamp', ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+          ).bind(
+            new_tenant.name.trim(),
+            new_tenant.contact_name ? new_tenant.contact_name.trim() : null,
+            new_tenant.phone ? new_tenant.phone.trim() : null,
+            new_tenant.email ? new_tenant.email.trim() : null,
+            new_tenant.tax_id ? new_tenant.tax_id.trim() : null,
+            new_tenant.address ? new_tenant.address.trim() : null,
+            subType,
+            basecamp_unit
+          ).run();
+          const newCustomerId = insRes.meta?.last_row_id;
+
+          let newContractId = null;
+          if (new_contract && new_contract.start_date && new_contract.end_date) {
+            const quotaVal = new_contract.monthly_quota_hours !== undefined
+              ? Number(new_contract.monthly_quota_hours)
+              : (subType === 'hotdesk' ? 2.0 : 4.0);
+            const ctrNum = new_contract.contract_number || `CTR-BC-${basecamp_unit}-${new_contract.start_date.slice(0, 7).replace('-', '')}`;
+            const ctrRes = await env.DB.prepare(
+              `INSERT INTO customer_contracts
+               (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+            ).bind(newCustomerId, ctrNum, new_contract.start_date, new_contract.end_date, quotaVal, new_contract.notes || null).run();
+            newContractId = ctrRes.meta?.last_row_id;
+          }
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId: newCustomerId,
+            contractId: newContractId,
+            action: 'TRANSFER_UNIT',
+            details: {
+              basecamp_unit,
+              previous_tenants: oldTenants ? oldTenants.map(t => ({ id: t.id, name: t.name })) : [],
+              new_tenant_name: new_tenant.name
+            },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            customer_id: newCustomerId,
+            contract_id: newContractId,
+            message: `เปลี่ยนผู้เช่ายูนิต ${basecamp_unit} เรียบร้อยแล้ว ประวัติของผู้เช่าเดิมถูกแยกเก็บอย่างปลอดภัย`
+          }), { status: 201, headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 5. GET /api/customers/:id/quota
+      const quotaMatch = pathname.match(/^\/api\/customers\/(\d+)\/quota$/);
+      if (quotaMatch && method === 'GET') {
+        const customerId = parseInt(quotaMatch[1], 10);
+        const month = url.searchParams.get('month');
+        const year = url.searchParams.get('year');
+        const date = url.searchParams.get('date');
+        try {
+          const quota = await calculateWorkerCustomerQuota(env, {
+            customerId,
+            serviceDate: date,
+            month,
+            year
+          });
+          return new Response(JSON.stringify({ success: true, ...quota }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 6. POST /api/customers/:id/contracts
+      const addContractMatch = pathname.match(/^\/api\/customers\/(\d+)\/contracts$/);
+      if (addContractMatch && method === 'POST') {
+        const customerId = parseInt(addContractMatch[1], 10);
+        try {
+          const body = await request.json();
+          const { contract_number, start_date, end_date, monthly_quota_hours, notes } = body;
+          if (!start_date || !end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาและวันสิ้นสุดสัญญาจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+
+          const customer = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
+          if (!customer) {
+            return new Response(JSON.stringify({ error: 'Customer not found' }), { status: 404, headers: corsHeaders });
+          }
+
+          const defaultQuota = customer.customer_type === 'shop' ? 4.0 : (customer.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
+          const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
+          const ctrNum = contract_number && contract_number.trim()
+            ? contract_number.trim()
+            : (customer.customer_type === 'basecamp'
+                ? `CTR-BC-${customer.basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
+                : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
+
+          const ctrRes = await env.DB.prepare(
+            `INSERT INTO customer_contracts
+             (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+          ).bind(customerId, ctrNum, start_date, end_date, quotaVal, notes || null).run();
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId,
+            contractId: ctrRes.meta?.last_row_id,
+            action: 'RENEW_CONTRACT',
+            details: { contract_number: ctrNum, start_date, end_date, monthly_quota_hours: quotaVal, notes },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            contract_id: ctrRes.meta?.last_row_id,
+            message: 'บันทึกสัญญาใหม่/ต่อสัญญาเรียบร้อยแล้ว'
+          }), { status: 201, headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 7. PATCH /api/customers/contracts/:contractId/terminate
+      const termContractMatch = pathname.match(/^\/api\/customers\/contracts\/(\d+)\/terminate$/);
+      if (termContractMatch && method === 'PATCH') {
+        const contractId = parseInt(termContractMatch[1], 10);
+        try {
+          const body = await request.json();
+          const { termination_date, reason } = body;
+          const today = getBangkokLocalISO(new Date()).slice(0, 10);
+          const effectiveTermDate = termination_date || today;
+
+          const contract = await env.DB.prepare('SELECT * FROM customer_contracts WHERE id = ?').bind(contractId).first();
+          if (!contract) {
+            return new Response(JSON.stringify({ error: 'Contract not found' }), { status: 404, headers: corsHeaders });
+          }
+
+          const updatedNotes = contract.notes
+            ? `${contract.notes}\n[TERMINATED ${effectiveTermDate}]: ${reason || 'ยกเลิกสัญญาก่อนกำหนด'}`
+            : `[TERMINATED ${effectiveTermDate}]: ${reason || 'ยกเลิกสัญญาก่อนกำหนด'}`;
+
+          await env.DB.prepare(
+            `UPDATE customer_contracts
+             SET status = 'TERMINATED', end_date = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`
+          ).bind(effectiveTermDate, updatedNotes, contractId).run();
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId: contract.customer_id,
+            contractId,
+            action: 'TERMINATE_CONTRACT',
+            details: { termination_date: effectiveTermDate, reason },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({ success: true, message: 'ยกเลิกสัญญาเรียบร้อยแล้ว' }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 8. PATCH /api/customers/:id/status
+      const statusMatch = pathname.match(/^\/api\/customers\/(\d+)\/status$/);
+      if (statusMatch && method === 'PATCH') {
+        const customerId = parseInt(statusMatch[1], 10);
+        try {
+          const body = await request.json();
+          const { status } = body;
+          if (!['active', 'inactive'].includes(status)) {
+            return new Response(JSON.stringify({ error: 'Invalid status' }), { status: 400, headers: corsHeaders });
+          }
+
+          await env.DB.prepare('UPDATE customers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(status, customerId).run();
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId,
+            action: 'UPDATE_STATUS',
+            details: { status },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({ success: true, message: `เปลี่ยนสถานะเป็น ${status} เรียบร้อยแล้ว` }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 9. GET /api/customers/:id
+      const customerDetailMatch = pathname.match(/^\/api\/customers\/(\d+)$/);
+      if (customerDetailMatch && method === 'GET') {
+        const customerId = parseInt(customerDetailMatch[1], 10);
+        const month = url.searchParams.get('month');
+        const year = url.searchParams.get('year');
+        try {
+          const customer = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
+          if (!customer) {
+            return new Response(JSON.stringify({ error: 'Customer not found' }), { status: 404, headers: corsHeaders });
+          }
+
+          const { results: contracts } = await env.DB.prepare(
+            'SELECT * FROM customer_contracts WHERE customer_id = ? ORDER BY start_date DESC, id DESC'
+          ).bind(customerId).all();
+
+          const evaluatedContracts = (contracts || []).map(ctr => {
+            const evalRes = evaluateWorkerContractStatus(ctr);
+            return {
+              ...ctr,
+              evaluated_status: evalRes.status,
+              days_left: evalRes.days_left,
+              urgency: evalRes.urgency
+            };
+          });
+
+          const { results: auditLogs } = await env.DB.prepare(
+            'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50'
+          ).bind(customerId).all();
+
+          const quota = await calculateWorkerCustomerQuota(env, {
+            customerId,
+            month,
+            year
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            customer: {
+              ...customer,
+              contracts: evaluatedContracts,
+              audit_logs: auditLogs || [],
+              quota
+            }
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 10. PUT /api/customers/:id
+      if (customerDetailMatch && method === 'PUT') {
+        const customerId = parseInt(customerDetailMatch[1], 10);
+        try {
+          const body = await request.json();
+          const { name, contact_name, phone, email, tax_id, address, basecamp_sub_type, basecamp_unit } = body;
+          if (!name || !name.trim()) {
+            return new Response(JSON.stringify({ error: 'ชื่อลูกค้าหรือร้านค้าจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+
+          const existing = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
+          if (!existing) {
+            return new Response(JSON.stringify({ error: 'Customer not found' }), { status: 404, headers: corsHeaders });
+          }
+
+          await env.DB.prepare(
+            `UPDATE customers
+             SET name = ?, contact_name = ?, phone = ?, email = ?, tax_id = ?, address = ?,
+                 basecamp_sub_type = ?, basecamp_unit = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`
+          ).bind(
+            name.trim(),
+            contact_name !== undefined ? contact_name : existing.contact_name,
+            phone !== undefined ? phone : existing.phone,
+            email !== undefined ? email : existing.email,
+            tax_id !== undefined ? tax_id : existing.tax_id,
+            address !== undefined ? address : existing.address,
+            existing.customer_type === 'basecamp' ? (basecamp_sub_type || existing.basecamp_sub_type) : null,
+            existing.customer_type === 'basecamp' ? (basecamp_unit || existing.basecamp_unit) : null,
+            customerId
+          ).run();
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId,
+            action: 'UPDATE_CUSTOMER',
+            details: {
+              previous: { name: existing.name, contact_name: existing.contact_name, phone: existing.phone },
+              updated: { name, contact_name, phone }
+            },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({ success: true, message: 'บันทึกการแก้ไขข้อมูลลูกค้าเรียบร้อยแล้ว' }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
       if (pathname === '/api/bookings' && method === 'GET') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -3707,48 +4439,116 @@ export default {
         let verifiedTotal = body.total_amount !== undefined ? body.total_amount : Math.round(serverTotal * 100) / 100;
         let quotaHoursUsed = 0;
         let effectiveBillingOption = billing_option || 'paid';
+        const customerId = body.customer_id ? parseInt(body.customer_id, 10) : null;
+        let contractId = body.contract_id ? parseInt(body.contract_id, 10) : null;
 
-        if (customer_type === 'basecamp') {
-          const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
+        if (customer_type === 'shop') {
           const firstItemDate = items[0]?.start_time || new Date().toISOString();
-          const targetMonthStr = normalizeToLocalISO(firstItemDate).substring(0, 7);
+          let remainingQuota = 0;
+          let contractEligible = true;
 
-          try {
-            const quotaRow = await env.DB.prepare(
-              `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
-               FROM bookings b
-               WHERE b.customer_type = 'basecamp'
-                 AND b.basecamp_sub_type = ?
-                 AND b.basecamp_unit = ?
-                 AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
-                 AND (
-                   EXISTS (
-                     SELECT 1 FROM booking_items bi
-                     WHERE bi.booking_id = b.id
-                       AND strftime('%Y-%m', bi.start_time) = ?
-                   )
-                   OR (
-                     NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
-                     AND strftime('%Y-%m', b.created_at) = ?
-                   )
-                 )`
-            ).bind(basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr).first();
+          if (customerId) {
+            const quotaCalc = await calculateWorkerCustomerQuota(env, {
+              customerId,
+              customerType: 'shop',
+              serviceDate: firstItemDate
+            });
+            remainingQuota = quotaCalc.remaining_quota;
+            contractEligible = quotaCalc.contract_eligible;
+            if (quotaCalc.contract && !contractId) {
+              contractId = quotaCalc.contract.id;
+            }
+          } else {
+            contractEligible = false;
+          }
 
-            const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
-            const remainingQuota = Math.max(0, maxQuota - usedQuota);
-
+          if (!contractEligible) {
+            quotaHoursUsed = 0;
+            verifiedTotal = Math.round(serverTotal * 100) / 100;
+            effectiveBillingOption = 'paid';
+          } else {
             quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
             const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+            verifiedTotal = totalBookingHours > 0
+              ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
+              : 0;
 
-            if (totalBookingHours > 0) {
-              verifiedTotal = Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100;
+            if (quotaHoursUsed > 0 && verifiedTotal === 0) {
+              effectiveBillingOption = 'quota';
+            } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
+              effectiveBillingOption = 'quota_partial';
             } else {
-              verifiedTotal = 0;
+              effectiveBillingOption = 'standard';
             }
+          }
+        } else if (customer_type === 'basecamp') {
+          const firstItemDate = items[0]?.start_time || new Date().toISOString();
+          let remainingQuota = 0;
+          let contractEligible = true;
 
-            effectiveBillingOption = quotaHoursUsed > 0 ? (verifiedTotal === 0 ? 'quota' : 'quota_partial') : 'paid';
-          } catch (qErr) {
-            console.error('Error fetching quota in worker:', qErr);
+          if (customerId) {
+            const quotaCalc = await calculateWorkerCustomerQuota(env, {
+              customerId,
+              customerType: 'basecamp',
+              basecampSubType: basecamp_sub_type,
+              basecampUnit: basecamp_unit,
+              serviceDate: firstItemDate
+            });
+            remainingQuota = quotaCalc.remaining_quota;
+            contractEligible = quotaCalc.contract_eligible;
+            if (quotaCalc.contract && !contractId) {
+              contractId = quotaCalc.contract.id;
+            }
+          } else {
+            const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
+            const targetMonthStr = normalizeToLocalISO(firstItemDate).substring(0, 7);
+
+            try {
+              const quotaRow = await env.DB.prepare(
+                `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
+                 FROM bookings b
+                 WHERE b.customer_type = 'basecamp'
+                   AND b.basecamp_sub_type = ?
+                   AND b.basecamp_unit = ?
+                   AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+                   AND (
+                     EXISTS (
+                       SELECT 1 FROM booking_items bi
+                       WHERE bi.booking_id = b.id
+                         AND strftime('%Y-%m', bi.start_time) = ?
+                     )
+                     OR (
+                       NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+                       AND strftime('%Y-%m', b.created_at) = ?
+                     )
+                   )`
+              ).bind(basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr).first();
+
+              const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
+              remainingQuota = Math.max(0, maxQuota - usedQuota);
+            } catch (qErr) {
+              console.error('Error fetching quota in worker:', qErr);
+            }
+          }
+
+          if (!contractEligible) {
+            quotaHoursUsed = 0;
+            verifiedTotal = Math.round(serverTotal * 100) / 100;
+            effectiveBillingOption = 'standard';
+          } else {
+            quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
+            const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+            verifiedTotal = totalBookingHours > 0
+              ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
+              : 0;
+
+            if (quotaHoursUsed > 0 && verifiedTotal === 0) {
+              effectiveBillingOption = 'quota';
+            } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
+              effectiveBillingOption = 'quota_partial';
+            } else {
+              effectiveBillingOption = 'standard';
+            }
           }
         } else if (customer_type === 'builtland') {
           verifiedTotal = 0;
@@ -3788,7 +4588,7 @@ export default {
               pinCode = await generateUniquePinCode(env);
             }
           } else {
-            // General / Walk-in / Basecamp: Customer Access Code only
+            // General / Walk-in / Basecamp / Shop: Customer Access Code only
             if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
               pinCode = roomDb.pin_code.trim();
             } else {
@@ -3812,9 +4612,9 @@ export default {
               subtotal_amount, discount_type, discount_value, discount_amount,
               total_amount, paid_amount, balance_amount, payment_status, payment_method,
               receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status,
-              customer_type, basecamp_sub_type, basecamp_unit, internal_department,
+              customer_type, customer_id, contract_id, basecamp_sub_type, basecamp_unit, internal_department,
               billing_option, quota_hours_used, booking_details, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name,
             department || internal_department || '',
@@ -3834,6 +4634,8 @@ export default {
             line_user_id || null,
             effectiveGuestCount,
             customer_type || 'walkin',
+            customerId,
+            contractId,
             basecamp_sub_type || null,
             basecamp_unit || null,
             internal_department || null,

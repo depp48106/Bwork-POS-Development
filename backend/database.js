@@ -253,6 +253,45 @@ async function initDatabase() {
       status TEXT DEFAULT 'completed',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS customers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      contact_name TEXT,
+      phone TEXT,
+      email TEXT,
+      tax_id TEXT,
+      address TEXT,
+      basecamp_sub_type TEXT,
+      basecamp_unit TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS customer_contracts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+      contract_number TEXT UNIQUE,
+      start_date DATE NOT NULL,
+      end_date DATE NOT NULL,
+      monthly_quota_hours REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS customer_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER,
+      contract_id INTEGER,
+      action TEXT NOT NULL,
+      details TEXT,
+      performed_by TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Migration: Add permissions column to users if not exists
@@ -514,6 +553,16 @@ async function initDatabase() {
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_slip_verifications_booking_id ON slip_verifications(booking_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_payment_transactions_booking_id ON payment_transactions(booking_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_balance_amount ON bookings(balance_amount)'); } catch (e) {}
+
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN customer_id INTEGER'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN contract_id INTEGER'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_customers_type_status ON customers(customer_type, status)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_customers_unit ON customers(basecamp_unit)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_contracts_dates ON customer_contracts(start_date, end_date, status)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_contracts_customer_id ON customer_contracts(customer_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_audit_logs_customer ON customer_audit_logs(customer_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_customer_id ON bookings(customer_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_contract_id ON bookings(contract_id)'); } catch (e) {}
 
   // Performance: Database Indexes for High-Speed Queries
   try {
