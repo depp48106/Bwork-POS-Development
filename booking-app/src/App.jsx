@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Search, CreditCard, ChevronRight, X, Clock } from 'lucide-react';
+import { Search, CreditCard, ChevronRight, X, Clock, LifeBuoy } from 'lucide-react';
 import HomePage from './pages/HomePage';
 import RoomListPage from './pages/RoomListPage';
 import BookingFormPage from './pages/BookingFormPage';
 import ConfirmPage from './pages/ConfirmPage';
 import StatusPage from './pages/StatusPage';
 import LinePreviewPage from './pages/LinePreviewPage';
+import SupportTicketPage from './pages/SupportTicketPage';
 import { API_BASE } from './apiConfig';
 
 function App() {
@@ -200,6 +201,32 @@ function App() {
               <span className="header-btn-text-full">เช็คสถานะการจอง</span>
               <span className="header-btn-text-short">เช็คสถานะ</span>
             </Link>
+
+            <Link
+              to="/support"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                background: 'rgba(255, 255, 255, 0.14)',
+                border: '1px solid rgba(255, 255, 255, 0.3)',
+                color: '#ffffff',
+                padding: '6px 10px',
+                borderRadius: '999px',
+                fontSize: '0.76rem',
+                fontWeight: 800,
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                backdropFilter: 'blur(8px)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+                textDecoration: 'none',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              <LifeBuoy size={13} strokeWidth={2.5} />
+              <span className="header-btn-text-full">แจ้งปัญหา</span>
+              <span className="header-btn-text-short">แจ้งปัญหา</span>
+            </Link>
           </div>
         </div>
       </header>
@@ -289,6 +316,8 @@ function App() {
           <Route path="/confirm" element={<ConfirmPage />} />
           <Route path="/confirm/:bookingId" element={<ConfirmPage />} />
           <Route path="/status" element={<StatusPage />} />
+          <Route path="/support" element={<SupportTicketPage />} />
+          <Route path="/support/:ticketNumber" element={<SupportTicketPage />} />
           {import.meta.env.DEV && <Route path="/line-preview" element={<LinePreviewPage />} />}
         </Routes>
       </main>
@@ -309,6 +338,11 @@ function App() {
           </div>
           <div>
             © {new Date().getFullYear()} บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.) · สงวนลิขสิทธิ์
+          </div>
+          <div style={{ marginTop: '4px' }}>
+            <Link to="/support" style={{ color: '#38bdf8', textDecoration: 'none', fontWeight: 700, fontSize: '0.78rem' }}>
+              ศูนย์ช่วยเหลือ & แจ้งปัญหา (Support Center)
+            </Link>
           </div>
         </div>
       </footer>

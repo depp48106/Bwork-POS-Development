@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu, Trash2, Package, Bell, CheckCircle2, Calendar, AlertCircle, Tag } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { LayoutDashboard, ShoppingCart, History, Settings, LogOut, Moon, Sun, Key, Sliders, Home, Coffee, User, Lock, ChevronDown, ChevronRight, ChevronLeft, Database, KeyRound, X, Users, Cloud, Map, Clock, FileText, Receipt, Menu, Trash2, Package, Bell, CheckCircle2, Calendar, AlertCircle, Tag, LifeBuoy } from 'lucide-react';
 import BookingPOS from './components/BookingPOS';
 import Dashboard from './components/Dashboard';
 import HistoryLog from './components/History';
@@ -12,6 +12,7 @@ import Quotations from './components/Quotations';
 import BasecampQuotaModal from './components/BasecampQuotaModal';
 import HourCredits from './components/HourCredits';
 import CustomerManagement from './components/CustomerManagement';
+import SupportTicketsManagement from './components/SupportTicketsManagement';
 import { creditNavigationLabel } from './utils/hourCreditUI';
 import LinePreview from './components/LinePreview';
 import { useLiveNotifications } from './hooks/useLiveNotifications';
@@ -112,6 +113,9 @@ function App() {
     }
     if (tabKey === 'customers') {
       return perms.includes('pos') || perms.includes('manage') || perms.includes('history') || perms.includes('customers') || perms.includes('admin-management');
+    }
+    if (tabKey === 'tickets') {
+      return perms.includes('pos') || perms.includes('manage') || perms.includes('pending') || perms.includes('tickets') || perms.includes('admin-management');
     }
     // If checking a settings sub-tab, grant it if they have the main 'admin-management' permission
     if (['manage', 'admin-users', 'admin-system', 'admin-promotion', 'admin-promotions', 'admin-quotation', 'admin-backup', 'admin-dooraccess'].includes(tabKey)) {
@@ -271,6 +275,31 @@ function App() {
     const interval = setInterval(checkUpcomingAlerts, 15000);
     return () => clearInterval(interval);
   }, [user, processAlertData]);
+
+  // Operational badges for Customer Support Tickets
+  const [ticketBadgeCount, setTicketBadgeCount] = useState(0);
+
+  const checkTicketAlerts = useCallback(async () => {
+    if (!user) return;
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token');
+      const res = await fetch('/api/pos/support/notifications/count', {
+        headers: { ...(token ? { 'Authorization': `Bearer ${token}` } : {}) }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setTicketBadgeCount(data.newTicketsCount || 0);
+    } catch (err) {
+      console.warn('Failed to fetch ticket alerts:', err);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    checkTicketAlerts();
+    const interval = setInterval(checkTicketAlerts, 15000);
+    return () => clearInterval(interval);
+  }, [user, checkTicketAlerts]);
 
   const handleChangePassword = async (e) => {
     e.preventDefault();
@@ -765,6 +794,31 @@ function App() {
                 <span>จัดการลูกค้า</span>
               </button>
             )}
+            {hasPermission('tickets') && (
+              <button
+                type="button"
+                className={`top-menu-item ${activeTab === 'tickets' ? 'active' : ''}`}
+                onClick={() => setActiveTab('tickets')}
+                style={{ position: 'relative' }}
+              >
+                <LifeBuoy size={15} />
+                <span>แจ้งปัญหา</span>
+                {ticketBadgeCount > 0 && (
+                  <span style={{
+                    backgroundColor: '#ef4444',
+                    color: '#ffffff',
+                    fontSize: '0.68rem',
+                    fontWeight: 800,
+                    padding: '1px 6px',
+                    borderRadius: '999px',
+                    marginLeft: '4px',
+                    boxShadow: '0 2px 6px rgba(0,0,0,0.2)'
+                  }}>
+                    {ticketBadgeCount}
+                  </span>
+                )}
+              </button>
+            )}
           </nav>
 
           {/* Hamburger Menu Toggle (Only visible on mobile screens) */}
@@ -989,6 +1043,34 @@ function App() {
                   <span>จัดการลูกค้า</span>
                 </div>
               )}
+              {hasPermission('tickets') && (
+                <div
+                  className={`menu-card ${activeTab === 'tickets' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('tickets')}
+                  style={{ position: 'relative' }}
+                >
+                  <div className="menu-card-icon-wrapper">
+                    <LifeBuoy size={20} />
+                  </div>
+                  <span>แจ้งปัญหา</span>
+                  {ticketBadgeCount > 0 && (
+                    <span style={{
+                      position: 'absolute',
+                      top: '12px',
+                      right: '12px',
+                      backgroundColor: '#ef4444',
+                      color: '#ffffff',
+                      fontSize: '0.72rem',
+                      fontWeight: 900,
+                      padding: '2px 8px',
+                      borderRadius: '999px',
+                      boxShadow: '0 2px 6px rgba(0,0,0,0.2)'
+                    }}>
+                      {ticketBadgeCount}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1072,6 +1154,14 @@ function App() {
             user={user}
             sysAlert={customAlert}
             sysConfirm={customConfirm}
+          />
+        )}
+        {activeTab === 'tickets' && hasPermission('tickets') && (
+          <SupportTicketsManagement
+            user={user}
+            sysAlert={customAlert}
+            sysConfirm={customConfirm}
+            onRefreshBadge={checkTicketAlerts}
           />
         )}
         

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Search, AlertCircle, ArrowLeft, Upload, CheckCircle2, Clock, XCircle, Calendar, Download, Check, CreditCard } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { Search, AlertCircle, ArrowLeft, Upload, CheckCircle2, Clock, XCircle, Calendar, Download, Check, CreditCard, LifeBuoy } from 'lucide-react';
 import { API_BASE } from '../apiConfig';
 import { generateGoogleCalendarUrl, downloadIcsFile } from '../utils/calendarUtils';
 import { calcPaymentTimeLeft } from '../utils/paymentCountdown';
@@ -542,6 +542,31 @@ export default function StatusPage() {
                     </div>
                   </div>
                 )}
+
+                {/* Report Issue Link for this Booking */}
+                <div style={{
+                  marginTop: '12px',
+                  borderTop: '1px dashed #e2e8f0',
+                  paddingTop: '10px',
+                  display: 'flex',
+                  justifyContent: 'flex-end'
+                }}>
+                  <Link
+                    to={`/support?category=booking&booking_code=${encodeURIComponent(bookingCode)}&phone=${encodeURIComponent(phone)}`}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      fontSize: '0.76rem',
+                      color: '#0284c7',
+                      textDecoration: 'none',
+                      fontWeight: 700
+                    }}
+                  >
+                    <LifeBuoy size={13} />
+                    <span>พบปัญหาเกี่ยวกับการจองนี้? แจ้งเจ้าหน้าที่</span>
+                  </Link>
+                </div>
               </div>
             );
           })}

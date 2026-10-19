@@ -274,6 +274,11 @@ app.use('/api/hour-credits', authenticateToken, requireAnyPermission('pos'), cre
 app.use('/api/bookings', creditMutationGuard(dbQuery));
 app.use('/api/admin/clear-history', creditMutationGuard(dbQuery, true));
 
+// Customer Support Tickets & POS Notification System
+const { createPublicSupportRouter, createStaffSupportRouter } = require('./supportTickets/routes');
+app.use('/api/public/support', createPublicSupportRouter(dbQuery));
+app.use('/api/pos/support', authenticateToken, requireAnyPermission('pos', 'manage', 'pending', 'history', 'dashboard', 'admin-management'), createStaffSupportRouter(dbQuery));
+
 // ==========================================
 // 2. ROOMS ENDPOINTS
 // ==========================================
