@@ -97,7 +97,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
   const officeUnits = ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'];
   const hotdeskUnits = ['419', '420', '421', '422', '427', '428', '429', '430'];
 
-  const token = localStorage.getItem('token') || '';
+  const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
   const headers = {
     'Content-Type': 'application/json',
     ...(token ? { 'Authorization': `Bearer ${token}` } : {})

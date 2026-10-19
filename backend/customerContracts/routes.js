@@ -28,6 +28,20 @@ function createCustomerRouter(dbQuery) {
     }
   }
 
+  // Helper to ensure unique contract numbers
+  async function generateUniqueContractNumber(prefix) {
+    let candidate = prefix;
+    let counter = 1;
+    while (true) {
+      const existing = await dbQuery.get(
+        'SELECT id FROM customer_contracts WHERE contract_number = ?',
+        [candidate]
+      );
+      if (!existing) return candidate;
+      candidate = `${prefix}-${String(counter++).padStart(2, '0')}`;
+    }
+  }
+
   // 1. GET /api/customers/contracts/alerts
   router.get('/contracts/alerts', async (req, res) => {
     try {
@@ -201,6 +215,9 @@ function createCustomerRouter(dbQuery) {
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'ชื่อลูกค้าหรือชื่อร้านค้าจำเป็นต้องระบุ' });
     }
+    if (start_date && end_date && start_date > end_date) {
+      return res.status(400).json({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' });
+    }
     const cleanType = customer_type === 'shop' ? 'shop' : 'basecamp';
 
     try {
@@ -243,18 +260,39 @@ function createCustomerRouter(dbQuery) {
       if (start_date && end_date) {
         const defaultQuota = cleanType === 'shop' ? 4.0 : (basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
         const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
-        effectiveContractNumber = contract_number && contract_number.trim()
+        const baseCtr = contract_number && contract_number.trim()
           ? contract_number.trim()
           : (cleanType === 'basecamp'
               ? `CTR-BC-${basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
               : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
 
-        const ctrRes = await dbQuery.run(
-          `INSERT INTO customer_contracts
-           (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-          [customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null]
-        );
+        let ctrRes = null;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          effectiveContractNumber = contract_number && contract_number.trim()
+            ? contract_number.trim()
+            : await generateUniqueContractNumber(baseCtr);
+          try {
+            ctrRes = await dbQuery.run(
+              `INSERT INTO customer_contracts
+               (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+              [customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null]
+            );
+            break;
+          } catch (insertErr) {
+            const isUniqueErr = insertErr && (
+              insertErr.code === 'SQLITE_CONSTRAINT' ||
+              String(insertErr.message || '').includes('UNIQUE constraint failed')
+            );
+            if (isUniqueErr && (!contract_number || !contract_number.trim()) && attempt < 4) {
+              continue;
+            }
+            if (isUniqueErr && contract_number && contract_number.trim()) {
+              return res.status(400).json({ error: `หมายเลขสัญญา "${contract_number.trim()}" มีอยู่ในระบบแล้ว กรุณาระบุหมายเลขสัญญาใหม่` });
+            }
+            throw insertErr;
+          }
+        }
         contractId = ctrRes.id;
       }
 
@@ -403,10 +441,31 @@ function createCustomerRouter(dbQuery) {
       return res.status(400).json({ error: 'วันเริ่มสัญญาและวันสิ้นสุดสัญญาจำเป็นต้องระบุ' });
     }
 
+    if (start_date > end_date) {
+      return res.status(400).json({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' });
+    }
+
     try {
       const customer = await dbQuery.get('SELECT * FROM customers WHERE id = ?', [customerId]);
       if (!customer) {
         return res.status(404).json({ error: 'Customer not found' });
+      }
+
+      // Check for overlapping active contracts
+      const overlapping = await dbQuery.get(
+        `SELECT id, contract_number, start_date, end_date FROM customer_contracts
+         WHERE customer_id = ?
+           AND status != 'TERMINATED'
+           AND start_date <= ?
+           AND end_date >= ?
+         LIMIT 1`,
+        [customerId, end_date, start_date]
+      );
+
+      if (overlapping) {
+        return res.status(400).json({
+          error: `ช่วงเวลาของสัญญานี้ซ้อนทับกับสัญญาที่มีอยู่ (${overlapping.contract_number}: ${overlapping.start_date} ถึง ${overlapping.end_date})`
+        });
       }
 
       const defaultQuota = customer.customer_type === 'shop'
@@ -414,18 +473,40 @@ function createCustomerRouter(dbQuery) {
         : (customer.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
       const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
 
-      const effectiveContractNumber = contract_number && contract_number.trim()
+      const baseCtr = contract_number && contract_number.trim()
         ? contract_number.trim()
         : (customer.customer_type === 'basecamp'
             ? `CTR-BC-${customer.basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
             : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
 
-      const ctrRes = await dbQuery.run(
-        `INSERT INTO customer_contracts
-         (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-        [customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null]
-      );
+      let ctrRes = null;
+      let effectiveContractNumber = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        effectiveContractNumber = contract_number && contract_number.trim()
+          ? contract_number.trim()
+          : await generateUniqueContractNumber(baseCtr);
+        try {
+          ctrRes = await dbQuery.run(
+            `INSERT INTO customer_contracts
+             (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            [customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null]
+          );
+          break;
+        } catch (insertErr) {
+          const isUniqueErr = insertErr && (
+            insertErr.code === 'SQLITE_CONSTRAINT' ||
+            String(insertErr.message || '').includes('UNIQUE constraint failed')
+          );
+          if (isUniqueErr && (!contract_number || !contract_number.trim()) && attempt < 4) {
+            continue;
+          }
+          if (isUniqueErr && contract_number && contract_number.trim()) {
+            return res.status(400).json({ error: `หมายเลขสัญญา "${contract_number.trim()}" มีอยู่ในระบบแล้ว กรุณาระบุหมายเลขสัญญาใหม่` });
+          }
+          throw insertErr;
+        }
+      }
 
       const performedBy = req.user?.username || 'staff';
       await recordAuditLog({
@@ -509,6 +590,9 @@ function createCustomerRouter(dbQuery) {
     if (!basecamp_unit || !new_tenant || !new_tenant.name) {
       return res.status(400).json({ error: 'กรุณาระบุเลขยูนิตและข้อมูลผู้เช่ารายใหม่' });
     }
+    if (new_contract && new_contract.start_date && new_contract.end_date && new_contract.start_date > new_contract.end_date) {
+      return res.status(400).json({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' });
+    }
 
     try {
       // 1. Deactivate old active tenant on this unit
@@ -547,18 +631,42 @@ function createCustomerRouter(dbQuery) {
 
       // 3. Create contract for new tenant
       let newContractId = null;
+      let ctrNum = null;
       if (new_contract && new_contract.start_date && new_contract.end_date) {
         const quotaVal = new_contract.monthly_quota_hours !== undefined
           ? Number(new_contract.monthly_quota_hours)
           : (subType === 'hotdesk' ? 2.0 : 4.0);
-        const ctrNum = new_contract.contract_number || `CTR-BC-${basecamp_unit}-${new_contract.start_date.slice(0, 7).replace('-', '')}`;
+        const baseCtr = new_contract.contract_number && new_contract.contract_number.trim()
+          ? new_contract.contract_number.trim()
+          : `CTR-BC-${basecamp_unit}-${new_contract.start_date.slice(0, 7).replace('-', '')}`;
 
-        const ctrRes = await dbQuery.run(
-          `INSERT INTO customer_contracts
-           (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-          [newCustomerId, ctrNum, new_contract.start_date, new_contract.end_date, quotaVal, new_contract.notes || null]
-        );
+        let ctrRes = null;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          ctrNum = new_contract.contract_number && new_contract.contract_number.trim()
+            ? new_contract.contract_number.trim()
+            : await generateUniqueContractNumber(baseCtr);
+          try {
+            ctrRes = await dbQuery.run(
+              `INSERT INTO customer_contracts
+               (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+              [newCustomerId, ctrNum, new_contract.start_date, new_contract.end_date, quotaVal, new_contract.notes || null]
+            );
+            break;
+          } catch (insertErr) {
+            const isUniqueErr = insertErr && (
+              insertErr.code === 'SQLITE_CONSTRAINT' ||
+              String(insertErr.message || '').includes('UNIQUE constraint failed')
+            );
+            if (isUniqueErr && (!new_contract.contract_number || !new_contract.contract_number.trim()) && attempt < 4) {
+              continue;
+            }
+            if (isUniqueErr && new_contract.contract_number && new_contract.contract_number.trim()) {
+              return res.status(400).json({ error: `หมายเลขสัญญา "${new_contract.contract_number.trim()}" มีอยู่ในระบบแล้ว กรุณาระบุหมายเลขสัญญาใหม่` });
+            }
+            throw insertErr;
+          }
+        }
         newContractId = ctrRes.id;
       }
 

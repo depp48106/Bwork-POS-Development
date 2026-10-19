@@ -3604,6 +3604,18 @@ export default {
         }
       }
 
+      async function generateWorkerUniqueContractNumber(env, prefix) {
+        let candidate = prefix;
+        let counter = 1;
+        while (true) {
+          const existing = await env.DB.prepare(
+            'SELECT id FROM customer_contracts WHERE contract_number = ?'
+          ).bind(candidate).first();
+          if (!existing) return candidate;
+          candidate = `${prefix}-${String(counter++).padStart(2, '0')}`;
+        }
+      }
+
       async function calculateWorkerCustomerQuota(env, { customerId, customerType, basecampSubType, basecampUnit, serviceDate, month, year }) {
         const today = getBangkokLocalISO(new Date()).slice(0, 10);
         const targetDate = serviceDate ? serviceDate.slice(0, 10) : today;
@@ -3876,6 +3888,9 @@ export default {
           if (!name || !name.trim()) {
             return new Response(JSON.stringify({ error: 'ชื่อลูกค้าหรือชื่อร้านค้าจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
           }
+          if (start_date && end_date && start_date > end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' }), { status: 400, headers: corsHeaders });
+          }
           const cleanType = customer_type === 'shop' ? 'shop' : 'basecamp';
 
           if (cleanType === 'basecamp' && basecamp_unit) {
@@ -3913,17 +3928,39 @@ export default {
           if (start_date && end_date) {
             const defaultQuota = cleanType === 'shop' ? 4.0 : (basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
             const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
-            effectiveContractNumber = contract_number && contract_number.trim()
+            const baseCtr = contract_number && contract_number.trim()
               ? contract_number.trim()
               : (cleanType === 'basecamp'
                   ? `CTR-BC-${basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
                   : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
 
-            const ctrRes = await env.DB.prepare(
-              `INSERT INTO customer_contracts
-               (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-            ).bind(customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null).run();
+            let ctrRes = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+              effectiveContractNumber = contract_number && contract_number.trim()
+                ? contract_number.trim()
+                : await generateWorkerUniqueContractNumber(env, baseCtr);
+              try {
+                ctrRes = await env.DB.prepare(
+                  `INSERT INTO customer_contracts
+                   (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+                ).bind(customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null).run();
+                break;
+              } catch (insertErr) {
+                const isUniqueErr = insertErr && (
+                  String(insertErr.message || '').includes('UNIQUE constraint failed') ||
+                  String(insertErr.message || '').includes('customer_contracts.contract_number') ||
+                  String(insertErr.cause || '').includes('UNIQUE')
+                );
+                if (isUniqueErr && (!contract_number || !contract_number.trim()) && attempt < 4) {
+                  continue;
+                }
+                if (isUniqueErr && contract_number && contract_number.trim()) {
+                  return new Response(JSON.stringify({ error: `หมายเลขสัญญา "${contract_number.trim()}" มีอยู่ในระบบแล้ว กรุณาระบุหมายเลขสัญญาใหม่` }), { status: 400, headers: corsHeaders });
+                }
+                throw insertErr;
+              }
+            }
             contractId = ctrRes.meta?.last_row_id;
           }
 
@@ -3956,6 +3993,9 @@ export default {
           if (!basecamp_unit || !new_tenant || !new_tenant.name) {
             return new Response(JSON.stringify({ error: 'กรุณาระบุเลขยูนิตและข้อมูลผู้เช่ารายใหม่' }), { status: 400, headers: corsHeaders });
           }
+          if (new_contract && new_contract.start_date && new_contract.end_date && new_contract.start_date > new_contract.end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' }), { status: 400, headers: corsHeaders });
+          }
 
           const { results: oldTenants } = await env.DB.prepare(
             `SELECT id, name FROM customers
@@ -3985,16 +4025,42 @@ export default {
           const newCustomerId = insRes.meta?.last_row_id;
 
           let newContractId = null;
+          let ctrNum = null;
           if (new_contract && new_contract.start_date && new_contract.end_date) {
             const quotaVal = new_contract.monthly_quota_hours !== undefined
               ? Number(new_contract.monthly_quota_hours)
               : (subType === 'hotdesk' ? 2.0 : 4.0);
-            const ctrNum = new_contract.contract_number || `CTR-BC-${basecamp_unit}-${new_contract.start_date.slice(0, 7).replace('-', '')}`;
-            const ctrRes = await env.DB.prepare(
-              `INSERT INTO customer_contracts
-               (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-            ).bind(newCustomerId, ctrNum, new_contract.start_date, new_contract.end_date, quotaVal, new_contract.notes || null).run();
+            const baseCtr = new_contract.contract_number && new_contract.contract_number.trim()
+              ? new_contract.contract_number.trim()
+              : `CTR-BC-${basecamp_unit}-${new_contract.start_date.slice(0, 7).replace('-', '')}`;
+
+            let ctrRes = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+              ctrNum = new_contract.contract_number && new_contract.contract_number.trim()
+                ? new_contract.contract_number.trim()
+                : await generateWorkerUniqueContractNumber(env, baseCtr);
+              try {
+                ctrRes = await env.DB.prepare(
+                  `INSERT INTO customer_contracts
+                   (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+                ).bind(newCustomerId, ctrNum, new_contract.start_date, new_contract.end_date, quotaVal, new_contract.notes || null).run();
+                break;
+              } catch (insertErr) {
+                const isUniqueErr = insertErr && (
+                  String(insertErr.message || '').includes('UNIQUE constraint failed') ||
+                  String(insertErr.message || '').includes('customer_contracts.contract_number') ||
+                  String(insertErr.cause || '').includes('UNIQUE')
+                );
+                if (isUniqueErr && (!new_contract.contract_number || !new_contract.contract_number.trim()) && attempt < 4) {
+                  continue;
+                }
+                if (isUniqueErr && new_contract.contract_number && new_contract.contract_number.trim()) {
+                  return new Response(JSON.stringify({ error: `หมายเลขสัญญา "${new_contract.contract_number.trim()}" มีอยู่ในระบบแล้ว กรุณาระบุหมายเลขสัญญาใหม่` }), { status: 400, headers: corsHeaders });
+                }
+                throw insertErr;
+              }
+            }
             newContractId = ctrRes.meta?.last_row_id;
           }
 
@@ -4054,24 +4120,66 @@ export default {
             return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาและวันสิ้นสุดสัญญาจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
           }
 
+          if (start_date > end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' }), { status: 400, headers: corsHeaders });
+          }
+
           const customer = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
           if (!customer) {
             return new Response(JSON.stringify({ error: 'Customer not found' }), { status: 404, headers: corsHeaders });
           }
 
+          // Check for overlapping active contracts
+          const overlapping = await env.DB.prepare(
+            `SELECT id, contract_number, start_date, end_date FROM customer_contracts
+             WHERE customer_id = ?
+               AND status != 'TERMINATED'
+               AND start_date <= ?
+               AND end_date >= ?
+             LIMIT 1`
+          ).bind(customerId, end_date, start_date).first();
+
+          if (overlapping) {
+            return new Response(JSON.stringify({
+              error: `ช่วงเวลาของสัญญานี้ซ้อนทับกับสัญญาที่มีอยู่ (${overlapping.contract_number}: ${overlapping.start_date} ถึง ${overlapping.end_date})`
+            }), { status: 400, headers: corsHeaders });
+          }
+
           const defaultQuota = customer.customer_type === 'shop' ? 4.0 : (customer.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
           const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
-          const ctrNum = contract_number && contract_number.trim()
+          const baseCtr = contract_number && contract_number.trim()
             ? contract_number.trim()
             : (customer.customer_type === 'basecamp'
                 ? `CTR-BC-${customer.basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
                 : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
-
-          const ctrRes = await env.DB.prepare(
-            `INSERT INTO customer_contracts
-             (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-          ).bind(customerId, ctrNum, start_date, end_date, quotaVal, notes || null).run();
+          let ctrRes = null;
+          let ctrNum = null;
+          for (let attempt = 0; attempt < 5; attempt++) {
+            ctrNum = contract_number && contract_number.trim()
+              ? contract_number.trim()
+              : await generateWorkerUniqueContractNumber(env, baseCtr);
+            try {
+              ctrRes = await env.DB.prepare(
+                `INSERT INTO customer_contracts
+                 (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+              ).bind(customerId, ctrNum, start_date, end_date, quotaVal, notes || null).run();
+              break;
+            } catch (insertErr) {
+              const isUniqueErr = insertErr && (
+                String(insertErr.message || '').includes('UNIQUE constraint failed') ||
+                String(insertErr.message || '').includes('customer_contracts.contract_number') ||
+                String(insertErr.cause || '').includes('UNIQUE')
+              );
+              if (isUniqueErr && (!contract_number || !contract_number.trim()) && attempt < 4) {
+                continue;
+              }
+              if (isUniqueErr && contract_number && contract_number.trim()) {
+                return new Response(JSON.stringify({ error: `หมายเลขสัญญา "${contract_number.trim()}" มีอยู่ในระบบแล้ว กรุณาระบุหมายเลขสัญญาใหม่` }), { status: 400, headers: corsHeaders });
+              }
+              throw insertErr;
+            }
+          }
 
           const auth = await authenticateUser(request, env);
           const performedBy = auth.user?.username || 'staff';
