@@ -283,7 +283,7 @@ export default function BookingFormPage() {
 
       <div className="booking-form-grid">
         {/* LEFT COLUMN: STICKY BOOKING SUMMARY CARD */}
-        <div className="booking-card" style={{ position: 'sticky', top: '80px' }}>
+        <div className="booking-card booking-summary-card" style={{ position: 'sticky', top: '80px' }}>
           <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--primary)', textTransform: 'uppercase', marginBottom: '8px' }}>
             สรุปรายการจอง
           </div>
