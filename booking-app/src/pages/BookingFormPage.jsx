@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
-  User, Phone, Mail, Building, FileText, CheckCircle2, 
+  User, Users, Phone, Mail, Building, FileText, CheckCircle2,
   ArrowLeft, ChevronRight, ChevronDown, AlertCircle, ShieldCheck, CheckSquare, Square, MessageSquare, Send, Truck, Sparkles
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
@@ -19,6 +19,7 @@ export default function BookingFormPage() {
   const [email, setEmail] = useState('');
   const [company, setCompany] = useState('');
   const [notes, setNotes] = useState('');
+  const [attendees, setAttendees] = useState('');
 
   // LINE Profile State
   const [lineUserId, setLineUserId] = useState('');
@@ -42,6 +43,9 @@ export default function BookingFormPage() {
     // 1. Prefer React Router in-memory state (immune to storage quota or restrictions)
     if (location.state && location.state.room_id) {
       setBookingData(location.state);
+      if (location.state.guests) {
+        setAttendees(String(location.state.guests));
+      }
     } else {
       let parsed = null;
       try {
@@ -52,6 +56,9 @@ export default function BookingFormPage() {
       }
       if (parsed) {
         setBookingData(parsed);
+        if (parsed.guests) {
+          setAttendees(String(parsed.guests));
+        }
       } else {
         navigate('/');
         return;
@@ -96,6 +103,11 @@ export default function BookingFormPage() {
     }
   };
 
+  const effectiveCapacity = bookingData?.effective_capacity
+    || (bookingData?.layout === 'classroom' && bookingData?.classroom_capacity ? bookingData.classroom_capacity : bookingData?.room_capacity)
+    || (bookingData?.room && bookingData.room.capacity)
+    || 100;
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (loading || isSubmittingRef.current) return;
@@ -107,6 +119,16 @@ export default function BookingFormPage() {
     }
     if (!contact.trim()) {
       setError('กรุณาระบุเบอร์โทรศัพท์สำหรับติดต่อและรับรหัสผ่าน');
+      return;
+    }
+
+    const parsedAttendees = parseInt(attendees, 10);
+    if (!attendees || isNaN(parsedAttendees) || parsedAttendees < 1) {
+      setError('กรุณาระบุจำนวนผู้เข้าใช้ห้องอย่างน้อย 1 ท่าน');
+      return;
+    }
+    if (parsedAttendees > effectiveCapacity) {
+      setError(`จำนวนผู้เข้าใช้งาน (${parsedAttendees} ท่าน) เกินความจุของห้องที่เลือก (รองรับสูงสุด ${effectiveCapacity} ท่าน)`);
       return;
     }
 
@@ -148,7 +170,8 @@ export default function BookingFormPage() {
         end_time: bookingData.end_time,
         booking_type: bookingData.booking_type || (bookingData.duration >= 8 ? 'daily' : (bookingData.duration === 4 && bookingData.half_day_rate > 0 ? 'halfday' : 'hourly')),
         layout: bookingData.layout || 'standard',
-        guest_count: bookingData.guests || 1,
+        guest_count: parsedAttendees,
+        guests: parsedAttendees,
         total_amount: bookingData.total_amount || 0,
         note: notes.trim(),
         line_user_id: lineUserId,
@@ -182,7 +205,7 @@ export default function BookingFormPage() {
         // CRITICAL ROOT-CAUSE FIX FOR QuotaExceededError ON IPHONE / IN-APP BROWSERS:
         // Strip heavy Base64 image data (which in Production can exceed 1.4 MB) before storage serialization.
         // This reduces storage footprint from ~1.4 MB down to ~350 bytes (>99.9% reduction), well within iOS Safari 5 MB limit.
-        const sanitizedBookingData = { ...bookingData };
+        const sanitizedBookingData = { ...bookingData, guests: parsedAttendees, guest_count: parsedAttendees };
         if (typeof sanitizedBookingData.image_url === 'string' && sanitizedBookingData.image_url.startsWith('data:')) {
           sanitizedBookingData.image_url = '';
         }
@@ -192,6 +215,8 @@ export default function BookingFormPage() {
 
         const completedResult = {
           ...sanitizedBookingData,
+          guests: parsedAttendees,
+          guest_count: parsedAttendees,
           booking_id: finalBookingId,
           booking_code: finalBookingCode,
           receipt_number: data.receipt_number || data.receiptNumber,
@@ -292,7 +317,9 @@ export default function BookingFormPage() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span>จำนวนผู้เข้าใช้:</span>
-              <strong style={{ color: 'var(--text-main)' }}>{bookingData.guests} ท่าน</strong>
+              <strong style={{ color: attendees ? 'var(--text-main)' : 'var(--warning)' }}>
+                {attendees ? `${attendees} ท่าน` : 'ยังไม่ได้ระบุ'}
+              </strong>
             </div>
             {bookingData.layout && (
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -443,6 +470,51 @@ export default function BookingFormPage() {
                 }}
                 className="form-input"
               />
+            </div>
+
+            {/* Attendees Count */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Users size={16} style={{ color: 'var(--primary)' }} />
+                  <span>จำนวนผู้เข้าใช้งาน (Attendees)</span>
+                  <span style={{ color: 'var(--danger)' }}>*</span>
+                </label>
+                <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                  ห้องนี้รองรับสูงสุด {effectiveCapacity} ท่าน
+                </span>
+              </div>
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                <Users size={18} style={{ position: 'absolute', left: '14px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+                <input
+                  type="number"
+                  min="1"
+                  max={effectiveCapacity}
+                  required
+                  placeholder={`ระบุจำนวนผู้เข้าใช้ห้อง (1 - ${effectiveCapacity} ท่าน)`}
+                  value={attendees}
+                  onChange={e => {
+                    setAttendees(e.target.value);
+                    setError('');
+                  }}
+                  className="form-input"
+                  style={{
+                    paddingLeft: '44px',
+                    paddingRight: '60px',
+                    fontWeight: 700
+                  }}
+                />
+                <span style={{
+                  position: 'absolute',
+                  right: '16px',
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  color: 'var(--text-muted)',
+                  pointerEvents: 'none'
+                }}>
+                  ท่าน
+                </span>
+              </div>
             </div>
 
             {/* Email & Company (2 columns on desktop, 1 on mobile) */}

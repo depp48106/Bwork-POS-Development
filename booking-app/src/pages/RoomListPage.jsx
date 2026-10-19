@@ -62,7 +62,10 @@ export default function RoomListPage() {
 
   // Search parameters from URL
   const [dateStr] = useState(query.get('date') || todayIso);
-  const [guests] = useState(parseInt(query.get('guests'), 10) || 4);
+  const queryRoomId = query.get('roomId');
+  const [roomIdParam, setRoomIdParam] = useState(queryRoomId || null);
+  const rawGuestsParam = query.get('guests');
+  const [guests, setGuests] = useState(rawGuestsParam ? (parseInt(rawGuestsParam, 10) || null) : null);
 
   const isToday = dateStr === todayIso;
   const currentMins = today.getHours() * 60 + today.getMinutes();
@@ -363,11 +366,18 @@ export default function RoomListPage() {
     return { isOccupied: false, label: 'ว่างพร้อมจอง' };
   };
 
+  // Direct room selection memo
+  const selectedDirectRoom = useMemo(() => {
+    if (!roomIdParam || rooms.length === 0) return null;
+    return rooms.find(r => String(r.id) === String(roomIdParam)) || null;
+  }, [roomIdParam, rooms]);
+
   // Smart Room Categorization & Tier Matching (with Special Offers)
   const { recommendedRooms, upgradeRooms, recommendedLabel, upgradeLabel } = useMemo(() => {
     const recommended = [];
     const upgrade = [];
-    let recLabel = `ห้องขนาดพอดี (${guests} ท่าน)`;
+    const effectiveGuests = guests || 4;
+    let recLabel = guests ? `ห้องขนาดพอดี (${guests} ท่าน)` : 'ห้องประชุมแนะนำ';
     let upgLabel = 'ข้อเสนอพิเศษ: ห้องขนาดใหญ่ขึ้น เพิ่มความสะดวกสบาย';
 
     const sortedAll = sortRoomsByStandardOrder(rooms);
@@ -375,36 +385,36 @@ export default function RoomListPage() {
     sortedAll.forEach(room => {
       const cap = room.capacity || 4;
 
-      if (guests === 1) {
+      if (effectiveGuests === 1) {
         // 1 Person: 4-person rooms as Perfect Match, 8-12 person rooms as Special Offers
-        recLabel = 'ห้องขนาดพอดี (1 ท่าน) - โซนส่วนตัว/โฟกัสงาน';
+        recLabel = guests ? 'ห้องขนาดพอดี (1 ท่าน) - โซนส่วนตัว/โฟกัสงาน' : 'ห้องขนาด 1-4 ท่าน - โซนส่วนตัว/โฟกัสงาน';
         upgLabel = 'ข้อเสนอพิเศษ: ห้องขนาด 8-12 ท่าน (สำหรับประชุมสัมมนา/ต้องการจอใหญ่)';
         if (cap <= 4) {
           recommended.push(room);
         } else if (cap >= 8 && cap <= 12) {
           upgrade.push(room);
         }
-      } else if (guests <= 4) {
+      } else if (effectiveGuests <= 4) {
         // 2 - 4 People: 4-person rooms as Perfect Match, 8-12 person rooms as Special Offers
-        recLabel = `ห้องขนาดพอดี (${guests} ท่าน)`;
+        recLabel = guests ? `ห้องขนาดพอดี (${guests} ท่าน)` : 'ห้องขนาด 2-4 ท่าน';
         upgLabel = 'ข้อเสนอพิเศษ: ห้องขนาด 8-12 ท่าน (พื้นที่กว้างขวาง เพิ่มความสบาย)';
         if (cap <= 4) {
           recommended.push(room);
         } else if (cap >= 8 && cap <= 12) {
           upgrade.push(room);
         }
-      } else if (guests <= 8) {
+      } else if (effectiveGuests <= 8) {
         // 5 - 8 People: 8-10 person rooms as Perfect Match, 12-40 person rooms as Special Offers
-        recLabel = `ห้องขนาดพอดี (${guests} ท่าน)`;
+        recLabel = guests ? `ห้องขนาดพอดี (${guests} ท่าน)` : 'ห้องขนาด 5-8 ท่าน';
         upgLabel = 'ข้อเสนอพิเศษ: ห้องขนาด 12-40 ท่าน (สำหรับกลุ่มใหญ่)';
         if (cap >= 5 && cap <= 10) {
           recommended.push(room);
         } else if (cap > 10) {
           upgrade.push(room);
         }
-      } else if (guests <= 12) {
+      } else if (effectiveGuests <= 12) {
         // 9 - 12 People
-        recLabel = `ห้องขนาดพอดี (${guests} ท่าน)`;
+        recLabel = guests ? `ห้องขนาดพอดี (${guests} ท่าน)` : 'ห้องขนาด 9-12 ท่าน';
         upgLabel = 'ข้อเสนอพิเศษ: ห้องประชุมใหญ่ 40 ท่าน';
         if (cap >= 10 && cap <= 12) {
           recommended.push(room);
@@ -413,7 +423,7 @@ export default function RoomListPage() {
         }
       } else {
         // > 12 People
-        recLabel = `ห้องประชุมใหญ่ / อีเวนต์ (${guests} ท่าน)`;
+        recLabel = guests ? `ห้องประชุมใหญ่ / อีเวนต์ (${guests} ท่าน)` : 'ห้องประชุมใหญ่ / อีเวนต์';
         upgLabel = 'ข้อเสนอพิเศษ';
         if (cap > 12) {
           recommended.push(room);
@@ -442,12 +452,15 @@ export default function RoomListPage() {
     const bookingPayload = {
       room_id: room.id,
       room_name: room.name,
+      room_capacity: room.capacity || 4,
+      classroom_capacity: room.classroom_capacity || room.capacity || 4,
+      effective_capacity: sel.effectiveCapacity,
       image_url: safeImage,
       date: dateStr,
       start_time: sel.startTime,
       end_time: sel.endTime,
       duration: sel.duration,
-      guests: guests,
+      guests: guests || null,
       layout: layout,
       booking_type: sel.mode,
       rate_label: sel.rateLabel,
@@ -1020,36 +1033,63 @@ export default function RoomListPage() {
           <span>{formatToDdMmYyyy(dateStr)} ({formatThaiDateDesc(dateStr)})</span>
         </div>
 
-        {/* Row 2: Guests Badge on Left & Change Date Button on Right */}
+        {/* Row 2: Selected Room or Guests Badge on Left & Change Button on Right */}
         <div style={{
           display: 'grid',
           gridTemplateColumns: 'auto 1fr',
           alignItems: 'center',
           gap: '10px'
         }}>
-          {/* Guests Badge */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            backgroundColor: 'var(--bg-page)',
-            color: 'var(--text-main)',
-            border: '1.5px solid var(--border)',
-            padding: '8px 14px',
-            borderRadius: '12px',
-            fontSize: '0.86rem',
-            fontWeight: 800,
-            height: '42px',
-            whiteSpace: 'nowrap'
-          }}>
-            <Users size={16} style={{ color: 'var(--primary)' }} />
-            <span>{guests} ท่าน</span>
-          </div>
+          {roomIdParam ? (
+            /* Direct Room Badge */
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: 'var(--bg-page)',
+              color: 'var(--text-main)',
+              border: '1.5px solid var(--border)',
+              padding: '8px 14px',
+              borderRadius: '12px',
+              fontSize: '0.86rem',
+              fontWeight: 800,
+              height: '42px',
+              whiteSpace: 'nowrap'
+            }}>
+              <Building size={16} style={{ color: 'var(--primary)' }} />
+              <span>{selectedDirectRoom ? selectedDirectRoom.name : `ห้อง ID: ${roomIdParam}`}</span>
+            </div>
+          ) : (
+            /* Guests Badge */
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              backgroundColor: 'var(--bg-page)',
+              color: 'var(--text-main)',
+              border: '1.5px solid var(--border)',
+              padding: '8px 14px',
+              borderRadius: '12px',
+              fontSize: '0.86rem',
+              fontWeight: 800,
+              height: '42px',
+              whiteSpace: 'nowrap'
+            }}>
+              <Users size={16} style={{ color: 'var(--primary)' }} />
+              <span>{guests ? `${guests} ท่าน` : 'ทุกขนาดห้อง'}</span>
+            </div>
+          )}
 
-          {/* Change Date / Guests Button */}
+          {/* Change Date / Room Button */}
           <button
             type="button"
-            onClick={() => navigate(`/?date=${dateStr}&guests=${guests}`)}
+            onClick={() => {
+              if (roomIdParam) {
+                navigate(`/?date=${dateStr}&roomId=${roomIdParam}`);
+              } else {
+                navigate(`/?date=${dateStr}${guests ? `&guests=${guests}` : ''}`);
+              }
+            }}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -1073,18 +1113,52 @@ export default function RoomListPage() {
             onMouseLeave={e => e.currentTarget.style.backgroundColor = '#ffffff'}
           >
             <Edit3 size={15} />
-            <span>เปลี่ยนวันที่ / จำนวนคน</span>
+            <span>{roomIdParam ? 'เปลี่ยนห้อง / วันที่' : 'เปลี่ยนวันที่ / จำนวนคน'}</span>
           </button>
         </div>
+
+        {/* View All Rooms Button (Shown only when in Direct Room mode) */}
+        {roomIdParam && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '4px', borderTop: '1px dashed var(--border)' }}>
+            <button
+              type="button"
+              onClick={() => {
+                setRoomIdParam(null);
+                navigate(`/rooms?date=${dateStr}${guests ? `&guests=${guests}` : ''}`);
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 14px',
+                borderRadius: '10px',
+                backgroundColor: 'rgba(37, 99, 235, 0.06)',
+                color: 'var(--primary)',
+                border: '1px solid rgba(37, 99, 235, 0.25)',
+                fontSize: '0.8rem',
+                fontWeight: 800,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease'
+              }}
+              onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.12)'}
+              onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(37, 99, 235, 0.06)'}
+            >
+              <Building size={14} />
+              <span>ดูห้องประชุมทั้งหมด</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* SECTION TITLE */}
       <div style={{ marginBottom: '16px' }}>
         <h2 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--text-main)', margin: 0 }}>
-          2. เลือกห้องประชุม & แพ็กเกจที่ต้องการ
+          {roomIdParam ? '2. รายละเอียดห้อง & ช่วงเวลาว่าง' : '2. เลือกห้องประชุม & แพ็กเกจที่ต้องการ'}
         </h2>
         <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: '4px 0 0 0' }}>
-          แต่ละห้องแสดงแพ็กเกจราคาเฉพาะที่มีในคลังสินค้า สามารถเลือกรายชั่วโมง, ครึ่งวัน หรือเหมาทั้งวันได้ทันที
+          {roomIdParam
+            ? 'ตรวจสอบช่วงเวลาว่าง แพ็กเกจราคา และเลือกเวลาที่ต้องการจอง'
+            : 'แต่ละห้องแสดงแพ็กเกจราคาเฉพาะที่มีในคลังสินค้า สามารถเลือกรายชั่วโมง, ครึ่งวัน หรือเหมาทั้งวันได้ทันที'}
         </p>
       </div>
 
@@ -1094,7 +1168,112 @@ export default function RoomListPage() {
           <div className="spinner" style={{ margin: '0 auto 12px auto' }} />
           <div style={{ fontSize: '0.9rem', fontWeight: 700 }}>กำลังตรวจสอบข้อมูลห้องว่างและคลังสินค้า...</div>
         </div>
+      ) : roomIdParam ? (
+        /* MODE A: DIRECT ROOM SELECTION VIEW */
+        selectedDirectRoom ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {renderRoomCard(selectedDirectRoom, false)}
+
+            {/* Occupied Notice & Alternative Actions */}
+            {(() => {
+              const sel = getRoomSelection(selectedDirectRoom);
+              const occInfo = getRoomOccupiedInfo(selectedDirectRoom.id, sel.startTime, sel.endTime);
+              if (occInfo && occInfo.isOccupied) {
+                return (
+                  <div style={{
+                    backgroundColor: 'rgba(239, 68, 68, 0.05)',
+                    border: '1.5px solid rgba(239, 68, 68, 0.25)',
+                    borderRadius: '16px',
+                    padding: '16px 20px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--danger)', fontWeight: 800, fontSize: '0.92rem' }}>
+                      <AlertCircle size={18} />
+                      <span>ห้องนี้ไม่สามารถจองในช่วงเวลาที่เลือกได้ ({occInfo.label})</span>
+                    </div>
+                    <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', margin: 0 }}>
+                      คุณสามารถปรับเปลี่ยนเวลาด้านบน, เปลี่ยนวันที่ใช้งาน หรือเลือกดูห้องประชุมห้องอื่นที่ว่างในวันเดียวกัน
+                    </p>
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '4px' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRoomIdParam(null);
+                          navigate(`/rooms?date=${dateStr}`);
+                        }}
+                        style={{
+                          padding: '8px 14px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--primary)',
+                          backgroundColor: '#ffffff',
+                          color: 'var(--primary)',
+                          fontSize: '0.82rem',
+                          fontWeight: 800,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ดูห้องประชุมอื่นที่ว่าง
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/?date=${dateStr}&roomId=${selectedDirectRoom.id}`)}
+                        style={{
+                          padding: '8px 14px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border)',
+                          backgroundColor: '#ffffff',
+                          color: 'var(--text-main)',
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        เปลี่ยนวันที่ใช้งาน
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+          </div>
+        ) : (
+          /* ROOM NOT FOUND STATE */
+          <div className="booking-card" style={{ textAlign: 'center', padding: '40px 20px' }}>
+            <AlertCircle size={40} style={{ color: 'var(--danger)', margin: '0 auto 12px auto' }} />
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--text-main)' }}>
+              ไม่พบห้องประชุมที่เลือก หรือห้องประชุมนี้ปิดให้บริการชั่วคราว
+            </h3>
+            <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', marginTop: '4px', marginBottom: '16px' }}>
+              กรุณาเลือกห้องประชุมใหม่อีกครั้ง หรือเลือกดูห้องประชุมทั้งหมดที่เปิดให้บริการ
+            </p>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+              <button
+                type="button"
+                onClick={() => navigate(`/?date=${dateStr}`)}
+                className="btn-secondary"
+                style={{ width: 'auto', padding: '0 16px', height: '42px', fontSize: '0.86rem' }}
+              >
+                กลับไปเลือกห้องใหม่
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRoomIdParam(null);
+                  navigate(`/rooms?date=${dateStr}`);
+                }}
+                className="btn-primary"
+                style={{ width: 'auto', padding: '0 16px', height: '42px', fontSize: '0.86rem' }}
+              >
+                ดูห้องประชุมทั้งหมด
+              </button>
+            </div>
+          </div>
+        )
       ) : (
+        /* MODE B: ALL ROOMS CATEGORIZED VIEW (Existing behavior preserved) */
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           
           {/* SECTION A: RECOMMENDED ROOMS (Exact Fit) */}
