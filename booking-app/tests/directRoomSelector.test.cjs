@@ -182,6 +182,49 @@ describe('BWORK-POS: Direct Room Selector Test Suite', () => {
     assert.ok(indexCss.includes('-webkit-appearance: none'), 'Must set -webkit-appearance: none in CSS');
   });
 
+  test('2.13: All rendered JSX component tags across Direct Room Selector pages have valid imports in scope (Zero ReferenceErrors)', () => {
+    function findMissingJsxImports(src) {
+      const imported = new Set();
+      const importMatches = src.matchAll(/import\s+(?:\{([^}]+)\}|([A-Za-z0-9_]+))\s+from\s+['"][^'"]+['"]/g);
+      for (const m of importMatches) {
+        if (m[1]) {
+          m[1].split(',').forEach(item => {
+            const parts = item.trim().split(/\s+as\s+/);
+            const name = parts[parts.length - 1].trim();
+            if (name) imported.add(name);
+          });
+        }
+        if (m[2]) {
+          imported.add(m[2].trim());
+        }
+      }
+
+      const localDefs = src.matchAll(/(?:function|class|const|let|var)\s+([A-Z][A-Za-z0-9_]+)\b/g);
+      for (const m of localDefs) {
+        imported.add(m[1].trim());
+      }
+
+      const jsxTags = src.matchAll(/<([A-Z][A-Za-z0-9_]*)/g);
+      const missing = [];
+      for (const m of jsxTags) {
+        const tag = m[1];
+        if (!imported.has(tag)) {
+          missing.push(tag);
+        }
+      }
+      return [...new Set(missing)];
+    }
+
+    const roomListMissing = findMissingJsxImports(roomListSrc);
+    assert.deepStrictEqual(roomListMissing, [], `RoomListPage.jsx has missing JSX component imports: ${roomListMissing.join(', ')}`);
+
+    const homePageMissing = findMissingJsxImports(homePageSrc);
+    assert.deepStrictEqual(homePageMissing, [], `HomePage.jsx has missing JSX component imports: ${homePageMissing.join(', ')}`);
+
+    const bookingFormMissing = findMissingJsxImports(bookingFormSrc);
+    assert.deepStrictEqual(bookingFormMissing, [], `BookingFormPage.jsx has missing JSX component imports: ${bookingFormMissing.join(', ')}`);
+  });
+
   // ==========================================================================
   // 3. BOOKING FORM PAGE: CAPACITY ENFORCEMENT & PAYLOAD INTEGRITY
   // ==========================================================================

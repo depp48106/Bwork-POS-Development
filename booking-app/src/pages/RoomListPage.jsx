@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   Users, Wifi, Tv, Zap, Coffee, Wind, CheckCircle2, 
-  ArrowLeft, ChevronRight, Calendar, Clock, Sparkles, Building, AlertCircle, Edit3 
+  ArrowLeft, ChevronRight, ChevronDown, Calendar, Clock, Sparkles, Building, AlertCircle, Edit3
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
