@@ -1177,11 +1177,11 @@ export default function RoomListPage() {
               <select
                 value={roomIdParam || ''}
                 onChange={(e) => handleRoomChange(e.target.value)}
-                className="form-input"
+                className="form-input custom-select-input"
                 style={{
                   height: '48px',
                   paddingLeft: '44px',
-                  paddingRight: '36px',
+                  paddingRight: '40px',
                   fontSize: '0.92rem',
                   fontWeight: 700,
                   color: roomIdParam ? 'var(--text-main)' : 'var(--text-muted)',
@@ -1189,7 +1189,10 @@ export default function RoomListPage() {
                   border: '1.5px solid var(--border)',
                   cursor: 'pointer',
                   backgroundColor: '#ffffff',
-                  width: '100%'
+                  width: '100%',
+                  appearance: 'none',
+                  WebkitAppearance: 'none',
+                  MozAppearance: 'none'
                 }}
               >
                 <option value="">-- กรุณาเลือกห้องประชุม --</option>
@@ -1199,7 +1202,7 @@ export default function RoomListPage() {
                   </option>
                 ))}
               </select>
-              <ChevronDown size={18} style={{ position: 'absolute', right: '14px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+              <ChevronDown size={18} style={{ position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
             </div>
           </div>
         </div>

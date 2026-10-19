@@ -456,18 +456,21 @@ export default function HomePage() {
                         setSelectedRoomId(e.target.value);
                         setErrorMessage('');
                       }}
-                      className="form-input"
+                      className="form-input custom-select-input"
                       style={{
                         height: '52px',
                         paddingLeft: '48px',
-                        paddingRight: '36px',
+                        paddingRight: '40px',
                         fontSize: '1rem',
                         fontWeight: 700,
                         color: selectedRoomId ? 'var(--text-main)' : 'var(--text-muted)',
                         borderRadius: '14px',
                         border: '1.5px solid var(--border)',
                         cursor: 'pointer',
-                        backgroundColor: '#ffffff'
+                        backgroundColor: '#ffffff',
+                        appearance: 'none',
+                        WebkitAppearance: 'none',
+                        MozAppearance: 'none'
                       }}
                     >
                       <option value="">-- กรุณาเลือกห้องประชุม --</option>
@@ -477,7 +480,7 @@ export default function HomePage() {
                         </option>
                       ))}
                     </select>
-                    <ChevronDown size={18} style={{ position: 'absolute', right: '14px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+                    <ChevronDown size={18} style={{ position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
                   </div>
                 )}
               </div>

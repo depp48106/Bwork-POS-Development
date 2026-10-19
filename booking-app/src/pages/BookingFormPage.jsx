@@ -684,13 +684,21 @@ export default function BookingFormPage() {
                       <select
                         value={taxDeliveryMethod}
                         onChange={e => setTaxDeliveryMethod(e.target.value)}
-                        className="form-input"
-                        style={{ height: '46px', fontWeight: 700, cursor: 'pointer', paddingRight: '28px' }}
+                        className="form-input custom-select-input"
+                        style={{
+                          height: '46px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          paddingRight: '36px',
+                          appearance: 'none',
+                          WebkitAppearance: 'none',
+                          MozAppearance: 'none'
+                        }}
                       >
                         <option value="online">จัดส่งออนไลน์ (E-Tax / อีเมล / LINE)</option>
                         <option value="postal">จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)</option>
                       </select>
-                      <ChevronDown size={15} style={{ position: 'absolute', right: '12px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+                      <ChevronDown size={15} style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
                     </div>
                   </div>
 

@@ -92,6 +92,14 @@ describe('BWORK-POS: Direct Room Selector Test Suite', () => {
     assert.ok(dateValIdx < roomValIdx, 'dateStr validation MUST occur before selectedRoomId validation');
   });
 
+  test('1.8: HomePage Direct Room Selector hides native arrow and uses single custom chevron', () => {
+    assert.ok(homePageSrc.includes("appearance: 'none'"), 'Must set appearance: none');
+    assert.ok(homePageSrc.includes("WebkitAppearance: 'none'"), 'Must set WebkitAppearance: none for iOS/WebKit');
+    assert.ok(homePageSrc.includes("MozAppearance: 'none'"), 'Must set MozAppearance: none for Firefox');
+    assert.ok(homePageSrc.includes("pointerEvents: 'none'"), 'Must pass touch events through custom chevron');
+    assert.ok(homePageSrc.includes("custom-select-input"), 'Must include custom-select-input class');
+  });
+
   // ==========================================================================
   // 2. ROOM LIST PAGE: DIRECT ROOM MODE & OCCUPIED NOTICE
   // ==========================================================================
@@ -158,6 +166,20 @@ describe('BWORK-POS: Direct Room Selector Test Suite', () => {
     assert.ok(roomListSrc.includes('/* MODE B: ALL ROOMS CATEGORIZED VIEW (Existing behavior preserved) */'), 'Preserves Mode B container');
     assert.ok(roomListSrc.includes('/* SECTION A: RECOMMENDED ROOMS (Exact Fit) */'), 'Preserves Recommended Rooms');
     assert.ok(roomListSrc.includes('/* SECTION B: UPGRADE OFFER ROOMS (Wider Spaces) */'), 'Preserves Upgrade Rooms');
+  });
+
+  test('2.11: RoomListPage Direct Room Selector hides native arrow and uses single custom chevron', () => {
+    assert.ok(roomListSrc.includes("appearance: 'none'"), 'Must set appearance: none in RoomListPage');
+    assert.ok(roomListSrc.includes("WebkitAppearance: 'none'"), 'Must set WebkitAppearance: none in RoomListPage');
+    assert.ok(roomListSrc.includes("MozAppearance: 'none'"), 'Must set MozAppearance: none in RoomListPage');
+    assert.ok(roomListSrc.includes("custom-select-input"), 'Must include custom-select-input class');
+  });
+
+  test('2.12: index.css hides native browser dropdown arrow on custom-select-input', () => {
+    const indexCss = fs.readFileSync(path.join(ROOT_DIR, 'src/index.css'), 'utf8');
+    assert.ok(indexCss.includes('.custom-select-input'), 'Must define .custom-select-input');
+    assert.ok(indexCss.includes('appearance: none'), 'Must set appearance: none in CSS');
+    assert.ok(indexCss.includes('-webkit-appearance: none'), 'Must set -webkit-appearance: none in CSS');
   });
 
   // ==========================================================================
