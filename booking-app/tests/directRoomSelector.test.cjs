@@ -66,6 +66,32 @@ describe('BWORK-POS: Direct Room Selector Test Suite', () => {
     assert.ok(homePageSrc.includes("query.get('roomId') ? 'directRoom' : 'byGuests'"), 'Auto-detect mode from query param');
   });
 
+  test('1.6: Mode A in HomePage renders Date Picker FIRST and Room Dropdown SECOND', () => {
+    const directModeJSXStart = homePageSrc.indexOf("searchMode === 'directRoom' ? (");
+    const directModeJSXEnd = homePageSrc.indexOf("/* MODE B: SECTION 1 - DATE SELECTION */");
+    const directModeJSX = homePageSrc.slice(directModeJSXStart, directModeJSXEnd);
+
+    const datePickerIdx = directModeJSX.indexOf('renderDatePicker(1)');
+    const roomDropdownIdx = directModeJSX.indexOf('2. เลือกห้องประชุม (Select Meeting Room)');
+
+    assert.ok(datePickerIdx !== -1, 'Must render Date Picker (renderDatePicker(1)) in Mode A');
+    assert.ok(roomDropdownIdx !== -1, 'Must render Room Dropdown (2. เลือกห้องประชุม) in Mode A');
+    assert.ok(datePickerIdx < roomDropdownIdx, 'Date Picker MUST appear before Room Dropdown in Mode A');
+  });
+
+  test('1.7: Mode A in HomePage validates Date FIRST before Room Selection SECOND', () => {
+    const directSearchBlock = homePageSrc.slice(
+      homePageSrc.indexOf("if (searchMode === 'directRoom')"),
+      homePageSrc.indexOf("navigate(`/rooms?date=${dateStr}&roomId=${selectedRoomId}`);")
+    );
+    const dateValIdx = directSearchBlock.indexOf('if (!dateStr)');
+    const roomValIdx = directSearchBlock.indexOf('if (!selectedRoomId)');
+
+    assert.ok(dateValIdx !== -1, 'Must validate dateStr');
+    assert.ok(roomValIdx !== -1, 'Must validate selectedRoomId');
+    assert.ok(dateValIdx < roomValIdx, 'dateStr validation MUST occur before selectedRoomId validation');
+  });
+
   // ==========================================================================
   // 2. ROOM LIST PAGE: DIRECT ROOM MODE & OCCUPIED NOTICE
   // ==========================================================================
@@ -101,6 +127,37 @@ describe('BWORK-POS: Direct Room Selector Test Suite', () => {
     assert.ok(roomListSrc.includes('effective_capacity: sel.effectiveCapacity'), 'Passes effective capacity');
     assert.ok(roomListSrc.includes('room_capacity: room.capacity || 4'), 'Passes room capacity');
     assert.ok(roomListSrc.includes('guests: guests || null'), 'Allows null guests in Mode A');
+  });
+
+  test('2.7: RoomListPage in Mode A renders Date Picker FIRST and Room Selector SECOND', () => {
+    const directControlsStart = roomListSrc.indexOf('{isDirectRoomMode ? (');
+    const directControlsEnd = roomListSrc.indexOf('/* MODE B: FIXED DATE/GUESTS DISPLAY */');
+    const directControls = roomListSrc.slice(directControlsStart, directControlsEnd);
+
+    const dateIdx = directControls.indexOf('1. วันที่ต้องการใช้งาน (Date)');
+    const roomIdx = directControls.indexOf('2. เลือกห้องประชุม (Select Meeting Room)');
+
+    assert.ok(dateIdx !== -1, 'Must render Date Picker (1. วันที่ต้องการใช้งาน) in Mode A top controls');
+    assert.ok(roomIdx !== -1, 'Must render Room Dropdown (2. เลือกห้องประชุม) in Mode A top controls');
+    assert.ok(dateIdx < roomIdx, 'Date Picker MUST appear before Room Dropdown in Mode A controls');
+  });
+
+  test('2.8: RoomListPage in Mode A displays polite waiting state when room is not yet selected', () => {
+    assert.ok(roomListSrc.includes('!roomIdParam ? ('), 'Has branch for unselected room in Mode A');
+    assert.ok(roomListSrc.includes('กรุณาเลือกห้องประชุมเพื่อดูรายละเอียดและช่วงเวลาว่าง'), 'Polite waiting message');
+  });
+
+  test('2.9: RoomListPage in Mode A provides instant room dropdown switcher and date changer', () => {
+    assert.ok(roomListSrc.includes('handleRoomChange'), 'Provides room switcher callback');
+    assert.ok(roomListSrc.includes('handleDateChange'), 'Provides date change callback');
+    assert.ok(roomListSrc.includes('handleOpenDatePicker'), 'Provides calendar launcher callback');
+    assert.ok(roomListSrc.includes('sortedAllRooms.map'), 'Maps sorted rooms in dropdown');
+  });
+
+  test('2.10: Mode B remains 100% preserved in RoomListPage', () => {
+    assert.ok(roomListSrc.includes('/* MODE B: ALL ROOMS CATEGORIZED VIEW (Existing behavior preserved) */'), 'Preserves Mode B container');
+    assert.ok(roomListSrc.includes('/* SECTION A: RECOMMENDED ROOMS (Exact Fit) */'), 'Preserves Recommended Rooms');
+    assert.ok(roomListSrc.includes('/* SECTION B: UPGRADE OFFER ROOMS (Wider Spaces) */'), 'Preserves Upgrade Rooms');
   });
 
   // ==========================================================================

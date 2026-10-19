@@ -125,17 +125,7 @@ export default function HomePage() {
     setErrorMessage('');
 
     if (searchMode === 'directRoom') {
-      // MODE A: Direct Room Selection
-      if (!selectedRoomId) {
-        setErrorMessage('กรุณาเลือกห้องประชุมที่ต้องการใช้งาน');
-        return;
-      }
-      // Ensure selected room is valid
-      const roomExists = rooms.some(r => String(r.id) === String(selectedRoomId));
-      if (rooms.length > 0 && !roomExists) {
-        setErrorMessage('ห้องประชุมที่เลือกไม่มีอยู่ในระบบ กรุณาเลือกห้องใหม่อีกครั้ง');
-        return;
-      }
+      // MODE A: Direct Room Selection (Date First, Room Second)
       if (!dateStr) {
         setErrorMessage('กรุณาเลือกวันที่ต้องการใช้งาน');
         return;
@@ -146,6 +136,16 @@ export default function HomePage() {
       }
       if (dateStr === todayIso && currentMins >= 17 * 60 + 30) {
         setErrorMessage('วันนี้หมดรอบเวลาให้บริการแล้ว กรุณาเลือกวันพรุ่งนี้เป็นต้นไป');
+        return;
+      }
+      if (!selectedRoomId) {
+        setErrorMessage('กรุณาเลือกห้องประชุมที่ต้องการใช้งาน');
+        return;
+      }
+      // Ensure selected room is valid
+      const roomExists = rooms.some(r => String(r.id) === String(selectedRoomId));
+      if (rooms.length > 0 && !roomExists) {
+        setErrorMessage('ห้องประชุมที่เลือกไม่มีอยู่ในระบบ กรุณาเลือกห้องใหม่อีกครั้ง');
         return;
       }
 
@@ -305,7 +305,7 @@ export default function HomePage() {
           lineHeight: 1.6
         }}>
           {searchMode === 'directRoom'
-            ? 'เลือกห้องประชุมและวันที่ต้องการ เพื่อตรวจสอบช่วงเวลาว่างและเลือกแพ็กเกจ'
+            ? 'เลือกวันที่และห้องประชุมที่ต้องการ เพื่อตรวจสอบช่วงเวลาว่างและเลือกแพ็กเกจ'
             : 'ระบุวันที่และจำนวนผู้เข้าใช้งาน เพื่อค้นหาห้องที่ว่างและเลือกช่วงเวลา'}
         </p>
       </div>
@@ -382,12 +382,15 @@ export default function HomePage() {
           
           {searchMode === 'directRoom' ? (
             <>
-              {/* MODE A: SECTION 1 - ROOM DROPDOWN */}
+              {/* MODE A: SECTION 1 - DATE PICKER (ON TOP FIRST) */}
+              {renderDatePicker(1)}
+
+              {/* MODE A: SECTION 2 - ROOM DROPDOWN (SECOND) */}
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                   <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <Building size={17} style={{ color: 'var(--primary)' }} />
-                    <span>1. เลือกห้องประชุม (Select Meeting Room)</span>
+                    <span>2. เลือกห้องประชุม (Select Meeting Room)</span>
                     <span style={{ color: 'var(--danger)' }}>*</span>
                   </label>
                   <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
@@ -478,9 +481,6 @@ export default function HomePage() {
                   </div>
                 )}
               </div>
-
-              {/* MODE A: SECTION 2 - DATE PICKER */}
-              {renderDatePicker(2)}
             </>
           ) : (
             <>
