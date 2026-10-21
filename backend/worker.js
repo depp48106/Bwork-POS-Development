@@ -3843,8 +3843,10 @@ export default {
           const { results: contracts } = await env.DB.prepare(
             `SELECT * FROM customer_contracts
              WHERE customer_id = ?
-             ORDER BY CASE WHEN status IN ('ACTIVE', 'EXPIRING') THEN 0 ELSE 1 END, end_date DESC`
-          ).bind(customerId).all();
+             ORDER BY CASE WHEN ? BETWEEN start_date AND end_date THEN 0
+                           WHEN status IN ('ACTIVE', 'EXPIRING') THEN 1
+                           ELSE 2 END, end_date DESC`
+          ).bind(customerId, targetDate).all();
 
           if (contracts && contracts.length > 0) {
             activeContract = contracts[0];
@@ -4453,7 +4455,130 @@ export default {
         }
       }
 
-      // 8. PATCH /api/customers/:id/status
+// 7.1. PUT & PATCH /api/customers/contracts/:contractId/dates
+      const editContractDatesMatch = pathname.match(/^\/api\/customers\/contracts\/(\d+)\/dates$/);
+      if (editContractDatesMatch && (method === 'PUT' || method === 'PATCH')) {
+        const contractId = parseInt(editContractDatesMatch[1], 10);
+        const hasContractManagePermission = user && (
+          user.role === 'admin' ||
+          user.username === 'admin' ||
+          String(user.permissions || '').split(',').map(p => p.trim()).includes('manage') ||
+          String(user.permissions || '').split(',').map(p => p.trim()).includes('admin-management')
+        );
+
+        if (!hasContractManagePermission) {
+          return new Response(JSON.stringify({ error: 'สิทธิ์ไม่เพียงพอ ท่านไม่มีสิทธิ์ในการแก้ไขข้อมูลสัญญา' }), { status: 403, headers: corsHeaders });
+        }
+
+        try {
+          const body = await request.json();
+          const { start_date, end_date, reason } = body || {};
+
+          if (!start_date || !end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาและวันสิ้นสุดสัญญาจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(start_date) || !/^\d{4}-\d{2}-\d{2}$/.test(end_date)) {
+            return new Response(JSON.stringify({ error: 'รูปแบบวันที่ไม่ถูกต้อง (ต้องเป็น YYYY-MM-DD)' }), { status: 400, headers: corsHeaders });
+          }
+          if (start_date > end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' }), { status: 400, headers: corsHeaders });
+          }
+          if (!reason || !String(reason).trim()) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเหตุผลในการแก้ไขวันที่สัญญา (Change reason is required)' }), { status: 400, headers: corsHeaders });
+          }
+
+          const contract = await env.DB.prepare('SELECT * FROM customer_contracts WHERE id = ?').bind(contractId).first();
+          if (!contract) {
+            return new Response(JSON.stringify({ error: 'ไม่พบสัญญาที่ระบุ' }), { status: 404, headers: corsHeaders });
+          }
+
+          if (contract.status === 'TERMINATED') {
+            return new Response(JSON.stringify({
+              error: 'ไม่สามารถแก้ไขวันที่ของสัญญาที่ถูกยกเลิก (TERMINATED) แล้วได้ หากต้องการเปิดสัญญาใหม่ กรุณาใช้ฟังก์ชันต่อสัญญา (Renew)'
+            }), { status: 400, headers: corsHeaders });
+          }
+
+          // Overlap check with other active contracts for the same customer
+          const overlapping = await env.DB.prepare(
+            `SELECT id, contract_number, start_date, end_date FROM customer_contracts
+             WHERE customer_id = ?
+               AND id != ?
+               AND status != 'TERMINATED'
+               AND start_date <= ?
+               AND end_date >= ?
+             LIMIT 1`
+          ).bind(contract.customer_id, contractId, end_date, start_date).first();
+
+          if (overlapping) {
+            return new Response(JSON.stringify({
+              error: `ช่วงเวลาของสัญญานี้ซ้อนทับกับสัญญาที่มีอยู่ (${overlapping.contract_number}: ${overlapping.start_date} ถึง ${overlapping.end_date})`
+            }), { status: 400, headers: corsHeaders });
+          }
+
+          // Check if affected bookings / quota usage fall outside new range
+          const isWindowShrunk = start_date > contract.start_date || end_date < contract.end_date;
+          if (isWindowShrunk) {
+            const { results: affectedBookings } = await env.DB.prepare(
+              `SELECT b.id FROM bookings b
+               LEFT JOIN booking_items bi ON bi.booking_id = b.id
+               WHERE (b.contract_id = ? OR (b.customer_id = ? AND b.quota_hours_used > 0))
+                 AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                 AND (
+                   (bi.start_time IS NOT NULL AND (substr(bi.start_time, 1, 10) < ? OR substr(bi.start_time, 1, 10) > ?))
+                   OR (bi.start_time IS NULL AND (substr(b.created_at, 1, 10) < ? OR substr(b.created_at, 1, 10) > ?))
+                 )`
+            ).bind(contractId, contract.customer_id, start_date, end_date, start_date, end_date).all();
+
+            if (affectedBookings && affectedBookings.length > 0) {
+              return new Response(JSON.stringify({
+                error: `ไม่สามารถปรับลดช่วงเวลาสัญญาได้ เนื่องจากมีรายการจองที่ใช้สิทธิ์โควต้าสัญญาอยู่นอกช่วงเวลาใหม่ (${affectedBookings.length} รายการจอง)`
+              }), { status: 400, headers: corsHeaders });
+            }
+          }
+
+          const performedBy = user?.username || 'staff';
+          const auditDetails = {
+            contract_id: contract.id,
+            customer_id: contract.customer_id,
+            contract_number: contract.contract_number,
+            old_start_date: contract.start_date,
+            new_start_date: start_date,
+            old_end_date: contract.end_date,
+            new_end_date: end_date,
+            change_reason: String(reason).trim(),
+            updated_by: performedBy,
+            updated_at: new Date().toISOString()
+          };
+
+          // Atomic execution via Cloudflare D1 batch
+          await env.DB.batch([
+            env.DB.prepare(
+              `UPDATE customer_contracts
+               SET start_date = ?,
+                   end_date = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            ).bind(start_date, end_date, contractId),
+            env.DB.prepare(
+              `INSERT INTO customer_audit_logs (customer_id, contract_id, action, details, performed_by)
+               VALUES (?, ?, 'EDIT_CONTRACT_DATES', ?, ?)`
+            ).bind(contract.customer_id, contract.id, JSON.stringify(auditDetails), performedBy)
+          ]);
+
+          const updatedContract = await env.DB.prepare('SELECT * FROM customer_contracts WHERE id = ?').bind(contractId).first();
+
+          return new Response(JSON.stringify({
+            success: true,
+            contract: updatedContract,
+            audit: auditDetails,
+            message: 'แก้ไขวันที่สัญญาและบันทึกประวัติเรียบร้อยแล้ว'
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+            // 8. PATCH /api/customers/:id/status
       const statusMatch = pathname.match(/^\/api\/customers\/(\d+)\/status$/);
       if (statusMatch && method === 'PATCH') {
         const customerId = parseInt(statusMatch[1], 10);
@@ -4507,9 +4632,15 @@ export default {
             };
           });
 
-          const { results: auditLogs } = await env.DB.prepare(
-            'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50'
-          ).bind(customerId).all();
+          // Security Gate: Non-admin users must NEVER receive audit logs in Customer Detail API
+          const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+          let auditLogs = [];
+          if (isAdmin) {
+            const { results } = await env.DB.prepare(
+              'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50'
+            ).bind(customerId).all();
+            auditLogs = results || [];
+          }
 
           const quota = await calculateWorkerCustomerQuota(env, {
             customerId,
@@ -4525,6 +4656,29 @@ export default {
               audit_logs: auditLogs || [],
               quota
             }
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 9.1. GET /api/customers/:id/audit-logs (Strictly Admin Only)
+      const customerAuditLogsMatch = pathname.match(/^\/api\/customers\/(\d+)\/audit-logs$/);
+      if (customerAuditLogsMatch && method === 'GET') {
+        const customerId = parseInt(customerAuditLogsMatch[1], 10);
+        const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+        if (!isAdmin) {
+          return new Response(JSON.stringify({ error: 'สิทธิ์ไม่เพียงพอ เฉพาะผู้ดูแลระบบ (Admin) เท่านั้นที่สามารถดูประวัติ Audit Log ได้' }), { status: 403, headers: corsHeaders });
+        }
+
+        try {
+          const { results: logs } = await env.DB.prepare(
+            'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 100'
+          ).bind(customerId).all();
+
+          return new Response(JSON.stringify({
+            success: true,
+            audit_logs: logs || []
           }), { headers: corsHeaders });
         } catch (err) {
           return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });

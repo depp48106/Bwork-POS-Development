@@ -9,7 +9,8 @@ const {
   calculateDaysDifference,
   evaluateContractStatus,
   calculateCustomerQuota,
-  getContractAlerts
+  getContractAlerts,
+  updateContractDates
 } = require('./service');
 
 function createCustomerRouter(dbQuery) {
@@ -146,10 +147,15 @@ function createCustomerRouter(dbQuery) {
         };
       });
 
-      const auditLogs = await dbQuery.all(
-        'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50',
-        [customerId]
-      );
+      // Security Gate: Non-admin users must NEVER receive audit logs in Customer Detail API
+      const isAdmin = req.user && (req.user.role === 'admin' || req.user.username === 'admin');
+      let auditLogs = [];
+      if (isAdmin) {
+        auditLogs = await dbQuery.all(
+          'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50',
+          [customerId]
+        );
+      }
 
       const quota = await calculateCustomerQuota(dbQuery, {
         customerId,
@@ -168,6 +174,29 @@ function createCustomerRouter(dbQuery) {
       });
     } catch (err) {
       console.error('[CustomerRouter] get detail error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 3.1. GET /api/customers/:id/audit-logs (Strictly Admin Only)
+  router.get('/:id/audit-logs', async (req, res) => {
+    const customerId = parseInt(req.params.id, 10);
+    const isAdmin = req.user && (req.user.role === 'admin' || req.user.username === 'admin');
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'สิทธิ์ไม่เพียงพอ เฉพาะผู้ดูแลระบบ (Admin) เท่านั้นที่สามารถดูประวัติ Audit Log ได้' });
+    }
+
+    try {
+      const logs = await dbQuery.all(
+        'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 100',
+        [customerId]
+      );
+      res.json({
+        success: true,
+        audit_logs: logs || []
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] get audit logs error:', err);
       res.status(500).json({ error: err.message });
     }
   });
@@ -578,6 +607,53 @@ function createCustomerRouter(dbQuery) {
       res.status(500).json({ error: err.message });
     }
   });
+
+  // 9.1. PUT & PATCH /api/customers/contracts/:contractId/dates
+  const handleEditContractDates = async (req, res) => {
+    const contractId = parseInt(req.params.contractId, 10);
+    const { start_date, end_date, reason } = req.body || {};
+
+    // Authorization check: User must have manage/admin permission
+    const hasContractManagePermission = req.user && (
+      req.user.role === 'admin' ||
+      req.user.username === 'admin' ||
+      String(req.user.permissions || '').split(',').map(p => p.trim()).includes('manage') ||
+      String(req.user.permissions || '').split(',').map(p => p.trim()).includes('admin-management')
+    );
+
+    if (!hasContractManagePermission) {
+      return res.status(403).json({ error: 'สิทธิ์ไม่เพียงพอ ท่านไม่มีสิทธิ์ในการแก้ไขข้อมูลสัญญา' });
+    }
+
+    const performedBy = req.user?.username || req.user?.fullname || 'staff';
+
+    try {
+      const result = await updateContractDates(dbQuery, {
+        contractId,
+        startDate: start_date,
+        endDate: end_date,
+        reason,
+        performedBy
+      });
+
+      if (!result.success) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      res.json({
+        success: true,
+        contract: result.contract,
+        audit: result.audit,
+        message: result.message
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] edit contract dates error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  };
+
+  router.put('/contracts/:contractId/dates', handleEditContractDates);
+  router.patch('/contracts/:contractId/dates', handleEditContractDates);
 
   // 10. POST /api/customers/transfer-unit (Basecamp tenant change)
   router.post('/transfer-unit', async (req, res) => {

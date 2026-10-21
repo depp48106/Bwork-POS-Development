@@ -118,12 +118,14 @@ async function calculateCustomerQuota(dbQuery, {
       throw new Error(`Customer with ID ${customerId} not found`);
     }
 
-    // Retrieve active or latest contract
+    // Retrieve active contract for target date or latest active contract
     const contracts = await dbQuery.all(
       `SELECT * FROM customer_contracts
        WHERE customer_id = ?
-       ORDER BY CASE WHEN status IN ('ACTIVE', 'EXPIRING') THEN 0 ELSE 1 END, end_date DESC`,
-      [customerId]
+       ORDER BY CASE WHEN ? BETWEEN start_date AND end_date THEN 0
+                     WHEN status IN ('ACTIVE', 'EXPIRING') THEN 1
+                     ELSE 2 END, end_date DESC`,
+      [customerId, targetDate]
     );
 
     if (contracts && contracts.length > 0) {
@@ -281,6 +283,146 @@ async function getContractAlerts(dbQuery, baseDateStr = getBangkokDateToday()) {
   };
 }
 
+/**
+ * Validates and atomically updates existing contract start and end dates.
+ * Records mandatory audit log with verified actor and change reason.
+ */
+async function updateContractDates(dbQuery, { contractId, startDate, endDate, reason, performedBy }) {
+  if (!contractId) {
+    return { success: false, status: 400, error: 'กรุณาระบุรหัสสัญญา (contractId is required)' };
+  }
+  if (!startDate || !endDate) {
+    return { success: false, status: 400, error: 'วันเริ่มสัญญาและวันสิ้นสุดสัญญาจำเป็นต้องระบุ' };
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    return { success: false, status: 400, error: 'รูปแบบวันที่ไม่ถูกต้อง (ต้องเป็น YYYY-MM-DD)' };
+  }
+  if (startDate > endDate) {
+    return { success: false, status: 400, error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' };
+  }
+  if (!reason || !String(reason).trim()) {
+    return { success: false, status: 400, error: 'กรุณาระบุเหตุผลในการแก้ไขวันที่สัญญา (Change reason is required)' };
+  }
+
+  // 1. Fetch current contract
+  const contract = await dbQuery.get('SELECT * FROM customer_contracts WHERE id = ?', [contractId]);
+  if (!contract) {
+    return { success: false, status: 404, error: 'ไม่พบสัญญาที่ระบุ' };
+  }
+
+  // Policy: Terminated contracts cannot have dates edited automatically
+  if (contract.status === 'TERMINATED') {
+    return {
+      success: false,
+      status: 400,
+      error: 'ไม่สามารถแก้ไขวันที่ของสัญญาที่ถูกยกเลิก (TERMINATED) แล้วได้ หากต้องการเปิดสัญญาใหม่ กรุณาใช้ฟังก์ชันต่อสัญญา (Renew)'
+    };
+  }
+
+  // 2. Overlap validation with other contracts of the same customer
+  const overlapping = await dbQuery.get(
+    `SELECT id, contract_number, start_date, end_date FROM customer_contracts
+     WHERE customer_id = ?
+       AND id != ?
+       AND status != 'TERMINATED'
+       AND start_date <= ?
+       AND end_date >= ?
+     LIMIT 1`,
+    [contract.customer_id, contractId, endDate, startDate]
+  );
+  if (overlapping) {
+    return {
+      success: false,
+      status: 400,
+      error: `ช่วงเวลาของสัญญานี้ซ้อนทับกับสัญญาที่มีอยู่ (${overlapping.contract_number}: ${overlapping.start_date} ถึง ${overlapping.end_date})`
+    };
+  }
+
+  // 3. Business rule check: check if contracted bookings or quota usage fall outside new date range
+  const isWindowShrunk = startDate > contract.start_date || endDate < contract.end_date;
+  if (isWindowShrunk) {
+    const affectedBookings = await dbQuery.all(
+      `SELECT b.id, b.quota_hours_used, bi.start_time, b.created_at
+       FROM bookings b
+       LEFT JOIN booking_items bi ON bi.booking_id = b.id
+       WHERE (b.contract_id = ? OR (b.customer_id = ? AND b.quota_hours_used > 0))
+         AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+         AND (
+           (bi.start_time IS NOT NULL AND (substr(bi.start_time, 1, 10) < ? OR substr(bi.start_time, 1, 10) > ?))
+           OR (bi.start_time IS NULL AND (substr(b.created_at, 1, 10) < ? OR substr(b.created_at, 1, 10) > ?))
+         )`,
+      [contractId, contract.customer_id, startDate, endDate, startDate, endDate]
+    );
+
+    if (affectedBookings && affectedBookings.length > 0) {
+      return {
+        success: false,
+        status: 400,
+        error: `ไม่สามารถปรับลดช่วงเวลาสัญญาได้ เนื่องจากมีรายการจองที่ใช้สิทธิ์โควต้าสัญญาอยู่นอกช่วงเวลาใหม่ (${affectedBookings.length} รายการจอง)`
+      };
+    }
+  }
+
+  // 4. Atomic Database Update & Audit Log Creation
+  const auditDetails = {
+    contract_id: contract.id,
+    customer_id: contract.customer_id,
+    contract_number: contract.contract_number,
+    old_start_date: contract.start_date,
+    new_start_date: startDate,
+    old_end_date: contract.end_date,
+    new_end_date: endDate,
+    change_reason: String(reason).trim(),
+    updated_by: performedBy || 'staff',
+    updated_at: new Date().toISOString()
+  };
+
+  const executeAtomic = async () => {
+    await dbQuery.run(
+      `UPDATE customer_contracts
+       SET start_date = ?,
+           end_date = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [startDate, endDate, contractId]
+    );
+
+    await dbQuery.run(
+      `INSERT INTO customer_audit_logs (customer_id, contract_id, action, details, performed_by)
+       VALUES (?, ?, 'EDIT_CONTRACT_DATES', ?, ?)`,
+      [contract.customer_id, contract.id, JSON.stringify(auditDetails), performedBy || 'staff']
+    );
+  };
+
+  if (typeof dbQuery.transaction === 'function') {
+    await dbQuery.transaction(executeAtomic);
+  } else {
+    let inTx = false;
+    try {
+      await dbQuery.run('BEGIN TRANSACTION');
+      inTx = true;
+      await executeAtomic();
+      await dbQuery.run('COMMIT');
+      inTx = false;
+    } catch (txErr) {
+      if (inTx) {
+        try { await dbQuery.run('ROLLBACK'); } catch (_) {}
+      }
+      throw txErr;
+    }
+  }
+
+  // Fetch updated contract record to return
+  const updatedContract = await dbQuery.get('SELECT * FROM customer_contracts WHERE id = ?', [contractId]);
+
+  return {
+    success: true,
+    contract: updatedContract,
+    audit: auditDetails,
+    message: 'แก้ไขวันที่สัญญาและบันทึกประวัติเรียบร้อยแล้ว'
+  };
+}
+
 module.exports = {
   getBangkokDateToday,
   getBangkokMonthCurrent,
@@ -288,5 +430,6 @@ module.exports = {
   evaluateContractStatus,
   verifyServiceDateContractEligibility,
   calculateCustomerQuota,
-  getContractAlerts
+  getContractAlerts,
+  updateContractDates
 };
