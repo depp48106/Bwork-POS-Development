@@ -156,6 +156,17 @@ a {
   box-shadow: 0 0 0 3px var(--primary-glow);
 }
 
+/* Custom Select: Hides native browser dropdown arrow when custom chevron is used */
+.custom-select-input {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+}
+
+.custom-select-input::-ms-expand {
+  display: none !important;
+}
+
 /* Primary Action Buttons */
 .btn-primary {
   display: flex;
@@ -298,6 +309,11 @@ a {
   align-items: start;
 }
 
+.booking-summary-card {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 /* Responsive Payment Grid (ConfirmPage) */
 .payment-grid {
   display: grid;
@@ -335,10 +351,17 @@ a {
   .booking-form-grid {
     display: flex;
     flex-direction: column;
+    align-items: stretch;
     gap: 16px;
+    width: 100%;
   }
-  .booking-form-grid .booking-card:first-child {
+  .booking-form-grid .booking-card:first-child,
+  .booking-summary-card {
     position: static !important;
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    box-sizing: border-box;
   }
   .payment-grid {
     display: flex;
