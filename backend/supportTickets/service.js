@@ -3,6 +3,8 @@
  * Business logic and database access layer for Customer Issue Tickets & POS Notification System
  */
 
+const { generateSecureTicketToken, verifyTicketOwnership } = require('./customerAuth');
+
 const VALID_CATEGORIES = ['booking', 'payment', 'facility', 'general', 'other'];
 const VALID_PRIORITIES = ['urgent', 'high', 'normal', 'low'];
 const VALID_STATUSES = ['NEW', 'ACKNOWLEDGED', 'IN_PROGRESS', 'RESOLVED', 'CLOSED', 'REOPENED'];
@@ -173,18 +175,20 @@ async function createTicket(dbQuery, data) {
   // Insert ticket with collision retry loop
   let inserted = null;
   let attempts = 0;
+  const accessToken = generateSecureTicketToken();
   while (!inserted && attempts < 5) {
     attempts++;
     const ticketNumber = await generateUniqueTicketNumber(dbQuery);
     try {
       const res = await dbQuery.run(
         `INSERT INTO support_tickets
-         (ticket_number, customer_id, customer_name, customer_phone, line_user_id,
+         (ticket_number, access_token, customer_id, customer_name, customer_phone, line_user_id,
           booking_id, booking_code, room_id, category, other_category, subject, description,
           priority, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
         [
           ticketNumber,
+          accessToken,
           customerId,
           customer_name.trim(),
           customer_phone.trim(),
@@ -267,6 +271,7 @@ async function createTicket(dbQuery, data) {
     success: true,
     ticket_id: ticketId,
     ticket_number: inserted.ticket_number,
+    access_token: accessToken,
     status: 'NEW',
     category,
     other_category: finalOtherCategory,
@@ -276,35 +281,44 @@ async function createTicket(dbQuery, data) {
 }
 
 /**
- * List tickets for a customer by phone, line_user_id, or booking_code
+ * List tickets for a customer by server-authoritative credentials (LINE ID Token, Ticket Tokens, Booking Token)
  */
-async function listCustomerTickets(dbQuery, { phone, line_user_id, booking_code }) {
+async function listCustomerTickets(dbQuery, auth = {}) {
+  if (auth && auth.is_staff) {
+    return await dbQuery.all(`SELECT * FROM support_tickets ORDER BY created_at DESC LIMIT 50`);
+  }
+
   const conditions = [];
   const params = [];
 
-  if (phone) {
-    const clean = phone.replace(/[^0-9]/g, '');
-    conditions.push(`REPLACE(REPLACE(customer_phone, '-', ''), ' ', '') LIKE ?`);
-    params.push(`%${clean.slice(-9)}%`);
+  if (auth.lineUserId) {
+    conditions.push('t.line_user_id = ?');
+    params.push(auth.lineUserId);
   }
-  if (line_user_id) {
-    conditions.push(`line_user_id = ?`);
-    params.push(line_user_id);
+
+  if (Array.isArray(auth.ticketTokens) && auth.ticketTokens.length > 0) {
+    const placeholders = auth.ticketTokens.map(() => '?').join(', ');
+    conditions.push(`t.access_token IN (${placeholders})`);
+    params.push(...auth.ticketTokens);
   }
-  if (booking_code) {
-    conditions.push(`booking_code = ?`);
-    params.push(String(booking_code).trim().toUpperCase());
+
+  if (auth.bookingToken) {
+    conditions.push('t.booking_id IN (SELECT id FROM bookings WHERE qr_token = ?)');
+    params.push(auth.bookingToken);
   }
 
   if (conditions.length === 0) {
-    return [];
+    const err = new Error('กรุณาระบุสิทธิ์การเข้าถึง (LINE Login, Ticket Token หรือ Booking Token)');
+    err.status = 401;
+    throw err;
   }
 
   const sql = `
-    SELECT t.*,
-      (SELECT COUNT(*) FROM support_ticket_messages WHERE ticket_id = t.id AND visibility = 'public') AS message_count,
-      (SELECT COUNT(*) FROM support_ticket_attachments WHERE ticket_id = t.id) AS attachment_count,
-      r.name as room_name
+    SELECT t.id, t.ticket_number, t.category, t.other_category, t.subject, t.description,
+           t.status, t.priority, t.booking_code, t.created_at, t.updated_at,
+           (SELECT COUNT(*) FROM support_ticket_messages WHERE ticket_id = t.id AND visibility = 'public') AS message_count,
+           (SELECT COUNT(*) FROM support_ticket_attachments a JOIN support_ticket_messages m ON a.message_id = m.id WHERE a.ticket_id = t.id AND m.visibility = 'public') AS attachment_count,
+           r.name as room_name
     FROM support_tickets t
     LEFT JOIN rooms r ON t.room_id = r.id
     WHERE ${conditions.join(' OR ')}
@@ -316,9 +330,9 @@ async function listCustomerTickets(dbQuery, { phone, line_user_id, booking_code 
 }
 
 /**
- * Get ticket details for Customer (public visibility only)
+ * Get ticket details for Customer with server-authoritative ownership verification
  */
-async function getCustomerTicketByNumber(dbQuery, ticketNumber, verification = {}) {
+async function getCustomerTicketByNumber(dbQuery, ticketNumber, auth = {}) {
   const ticket = await dbQuery.get(
     `SELECT t.*, r.name as room_name,
       b.payment_status as booking_payment_status,
@@ -338,24 +352,18 @@ async function getCustomerTicketByNumber(dbQuery, ticketNumber, verification = {
     throw err;
   }
 
-  // If verification provided (phone or line_user_id), check ownership
-  if (verification.phone) {
-    const cleanInput = verification.phone.replace(/[^0-9]/g, '');
-    const cleanStored = ticket.customer_phone.replace(/[^0-9]/g, '');
-    if (cleanInput.slice(-8) !== cleanStored.slice(-8)) {
-      const err = new Error('เบอร์โทรศัพท์ไม่ตรงกับข้อมูลในระบบ');
-      err.status = 403;
-      throw err;
-    }
-  } else if (verification.line_user_id) {
-    if (ticket.line_user_id && ticket.line_user_id !== verification.line_user_id) {
-      const err = new Error('LINE Account ไม่ตรงกับผู้เปิด Ticket');
-      err.status = 403;
-      throw err;
-    }
+  const isOwner = await verifyTicketOwnership(dbQuery, ticket, auth);
+  if (!isOwner) {
+    const hasAnyAuth = Boolean(auth && (auth.ticketToken || auth.lineUserId || auth.bookingToken));
+    const err = new Error(hasAnyAuth ? 'ท่านไม่มีสิทธิ์เข้าถึง Ticket นี้' : 'กรุณาระบุสิทธิ์การเข้าถึง Ticket (Ticket Token หรือ LINE User)');
+    err.status = hasAnyAuth ? 403 : 401;
+    throw err;
   }
 
-  // Get public messages only
+  // Strip internal access_token from response
+  const { access_token, ...safeTicket } = ticket;
+
+  // Get public messages only (internal notes strictly stripped)
   const messages = await dbQuery.all(
     `SELECT m.id, m.ticket_id, m.sender_type, m.sender_name, m.message, m.created_at
      FROM support_ticket_messages m
@@ -364,16 +372,16 @@ async function getCustomerTicketByNumber(dbQuery, ticketNumber, verification = {
     [ticket.id]
   );
 
-  // Get attachments
+  // Get public attachments only (exclude internal attachments)
   const attachments = await dbQuery.all(
-    `SELECT id, ticket_id, message_id, file_url, file_name, content_type, file_size, created_at
-     FROM support_ticket_attachments
-     WHERE ticket_id = ?
-     ORDER BY created_at ASC`,
+    `SELECT a.id, a.ticket_id, a.message_id, a.file_url, a.file_name, a.content_type, a.file_size, a.created_at
+     FROM support_ticket_attachments a
+     JOIN support_ticket_messages m ON a.message_id = m.id
+     WHERE a.ticket_id = ? AND m.visibility = 'public'
+     ORDER BY a.created_at ASC`,
     [ticket.id]
   );
 
-  // Group attachments by message_id
   const attachByMsg = {};
   for (const a of attachments) {
     if (!attachByMsg[a.message_id]) attachByMsg[a.message_id] = [];
@@ -386,15 +394,15 @@ async function getCustomerTicketByNumber(dbQuery, ticketNumber, verification = {
   }));
 
   return {
-    ticket,
+    ticket: safeTicket,
     messages: enrichedMessages
   };
 }
 
 /**
- * Customer reply to ticket
+ * Customer reply to ticket with server-authoritative ownership verification
  */
-async function addCustomerMessage(dbQuery, ticketNumber, { sender_name, sender_phone, line_user_id, message, attachments = [] }) {
+async function addCustomerMessage(dbQuery, ticketNumber, { sender_name, sender_phone, line_user_id, message, attachments = [] }, auth = {}) {
   if (!message || typeof message !== 'string' || !message.trim()) {
     const err = new Error('กรุณากรอกข้อความ');
     err.status = 400;
@@ -402,7 +410,7 @@ async function addCustomerMessage(dbQuery, ticketNumber, { sender_name, sender_p
   }
 
   const ticket = await dbQuery.get(
-    `SELECT id, ticket_number, status, customer_name, customer_phone, line_user_id
+    `SELECT id, ticket_number, access_token, status, customer_name, customer_phone, line_user_id, booking_id, booking_code
      FROM support_tickets WHERE ticket_number = ?`,
     [ticketNumber]
   );
@@ -413,21 +421,18 @@ async function addCustomerMessage(dbQuery, ticketNumber, { sender_name, sender_p
     throw err;
   }
 
-  // Check ownership if phone or line provided
-  if (sender_phone) {
-    const cleanInput = sender_phone.replace(/[^0-9]/g, '');
-    const cleanStored = ticket.customer_phone.replace(/[^0-9]/g, '');
-    if (cleanInput.slice(-8) !== cleanStored.slice(-8)) {
-      const err = new Error('เบอร์โทรศัพท์ไม่ตรงกับข้อมูลในระบบ');
-      err.status = 403;
-      throw err;
-    }
+  const isOwner = await verifyTicketOwnership(dbQuery, ticket, auth);
+  if (!isOwner) {
+    const hasAnyAuth = Boolean(auth && (auth.ticketToken || auth.lineUserId || auth.bookingToken));
+    const err = new Error(hasAnyAuth ? 'ท่านไม่มีสิทธิ์ตอบกลับ Ticket นี้' : 'กรุณาระบุสิทธิ์การเข้าถึง Ticket');
+    err.status = hasAnyAuth ? 403 : 401;
+    throw err;
   }
 
   const senderName = (sender_name || ticket.customer_name || 'ลูกค้า').trim();
-  const senderId = line_user_id || sender_phone || ticket.customer_phone;
+  const senderId = auth.lineUserId || line_user_id || sender_phone || ticket.customer_phone;
 
-  // Insert message
+  // Insert message (visibility always public for customer messages)
   const msgRes = await dbQuery.run(
     `INSERT INTO support_ticket_messages
      (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)
@@ -490,6 +495,52 @@ async function addCustomerMessage(dbQuery, ticketNumber, { sender_name, sender_p
     ticket_status: newStatus,
     created_at: new Date().toISOString()
   };
+}
+
+/**
+ * Access individual attachment with ownership verification
+ */
+async function getTicketAttachment(dbQuery, ticketNumber, attachmentId, auth = {}) {
+  const ticket = await dbQuery.get(
+    `SELECT id, ticket_number, access_token, line_user_id, booking_id, booking_code
+     FROM support_tickets WHERE ticket_number = ?`,
+    [ticketNumber]
+  );
+  if (!ticket) {
+    const err = new Error('ไม่พบข้อมูล Ticket นี้');
+    err.status = 404;
+    throw err;
+  }
+
+  const isOwner = await verifyTicketOwnership(dbQuery, ticket, auth);
+  if (!isOwner) {
+    const hasAnyAuth = Boolean(auth && (auth.ticketToken || auth.lineUserId || auth.bookingToken));
+    const err = new Error(hasAnyAuth ? 'ท่านไม่มีสิทธิ์เข้าถึงไฟล์แนบนี้' : 'กรุณาระบุสิทธิ์การเข้าถึงไฟล์แนบ');
+    err.status = hasAnyAuth ? 403 : 401;
+    throw err;
+  }
+
+  const attachment = await dbQuery.get(
+    `SELECT a.*, m.visibility
+     FROM support_ticket_attachments a
+     JOIN support_ticket_messages m ON a.message_id = m.id
+     WHERE a.ticket_id = ? AND a.id = ?`,
+    [ticket.id, attachmentId]
+  );
+
+  if (!attachment) {
+    const err = new Error('ไม่พบไฟล์แนบนี้');
+    err.status = 404;
+    throw err;
+  }
+
+  if (attachment.visibility === 'internal' && !auth.is_staff) {
+    const err = new Error('ท่านไม่มีสิทธิ์เข้าถึงไฟล์แนบนี้');
+    err.status = 403;
+    throw err;
+  }
+
+  return attachment;
 }
 
 /**
@@ -914,5 +965,6 @@ module.exports = {
   updateTicketStatus,
   addStaffMessage,
   markTicketRead,
-  getTicketNotificationCounts
+  getTicketNotificationCounts,
+  getTicketAttachment
 };

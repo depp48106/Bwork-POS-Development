@@ -5,6 +5,7 @@
 CREATE TABLE IF NOT EXISTS support_tickets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticket_number TEXT UNIQUE NOT NULL,
+  access_token TEXT,
   customer_id INTEGER REFERENCES customers(id),
   customer_name TEXT NOT NULL,
   customer_phone TEXT NOT NULL,
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS support_ticket_reads (
 
 -- 6. Performance & Lookup Indexes
 CREATE INDEX IF NOT EXISTS idx_tickets_number ON support_tickets(ticket_number);
+CREATE INDEX IF NOT EXISTS idx_tickets_access_token ON support_tickets(access_token);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_category ON support_tickets(category);
 CREATE INDEX IF NOT EXISTS idx_tickets_phone ON support_tickets(customer_phone);
@@ -86,5 +88,6 @@ CREATE INDEX IF NOT EXISTS idx_ticket_attachments_ticket ON support_ticket_attac
 CREATE INDEX IF NOT EXISTS idx_ticket_events_ticket ON support_ticket_events(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_reads_staff ON support_ticket_reads(staff_username, ticket_id);
 
--- 7. Ensure other_category column exists if table was pre-created
+-- 7. Ensure upgrade columns exist if table was pre-created
 ALTER TABLE support_tickets ADD COLUMN other_category TEXT;
+ALTER TABLE support_tickets ADD COLUMN access_token TEXT;

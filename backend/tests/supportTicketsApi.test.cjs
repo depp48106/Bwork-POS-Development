@@ -206,18 +206,23 @@ test('Customer Support Tickets & Notification System Test Suite', async (t) => {
     assert.equal(tRow.priority, 'high');
   });
 
-  await t.test('5. Customer Ticket Listing (By Phone / LINE ID)', async () => {
-    const byPhone = await listCustomerTickets(dbQuery, { phone: '0812345678' });
-    assert.equal(byPhone.length, 1);
-    assert.equal(byPhone[0].ticket_number, createdTicket1.ticket_number);
-    assert.equal(byPhone[0].message_count, 1);
-    assert.equal(byPhone[0].attachment_count, 1);
+  await t.test('5. Customer Ticket Listing (By Token / LINE ID)', async () => {
+    const byToken = await listCustomerTickets(dbQuery, { ticketTokens: [createdTicket1.access_token] });
+    assert.equal(byToken.length, 1);
+    assert.equal(byToken[0].ticket_number, createdTicket1.ticket_number);
+    assert.equal(byToken[0].message_count, 1);
+    assert.equal(byToken[0].attachment_count, 1);
 
-    const byLine = await listCustomerTickets(dbQuery, { line_user_id: 'U1234567890abcdef' });
+    const byLine = await listCustomerTickets(dbQuery, { lineUserId: 'U1234567890abcdef' });
     assert.equal(byLine.length, 1);
 
-    const byBooking = await listCustomerTickets(dbQuery, { booking_code: 'BK-202610-001' });
-    assert.equal(byBooking.length, 1);
+    // Unverified request without credentials throws 401
+    await assert.rejects(
+      async () => {
+        await listCustomerTickets(dbQuery, {});
+      },
+      (err) => err.status === 401
+    );
   });
 
   await t.test('6. Customer Ticket Detail (Public Filter Verification)', async () => {
@@ -229,18 +234,26 @@ test('Customer Support Tickets & Notification System Test Suite', async (t) => {
       [createdTicket1.ticket_id]
     );
 
-    const detail = await getCustomerTicketByNumber(dbQuery, createdTicket1.ticket_number, { phone: '0812345678' });
+    const detail = await getCustomerTicketByNumber(dbQuery, createdTicket1.ticket_number, { ticketToken: createdTicket1.access_token });
     assert.equal(detail.ticket.ticket_number, createdTicket1.ticket_number);
     // Should ONLY have 1 public message, NOT the internal note!
     assert.equal(detail.messages.length, 1);
     assert.equal(detail.messages[0].sender_type, 'customer');
 
-    // Phone mismatch throws 403
+    // Mismatched token throws 403
     await assert.rejects(
       async () => {
-        await getCustomerTicketByNumber(dbQuery, createdTicket1.ticket_number, { phone: '0999999999' });
+        await getCustomerTicketByNumber(dbQuery, createdTicket1.ticket_number, { ticketToken: 'tkt_sec_badtoken' });
       },
       (err) => err.status === 403
+    );
+
+    // Missing token throws 401
+    await assert.rejects(
+      async () => {
+        await getCustomerTicketByNumber(dbQuery, createdTicket1.ticket_number, {});
+      },
+      (err) => err.status === 401
     );
   });
 
@@ -249,11 +262,11 @@ test('Customer Support Tickets & Notification System Test Suite', async (t) => {
       sender_name: 'Somchai Prasert',
       sender_phone: '081-234-5678',
       message: 'สอบถามความคืบหน้าเพิ่มเติมครับ'
-    });
+    }, { ticketToken: createdTicket1.access_token });
 
     assert.equal(replyRes.success, true);
 
-    const detail = await getCustomerTicketByNumber(dbQuery, createdTicket1.ticket_number, { phone: '0812345678' });
+    const detail = await getCustomerTicketByNumber(dbQuery, createdTicket1.ticket_number, { ticketToken: createdTicket1.access_token });
     assert.equal(detail.messages.length, 2);
     assert.equal(detail.messages[1].message, 'สอบถามความคืบหน้าเพิ่มเติมครับ');
   });
@@ -372,7 +385,7 @@ test('Customer Support Tickets & Notification System Test Suite', async (t) => {
     await addCustomerMessage(dbQuery, createdTicket1.ticket_number, {
       sender_phone: '081-234-5678',
       message: 'ยังพบปัญหาเดิมอยู่ครับ รบกวนดูให้อีกที'
-    });
+    }, { ticketToken: createdTicket1.access_token });
 
     t1 = await dbQuery.get(`SELECT status FROM support_tickets WHERE id = ?`, [createdTicket1.ticket_id]);
     assert.equal(t1.status, 'REOPENED');
@@ -399,7 +412,7 @@ test('Customer Support Tickets & Notification System Test Suite', async (t) => {
     assert.equal(row.other_category, 'ปัญหาที่จอดรถและการเดินทาง');
 
     // Verify getCustomerTicketByNumber returns other_category
-    const detail = await getCustomerTicketByNumber(dbQuery, res.ticket_number);
+    const detail = await getCustomerTicketByNumber(dbQuery, res.ticket_number, { ticketToken: res.access_token });
     assert.equal(detail.ticket.category, 'other');
     assert.equal(detail.ticket.other_category, 'ปัญหาที่จอดรถและการเดินทาง');
   });
@@ -445,23 +458,38 @@ test('Customer Support Tickets & Notification System Test Suite', async (t) => {
       assert.equal(createData.success, true);
       assert.match(createData.ticket_number, /^TKT-/);
 
-      // 2. GET /api/public/support/tickets?phone=0823456789
-      const listRes = await fetch(`${baseUrl}/api/public/support/tickets?phone=0823456789`);
+      // 2. GET /api/public/support/tickets (with X-Ticket-Tokens)
+      const listRes = await fetch(`${baseUrl}/api/public/support/tickets`, {
+        headers: { 'X-Ticket-Tokens': JSON.stringify([createData.access_token]) }
+      });
       assert.equal(listRes.status, 200);
       const listData = await listRes.json();
       assert.equal(listData.tickets.length, 1);
       assert.equal(listData.tickets[0].ticket_number, createData.ticket_number);
 
-      // 3. GET /api/public/support/tickets/:ticketNumber
-      const detailRes = await fetch(`${baseUrl}/api/public/support/tickets/${createData.ticket_number}`);
+      // Unauthenticated list returns 401
+      const unauthListRes = await fetch(`${baseUrl}/api/public/support/tickets`);
+      assert.equal(unauthListRes.status, 401);
+
+      // 3. GET /api/public/support/tickets/:ticketNumber (with X-Ticket-Token)
+      const detailRes = await fetch(`${baseUrl}/api/public/support/tickets/${createData.ticket_number}`, {
+        headers: { 'X-Ticket-Token': createData.access_token }
+      });
       assert.equal(detailRes.status, 200);
       const detailData = await detailRes.json();
       assert.equal(detailData.ticket.ticket_number, createData.ticket_number);
 
-      // 4. POST /api/public/support/tickets/:ticketNumber/messages
+      // Unauthenticated detail returns 401
+      const unauthDetailRes = await fetch(`${baseUrl}/api/public/support/tickets/${createData.ticket_number}`);
+      assert.equal(unauthDetailRes.status, 401);
+
+      // 4. POST /api/public/support/tickets/:ticketNumber/messages (with X-Ticket-Token)
       const msgRes = await fetch(`${baseUrl}/api/public/support/tickets/${createData.ticket_number}/messages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Ticket-Token': createData.access_token
+        },
         body: JSON.stringify({
           sender_name: 'Preecha',
           message: 'ลองเปลี่ยนปลั๊กแล้วยังไม่ติดครับ'

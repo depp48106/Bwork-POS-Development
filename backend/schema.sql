@@ -294,6 +294,7 @@ CREATE INDEX IF NOT EXISTS idx_bookings_contract_id ON bookings(contract_id);
 CREATE TABLE IF NOT EXISTS support_tickets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticket_number TEXT UNIQUE NOT NULL,
+  access_token TEXT,
   customer_id INTEGER REFERENCES customers(id),
   customer_name TEXT NOT NULL,
   customer_phone TEXT NOT NULL,
@@ -359,6 +360,7 @@ CREATE TABLE IF NOT EXISTS support_ticket_reads (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tickets_number ON support_tickets(ticket_number);
+CREATE INDEX IF NOT EXISTS idx_tickets_access_token ON support_tickets(access_token);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_category ON support_tickets(category);
 CREATE INDEX IF NOT EXISTS idx_tickets_phone ON support_tickets(customer_phone);

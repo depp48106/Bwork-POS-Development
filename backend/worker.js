@@ -2455,6 +2455,7 @@ async function ensureD1Schema(env) {
     `CREATE TABLE IF NOT EXISTS support_tickets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ticket_number TEXT UNIQUE NOT NULL,
+      access_token TEXT,
       customer_id INTEGER,
       customer_name TEXT NOT NULL,
       customer_phone TEXT NOT NULL,
@@ -2526,7 +2527,99 @@ async function ensureD1Schema(env) {
     await env.DB.prepare("ALTER TABLE support_tickets ADD COLUMN other_category TEXT").run();
   } catch (e) {}
 
+  try {
+    await env.DB.prepare("ALTER TABLE support_tickets ADD COLUMN access_token TEXT").run();
+  } catch (e) {}
+
   schemaInitialized = true;
+}
+
+
+function generateWorkerTicketToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return 'tkt_sec_' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function verifyWorkerLineIdToken(tokenString, expectedAudience = null) {
+  if (!tokenString || typeof tokenString !== 'string') return null;
+  const parts = tokenString.trim().split('.');
+  if (parts.length !== 3) return null;
+  try {
+    let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    const payload = JSON.parse(atob(b64));
+    if (payload.iss !== 'https://access.line.me') return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (!payload.exp || typeof payload.exp !== 'number' || payload.exp < (nowSec - 60)) return null;
+    if (!payload.sub || typeof payload.sub !== 'string' || !payload.sub.trim()) return null;
+    if (expectedAudience && payload.aud && payload.aud !== expectedAudience && !String(expectedAudience).includes(payload.aud)) {
+      return null;
+    }
+    return { userId: payload.sub.trim(), name: payload.name || null };
+  } catch (e) {
+    return null;
+  }
+}
+
+function extractWorkerCustomerAuth(request, url) {
+  const ticketToken = request.headers.get('x-ticket-token') || url.searchParams.get('ticket_token');
+  const bookingToken = request.headers.get('x-booking-token') || url.searchParams.get('booking_token');
+
+  let ticketTokens = [];
+  const rawTokens = request.headers.get('x-ticket-tokens') || url.searchParams.get('ticket_tokens');
+  if (rawTokens) {
+    try {
+      const parsed = JSON.parse(rawTokens);
+      if (Array.isArray(parsed)) ticketTokens = parsed.map(t => String(t).trim()).filter(Boolean);
+    } catch (e) {
+      ticketTokens = rawTokens.split(',').map(t => t.trim()).filter(Boolean);
+    }
+  }
+  if (ticketToken && !ticketTokens.includes(ticketToken)) {
+    ticketTokens.push(String(ticketToken).trim());
+  }
+
+  let lineUserId = null;
+  const authHeader = request.headers.get('authorization');
+  const lineIdToken = request.headers.get('x-line-id-token') || (
+    authHeader && authHeader.startsWith('Bearer ') && authHeader.split(' ')[1].includes('.')
+      ? authHeader.split(' ')[1]
+      : null
+  );
+
+  if (lineIdToken) {
+    const verified = verifyWorkerLineIdToken(lineIdToken);
+    if (verified) lineUserId = verified.userId;
+  }
+
+  return {
+    ticketToken: ticketToken ? String(ticketToken).trim() : null,
+    ticketTokens,
+    bookingToken: bookingToken ? String(bookingToken).trim() : null,
+    lineUserId: lineUserId || null
+  };
+}
+
+async function verifyWorkerTicketOwnership(env, ticket, auth = {}) {
+  if (!ticket) return false;
+  if (auth.is_staff) return true;
+
+  if (auth.ticketToken && ticket.access_token) {
+    if (safeEqualString(auth.ticketToken, ticket.access_token)) return true;
+  }
+  if (auth.lineUserId && ticket.line_user_id) {
+    if (safeEqualString(auth.lineUserId, ticket.line_user_id)) return true;
+  }
+  if (auth.bookingToken && (ticket.booking_id || ticket.booking_code)) {
+    const booking = await env.DB.prepare(
+      'SELECT qr_token FROM bookings WHERE id = ? OR receipt_number = ?'
+    ).bind(ticket.booking_id, ticket.booking_code).first();
+    if (booking && booking.qr_token && safeEqualString(auth.bookingToken, booking.qr_token)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function generateWorkerUniqueTicketNumber(env) {
@@ -2584,7 +2677,7 @@ export default {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, X-Booking-Contact, X-Booking-Token',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, X-Booking-Contact, X-Booking-Token, X-Ticket-Token, X-Ticket-Tokens, X-Line-ID-Token',
       'Content-Type': 'application/json'
     };
 
@@ -8487,16 +8580,18 @@ export default {
 
         let inserted = null;
         let attempts = 0;
+        const accessToken = generateWorkerTicketToken();
         while (!inserted && attempts < 5) {
           attempts++;
           const ticketNumber = await generateWorkerUniqueTicketNumber(env);
           try {
             const insRes = await env.DB.prepare(
               `INSERT INTO support_tickets
-               (ticket_number, customer_name, customer_phone, line_user_id, booking_code, category, other_category, subject, description, priority, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+               (ticket_number, access_token, customer_name, customer_phone, line_user_id, booking_code, category, other_category, subject, description, priority, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
             ).bind(
               ticketNumber,
+              accessToken,
               customer_name.trim(),
               customer_phone.trim(),
               line_user_id || null,
@@ -8557,6 +8652,7 @@ export default {
           success: true,
           ticket_id: inserted.id,
           ticket_number: inserted.ticket_number,
+          access_token: accessToken,
           status: 'NEW',
           category,
           other_category: finalOtherCategory,
@@ -8564,36 +8660,38 @@ export default {
         }), { status: 201, headers: corsHeaders });
       }
 
-      // 3. GET /api/public/support/tickets (List customer tickets)
+      // 3. GET /api/public/support/tickets (List customer tickets with server auth)
       if (pathname === '/api/public/support/tickets' && method === 'GET') {
-        const phone = url.searchParams.get('phone');
-        const line_user_id = url.searchParams.get('line_user_id');
-        const booking_code = url.searchParams.get('booking_code');
+        const auth = await extractWorkerCustomerAuth(request, url, env);
+
+        if (!auth.lineUserId && !auth.bookingToken && (!auth.ticketTokens || auth.ticketTokens.length === 0)) {
+          return new Response(JSON.stringify({
+            error: 'กรุณายืนยันตัวตนด้วย LINE หรือ Ticket Token เพื่อดูประวัติการแจ้งปัญหา'
+          }), { status: 401, headers: corsHeaders });
+        }
 
         const conditions = [];
         const params = [];
-        if (phone) {
-          const clean = phone.replace(/[^0-9]/g, '');
-          conditions.push(`REPLACE(REPLACE(customer_phone, '-', ''), ' ', '') LIKE ?`);
-          params.push(`%${clean.slice(-9)}%`);
-        }
-        if (line_user_id) {
-          conditions.push(`line_user_id = ?`);
-          params.push(line_user_id);
-        }
-        if (booking_code) {
-          conditions.push(`booking_code = ?`);
-          params.push(booking_code.trim().toUpperCase());
-        }
 
-        if (conditions.length === 0) {
-          return new Response(JSON.stringify({ error: 'กรุณาระบุข้อมูลเพื่อค้นหา' }), { status: 400, headers: corsHeaders });
+        if (auth.lineUserId) {
+          conditions.push('t.line_user_id = ?');
+          params.push(auth.lineUserId);
+        }
+        if (auth.ticketTokens.length > 0) {
+          const placeholders = auth.ticketTokens.map(() => '?').join(', ');
+          conditions.push(`t.access_token IN (${placeholders})`);
+          params.push(...auth.ticketTokens);
+        }
+        if (auth.bookingToken) {
+          conditions.push('t.booking_id IN (SELECT id FROM bookings WHERE qr_token = ?)');
+          params.push(auth.bookingToken);
         }
 
         const sql = `
-          SELECT t.*,
+          SELECT t.id, t.ticket_number, t.category, t.other_category, t.subject, t.description,
+                 t.status, t.priority, t.booking_code, t.created_at, t.updated_at,
             (SELECT COUNT(*) FROM support_ticket_messages WHERE ticket_id = t.id AND visibility = 'public') AS message_count,
-            (SELECT COUNT(*) FROM support_ticket_attachments WHERE ticket_id = t.id) AS attachment_count
+            (SELECT COUNT(*) FROM support_ticket_attachments a JOIN support_ticket_messages m ON a.message_id = m.id WHERE a.ticket_id = t.id AND m.visibility = 'public') AS attachment_count
           FROM support_tickets t
           WHERE ${conditions.join(' OR ')}
           ORDER BY t.created_at DESC LIMIT 50
@@ -8602,7 +8700,7 @@ export default {
         return new Response(JSON.stringify({ success: true, tickets: tickets || [] }), { headers: corsHeaders });
       }
 
-      // 4. Customer Ticket Detail & Messages
+      // 4. Customer Ticket Detail & Messages (Server-authoritative ownership check)
       const publicTicketDetailMatch = pathname.match(/^\/api\/public\/support\/tickets\/([A-Za-z0-9\-]+)$/);
       if (publicTicketDetailMatch && method === 'GET') {
         const ticketNumber = publicTicketDetailMatch[1];
@@ -8611,12 +8709,24 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
         }
 
+        const auth = await extractWorkerCustomerAuth(request, url, env);
+        const isOwner = await verifyWorkerTicketOwnership(env, ticket, auth);
+        if (!isOwner) {
+          const hasAnyAuth = Boolean(auth.ticketToken || auth.lineUserId || auth.bookingToken);
+          return new Response(JSON.stringify({
+            error: hasAnyAuth ? 'ท่านไม่มีสิทธิ์เข้าถึง Ticket นี้' : 'กรุณาระบุสิทธิ์การเข้าถึง Ticket'
+          }), { status: hasAnyAuth ? 403 : 401, headers: corsHeaders });
+        }
+
+        // Strip access_token from response
+        const { access_token, ...safeTicket } = ticket;
+
         const { results: messages } = await env.DB.prepare(
           "SELECT * FROM support_ticket_messages WHERE ticket_id = ? AND visibility = 'public' ORDER BY created_at ASC"
         ).bind(ticket.id).all();
 
         const { results: attachments } = await env.DB.prepare(
-          "SELECT * FROM support_ticket_attachments WHERE ticket_id = ? ORDER BY created_at ASC"
+          "SELECT a.* FROM support_ticket_attachments a JOIN support_ticket_messages m ON a.message_id = m.id WHERE a.ticket_id = ? AND m.visibility = 'public' ORDER BY a.created_at ASC"
         ).bind(ticket.id).all();
 
         const attachMap = {};
@@ -8630,9 +8740,44 @@ export default {
           attachments: attachMap[m.id] || []
         }));
 
-        return new Response(JSON.stringify({ success: true, ticket, messages: enrichedMessages }), { headers: corsHeaders });
+        return new Response(JSON.stringify({ success: true, ticket: safeTicket, messages: enrichedMessages }), { headers: corsHeaders });
       }
 
+      // 4b. GET /api/public/support/tickets/:ticketNumber/attachments/:attachmentId
+      const publicAttachmentMatch = pathname.match(/^\/api\/public\/support\/tickets\/([A-Za-z0-9\-]+)\/attachments\/([0-9]+)$/);
+      if (publicAttachmentMatch && method === 'GET') {
+        const ticketNumber = publicAttachmentMatch[1];
+        const attachmentId = parseInt(publicAttachmentMatch[2], 10);
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE ticket_number = ?").bind(ticketNumber).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const auth = await extractWorkerCustomerAuth(request, url, env);
+        const isOwner = await verifyWorkerTicketOwnership(env, ticket, auth);
+        if (!isOwner) {
+          const hasAnyAuth = Boolean(auth.ticketToken || auth.lineUserId || auth.bookingToken);
+          return new Response(JSON.stringify({
+            error: hasAnyAuth ? 'ท่านไม่มีสิทธิ์เข้าถึงไฟล์แนบนี้' : 'กรุณาระบุสิทธิ์การเข้าถึงไฟล์แนบ'
+          }), { status: hasAnyAuth ? 403 : 401, headers: corsHeaders });
+        }
+
+        const attachment = await env.DB.prepare(
+          "SELECT a.*, m.visibility FROM support_ticket_attachments a JOIN support_ticket_messages m ON a.message_id = m.id WHERE a.ticket_id = ? AND a.id = ?"
+        ).bind(ticket.id, attachmentId).first();
+
+        if (!attachment) {
+          return new Response(JSON.stringify({ error: 'ไม่พบไฟล์แนบนี้' }), { status: 404, headers: corsHeaders });
+        }
+
+        if (attachment.visibility === 'internal') {
+          return new Response(JSON.stringify({ error: 'ท่านไม่มีสิทธิ์เข้าถึงไฟล์แนบนี้' }), { status: 403, headers: corsHeaders });
+        }
+
+        return new Response(JSON.stringify({ success: true, attachment }), { headers: corsHeaders });
+      }
+
+      // 4c. Customer Ticket Reply with ownership verification
       const publicTicketReplyMatch = pathname.match(/^\/api\/public\/support\/tickets\/([A-Za-z0-9\-]+)\/messages$/);
       if (publicTicketReplyMatch && method === 'POST') {
         const ticketNumber = publicTicketReplyMatch[1];
@@ -8647,8 +8792,17 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
         }
 
+        const auth = await extractWorkerCustomerAuth(request, url, env);
+        const isOwner = await verifyWorkerTicketOwnership(env, ticket, auth);
+        if (!isOwner) {
+          const hasAnyAuth = Boolean(auth.ticketToken || auth.lineUserId || auth.bookingToken);
+          return new Response(JSON.stringify({
+            error: hasAnyAuth ? 'ท่านไม่มีสิทธิ์ตอบกลับ Ticket นี้' : 'กรุณาระบุสิทธิ์การเข้าถึง Ticket'
+          }), { status: hasAnyAuth ? 403 : 401, headers: corsHeaders });
+        }
+
         const senderName = sender_name || ticket.customer_name || 'ลูกค้า';
-        const senderId = line_user_id || sender_phone || ticket.customer_phone;
+        const senderId = auth.lineUserId || line_user_id || sender_phone || ticket.customer_phone;
 
         const msgRes = await env.DB.prepare(
           `INSERT INTO support_ticket_messages (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)

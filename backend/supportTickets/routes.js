@@ -4,6 +4,7 @@
  */
 
 const express = require('express');
+const { extractCustomerAuth } = require('./customerAuth');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -17,7 +18,8 @@ const {
   updateTicketStatus,
   addStaffMessage,
   markTicketRead,
-  getTicketNotificationCounts
+  getTicketNotificationCounts,
+  getTicketAttachment
 } = require('./service');
 
 // Helper to save base64 image to uploads/
@@ -126,15 +128,17 @@ function createPublicSupportRouter(dbQuery) {
     }
   });
 
-  // 2. GET /api/public/support/tickets (List customer tickets)
+  // 2. GET /api/public/support/tickets (List customer tickets with server auth)
   router.get('/tickets', async (req, res) => {
     try {
-      const { phone, line_user_id, booking_code } = req.query;
-      if (!phone && !line_user_id && !booking_code) {
-        return res.status(400).json({ error: 'กรุณาระบุเบอร์โทรศัพท์, LINE User ID หรือรหัสการจองเพื่อค้นหา' });
+      const auth = await extractCustomerAuth(req);
+      if (!auth.lineUserId && !auth.bookingToken && (!auth.ticketTokens || auth.ticketTokens.length === 0)) {
+        return res.status(401).json({
+          error: 'กรุณายืนยันตัวตนด้วย LINE หรือ Ticket Token เพื่อดูประวัติการแจ้งปัญหา'
+        });
       }
 
-      const tickets = await listCustomerTickets(dbQuery, { phone, line_user_id, booking_code });
+      const tickets = await listCustomerTickets(dbQuery, auth);
       res.json({ success: true, tickets });
     } catch (err) {
       console.error('[PublicSupport] listCustomerTickets error:', err.message);
@@ -142,11 +146,11 @@ function createPublicSupportRouter(dbQuery) {
     }
   });
 
-  // 3. GET /api/public/support/tickets/:ticketNumber (Get Ticket Details)
+  // 3. GET /api/public/support/tickets/:ticketNumber (Get Ticket Details with ownership verification)
   router.get('/tickets/:ticketNumber', async (req, res) => {
     try {
-      const { phone, line_user_id } = req.query;
-      const result = await getCustomerTicketByNumber(dbQuery, req.params.ticketNumber, { phone, line_user_id });
+      const auth = await extractCustomerAuth(req);
+      const result = await getCustomerTicketByNumber(dbQuery, req.params.ticketNumber, auth);
       res.json({ success: true, ...result });
     } catch (err) {
       console.error('[PublicSupport] getCustomerTicket error:', err.message);
@@ -154,9 +158,10 @@ function createPublicSupportRouter(dbQuery) {
     }
   });
 
-  // 4. POST /api/public/support/tickets/:ticketNumber/messages (Customer Reply)
+  // 4. POST /api/public/support/tickets/:ticketNumber/messages (Customer Reply with ownership verification)
   router.post('/tickets/:ticketNumber/messages', async (req, res) => {
     try {
+      const auth = await extractCustomerAuth(req);
       const { message, sender_name, sender_phone, line_user_id, attachments } = req.body;
 
       // Process base64 attachments if sent directly
@@ -178,11 +183,23 @@ function createPublicSupportRouter(dbQuery) {
         line_user_id,
         message,
         attachments: processedAttachments
-      });
+      }, auth);
 
       res.status(201).json(result);
     } catch (err) {
       console.error('[PublicSupport] addCustomerMessage error:', err.message);
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  // 4b. GET /api/public/support/tickets/:ticketNumber/attachments/:attachmentId (Attachment access with ownership check)
+  router.get('/tickets/:ticketNumber/attachments/:attachmentId', async (req, res) => {
+    try {
+      const auth = await extractCustomerAuth(req);
+      const attachment = await getTicketAttachment(dbQuery, req.params.ticketNumber, req.params.attachmentId, auth);
+      res.json({ success: true, attachment });
+    } catch (err) {
+      console.error('[PublicSupport] getTicketAttachment error:', err.message);
       res.status(err.status || 500).json({ error: err.message });
     }
   });

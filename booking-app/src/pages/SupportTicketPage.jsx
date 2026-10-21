@@ -276,12 +276,24 @@ export default function SupportTicketPage() {
     }
   };
 
-  // Load Ticket Detail by Ticket Number
+  // Load Ticket Detail by Ticket Number with client capability & LINE identity
   const loadTicketDetail = async (ticketNumber) => {
     setIsSearching(true);
     setSearchError('');
     try {
-      const res = await fetch(`${API_BASE}/api/public/support/tickets/${encodeURIComponent(ticketNumber)}`);
+      const tokenMap = JSON.parse(localStorage.getItem('bwork_ticket_tokens') || '{}');
+      const ticketToken = tokenMap[ticketNumber] || '';
+      let idToken = '';
+      if (typeof window !== 'undefined' && window.liff && window.liff.isLoggedIn()) {
+        try { idToken = window.liff.getIDToken() || ''; } catch (e) {}
+      }
+      const headers = {};
+      if (ticketToken) headers['X-Ticket-Token'] = ticketToken;
+      if (idToken) headers['X-Line-ID-Token'] = idToken;
+
+      const res = await fetch(`${API_BASE}/api/public/support/tickets/${encodeURIComponent(ticketNumber)}`, {
+        headers
+      });
       const data = await res.json();
       if (res.ok && data.success) {
         setSelectedTicket(data.ticket);
@@ -296,37 +308,44 @@ export default function SupportTicketPage() {
     }
   };
 
-  // Search Tickets by Phone or Ticket Number
+  // Search Tickets by Ticket Number or Account History
   const handleSearchTickets = async (e) => {
     if (e) e.preventDefault();
     const query = searchQuery.trim();
-    if (!query) {
-      setSearchError('กรุณากรอกรหัส Ticket หรือเบอร์โทรศัพท์');
-      return;
-    }
 
     setIsSearching(true);
     setSearchError('');
     setSelectedTicket(null);
 
     // If looks like Ticket Number: TKT-...
-    if (query.toUpperCase().startsWith('TKT-')) {
+    if (query && query.toUpperCase().startsWith('TKT-')) {
       await loadTicketDetail(query.toUpperCase());
       return;
     }
 
-    // Otherwise search by phone
+    // Otherwise list customer tickets by verified tokens
     try {
-      const cleanPhone = query.replace(/\D/g, '');
-      const res = await fetch(`${API_BASE}/api/public/support/tickets?phone=${encodeURIComponent(cleanPhone)}`);
+      const tokenMap = JSON.parse(localStorage.getItem('bwork_ticket_tokens') || '{}');
+      const ticketTokens = Object.values(tokenMap);
+      let idToken = '';
+      if (typeof window !== 'undefined' && window.liff && window.liff.isLoggedIn()) {
+        try { idToken = window.liff.getIDToken() || ''; } catch (e) {}
+      }
+      const headers = {};
+      if (ticketTokens.length > 0) headers['X-Ticket-Tokens'] = JSON.stringify(ticketTokens);
+      if (idToken) headers['X-Line-ID-Token'] = idToken;
+
+      const res = await fetch(`${API_BASE}/api/public/support/tickets`, {
+        headers
+      });
       const data = await res.json();
       if (res.ok && data.success) {
         setCustomerTickets(data.tickets || []);
         if (!data.tickets || data.tickets.length === 0) {
-          setSearchError('ไม่พบรายการแจ้งปัญหาสำหรับเบอร์นี้');
+          setSearchError('ไม่พบรายการแจ้งปัญหาสำหรับบัญชีของท่าน');
         }
       } else {
-        setSearchError(data.error || 'ไม่พบรายการแจ้งปัญหา');
+        setSearchError(data.error || 'ไม่พบรายการแจ้งปัญหา (กรุณาใช้เครื่องเดิมที่เคยเปิดเรื่อง หรือเข้าสู่ระบบด้วย LINE)');
         setCustomerTickets([]);
       }
     } catch (err) {
@@ -337,7 +356,7 @@ export default function SupportTicketPage() {
     }
   };
 
-  // Customer Send Reply Message
+  // Customer Send Reply Message with capability auth
   const handleSendReply = async (e) => {
     e.preventDefault();
     if (!replyMessage.trim()) return;
@@ -359,9 +378,19 @@ export default function SupportTicketPage() {
         }))
       };
 
+      const tokenMap = JSON.parse(localStorage.getItem('bwork_ticket_tokens') || '{}');
+      const ticketToken = tokenMap[selectedTicket.ticket_number] || '';
+      let idToken = '';
+      if (typeof window !== 'undefined' && window.liff && window.liff.isLoggedIn()) {
+        try { idToken = window.liff.getIDToken() || ''; } catch (e) {}
+      }
+      const headers = { 'Content-Type': 'application/json' };
+      if (ticketToken) headers['X-Ticket-Token'] = ticketToken;
+      if (idToken) headers['X-Line-ID-Token'] = idToken;
+
       const res = await fetch(`${API_BASE}/api/public/support/tickets/${selectedTicket.ticket_number}/messages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload)
       });
       const data = await res.json();
