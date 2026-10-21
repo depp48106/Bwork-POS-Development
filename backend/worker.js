@@ -2450,7 +2450,125 @@ async function ensureD1Schema(env) {
       // Ignored: column already exists
     }
   }
+
+  const supportTables = [
+    `CREATE TABLE IF NOT EXISTS support_tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_number TEXT UNIQUE NOT NULL,
+      customer_id INTEGER,
+      customer_name TEXT NOT NULL,
+      customer_phone TEXT NOT NULL,
+      line_user_id TEXT,
+      booking_id INTEGER,
+      booking_code TEXT,
+      room_id INTEGER,
+      category TEXT NOT NULL,
+      other_category TEXT,
+      subject TEXT NOT NULL,
+      description TEXT NOT NULL,
+      priority TEXT NOT NULL DEFAULT 'normal',
+      status TEXT NOT NULL DEFAULT 'NEW',
+      assigned_to TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      resolved_at DATETIME,
+      closed_at DATETIME
+    )`,
+    `CREATE TABLE IF NOT EXISTS support_ticket_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      sender_type TEXT NOT NULL,
+      sender_name TEXT NOT NULL,
+      verified_sender_id TEXT,
+      message TEXT NOT NULL,
+      visibility TEXT NOT NULL DEFAULT 'public',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS support_ticket_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      message_id INTEGER,
+      file_url TEXT NOT NULL,
+      r2_object_key TEXT,
+      file_name TEXT,
+      content_type TEXT,
+      file_size INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS support_ticket_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      actor_type TEXT NOT NULL,
+      actor_id TEXT,
+      actor_name TEXT,
+      event_type TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS support_ticket_reads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      staff_username TEXT NOT NULL,
+      last_read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(ticket_id, staff_username)
+    )`
+  ];
+
+  for (const sql of supportTables) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch (e) {}
+  }
+
+  try {
+    await env.DB.prepare("ALTER TABLE support_tickets ADD COLUMN other_category TEXT").run();
+  } catch (e) {}
+
   schemaInitialized = true;
+}
+
+async function generateWorkerUniqueTicketNumber(env) {
+  const now = new Date();
+  const ym = getBangkokLocalISO(now).slice(0, 7).replace('-', '');
+  const prefix = `TKT-${ym}-`;
+  const row = await env.DB.prepare(
+    "SELECT ticket_number FROM support_tickets WHERE ticket_number LIKE ? ORDER BY ticket_number DESC LIMIT 1"
+  ).bind(`${prefix}%`).first();
+
+  let nextSeq = 1;
+  if (row && row.ticket_number) {
+    const parts = row.ticket_number.split('-');
+    if (parts.length >= 3) {
+      const currentSeq = parseInt(parts[2], 10);
+      if (!isNaN(currentSeq)) {
+        nextSeq = currentSeq + 1;
+      }
+    }
+  }
+  return `${prefix}${String(nextSeq).padStart(5, '0')}`;
+}
+
+async function recordWorkerTicketEvent(env, { ticketId, actorType, actorId, actorName, eventType, oldValue, newValue, notes }) {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO support_ticket_events
+       (ticket_id, actor_type, actor_id, actor_name, event_type, old_value, new_value, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+    ).bind(
+      ticketId,
+      actorType,
+      actorId || null,
+      actorName || actorType,
+      eventType,
+      oldValue || null,
+      newValue || null,
+      notes || null
+    ).run();
+  } catch (err) {
+    console.warn('[WorkerTicketEvent] Failed:', err.message);
+  }
 }
 
 // ==========================================
@@ -8296,6 +8414,585 @@ export default {
         return new Response(JSON.stringify({ success: true, message: 'ล้างประวัติการใช้งานและรูปภาพสลิปทดสอบทั้งหมดเรียบร้อยแล้ว' }), { headers: corsHeaders });
       }
 
+      // ==========================================
+      // CUSTOMER SUPPORT TICKETS & NOTIFICATIONS
+      // ==========================================
+
+      // 1. POST /api/public/support/upload
+      if (pathname === '/api/public/support/upload' && method === 'POST') {
+        const body = await request.json();
+        const base64Data = body.base64Data || body.image;
+        if (!base64Data) {
+          return new Response(JSON.stringify({ error: 'กรุณาส่งข้อมูลรูปภาพ' }), { status: 400, headers: corsHeaders });
+        }
+        const fileUrl = await saveUploadedFile(env, base64Data, 'support');
+        return new Response(JSON.stringify({
+          success: true,
+          file_url: fileUrl,
+          file_name: body.imageName || 'attachment.jpg'
+        }), { headers: corsHeaders });
+      }
+
+      // 2. POST /api/public/support/tickets
+      if (pathname === '/api/public/support/tickets' && method === 'POST') {
+        const body = await request.json();
+        const {
+          category, other_category, subject, description, customer_name, customer_phone,
+          line_user_id, booking_code, priority = 'normal', attachments = []
+        } = body;
+
+        const validCategories = ['booking', 'payment', 'facility', 'general', 'other'];
+        if (!category || !validCategories.includes(category)) {
+          return new Response(JSON.stringify({ error: 'หมวดหมู่ปัญหาไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+        if (category === 'other') {
+          if (!other_category || typeof other_category !== 'string' || !other_category.trim()) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุประเภทปัญหาอื่น ๆ' }), { status: 400, headers: corsHeaders });
+          }
+          if (other_category.trim().length > 100) {
+            return new Response(JSON.stringify({ error: 'ประเภทปัญหาอื่น ๆ ต้องไม่เกิน 100 ตัวอักษร' }), { status: 400, headers: corsHeaders });
+          }
+        }
+        const finalOtherCategory = category === 'other' ? String(other_category).trim() : null;
+
+        if (!subject || !subject.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณากรอกหัวข้อปัญหา' }), { status: 400, headers: corsHeaders });
+        }
+        if (!description || !description.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณากรอกรายละเอียดปัญหา' }), { status: 400, headers: corsHeaders });
+        }
+        if (!customer_name || !customer_name.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุชื่อผู้ติดต่อ' }), { status: 400, headers: corsHeaders });
+        }
+        if (!customer_phone || !customer_phone.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุเบอร์โทรศัพท์' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Process attachments
+        const processedAttachments = [];
+        for (const att of (attachments || []).slice(0, 3)) {
+          let url = att.file_url;
+          if (att.base64Data) {
+            url = await saveUploadedFile(env, att.base64Data, 'support');
+          }
+          if (url) {
+            processedAttachments.push({
+              file_url: url,
+              file_name: att.file_name || 'attachment.jpg',
+              content_type: att.content_type || 'image/jpeg',
+              file_size: att.file_size || null
+            });
+          }
+        }
+
+        let inserted = null;
+        let attempts = 0;
+        while (!inserted && attempts < 5) {
+          attempts++;
+          const ticketNumber = await generateWorkerUniqueTicketNumber(env);
+          try {
+            const insRes = await env.DB.prepare(
+              `INSERT INTO support_tickets
+               (ticket_number, customer_name, customer_phone, line_user_id, booking_code, category, other_category, subject, description, priority, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+            ).bind(
+              ticketNumber,
+              customer_name.trim(),
+              customer_phone.trim(),
+              line_user_id || null,
+              booking_code ? String(booking_code).trim().toUpperCase() : null,
+              category,
+              finalOtherCategory,
+              subject.trim(),
+              description.trim(),
+              priority
+            ).run();
+
+            const ticketId = insRes.meta?.last_row_id;
+            inserted = { id: ticketId, ticket_number: ticketNumber };
+          } catch (insErr) {
+            if (insErr.message && insErr.message.includes('UNIQUE')) continue;
+            throw insErr;
+          }
+        }
+
+        if (!inserted) {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถสร้าง Ticket ได้ กรุณาลองใหม่' }), { status: 500, headers: corsHeaders });
+        }
+
+        // Insert initial message
+        const msgRes = await env.DB.prepare(
+          `INSERT INTO support_ticket_messages
+           (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)
+           VALUES (?, 'customer', ?, ?, ?, 'public', CURRENT_TIMESTAMP)`
+        ).bind(
+          inserted.id,
+          customer_name.trim(),
+          line_user_id || customer_phone.trim(),
+          description.trim()
+        ).run();
+        const msgId = msgRes.meta?.last_row_id;
+
+        // Insert attachments
+        for (const att of processedAttachments) {
+          await env.DB.prepare(
+            `INSERT INTO support_ticket_attachments
+             (ticket_id, message_id, file_url, file_name, content_type, file_size, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+          ).bind(inserted.id, msgId, att.file_url, att.file_name, att.content_type, att.file_size).run();
+        }
+
+        // Record event
+        await recordWorkerTicketEvent(env, {
+          ticketId: inserted.id,
+          actorType: 'customer',
+          actorId: line_user_id || customer_phone,
+          actorName: customer_name,
+          eventType: 'CREATED',
+          newValue: 'NEW',
+          notes: `เปิด Ticket: ${subject.trim()}`
+        });
+
+        return new Response(JSON.stringify({
+          success: true,
+          ticket_id: inserted.id,
+          ticket_number: inserted.ticket_number,
+          status: 'NEW',
+          category,
+          other_category: finalOtherCategory,
+          subject: subject.trim()
+        }), { status: 201, headers: corsHeaders });
+      }
+
+      // 3. GET /api/public/support/tickets (List customer tickets)
+      if (pathname === '/api/public/support/tickets' && method === 'GET') {
+        const phone = url.searchParams.get('phone');
+        const line_user_id = url.searchParams.get('line_user_id');
+        const booking_code = url.searchParams.get('booking_code');
+
+        const conditions = [];
+        const params = [];
+        if (phone) {
+          const clean = phone.replace(/[^0-9]/g, '');
+          conditions.push(`REPLACE(REPLACE(customer_phone, '-', ''), ' ', '') LIKE ?`);
+          params.push(`%${clean.slice(-9)}%`);
+        }
+        if (line_user_id) {
+          conditions.push(`line_user_id = ?`);
+          params.push(line_user_id);
+        }
+        if (booking_code) {
+          conditions.push(`booking_code = ?`);
+          params.push(booking_code.trim().toUpperCase());
+        }
+
+        if (conditions.length === 0) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุข้อมูลเพื่อค้นหา' }), { status: 400, headers: corsHeaders });
+        }
+
+        const sql = `
+          SELECT t.*,
+            (SELECT COUNT(*) FROM support_ticket_messages WHERE ticket_id = t.id AND visibility = 'public') AS message_count,
+            (SELECT COUNT(*) FROM support_ticket_attachments WHERE ticket_id = t.id) AS attachment_count
+          FROM support_tickets t
+          WHERE ${conditions.join(' OR ')}
+          ORDER BY t.created_at DESC LIMIT 50
+        `;
+        const { results: tickets } = await env.DB.prepare(sql).bind(...params).all();
+        return new Response(JSON.stringify({ success: true, tickets: tickets || [] }), { headers: corsHeaders });
+      }
+
+      // 4. Customer Ticket Detail & Messages
+      const publicTicketDetailMatch = pathname.match(/^\/api\/public\/support\/tickets\/([A-Za-z0-9\-]+)$/);
+      if (publicTicketDetailMatch && method === 'GET') {
+        const ticketNumber = publicTicketDetailMatch[1];
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE ticket_number = ?").bind(ticketNumber).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const { results: messages } = await env.DB.prepare(
+          "SELECT * FROM support_ticket_messages WHERE ticket_id = ? AND visibility = 'public' ORDER BY created_at ASC"
+        ).bind(ticket.id).all();
+
+        const { results: attachments } = await env.DB.prepare(
+          "SELECT * FROM support_ticket_attachments WHERE ticket_id = ? ORDER BY created_at ASC"
+        ).bind(ticket.id).all();
+
+        const attachMap = {};
+        (attachments || []).forEach(a => {
+          if (!attachMap[a.message_id]) attachMap[a.message_id] = [];
+          attachMap[a.message_id].push(a);
+        });
+
+        const enrichedMessages = (messages || []).map(m => ({
+          ...m,
+          attachments: attachMap[m.id] || []
+        }));
+
+        return new Response(JSON.stringify({ success: true, ticket, messages: enrichedMessages }), { headers: corsHeaders });
+      }
+
+      const publicTicketReplyMatch = pathname.match(/^\/api\/public\/support\/tickets\/([A-Za-z0-9\-]+)\/messages$/);
+      if (publicTicketReplyMatch && method === 'POST') {
+        const ticketNumber = publicTicketReplyMatch[1];
+        const body = await request.json();
+        const { message, sender_name, sender_phone, line_user_id, attachments = [] } = body;
+        if (!message || !message.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณากรอกข้อความ' }), { status: 400, headers: corsHeaders });
+        }
+
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE ticket_number = ?").bind(ticketNumber).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const senderName = sender_name || ticket.customer_name || 'ลูกค้า';
+        const senderId = line_user_id || sender_phone || ticket.customer_phone;
+
+        const msgRes = await env.DB.prepare(
+          `INSERT INTO support_ticket_messages (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)
+           VALUES (?, 'customer', ?, ?, ?, 'public', CURRENT_TIMESTAMP)`
+        ).bind(ticket.id, senderName, senderId, message.trim()).run();
+        const msgId = msgRes.meta?.last_row_id;
+
+        // Process attachments
+        for (const att of (attachments || []).slice(0, 3)) {
+          let url = att.file_url;
+          if (att.base64Data) {
+            url = await saveUploadedFile(env, att.base64Data, 'support');
+          }
+          if (url) {
+            await env.DB.prepare(
+              `INSERT INTO support_ticket_attachments (ticket_id, message_id, file_url, file_name, content_type, file_size, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+            ).bind(ticket.id, msgId, url, att.file_name || 'attachment.jpg', att.content_type || 'image/jpeg', att.file_size || null).run();
+          }
+        }
+
+        // Reopen if closed/resolved
+        let newStatus = ticket.status;
+        if (['RESOLVED', 'CLOSED'].includes(ticket.status)) {
+          newStatus = 'REOPENED';
+          await env.DB.prepare("UPDATE support_tickets SET status = 'REOPENED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ticket.id).run();
+          await recordWorkerTicketEvent(env, {
+            ticketId: ticket.id,
+            actorType: 'customer',
+            actorId: senderId,
+            actorName: senderName,
+            eventType: 'STATUS_CHANGE',
+            oldValue: ticket.status,
+            newValue: 'REOPENED',
+            notes: 'ลูกค้าตอบกลับทำให้เปิด Ticket ใหม่อัตโนมัติ'
+          });
+        } else {
+          await env.DB.prepare("UPDATE support_tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ticket.id).run();
+        }
+
+        return new Response(JSON.stringify({ success: true, message_id: msgId, ticket_status: newStatus }), { status: 201, headers: corsHeaders });
+      }
+
+      // 5. POS Staff Notifications Count
+      if (pathname === '/api/pos/support/notifications/count' && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const newRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM support_tickets WHERE status = 'NEW'").first();
+        const openRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM support_tickets WHERE status IN ('NEW', 'ACKNOWLEDGED', 'IN_PROGRESS', 'REOPENED')").first();
+        const unreadRow = await env.DB.prepare(
+          `SELECT COUNT(DISTINCT t.id) AS count
+           FROM support_tickets t
+           JOIN support_ticket_messages m ON t.id = m.ticket_id
+           LEFT JOIN support_ticket_reads r ON t.id = r.ticket_id AND r.staff_username = ?
+           WHERE t.status NOT IN ('CLOSED')
+             AND m.created_at > COALESCE(r.last_read_at, '1970-01-01')
+             AND (m.sender_type = 'customer' OR m.verified_sender_id != ?)`
+        ).bind(auth.user?.username || 'system', auth.user?.username || 'system').first();
+
+        return new Response(JSON.stringify({
+          success: true,
+          newTicketsCount: newRow?.count || 0,
+          openTicketsCount: openRow?.count || 0,
+          unreadCount: unreadRow?.count || 0
+        }), { headers: corsHeaders });
+      }
+
+      // 6. POS Staff Tickets List
+      if (pathname === '/api/pos/support/tickets' && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const statusParam = url.searchParams.get('status');
+        const categoryParam = url.searchParams.get('category');
+        const priorityParam = url.searchParams.get('priority');
+        const assignedParam = url.searchParams.get('assigned_to');
+        const qParam = url.searchParams.get('q');
+        const limitParam = parseInt(url.searchParams.get('limit') || '50', 10);
+        const offsetParam = parseInt(url.searchParams.get('offset') || '0', 10);
+
+        const conditions = [];
+        const params = [];
+        if (statusParam && statusParam !== 'ALL') {
+          conditions.push('t.status = ?');
+          params.push(statusParam);
+        }
+        if (categoryParam && categoryParam !== 'ALL') {
+          conditions.push('t.category = ?');
+          params.push(categoryParam);
+        }
+        if (priorityParam && priorityParam !== 'ALL') {
+          conditions.push('t.priority = ?');
+          params.push(priorityParam);
+        }
+        if (assignedParam && assignedParam !== 'ALL') {
+          conditions.push('t.assigned_to = ?');
+          params.push(assignedParam);
+        }
+        if (qParam && qParam.trim()) {
+          const search = `%${qParam.trim()}%`;
+          const cleanDigits = qParam.replace(/[^0-9]/g, '');
+          const phoneSearch = cleanDigits.length >= 4 ? `%${cleanDigits}%` : search;
+          conditions.push(
+            '(t.ticket_number LIKE ? OR t.customer_name LIKE ? OR t.customer_phone LIKE ? OR REPLACE(REPLACE(t.customer_phone, "-", ""), " ", "") LIKE ? OR t.booking_code LIKE ? OR t.subject LIKE ?)'
+          );
+          params.push(search, search, search, phoneSearch, search, search);
+        }
+
+        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+        const countRow = await env.DB.prepare(`SELECT COUNT(*) AS total FROM support_tickets t ${whereClause}`).bind(...params).first();
+        const total = countRow?.total || 0;
+
+        const sql = `
+          SELECT t.*,
+            r.name as room_name,
+            (SELECT COUNT(*) FROM support_ticket_messages WHERE ticket_id = t.id) AS message_count,
+            (SELECT COUNT(*) FROM support_ticket_attachments WHERE ticket_id = t.id) AS attachment_count,
+            (SELECT MAX(created_at) FROM support_ticket_messages WHERE ticket_id = t.id) AS last_message_at,
+            COALESCE(
+              (SELECT last_read_at FROM support_ticket_reads WHERE ticket_id = t.id AND staff_username = ?),
+              '1970-01-01'
+            ) AS staff_last_read_at
+          FROM support_tickets t
+          LEFT JOIN rooms r ON t.room_id = r.id
+          ${whereClause}
+          ORDER BY
+            CASE t.priority
+              WHEN 'urgent' THEN 1
+              WHEN 'high' THEN 2
+              WHEN 'normal' THEN 3
+              WHEN 'low' THEN 4
+              ELSE 5
+            END ASC,
+            t.updated_at DESC
+          LIMIT ? OFFSET ?
+        `;
+        const { results: tickets } = await env.DB.prepare(sql).bind(auth.user?.username || 'system', ...params, limitParam, offsetParam).all();
+        const enriched = (tickets || []).map(r => ({
+          ...r,
+          is_unread_for_staff: r.last_message_at ? (r.last_message_at > r.staff_last_read_at) : false
+        }));
+
+        return new Response(JSON.stringify({ success: true, tickets: enriched, total, limit: limitParam, offset: offsetParam }), { headers: corsHeaders });
+      }
+
+      // 7. POS Staff Ticket Detail
+      const staffTicketDetailMatch = pathname.match(/^\/api\/pos\/support\/tickets\/(\d+)$/);
+      if (staffTicketDetailMatch && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const ticketId = parseInt(staffTicketDetailMatch[1], 10);
+        const ticket = await env.DB.prepare(
+          `SELECT t.*, r.name as room_name,
+            b.payment_status as booking_payment_status,
+            b.checkin_status as booking_checkin_status,
+            (SELECT MIN(start_time) FROM booking_items WHERE booking_id = b.id) AS start_time,
+            (SELECT MAX(end_time) FROM booking_items WHERE booking_id = b.id) AS end_time
+           FROM support_tickets t
+           LEFT JOIN rooms r ON t.room_id = r.id
+           LEFT JOIN bookings b ON t.booking_id = b.id
+           WHERE t.id = ?`
+        ).bind(ticketId).first();
+
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const { results: messages } = await env.DB.prepare("SELECT * FROM support_ticket_messages WHERE ticket_id = ? ORDER BY created_at ASC").bind(ticketId).all();
+        const { results: attachments } = await env.DB.prepare("SELECT * FROM support_ticket_attachments WHERE ticket_id = ? ORDER BY created_at ASC").bind(ticketId).all();
+        const { results: events } = await env.DB.prepare("SELECT * FROM support_ticket_events WHERE ticket_id = ? ORDER BY created_at DESC").bind(ticketId).all();
+
+        const attachMap = {};
+        (attachments || []).forEach(a => {
+          if (!attachMap[a.message_id]) attachMap[a.message_id] = [];
+          attachMap[a.message_id].push(a);
+        });
+
+        const enrichedMessages = (messages || []).map(m => ({
+          ...m,
+          attachments: attachMap[m.id] || []
+        }));
+
+        // Mark read
+        if (auth.user?.username) {
+          await env.DB.prepare(
+            `INSERT INTO support_ticket_reads (ticket_id, staff_username, last_read_at)
+             VALUES (?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(ticket_id, staff_username) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`
+          ).bind(ticketId, auth.user.username).run().catch(() => {});
+        }
+
+        return new Response(JSON.stringify({ success: true, ticket, messages: enrichedMessages, attachments: attachments || [], events: events || [] }), { headers: corsHeaders });
+      }
+
+      // 8. POS Staff Update Ticket (Status, Priority, Assignee)
+      if (staffTicketDetailMatch && method === 'PATCH') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const ticketId = parseInt(staffTicketDetailMatch[1], 10);
+        const body = await request.json();
+        const { status, priority, assigned_to, notes } = body;
+
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE id = ?").bind(ticketId).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const updates = [];
+        const params = [];
+        const staffUser = auth.user;
+
+        if (status && status !== ticket.status) {
+          updates.push('status = ?');
+          params.push(status);
+          if (status === 'RESOLVED') updates.push('resolved_at = CURRENT_TIMESTAMP');
+          else if (status === 'CLOSED') updates.push('closed_at = CURRENT_TIMESTAMP');
+
+          await recordWorkerTicketEvent(env, {
+            ticketId,
+            actorType: 'staff',
+            actorId: staffUser.username,
+            actorName: staffUser.fullname || staffUser.username,
+            eventType: 'STATUS_CHANGE',
+            oldValue: ticket.status,
+            newValue: status,
+            notes: notes || `เปลี่ยนสถานะเป็น ${status}`
+          });
+        }
+
+        if (priority && priority !== ticket.priority) {
+          updates.push('priority = ?');
+          params.push(priority);
+          await recordWorkerTicketEvent(env, {
+            ticketId,
+            actorType: 'staff',
+            actorId: staffUser.username,
+            actorName: staffUser.fullname || staffUser.username,
+            eventType: 'PRIORITY_CHANGE',
+            oldValue: ticket.priority,
+            newValue: priority,
+            notes: `เปลี่ยนระดับความสำคัญเป็น ${priority}`
+          });
+        }
+
+        if (assigned_to !== undefined && assigned_to !== ticket.assigned_to) {
+          updates.push('assigned_to = ?');
+          params.push(assigned_to || null);
+          await recordWorkerTicketEvent(env, {
+            ticketId,
+            actorType: 'staff',
+            actorId: staffUser.username,
+            actorName: staffUser.fullname || staffUser.username,
+            eventType: 'ASSIGN_STAFF',
+            oldValue: ticket.assigned_to,
+            newValue: assigned_to || 'unassigned',
+            notes: assigned_to ? `มอบหมายงานให้ ${assigned_to}` : 'ยกเลิกการมอบหมาย'
+          });
+        }
+
+        if (notes && notes.trim()) {
+          await env.DB.prepare(
+            `INSERT INTO support_ticket_messages (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)
+             VALUES (?, 'staff', ?, ?, ?, 'internal', CURRENT_TIMESTAMP)`
+          ).bind(ticketId, staffUser.fullname || staffUser.username, staffUser.username, notes.trim()).run();
+        }
+
+        if (updates.length > 0) {
+          updates.push('updated_at = CURRENT_TIMESTAMP');
+          params.push(ticketId);
+          await env.DB.prepare(`UPDATE support_tickets SET ${updates.join(', ')} WHERE id = ?`).bind(...params).run();
+        }
+
+        const updated = await env.DB.prepare("SELECT * FROM support_tickets WHERE id = ?").bind(ticketId).first();
+        return new Response(JSON.stringify({ success: true, ticket: updated }), { headers: corsHeaders });
+      }
+
+      // 9. POS Staff Reply or Note
+      const staffTicketMsgMatch = pathname.match(/^\/api\/pos\/support\/tickets\/(\d+)\/messages$/);
+      if (staffTicketMsgMatch && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const ticketId = parseInt(staffTicketMsgMatch[1], 10);
+        const body = await request.json();
+        const { message, visibility = 'public', attachments = [] } = body;
+        if (!message || !message.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณากรอกข้อความ' }), { status: 400, headers: corsHeaders });
+        }
+
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE id = ?").bind(ticketId).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const staffUser = auth.user;
+        const staffName = staffUser.fullname || staffUser.username || 'เจ้าหน้าที่';
+
+        const msgRes = await env.DB.prepare(
+          `INSERT INTO support_ticket_messages (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)
+           VALUES (?, 'staff', ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+        ).bind(ticketId, staffName, staffUser.username, message.trim(), visibility).run();
+        const msgId = msgRes.meta?.last_row_id;
+
+        for (const att of (attachments || []).slice(0, 3)) {
+          let url = att.file_url;
+          if (att.base64Data) {
+            url = await saveUploadedFile(env, att.base64Data, 'support');
+          }
+          if (url) {
+            await env.DB.prepare(
+              `INSERT INTO support_ticket_attachments (ticket_id, message_id, file_url, file_name, content_type, file_size, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+            ).bind(ticketId, msgId, url, att.file_name || 'attachment.jpg', att.content_type || 'image/jpeg', att.file_size || null).run();
+          }
+        }
+
+        if (visibility === 'public' && ticket.status === 'NEW') {
+          await env.DB.prepare("UPDATE support_tickets SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ticketId).run();
+        } else {
+          await env.DB.prepare("UPDATE support_tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ticketId).run();
+        }
+
+        return new Response(JSON.stringify({ success: true, message_id: msgId, visibility }), { status: 201, headers: corsHeaders });
+      }
+
+      // 10. POS Staff Mark Read
+      const staffTicketReadMatch = pathname.match(/^\/api\/pos\/support\/tickets\/(\d+)\/read$/);
+      if (staffTicketReadMatch && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const ticketId = parseInt(staffTicketReadMatch[1], 10);
+        await env.DB.prepare(
+          `INSERT INTO support_ticket_reads (ticket_id, staff_username, last_read_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(ticket_id, staff_username) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`
+        ).bind(ticketId, auth.user.username).run().catch(() => {});
+
+        return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+      }
+
       // LINE Webhook Endpoint
       if (pathname === '/api/line/webhook') {
         return new Response(JSON.stringify({ success: true, message: 'LINE Webhook Received' }), { headers: corsHeaders });
@@ -8456,7 +9153,8 @@ const BACKUP_TABLES = [
   'customers', 'departments', 'settings', 'bookings',
   'booking_items', 'quotations', 'quotation_items',
   'payment_transactions', 'timeline_notes', 'booking_history',
-  'cash_shifts', 'cash_drawer_logs'
+  'cash_shifts', 'cash_drawer_logs',
+  'support_tickets', 'support_ticket_messages', 'support_ticket_attachments', 'support_ticket_events', 'support_ticket_reads'
 ];
 
 async function generateD1DumpSql(env) {
