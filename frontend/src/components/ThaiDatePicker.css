@@ -1,4 +1,4 @@
-/* ThaiDatePicker.css - Corporate Modern B.E. Calendar with Adaptive Placement */
+/* ThaiDatePicker.css - Corporate Modern B.E. Calendar with Selection Grids */
 
 .thai-datepicker-container {
   position: relative;
@@ -17,6 +17,8 @@
   display: flex;
   align-items: center;
   width: 100%;
+  height: 44px;
+  min-height: 44px;
   background: #ffffff;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
@@ -35,11 +37,11 @@
 
 .thai-datepicker-input {
   width: 100%;
-  height: 38px;
+  height: 42px;
   padding: 8px 65px 8px 12px;
   border: none;
   background: transparent;
-  font-size: 0.88rem;
+  font-size: 0.9rem;
   color: #1e293b;
   outline: none;
   font-family: inherit;
@@ -97,21 +99,29 @@
 }
 
 /* ===================================================
-   POPOVER CALENDAR (ADAPTIVE PLACEMENT)
+   POPOVER CALENDAR (ADAPTIVE PLACEMENT & 320PX WIDTH)
    =================================================== */
 .thai-datepicker-popover {
   position: absolute;
   top: calc(100% + 4px);
   z-index: 10000;
-  width: 300px;
-  max-width: calc(100vw - 28px);
+  width: 320px;
+  min-width: 310px;
+  max-width: calc(100vw - 24px);
   background: #ffffff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #cbd5e1;
   border-radius: 12px;
-  box-shadow: 0 10px 25px -3px rgba(15, 23, 42, 0.12), 0 4px 6px -2px rgba(15, 23, 42, 0.05);
-  padding: 12px;
+  box-shadow: 0 14px 30px -4px rgba(15, 23, 42, 0.16), 0 4px 10px -2px rgba(15, 23, 42, 0.08);
+  padding: 12px 14px;
   box-sizing: border-box;
   animation: thaiPickerFadeIn 0.15s ease-out;
+}
+
+/* Open upward when space below is tight */
+.thai-datepicker-popover.open-upward {
+  top: auto;
+  bottom: calc(100% + 4px);
+  animation: thaiPickerFadeInUp 0.15s ease-out;
 }
 
 /* Align Left by default */
@@ -137,21 +147,34 @@
   }
 }
 
-/* Header & Controls */
+@keyframes thaiPickerFadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Clean Corporate Header & Controls */
 .thai-datepicker-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 4px;
-  margin-bottom: 10px;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f1f5f9;
 }
 
 .thai-datepicker-nav-btn {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   color: #475569;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 6px;
   display: flex;
   align-items: center;
@@ -164,9 +187,11 @@
 .thai-datepicker-nav-btn:hover {
   background: #e2e8f0;
   color: #0f172a;
+  border-color: #cbd5e1;
 }
 
-.thai-datepicker-selects {
+/* Header Month & Buddhist Year Buttons (Click to open Grids) */
+.thai-datepicker-view-buttons {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -174,35 +199,65 @@
   justify-content: center;
 }
 
-.thai-datepicker-select {
+.thai-datepicker-title-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: #f8fafc;
-  border: 1px solid #cbd5e1;
+  border: 1px solid #e2e8f0;
   border-radius: 6px;
-  padding: 3px 6px;
-  font-size: 0.8rem;
+  padding: 4px 8px;
+  font-size: 0.85rem;
   font-weight: 600;
   color: #1e293b;
-  outline: none;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.15s ease-in-out;
+  outline: none;
 }
 
-.thai-datepicker-select:hover {
-  border-color: #94a3b8;
-  background: #ffffff;
+.thai-datepicker-title-btn:hover {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #2563eb;
 }
 
-.thai-datepicker-select:focus {
-  border-color: #2563eb;
-  background: #ffffff;
+.thai-datepicker-title-btn:active {
+  transform: translateY(1px);
 }
 
-.thai-datepicker-select.month {
-  max-width: 105px;
+.thai-datepicker-title-caret {
+  color: #64748b;
+  transition: transform 0.15s ease;
 }
 
-.thai-datepicker-select.year {
-  max-width: 90px;
+.thai-datepicker-title-btn:hover .thai-datepicker-title-caret {
+  color: #2563eb;
+}
+
+/* Header title in Month / Year Grid View */
+.thai-datepicker-picker-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #0f172a;
+  flex: 1;
+  text-align: center;
+}
+
+.thai-datepicker-picker-title.clickable {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.thai-datepicker-picker-title.clickable:hover {
+  background: #f1f5f9;
+  color: #2563eb;
 }
 
 /* Weekday Labels */
@@ -216,7 +271,7 @@
 }
 
 .thai-datepicker-weekday {
-  font-size: 0.72rem;
+  font-size: 0.74rem;
   font-weight: 600;
   color: #64748b;
   padding: 2px 0;
@@ -246,8 +301,8 @@
   justify-content: center;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 5px;
-  font-size: 0.82rem;
+  border-radius: 6px;
+  font-size: 0.84rem;
   font-weight: 500;
   color: #1e293b;
   cursor: pointer;
@@ -285,6 +340,129 @@
   opacity: 0.5;
 }
 
+/* ===================================================
+   MONTH SELECTION GRID (3 COLS x 4 ROWS = 12 MONTHS)
+   =================================================== */
+.thai-datepicker-grid-view {
+  animation: thaiPickerFadeIn 0.15s ease-out;
+}
+
+.thai-datepicker-month-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.thai-datepicker-month-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 9px 4px;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  outline: none;
+}
+
+.thai-datepicker-month-cell:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+.thai-datepicker-month-cell .thai-month-short {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #1e293b;
+  line-height: 1.2;
+}
+
+.thai-datepicker-month-cell .thai-month-full {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.thai-datepicker-month-cell.current-month {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.thai-datepicker-month-cell.selected {
+  background: #2563eb !important;
+  border-color: #2563eb !important;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+  transform: none;
+}
+
+.thai-datepicker-month-cell.selected .thai-month-short {
+  color: #ffffff !important;
+}
+
+.thai-datepicker-month-cell.selected .thai-month-full {
+  color: rgba(255, 255, 255, 0.88) !important;
+}
+
+/* ===================================================
+   YEAR SELECTION GRID (3 COLS x 4 ROWS = 12 YEARS)
+   =================================================== */
+.thai-datepicker-year-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.thai-datepicker-year-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+  outline: none;
+}
+
+.thai-datepicker-year-cell:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+.thai-datepicker-year-cell .thai-year-number {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.thai-datepicker-year-cell.current-year {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.thai-datepicker-year-cell.selected {
+  background: #2563eb !important;
+  border-color: #2563eb !important;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+  transform: none;
+}
+
+.thai-datepicker-year-cell.selected .thai-year-number {
+  color: #ffffff !important;
+  font-weight: 700;
+}
+
 /* Footer / Quick Actions */
 .thai-datepicker-footer {
   display: flex;
@@ -292,16 +470,21 @@
   justify-content: space-between;
   border-top: 1px solid #f1f5f9;
   padding-top: 8px;
+  margin-top: 2px;
+}
+
+.thai-datepicker-footer.picker-footer {
+  justify-content: center;
 }
 
 .thai-datepicker-footer-btn {
   background: transparent;
   border: none;
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   font-weight: 600;
   cursor: pointer;
-  padding: 3px 6px;
-  border-radius: 4px;
+  padding: 5px 10px;
+  border-radius: 5px;
   transition: all 0.15s;
 }
 
@@ -319,6 +502,17 @@
 
 .thai-datepicker-footer-btn.clear:hover {
   background: #fee2e2;
+}
+
+.thai-datepicker-footer-btn.back {
+  color: #475569;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+}
+
+.thai-datepicker-footer-btn.back:hover {
+  background: #e2e8f0;
+  color: #0f172a;
 }
 
 /* ===================================================

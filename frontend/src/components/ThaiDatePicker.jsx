@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   X,
   Check
 } from 'lucide-react';
 import {
   THAI_MONTHS_FULL,
+  THAI_MONTHS_SHORT,
   THAI_WEEKDAYS_SHORT,
   formatThaiDate,
   parseThaiDateInput,
@@ -19,14 +22,16 @@ import './ThaiDatePicker.css';
 
 /**
  * ThaiDatePicker
- * True Thai Buddhist Era (พ.ศ.) Date Picker Component
+ * True Thai Buddhist Era (พ.ศ.) Date Picker Component with Grid Selection
  *
  * Features:
  * - True Thai Buddhist Era calendar (เดือนภาษาไทย, ปี พ.ศ. เช่น 2568, 2569, 2570)
- * - Adaptive positioning (Auto Flip / Align Right to prevent viewport/drawer clipping)
- * - Mobile responsive sheet / dialog mode (prevents parent scroll clipping on small screens)
- * - Zero horizontal scrollbar
- * - Direct text typing in DD/MM/BBBB with leap year validation (29/02/2571 allowed, 29/02/2569 rejected)
+ * - Clickable Month (3x4) and Year (3x4) selection grids (no native dropdowns)
+ * - Pure calendar view navigation: changing month/year never alters form value
+ * - Vertical & Horizontal Adaptive Collision Detection (Auto Flip, Align Right/Left)
+ * - 44px Minimum Touch Height & Focus Restoration
+ * - Isolated Escape key handling via capture phase (prevents unintended parent modal dismissal)
+ * - Mobile responsive bottom sheet mode
  * - ISO YYYY-MM-DD standard payload for zero breaking changes to APIs
  */
 export default function ThaiDatePicker({
@@ -44,7 +49,12 @@ export default function ThaiDatePicker({
   const [isOpen, setIsOpen] = useState(false);
   const [inputText, setInputText] = useState('');
   const [alignRight, setAlignRight] = useState(false);
+  const [openUpward, setOpenUpward] = useState(false);
   const [isMobileView, setIsMobileView] = useState(false);
+  const [popoverStyle, setPopoverStyle] = useState({});
+
+  // View mode: 'DAY_VIEW' | 'MONTH_PICKER' | 'YEAR_PICKER'
+  const [pickerView, setPickerView] = useState('DAY_VIEW');
 
   // Calendar view state (in CE year and 0-indexed month)
   const today = new Date();
@@ -54,8 +64,15 @@ export default function ThaiDatePicker({
   const [viewYear, setViewYear] = useState(currentCeYear);
   const [viewMonth, setViewMonth] = useState(currentMonth);
 
+  // Year range start in Buddhist Era (12 years per page)
+  const [yearPageStart, setYearPageStart] = useState(() => {
+    const be = toBuddhistYear(currentCeYear);
+    return Math.floor((be - 4) / 12) * 12 + 4;
+  });
+
   const containerRef = useRef(null);
   const inputRef = useRef(null);
+  const popoverRef = useRef(null);
 
   // Sync internal text and view state with external ISO `value`
   useEffect(() => {
@@ -64,63 +81,129 @@ export default function ThaiDatePicker({
       setInputText(formatThaiDate(value));
       setViewYear(y);
       setViewMonth(m - 1);
+      const be = toBuddhistYear(y);
+      setYearPageStart(Math.floor((be - 4) / 12) * 12 + 4);
     } else {
       setInputText('');
     }
   }, [value]);
 
-  // Adaptive alignment check on open
+  // Reset pickerView when opened
+  useEffect(() => {
+    if (isOpen) {
+      setPickerView('DAY_VIEW');
+      const be = toBuddhistYear(viewYear);
+      setYearPageStart(Math.floor((be - 4) / 12) * 12 + 4);
+    }
+  }, [isOpen]);
+
+  // Adaptive alignment, collision check, and portal positioning on open
   useEffect(() => {
     if (isOpen) {
       const checkPlacement = () => {
         const windowWidth = window.innerWidth;
+        const windowHeight = window.innerHeight;
+
         if (windowWidth <= 640) {
           setIsMobileView(true);
           setAlignRight(false);
+          setOpenUpward(false);
+          setPopoverStyle({});
           return;
         }
 
         setIsMobileView(false);
-        if (align === 'right') {
-          setAlignRight(true);
-        } else if (align === 'left') {
-          setAlignRight(false);
-        } else if (inputRef.current) {
+
+        if (inputRef.current) {
           const rect = inputRef.current.getBoundingClientRect();
-          // If input is near the right edge of the screen or right edge of a container (<330px room to the right)
-          if (windowWidth - rect.left < 340 || rect.right > windowWidth - 40) {
-            setAlignRight(true);
+          const popoverWidth = 320;
+          const popoverHeight = 350;
+
+          // Vertical collision: if space below in viewport < popoverHeight and space above > popoverHeight, open upward
+          const spaceBelow = windowHeight - rect.bottom;
+          const spaceAbove = rect.top;
+          const shouldOpenUpward = spaceBelow < popoverHeight && spaceAbove > popoverHeight;
+          setOpenUpward(shouldOpenUpward);
+
+          // Horizontal alignment
+          let isRight = false;
+          if (align === 'right') {
+            isRight = true;
+          } else if (align === 'left') {
+            isRight = false;
           } else {
-            // Also check container boundary if inside a drawer
-            const drawer = inputRef.current.closest('.crm-drawer-panel, .crm-modal-dialog');
-            if (drawer) {
-              const drawerRect = drawer.getBoundingClientRect();
-              if (drawerRect.right - rect.left < 330) {
-                setAlignRight(true);
-                return;
+            if (windowWidth - rect.left < popoverWidth + 20 || rect.right > windowWidth - 20) {
+              isRight = true;
+            } else {
+              const drawer = inputRef.current.closest('.crm-drawer-panel, .crm-modal-dialog');
+              if (drawer) {
+                const drawerRect = drawer.getBoundingClientRect();
+                if (drawerRect.right - rect.left < popoverWidth + 10) {
+                  isRight = true;
+                }
               }
             }
-            setAlignRight(false);
           }
+          setAlignRight(isRight);
+
+          let left = isRight ? Math.max(12, rect.right - popoverWidth) : Math.min(rect.left, windowWidth - popoverWidth - 12);
+          let top = shouldOpenUpward
+            ? Math.max(12, rect.top - popoverHeight - 6)
+            : Math.min(windowHeight - popoverHeight - 12, rect.bottom + 6);
+
+          setPopoverStyle({
+            position: 'fixed',
+            top: `${Math.round(top)}px`,
+            left: `${Math.round(left)}px`,
+            width: `${popoverWidth}px`,
+            zIndex: 99999
+          });
         }
       };
 
       checkPlacement();
       window.addEventListener('resize', checkPlacement);
-      return () => window.removeEventListener('resize', checkPlacement);
+      window.addEventListener('scroll', checkPlacement, true);
+      return () => {
+        window.removeEventListener('resize', checkPlacement);
+        window.removeEventListener('scroll', checkPlacement, true);
+      };
     }
-  }, [isOpen, align]);
+  }, [isOpen, align, pickerView]);
+
+  // Capture phase Escape listener: intercepts Escape when calendar is open
+  // This isolates calendar closing and prevents parent modals from dismissing
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleCaptureKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        setIsOpen(false);
+        setPickerView('DAY_VIEW');
+        setInputText(value ? formatThaiDate(value) : '');
+        inputRef.current?.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleCaptureKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', handleCaptureKeyDown, true);
+    };
+  }, [isOpen, value]);
 
   // Close calendar popup on click outside
   useEffect(() => {
     function handleClickOutside(event) {
-      if (containerRef.current && !containerRef.current.contains(event.target)) {
-        // Also check if click was on a mobile modal backdrop
-        const popoverEl = document.querySelector('.thai-datepicker-popover.mobile-sheet');
-        if (popoverEl && popoverEl.contains(event.target)) {
-          return;
-        }
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(event.target) &&
+        (!popoverRef.current || !popoverRef.current.contains(event.target))
+      ) {
         setIsOpen(false);
+        setPickerView('DAY_VIEW');
         handleCommitText();
       }
     }
@@ -159,7 +242,6 @@ export default function ThaiDatePicker({
       if (onChange) onChange(parsedIso);
       setInputText(formatThaiDate(parsedIso));
     } else {
-      // Revert if invalid
       setInputText(value ? formatThaiDate(value) : '');
     }
   };
@@ -168,7 +250,6 @@ export default function ThaiDatePicker({
     const rawVal = e.target.value;
     setInputText(rawVal);
 
-    // Auto-parse if user typed complete valid date (e.g. 10 chars "DD/MM/BBBB")
     if (rawVal.trim().length === 10) {
       const parsedIso = parseThaiDateInput(rawVal);
       if (parsedIso) {
@@ -176,6 +257,8 @@ export default function ThaiDatePicker({
         const [y, m] = parsedIso.split('-').map(Number);
         setViewYear(y);
         setViewMonth(m - 1);
+        const be = toBuddhistYear(y);
+        setYearPageStart(Math.floor((be - 4) / 12) * 12 + 4);
       }
     }
   };
@@ -185,13 +268,12 @@ export default function ThaiDatePicker({
       e.preventDefault();
       handleCommitText();
       setIsOpen(false);
-    } else if (e.key === 'Escape') {
-      setIsOpen(false);
-      setInputText(value ? formatThaiDate(value) : '');
+      setPickerView('DAY_VIEW');
+      inputRef.current?.focus();
     }
   };
 
-  // Month navigation
+  // Month navigation in DAY_VIEW
   const handlePrevMonth = (e) => {
     e.stopPropagation();
     if (viewMonth === 0) {
@@ -212,7 +294,7 @@ export default function ThaiDatePicker({
     }
   };
 
-  // Select a day
+  // Select a day (ONLY this triggers onChange and updates the date)
   const handleSelectDay = (day, targetMonth, targetYear) => {
     const isoString = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
     if (minDate && isoString < minDate) return;
@@ -223,6 +305,8 @@ export default function ThaiDatePicker({
     setViewMonth(targetMonth);
     setViewYear(targetYear);
     setIsOpen(false);
+    setPickerView('DAY_VIEW');
+    inputRef.current?.focus();
   };
 
   // Quick action: Today
@@ -237,6 +321,8 @@ export default function ThaiDatePicker({
     setViewYear(today.getFullYear());
     setViewMonth(today.getMonth());
     setIsOpen(false);
+    setPickerView('DAY_VIEW');
+    inputRef.current?.focus();
   };
 
   // Quick action: Clear
@@ -246,19 +332,11 @@ export default function ThaiDatePicker({
     if (onChange) onChange('');
     setInputText('');
     setIsOpen(false);
+    setPickerView('DAY_VIEW');
+    inputRef.current?.focus();
   };
 
-  // Generate Year range (Current BE +/- 10 years)
-  const currentBe = toBuddhistYear(currentCeYear);
-  const yearOptions = [];
-  for (let be = currentBe - 6; be <= currentBe + 10; be++) {
-    yearOptions.push({
-      beYear: be,
-      ceYear: toGregorianYear(be)
-    });
-  }
-
-  // Generate Calendar Days Grid
+  // Generate Calendar Days Grid for DAY_VIEW
   const daysInCurrentMonth = getDaysInMonth(viewYear, viewMonth + 1);
   const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay(); // 0 = Sunday
   const daysInPrevMonth = getDaysInMonth(viewYear, viewMonth === 0 ? 12 : viewMonth);
@@ -325,132 +403,283 @@ export default function ThaiDatePicker({
 
   const popoverContent = (
     <div
-      className={`thai-datepicker-popover ${alignRight ? 'align-right' : 'align-left'} ${isMobileView ? 'mobile-sheet' : ''}`}
+      ref={popoverRef}
+      className={`thai-datepicker-popover ${alignRight ? 'align-right' : 'align-left'} ${openUpward ? 'open-upward' : ''} ${isMobileView ? 'mobile-sheet' : ''}`}
+      style={!isMobileView ? popoverStyle : undefined}
       onClick={(e) => e.stopPropagation()}
     >
       {/* Mobile Sheet Top Bar */}
       {isMobileView && (
         <div className="thai-datepicker-sheet-header">
-          <span className="thai-datepicker-sheet-title">เลือกวันที่ (พ.ศ.)</span>
+          <span className="thai-datepicker-sheet-title">
+            {pickerView === 'DAY_VIEW' && 'เลือกวันที่ (พ.ศ.)'}
+            {pickerView === 'MONTH_PICKER' && `เลือกเดือน (พ.ศ. ${toBuddhistYear(viewYear)})`}
+            {pickerView === 'YEAR_PICKER' && `เลือกปี พ.ศ. (${yearPageStart} - ${yearPageStart + 11})`}
+          </span>
           <button
             type="button"
             className="thai-datepicker-sheet-close"
-            onClick={() => setIsOpen(false)}
+            onClick={() => {
+              setIsOpen(false);
+              setPickerView('DAY_VIEW');
+              inputRef.current?.focus();
+            }}
+            title="ปิดหน้าต่าง"
           >
             <X size={18} />
           </button>
         </div>
       )}
 
-      {/* Header: Month & Buddhist Year Selectors + Navigation */}
-      <div className="thai-datepicker-header">
-        <button
-          type="button"
-          className="thai-datepicker-nav-btn"
-          onClick={handlePrevMonth}
-          title="เดือนก่อนหน้า"
-        >
-          <ChevronLeft size={16} />
-        </button>
-
-        <div className="thai-datepicker-selects">
-          {/* Thai Month Dropdown */}
-          <select
-            className="thai-datepicker-select month"
-            value={viewMonth}
-            onChange={(e) => setViewMonth(parseInt(e.target.value, 10))}
-          >
-            {THAI_MONTHS_FULL.map((mName, idx) => (
-              <option key={idx} value={idx}>
-                {mName}
-              </option>
-            ))}
-          </select>
-
-          {/* Thai Buddhist Year Dropdown */}
-          <select
-            className="thai-datepicker-select year"
-            value={viewYear}
-            onChange={(e) => setViewYear(parseInt(e.target.value, 10))}
-          >
-            {yearOptions.map(opt => (
-              <option key={opt.beYear} value={opt.ceYear}>
-                พ.ศ. {opt.beYear}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <button
-          type="button"
-          className="thai-datepicker-nav-btn"
-          onClick={handleNextMonth}
-          title="เดือนถัดไป"
-        >
-          <ChevronRight size={16} />
-        </button>
-      </div>
-
-      {/* Weekday Names Header */}
-      <div className="thai-datepicker-weekdays">
-        {THAI_WEEKDAYS_SHORT.map((wd, i) => (
-          <div
-            key={i}
-            className={`thai-datepicker-weekday ${i === 0 ? 'sunday' : i === 6 ? 'saturday' : ''}`}
-          >
-            {wd}
-          </div>
-        ))}
-      </div>
-
-      {/* Days Grid */}
-      <div className="thai-datepicker-days-grid">
-        {allCells.map((cell, idx) => {
-          const selected = isCellSelected(cell);
-          const isToday = isCellToday(cell);
-          const isDisabled = isCellDisabled(cell);
-
-          let cellClass = 'thai-datepicker-day-cell';
-          if (!cell.isCurrentMonth) cellClass += ' outside-month';
-          if (selected) cellClass += ' selected';
-          if (isToday) cellClass += ' today';
-          if (isDisabled) cellClass += ' disabled';
-
-          return (
+      {/* 1. DAY VIEW */}
+      {pickerView === 'DAY_VIEW' && (
+        <>
+          {/* Header: Prev Month, Month & Buddhist Year Buttons with Caret, Next Month */}
+          <div className="thai-datepicker-header">
             <button
-              key={idx}
               type="button"
-              className={cellClass}
-              disabled={isDisabled}
-              onClick={() => handleSelectDay(cell.day, cell.month, cell.year)}
-              title={`${cell.day} ${THAI_MONTHS_FULL[cell.month]} พ.ศ. ${toBuddhistYear(cell.year)}`}
+              className="thai-datepicker-nav-btn"
+              onClick={handlePrevMonth}
+              title="เดือนก่อนหน้า"
+              tabIndex={-1}
             >
-              <span className="thai-datepicker-day-number">{cell.day}</span>
+              <ChevronLeft size={16} />
             </button>
-          );
-        })}
-      </div>
 
-      {/* Popover Footer: Quick Actions */}
-      <div className="thai-datepicker-footer">
-        <button
-          type="button"
-          className="thai-datepicker-footer-btn today"
-          onClick={handleSelectToday}
-        >
-          วันนี้ ({formatThaiDate(today.toISOString().slice(0, 10))})
-        </button>
+            <div className="thai-datepicker-view-buttons">
+              <button
+                type="button"
+                className="thai-datepicker-title-btn month-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPickerView('MONTH_PICKER');
+                }}
+                title="คลิกเพื่อเลือกเดือนแบบ Grid"
+              >
+                <span>{THAI_MONTHS_FULL[viewMonth]}</span>
+                <ChevronDown size={14} className="thai-datepicker-title-caret" />
+              </button>
 
-        {!required && (
-          <button
-            type="button"
-            className="thai-datepicker-footer-btn clear"
-            onClick={handleClear}
-          >
-            ล้างค่า
-          </button>
-        )}
-      </div>
+              <button
+                type="button"
+                className="thai-datepicker-title-btn year-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const be = toBuddhistYear(viewYear);
+                  const start = Math.floor((be - 4) / 12) * 12 + 4;
+                  setYearPageStart(start);
+                  setPickerView('YEAR_PICKER');
+                }}
+                title="คลิกเพื่อเลือกปี พ.ศ. แบบ Grid"
+              >
+                <span>พ.ศ. {toBuddhistYear(viewYear)}</span>
+                <ChevronDown size={14} className="thai-datepicker-title-caret" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              className="thai-datepicker-nav-btn"
+              onClick={handleNextMonth}
+              title="เดือนถัดไป"
+              tabIndex={-1}
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+
+          {/* Weekday Names Header */}
+          <div className="thai-datepicker-weekdays">
+            {THAI_WEEKDAYS_SHORT.map((wd, i) => (
+              <div
+                key={i}
+                className={`thai-datepicker-weekday ${i === 0 ? 'sunday' : i === 6 ? 'saturday' : ''}`}
+              >
+                {wd}
+              </div>
+            ))}
+          </div>
+
+          {/* Days Grid */}
+          <div className="thai-datepicker-days-grid">
+            {allCells.map((cell, idx) => {
+              const selected = isCellSelected(cell);
+              const isToday = isCellToday(cell);
+              const isDisabled = isCellDisabled(cell);
+
+              let cellClass = 'thai-datepicker-day-cell';
+              if (!cell.isCurrentMonth) cellClass += ' outside-month';
+              if (selected) cellClass += ' selected';
+              if (isToday) cellClass += ' today';
+              if (isDisabled) cellClass += ' disabled';
+
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  className={cellClass}
+                  disabled={isDisabled}
+                  onClick={() => handleSelectDay(cell.day, cell.month, cell.year)}
+                  title={`${cell.day} ${THAI_MONTHS_FULL[cell.month]} พ.ศ. ${toBuddhistYear(cell.year)}`}
+                >
+                  <span className="thai-datepicker-day-number">{cell.day}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Popover Footer: Clean Corporate Actions */}
+          <div className="thai-datepicker-footer">
+            <button
+              type="button"
+              className="thai-datepicker-footer-btn today"
+              onClick={handleSelectToday}
+            >
+              วันนี้
+            </button>
+
+            {!required && (
+              <button
+                type="button"
+                className="thai-datepicker-footer-btn clear"
+                onClick={handleClear}
+              >
+                ล้างค่า
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* 2. MONTH PICKER (3 cols x 4 rows = 12 months) */}
+      {pickerView === 'MONTH_PICKER' && (
+        <div className="thai-datepicker-grid-view">
+          <div className="thai-datepicker-header">
+            <button
+              type="button"
+              className="thai-datepicker-nav-btn back-btn"
+              onClick={() => setPickerView('DAY_VIEW')}
+              title="กลับสู่ปฏิทิน"
+              tabIndex={-1}
+            >
+              <ChevronLeft size={16} />
+            </button>
+
+            <div className="thai-datepicker-picker-title">
+              <span>เลือกเดือน (พ.ศ. {toBuddhistYear(viewYear)})</span>
+            </div>
+
+            <div style={{ width: 28, height: 28 }} />
+          </div>
+
+          <div className="thai-datepicker-month-grid">
+            {THAI_MONTHS_SHORT.map((mShort, idx) => {
+              const isSelected = viewMonth === idx;
+              const isCurrentMonth = today.getMonth() === idx && today.getFullYear() === viewYear;
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  className={`thai-datepicker-month-cell ${isSelected ? 'selected' : ''} ${isCurrentMonth ? 'current-month' : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setViewMonth(idx);
+                    setPickerView('DAY_VIEW');
+                  }}
+                  title={THAI_MONTHS_FULL[idx]}
+                >
+                  <span className="thai-month-short">{mShort}</span>
+                  <span className="thai-month-full">{THAI_MONTHS_FULL[idx]}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="thai-datepicker-footer picker-footer">
+            <button
+              type="button"
+              className="thai-datepicker-footer-btn back"
+              onClick={() => setPickerView('DAY_VIEW')}
+            >
+              ย้อนกลับไปปฏิทิน
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3. YEAR PICKER (3 cols x 4 rows = 12 years per page) */}
+      {pickerView === 'YEAR_PICKER' && (
+        <div className="thai-datepicker-grid-view">
+          <div className="thai-datepicker-header">
+            <button
+              type="button"
+              className="thai-datepicker-nav-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setYearPageStart(prev => prev - 12);
+              }}
+              title="12 ปีก่อนหน้า"
+              tabIndex={-1}
+            >
+              <ChevronLeft size={16} />
+            </button>
+
+            <button
+              type="button"
+              className="thai-datepicker-picker-title clickable"
+              onClick={() => setPickerView('DAY_VIEW')}
+              title="กลับสู่ปฏิทิน"
+            >
+              <span>พ.ศ. {yearPageStart} - {yearPageStart + 11}</span>
+            </button>
+
+            <button
+              type="button"
+              className="thai-datepicker-nav-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setYearPageStart(prev => prev + 12);
+              }}
+              title="12 ปีถัดไป"
+              tabIndex={-1}
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+
+          <div className="thai-datepicker-year-grid">
+            {Array.from({ length: 12 }, (_, i) => yearPageStart + i).map((beYear) => {
+              const isSelected = toBuddhistYear(viewYear) === beYear;
+              const isThisYear = toBuddhistYear(today.getFullYear()) === beYear;
+              return (
+                <button
+                  key={beYear}
+                  type="button"
+                  className={`thai-datepicker-year-cell ${isSelected ? 'selected' : ''} ${isThisYear ? 'current-year' : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setViewYear(toGregorianYear(beYear));
+                    setPickerView('DAY_VIEW');
+                  }}
+                  title={`ปี พ.ศ. ${beYear}`}
+                >
+                  <span className="thai-year-number">{beYear}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="thai-datepicker-footer picker-footer">
+            <button
+              type="button"
+              className="thai-datepicker-footer-btn back"
+              onClick={() => setPickerView('DAY_VIEW')}
+            >
+              ย้อนกลับไปปฏิทิน
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -479,7 +708,7 @@ export default function ThaiDatePicker({
               title="ล้างวันที่"
               tabIndex={-1}
             >
-              <X size={14} />
+              <X size={15} />
             </button>
           )}
           <button
@@ -492,19 +721,32 @@ export default function ThaiDatePicker({
             title="เปิดปฏิทินไทย (พ.ศ.)"
             tabIndex={-1}
           >
-            <CalendarIcon size={16} />
+            <CalendarIcon size={17} />
           </button>
         </div>
       </div>
 
-      {/* Popover or Mobile Backdrop Dialog */}
+      {/* Popover or Mobile Backdrop Dialog via Body Portal */}
       {isOpen && (
         isMobileView ? (
-          <div className="thai-datepicker-mobile-backdrop" onClick={() => setIsOpen(false)}>
-            {popoverContent}
-          </div>
+          createPortal(
+            <div
+              className="thai-datepicker-mobile-backdrop"
+              onClick={() => {
+                setIsOpen(false);
+                setPickerView('DAY_VIEW');
+                inputRef.current?.focus();
+              }}
+            >
+              {popoverContent}
+            </div>,
+            document.body
+          )
         ) : (
-          popoverContent
+          createPortal(
+            popoverContent,
+            document.body
+          )
         )
       )}
     </div>

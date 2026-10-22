@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Users,
   Building2,
@@ -119,6 +119,9 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     monthly_quota_hours: 4.0
   });
 
+  const initialCustomerFormRef = useRef(null);
+  const initialContractEditRef = useRef(null);
+
   const officeUnits = ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'];
   const hotdeskUnits = ['419', '420', '421', '422', '427', '428', '429', '430'];
 
@@ -236,6 +239,106 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     };
   }, [customers, alertsSummary]);
 
+  // Check if Customer Form has unsaved modifications
+  const isCustomerFormDirty = () => {
+    if (!initialCustomerFormRef.current) return false;
+    const init = initialCustomerFormRef.current;
+    return (
+      (customerForm.name || '') !== (init.name || '') ||
+      (customerForm.contact_name || '') !== (init.contact_name || '') ||
+      (customerForm.phone || '') !== (init.phone || '') ||
+      (customerForm.email || '') !== (init.email || '') ||
+      (customerForm.tax_id || '') !== (init.tax_id || '') ||
+      (customerForm.address || '') !== (init.address || '') ||
+      (customerForm.notes || '') !== (init.notes || '') ||
+      customerForm.customer_type !== init.customer_type ||
+      customerForm.basecamp_sub_type !== init.basecamp_sub_type ||
+      customerForm.basecamp_unit !== init.basecamp_unit ||
+      (customerForm.start_date || '') !== (init.start_date || '') ||
+      (customerForm.end_date || '') !== (init.end_date || '') ||
+      (customerForm.contract_number || '') !== (init.contract_number || '') ||
+      Number(customerForm.monthly_quota_hours) !== Number(init.monthly_quota_hours)
+    );
+  };
+
+  // Safe Close for Add/Edit Customer Modal (prompts if dirty)
+  const handleRequestCloseAddEditModal = async () => {
+    if (isCustomerFormDirty()) {
+      const msg = 'คุณมีข้อมูลที่ยังไม่ได้บันทึก ต้องการยกเลิกและปิดหน้าต่างนี้หรือไม่?\n(ข้อมูลที่คุณกรอกไว้จะไม่ได้รับการบันทึก)';
+      let confirmed = false;
+      if (sysConfirm) {
+        confirmed = await sysConfirm(msg);
+      } else {
+        confirmed = window.confirm(msg);
+      }
+      if (!confirmed) return;
+    }
+    setShowAddEditModal(false);
+    setEditingCustomer(null);
+    initialCustomerFormRef.current = null;
+  };
+
+  // Check if Contract Drawer has unsaved changes
+  const isContractDrawerDirty = () => {
+    if (contractDrawerTab === 'edit_dates') {
+      if (!initialContractEditRef.current) return false;
+      const init = initialContractEditRef.current;
+      return (
+        editDateForm.start_date !== init.start_date ||
+        editDateForm.end_date !== init.end_date ||
+        (editDateForm.reason || '').trim() !== ''
+      );
+    }
+    if (contractDrawerTab === 'renew') {
+      return (
+        (renewForm.contract_number || '').trim() !== '' ||
+        (renewForm.notes || '').trim() !== ''
+      );
+    }
+    return false;
+  };
+
+  // Safe Close for Contract Drawer (prompts if dirty)
+  const handleRequestCloseContractDrawer = async () => {
+    if (isContractDrawerDirty()) {
+      const msg = 'คุณมีข้อมูลการแก้ไขสัญญาที่ยังไม่ได้บันทึก ต้องการยกเลิกและปิดแถบด้านข้างหรือไม่?';
+      let confirmed = false;
+      if (sysConfirm) {
+        confirmed = await sysConfirm(msg);
+      } else {
+        confirmed = window.confirm(msg);
+      }
+      if (!confirmed) return;
+    }
+    setShowContractDrawer(false);
+    setContractDrawerTab('overview');
+    setShowTerminateInline(false);
+    setEditDateStep('input');
+    initialContractEditRef.current = null;
+  };
+
+  // Global Escape key listener: isolated from ThaiDatePicker popovers via capture phase
+  useEffect(() => {
+    const handleEscapeKey = (e) => {
+      if (e.key === 'Escape') {
+        if (showAddEditModal) {
+          handleRequestCloseAddEditModal();
+        } else if (showContractDrawer) {
+          handleRequestCloseContractDrawer();
+        } else if (showTransferModal) {
+          setShowTransferModal(false);
+        }
+      }
+    };
+
+    if (showAddEditModal || showContractDrawer || showTransferModal) {
+      document.addEventListener('keydown', handleEscapeKey);
+      return () => {
+        document.removeEventListener('keydown', handleEscapeKey);
+      };
+    }
+  }, [showAddEditModal, showContractDrawer, showTransferModal, customerForm, editingCustomer, contractDrawerTab, editDateForm, renewForm]);
+
   // Open Create Customer Modal
   const handleOpenCreate = () => {
     setEditingCustomer(null);
@@ -247,7 +350,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     const todayStr = today.toISOString().slice(0, 10);
     const nextYearStr = nextYear.toISOString().slice(0, 10);
 
-    setCustomerForm({
+    const initialData = {
       customer_type: 'basecamp',
       name: '',
       contact_name: '',
@@ -262,14 +365,16 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       monthly_quota_hours: 4.0,
       contract_number: '',
       notes: ''
-    });
+    };
+    initialCustomerFormRef.current = initialData;
+    setCustomerForm(initialData);
     setShowAddEditModal(true);
   };
 
   // Open Edit Customer Info Modal
   const handleOpenEdit = (c) => {
     setEditingCustomer(c);
-    setCustomerForm({
+    const initialData = {
       customer_type: c.customer_type,
       name: c.name || '',
       contact_name: c.contact_name || '',
@@ -284,7 +389,9 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       monthly_quota_hours: 4.0,
       contract_number: '',
       notes: ''
-    });
+    };
+    initialCustomerFormRef.current = initialData;
+    setCustomerForm(initialData);
     setShowAddEditModal(true);
   };
 
@@ -307,6 +414,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
         const data = await res.json();
         if (data.success) {
           if (sysAlert) sysAlert('บันทึกการแก้ไขข้อมูลเรียบร้อยแล้ว', 'success');
+          initialCustomerFormRef.current = null;
           setShowAddEditModal(false);
           fetchCustomers();
         } else {
@@ -321,6 +429,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
         const data = await res.json();
         if (data.success) {
           if (sysAlert) sysAlert('สร้างข้อมูลลูกค้าและสัญญาเรียบร้อยแล้ว', 'success');
+          initialCustomerFormRef.current = null;
           setShowAddEditModal(false);
           fetchCustomers();
           fetchAlerts();
@@ -380,11 +489,15 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
         setContractToEdit(currentActiveCtr);
 
         if (currentActiveCtr) {
-          setEditDateForm({
+          const initEdit = {
             start_date: currentActiveCtr.start_date || '',
             end_date: currentActiveCtr.end_date || '',
             reason: ''
-          });
+          };
+          initialContractEditRef.current = initEdit;
+          setEditDateForm(initEdit);
+        } else {
+          initialContractEditRef.current = null;
         }
 
         const today = new Date();
@@ -422,12 +535,14 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       if (sysAlert) sysAlert('ไม่สามารถแก้ไขวันที่ของสัญญาที่ถูกยกเลิก (TERMINATED) แล้วได้ หากต้องการเปิดสัญญาใหม่ กรุณาใช้ฟังก์ชันต่อสัญญา (Renew)', 'warning');
       return;
     }
-    setContractToEdit(ctr);
-    setEditDateForm({
+    const initEdit = {
       start_date: ctr.start_date || '',
       end_date: ctr.end_date || '',
       reason: ''
-    });
+    };
+    initialContractEditRef.current = initEdit;
+    setContractToEdit(ctr);
+    setEditDateForm(initEdit);
     setEditDateStep('input');
     setContractDrawerTab('edit_dates');
   };
@@ -481,6 +596,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
         }
         setEditDateStep('input');
         setContractDrawerTab('overview');
+        initialContractEditRef.current = null;
         fetchCustomers();
         fetchAlerts();
         if (isAdmin) fetchAuditLogs(contractCustomer.id);
@@ -1025,7 +1141,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
           SLIDE-OVER SIDE DRAWER: CONTRACT CONSOLE (POLISHED & STREAMLINED)
           ========================================================================= */}
       {showContractDrawer && contractCustomer && (
-        <div className="crm-drawer-backdrop" onClick={() => setShowContractDrawer(false)}>
+        <div className="crm-drawer-backdrop">
           <div className="crm-drawer-panel" onClick={(e) => e.stopPropagation()}>
             {/* 1. Compact Sticky Drawer Header */}
             <div className="crm-drawer-header">
@@ -1057,78 +1173,89 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
               <button
                 type="button"
                 className="crm-drawer-close-btn"
-                onClick={() => setShowContractDrawer(false)}
+                onClick={handleRequestCloseContractDrawer}
                 title="ปิดแถบด้านข้าง (Close)"
               >
                 <X size={18} />
               </button>
             </div>
 
-            {/* 2. Sleek Segmented Tab Bar (Zero Horizontal Scrollbar) */}
-            <div className="crm-drawer-nav-bar">
-              <div className="crm-drawer-tabs-grid">
+            {/* 2. Streamlined Drawer Navigation (Clean 3-Tab Segmented Bar or Contextual Back Bar) */}
+            {(contractDrawerTab === 'edit_dates' || contractDrawerTab === 'renew') ? (
+              <div className="crm-drawer-sub-nav">
                 <button
                   type="button"
-                  className={`crm-drawer-tab-btn ${contractDrawerTab === 'overview' ? 'active' : ''}`}
-                  onClick={() => {
+                  className="crm-drawer-back-btn crm-subnav-back-btn"
+                  onClick={async () => {
+                    if (isContractDrawerDirty()) {
+                      const msg = 'คุณมีข้อมูลการแก้ไขสัญญาที่ยังไม่ได้บันทึก ต้องการยกเลิกและกลับสู่ภาพรวมสัญญาหรือไม่?';
+                      const ok = sysConfirm ? await sysConfirm(msg) : window.confirm(msg);
+                      if (!ok) return;
+                    }
                     setContractDrawerTab('overview');
+                    setEditDateStep('input');
                     setShowTerminateInline(false);
                   }}
+                  title="กลับสู่ภาพรวมสัญญา"
                 >
-                  <FileText size={14} />
-                  <span>ภาพรวม</span>
+                  <ChevronLeft size={16} />
+                  <span>กลับสู่ภาพรวมสัญญา</span>
                 </button>
-
-                {canManageContracts && contractToEdit && contractToEdit.status !== 'TERMINATED' && (
+                <div className="crm-drawer-sub-badge">
+                  {contractDrawerTab === 'edit_dates' ? (
+                    <span className="crm-sub-badge edit">
+                      <Edit2 size={12} /> แก้ไขวันที่สัญญาเดิม
+                    </span>
+                  ) : (
+                    <span className="crm-sub-badge renew">
+                      <Plus size={12} /> ต่อสัญญาฉบับใหม่
+                    </span>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="crm-drawer-nav-bar">
+                <div className="crm-drawer-tabs-grid">
                   <button
                     type="button"
-                    className={`crm-drawer-tab-btn ${contractDrawerTab === 'edit_dates' ? 'active' : ''}`}
-                    onClick={() => handleStartEditDates(contractToEdit)}
-                  >
-                    <Edit2 size={13} />
-                    <span>แก้ไขวันที่</span>
-                  </button>
-                )}
-
-                <button
-                  type="button"
-                  className={`crm-drawer-tab-btn ${contractDrawerTab === 'renew' ? 'active' : ''}`}
-                  onClick={() => {
-                    setContractDrawerTab('renew');
-                    setShowTerminateInline(false);
-                  }}
-                >
-                  <Plus size={14} />
-                  <span>ต่อสัญญา</span>
-                </button>
-
-                <button
-                  type="button"
-                  className={`crm-drawer-tab-btn ${contractDrawerTab === 'history' ? 'active' : ''}`}
-                  onClick={() => {
-                    setContractDrawerTab('history');
-                    setShowTerminateInline(false);
-                  }}
-                >
-                  <History size={14} />
-                  <span>ประวัติ ({contractCustomer.contracts?.length || 0})</span>
-                </button>
-
-                {isAdmin && (
-                  <button
-                    type="button"
-                    className={`crm-drawer-tab-btn ${contractDrawerTab === 'audit' ? 'active' : ''}`}
+                    className={`crm-drawer-tab-btn ${contractDrawerTab === 'overview' ? 'active' : ''}`}
                     onClick={() => {
-                      setContractDrawerTab('audit');
+                      setContractDrawerTab('overview');
                       setShowTerminateInline(false);
                     }}
                   >
-                    <ShieldCheck size={14} />
-                    <span>Audit Log</span>
+                    <FileText size={14} />
+                    <span>ภาพรวม</span>
                   </button>
-                )}
+
+                  <button
+                    type="button"
+                    className={`crm-drawer-tab-btn ${contractDrawerTab === 'history' ? 'active' : ''}`}
+                    onClick={() => {
+                      setContractDrawerTab('history');
+                      setShowTerminateInline(false);
+                    }}
+                  >
+                    <History size={14} />
+                    <span>ประวัติสัญญา ({contractCustomer.contracts?.length || 0})</span>
+                  </button>
+
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      className={`crm-drawer-tab-btn ${contractDrawerTab === 'audit' ? 'active' : ''}`}
+                      onClick={() => {
+                        setContractDrawerTab('audit');
+                        setShowTerminateInline(false);
+                      }}
+                    >
+                      <ShieldCheck size={14} />
+                      <span>Audit Log</span>
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* 3. Scrollable Drawer Body (Clean Single Container, No Nested Cards) */}
             <div className="crm-drawer-body">
@@ -1630,81 +1757,81 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
               )}
             </div>
 
-            {/* 4. Unified Sticky Action Footer (Single Action Bar, No Duplicates) */}
-            <div className="crm-drawer-action-footer">
-              {contractDrawerTab === 'edit_dates' && editDateStep === 'input' && (
-                <>
-                  <button
-                    type="button"
-                    className="crm-btn-secondary"
-                    onClick={() => setContractDrawerTab('overview')}
-                  >
-                    ยกเลิก
-                  </button>
-                  <button
-                    type="button"
-                    className="crm-btn-primary"
-                    onClick={handleProceedToConfirmEdit}
-                  >
-                    <span>ตรวจสอบข้อมูลก่อนบันทึก</span>
-                    <ChevronRight size={15} />
-                  </button>
-                </>
-              )}
+            {/* 4. Unified Sticky Action Footer (ONLY when editing or renewing, no redundant close buttons) */}
+            {(contractDrawerTab === 'edit_dates' || contractDrawerTab === 'renew') && (
+              <div className="crm-drawer-action-footer">
+                {contractDrawerTab === 'edit_dates' && editDateStep === 'input' && (
+                  <>
+                    <button
+                      type="button"
+                      className="crm-btn-secondary"
+                      onClick={async () => {
+                        if (isContractDrawerDirty()) {
+                          const msg = 'คุณมีข้อมูลการแก้ไขสัญญาที่ยังไม่ได้บันทึก ต้องการยกเลิกและกลับสู่ภาพรวมสัญญาหรือไม่?';
+                          const ok = sysConfirm ? await sysConfirm(msg) : window.confirm(msg);
+                          if (!ok) return;
+                        }
+                        setContractDrawerTab('overview');
+                        setEditDateStep('input');
+                      }}
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="button"
+                      className="crm-btn-primary"
+                      onClick={handleProceedToConfirmEdit}
+                    >
+                      <span>ตรวจสอบข้อมูลก่อนบันทึก</span>
+                      <ChevronRight size={15} />
+                    </button>
+                  </>
+                )}
 
-              {contractDrawerTab === 'edit_dates' && editDateStep === 'confirm' && (
-                <>
-                  <button
-                    type="button"
-                    className="crm-btn-secondary"
-                    onClick={() => setEditDateStep('input')}
-                    disabled={isSubmitting}
-                  >
-                    <ChevronLeft size={15} />
-                    <span>ย้อนกลับไปแก้ไข</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="crm-btn-primary"
-                    onClick={handleConfirmSubmitEdit}
-                    disabled={isSubmitting}
-                  >
-                    {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันการแก้ไขวันที่สัญญา'}
-                  </button>
-                </>
-              )}
+                {contractDrawerTab === 'edit_dates' && editDateStep === 'confirm' && (
+                  <>
+                    <button
+                      type="button"
+                      className="crm-btn-secondary"
+                      onClick={() => setEditDateStep('input')}
+                      disabled={isSubmitting}
+                    >
+                      <ChevronLeft size={15} />
+                      <span>ย้อนกลับไปแก้ไข</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="crm-btn-primary"
+                      onClick={handleConfirmSubmitEdit}
+                      disabled={isSubmitting}
+                    >
+                      {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันการแก้ไขวันที่สัญญา'}
+                    </button>
+                  </>
+                )}
 
-              {contractDrawerTab === 'renew' && (
-                <>
-                  <button
-                    type="button"
-                    className="crm-btn-secondary"
-                    onClick={() => setContractDrawerTab('overview')}
-                    disabled={isSubmitting}
-                  >
-                    ยกเลิก
-                  </button>
-                  <button
-                    type="button"
-                    className="crm-btn-primary"
-                    onClick={handleSubmitRenew}
-                    disabled={isSubmitting}
-                  >
-                    {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันการต่อสัญญาใหม่'}
-                  </button>
-                </>
-              )}
-
-              {(contractDrawerTab === 'overview' || contractDrawerTab === 'history' || contractDrawerTab === 'audit') && (
-                <button
-                  type="button"
-                  className="crm-btn-secondary"
-                  onClick={() => setShowContractDrawer(false)}
-                >
-                  ปิดหน้าต่าง (Close)
-                </button>
-              )}
-            </div>
+                {contractDrawerTab === 'renew' && (
+                  <>
+                    <button
+                      type="button"
+                      className="crm-btn-secondary"
+                      onClick={() => setContractDrawerTab('overview')}
+                      disabled={isSubmitting}
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="button"
+                      className="crm-btn-primary"
+                      onClick={handleSubmitRenew}
+                      disabled={isSubmitting}
+                    >
+                      {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันการต่อสัญญาใหม่'}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1713,7 +1840,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
           MODAL: CREATE / EDIT CUSTOMER (WIDE 3-SECTION ARCHITECTURE)
           ========================================================================= */}
       {showAddEditModal && (
-        <div className="crm-modal-backdrop" onClick={() => setShowAddEditModal(false)}>
+        <div className="crm-modal-backdrop">
           <div
             className={`crm-modal-dialog crm-modal-dialog-wide ${editingCustomer ? 'edit-mode' : ''}`}
             onClick={(e) => e.stopPropagation()}
@@ -1735,7 +1862,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
               <button
                 type="button"
                 className="crm-modal-close-btn"
-                onClick={() => setShowAddEditModal(false)}
+                onClick={handleRequestCloseAddEditModal}
                 title="ปิดหน้าต่าง"
               >
                 <X size={18} />
@@ -1983,7 +2110,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                   <button
                     type="button"
                     className="crm-btn-secondary"
-                    onClick={() => setShowAddEditModal(false)}
+                    onClick={handleRequestCloseAddEditModal}
                     disabled={isSubmitting}
                   >
                     ยกเลิก
@@ -2006,7 +2133,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
           MODAL: TRANSFER BASECAMP TENANT
           ========================================================================= */}
       {showTransferModal && transferUnitCustomer && (
-        <div className="crm-modal-backdrop" onClick={() => setShowTransferModal(false)}>
+        <div className="crm-modal-backdrop">
           <div className="crm-modal-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="crm-modal-header">
               <div className="crm-modal-title">
