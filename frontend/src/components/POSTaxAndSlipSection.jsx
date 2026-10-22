@@ -182,7 +182,7 @@ export default function POSTaxAndSlipSection({
               }}
             >
               <Image size={12} />
-              <span>เลือกสลิป</span>
+              <span>แนบสลิป</span>
             </button>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -375,7 +375,7 @@ export default function POSTaxAndSlipSection({
               onClick={(e) => e.stopPropagation()}
             >
               <FileText size={14} style={{ color: taxInvoiceRequired ? '#2563eb' : 'var(--text-muted)' }} />
-              <span>ขอใบกำกับภาษี (Tax Invoice)</span>
+              <span>ลูกค้าต้องการใบกำกับภาษี</span>
               {taxInvoiceRequired && (
                 <span style={{
                   fontSize: '0.65rem',

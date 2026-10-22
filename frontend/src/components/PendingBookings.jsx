@@ -5006,16 +5006,50 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       </div>
                     </div>
 
-                    {/* 6. TAX INVOICE SECTION (Conditional) */}
-                    {b.tax_invoice_required === 1 && (
-                      <div className="pb-detail-card">
-                        <div className="pb-detail-card-header">
-                          <span className="pb-detail-card-title">ข้อมูลใบกำกับภาษี</span>
-                          <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: '5px', backgroundColor: 'rgba(37, 99, 235, 0.1)', color: '#2563eb' }}>
-                            ขอกำกับภาษี
-                          </span>
+                    {/* 6. TAX INVOICE SECTION (Always Visible in Details) */}
+                    <div className="pb-detail-card">
+                      <div className="pb-detail-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <FileText size={16} style={{ color: '#2563eb' }} />
+                          <span className="pb-detail-card-title">ข้อมูลและเอกสารใบกำกับภาษี</span>
                         </div>
-                        <div className="pb-detail-content">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            padding: '2px 8px',
+                            borderRadius: '5px',
+                            backgroundColor: b.tax_invoice_status === 'issued' ? 'rgba(16, 185, 129, 0.1)' : (b.tax_invoice_required === 1 ? 'rgba(37, 99, 235, 0.1)' : 'var(--bg-hover)'),
+                            color: b.tax_invoice_status === 'issued' ? '#10b981' : (b.tax_invoice_required === 1 ? '#2563eb' : 'var(--text-muted)')
+                          }}>
+                            {b.tax_invoice_status === 'issued' ? 'ออกเอกสารแล้ว' : (b.tax_invoice_required === 1 ? 'ขอใบกำกับภาษี' : 'ยังไม่ขอ')}
+                          </span>
+                          <button
+                            type="button"
+                            id="pb-btn-manage-tax-invoice"
+                            onClick={() => setSelectedTaxBooking(b)}
+                            style={{
+                              height: '26px',
+                              padding: '0 10px',
+                              borderRadius: '6px',
+                              border: '1px solid rgba(37, 99, 235, 0.3)',
+                              backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                              color: '#2563eb',
+                              fontSize: '0.72rem',
+                              fontWeight: 750,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            <FileText size={12} />
+                            <span>จัดการใบกำกับภาษี</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div className="pb-detail-content">
+                        {b.tax_invoice_required === 1 || b.tax_name ? (
                           <div className="pb-detail-field-group">
                             <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
                               <span className="pb-detail-label">ชื่อ / บริษัท</span>
@@ -5042,9 +5076,46 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               </span>
                             </div>
                           </div>
-                        </div>
+                        ) : (
+                          <div style={{
+                            padding: '16px',
+                            textAlign: 'center',
+                            borderRadius: '8px',
+                            backgroundColor: 'var(--bg-main)',
+                            border: '1px dashed var(--border-color)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            gap: '8px'
+                          }}>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              ยังไม่ได้ขอใบกำกับภาษีสำหรับรายการนี้
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedTaxBooking(b)}
+                              style={{
+                                height: '30px',
+                                padding: '0 12px',
+                                borderRadius: '6px',
+                                backgroundColor: '#2563eb',
+                                color: '#fff',
+                                border: 'none',
+                                fontSize: '0.74rem',
+                                fontWeight: 700,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <Plus size={12} />
+                              <span>จัดการใบกำกับภาษี</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </div>
                 </div>
               </div>

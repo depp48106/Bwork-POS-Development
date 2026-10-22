@@ -82,6 +82,7 @@ export default function TaxInvoiceManagementModal({
   const [isDraggingDoc, setIsDraggingDoc] = useState(false);
   const fileInputRef = useRef(null);
   const scrollBodyRef = useRef(null);
+  const initialTaxFormRef = useRef(null);
 
   const bookingId = booking?.id || booking?.booking_id;
 
@@ -113,8 +114,33 @@ export default function TaxInvoiceManagementModal({
           setEditPhone(data.tax_data.tax_phone || '');
           setEditDeliveryMethod(data.tax_data.tax_delivery_method || 'email');
           setEditPostalAddress(data.tax_data.tax_postal_address || '');
+
+          initialTaxFormRef.current = {
+            payerType: data.tax_data.tax_payer_type || 'corporate',
+            name: data.tax_data.tax_name || '',
+            taxId: data.tax_data.tax_id || '',
+            branchType: data.tax_data.tax_branch_type || 'head',
+            branchNumber: data.tax_data.tax_branch_number || '',
+            address: data.tax_data.tax_address || '',
+            email: data.tax_data.tax_email || '',
+            phone: data.tax_data.tax_phone || '',
+            deliveryMethod: data.tax_data.tax_delivery_method || 'email',
+            postalAddress: data.tax_data.tax_postal_address || ''
+          };
         } else if (booking?.customer_name) {
           setEditName(booking.customer_name);
+          initialTaxFormRef.current = {
+            payerType: 'corporate',
+            name: booking.customer_name,
+            taxId: '',
+            branchType: 'head',
+            branchNumber: '',
+            address: '',
+            email: '',
+            phone: '',
+            deliveryMethod: 'email',
+            postalAddress: ''
+          };
         }
       }
     } catch (err) {
@@ -127,6 +153,52 @@ export default function TaxInvoiceManagementModal({
   useEffect(() => {
     fetchTaxInvoiceData();
   }, [bookingId]);
+
+  // Start editing tax information
+  const handleStartEditing = () => {
+    initialTaxFormRef.current = {
+      payerType: editPayerType,
+      name: editName,
+      taxId: editTaxId,
+      branchType: editBranchType,
+      branchNumber: editBranchNumber,
+      address: editAddress,
+      email: editEmail,
+      phone: editPhone,
+      deliveryMethod: editDeliveryMethod,
+      postalAddress: editPostalAddress
+    };
+    setIsEditingTaxInfo(true);
+  };
+
+  // Check if tax form has unsaved modifications
+  const isTaxFormDirty = () => {
+    if (!isEditingTaxInfo || !initialTaxFormRef.current) return false;
+    const init = initialTaxFormRef.current;
+    return (
+      (editPayerType || '') !== (init.payerType || '') ||
+      (editName || '').trim() !== (init.name || '').trim() ||
+      (editTaxId || '').trim() !== (init.taxId || '').trim() ||
+      (editBranchType || '') !== (init.branchType || '') ||
+      (editBranchNumber || '').trim() !== (init.branchNumber || '').trim() ||
+      (editAddress || '').trim() !== (init.address || '').trim() ||
+      (editEmail || '').trim() !== (init.email || '').trim() ||
+      (editPhone || '').trim() !== (init.phone || '').trim() ||
+      (editDeliveryMethod || '') !== (init.deliveryMethod || '') ||
+      (editPostalAddress || '').trim() !== (init.postalAddress || '').trim()
+    );
+  };
+
+  // Safe close guard with unsaved changes confirmation
+  const handleSafeClose = (action) => {
+    if (isTaxFormDirty()) {
+      const confirmLeave = window.confirm('คุณมีข้อมูลใบกำกับภาษีที่ยังไม่ได้บันทึก ต้องการปิดโดยไม่บันทึกหรือไม่?');
+      if (!confirmLeave) return;
+    }
+    if (typeof action === 'function') {
+      action();
+    }
+  };
 
   // Copy Tax Fields to Clipboard
   const handleCopyTaxDetails = () => {
@@ -194,6 +266,18 @@ export default function TaxInvoiceManagementModal({
       const data = await res.json();
       if (res.ok && data.success) {
         setTaxData(data.tax_data);
+        initialTaxFormRef.current = {
+          payerType: editPayerType,
+          name: editName.trim(),
+          taxId: cleanId,
+          branchType: editBranchType,
+          branchNumber: editBranchType === 'branch' ? editBranchNumber.trim() : '',
+          address: editAddress.trim(),
+          email: editEmail.trim(),
+          phone: editPhone.trim(),
+          deliveryMethod: editDeliveryMethod,
+          postalAddress: editPostalAddress.trim()
+        };
         setIsEditingTaxInfo(false);
         if (sysAlert) sysAlert('บันทึกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว');
         if (onUpdated) onUpdated();
@@ -313,27 +397,34 @@ export default function TaxInvoiceManagementModal({
   const isEditTaxIdValid = cleanEditTaxId.length === 13 && /^\d+$/.test(cleanEditTaxId);
 
   return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: 'rgba(15, 23, 42, 0.75)',
-      backdropFilter: 'blur(8px)',
-      WebkitBackdropFilter: 'blur(8px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 9999,
-      padding: '16px'
-    }}>
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          handleSafeClose(onClose);
+        }
+      }}
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(15, 23, 42, 0.75)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 9999,
+        padding: '16px'
+      }}
+    >
       {/* 1080px Wide Modal Dialog Container */}
       <div style={{
         width: '100%',
-        maxWidth: '1080px',
-        maxHeight: '90vh',
-        height: '88vh',
+        maxWidth: 'min(1080px, 94vw)',
+        maxHeight: '90dvh',
+        height: 'min(88vh, 850px)',
         backgroundColor: 'var(--bg-card, #ffffff)',
         borderRadius: '16px',
         border: '1px solid var(--border-color, #e2e8f0)',
@@ -391,7 +482,7 @@ export default function TaxInvoiceManagementModal({
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => handleSafeClose(onClose)}
             aria-label="ปิดหน้าต่าง"
             style={{
               background: 'transparent',
@@ -488,7 +579,7 @@ export default function TaxInvoiceManagementModal({
                       <button
                         type="button"
                         id="btn-edit-tax-info"
-                        onClick={() => setIsEditingTaxInfo(true)}
+                        onClick={handleStartEditing}
                         style={{
                           height: '30px',
                           padding: '0 12px',
@@ -509,10 +600,20 @@ export default function TaxInvoiceManagementModal({
                       </button>
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', gap: '6px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{
+                        fontSize: '0.72rem',
+                        color: '#2563eb',
+                        fontWeight: 800,
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        padding: '2px 8px',
+                        borderRadius: '999px'
+                      }}>
+                        กำลังแก้ไขข้อมูล
+                      </span>
                       <button
                         type="button"
-                        onClick={() => setIsEditingTaxInfo(false)}
+                        onClick={() => handleSafeClose(() => setIsEditingTaxInfo(false))}
                         style={{
                           height: '30px',
                           padding: '0 10px',
@@ -526,29 +627,6 @@ export default function TaxInvoiceManagementModal({
                         }}
                       >
                         ยกเลิก
-                      </button>
-                      <button
-                        type="button"
-                        id="btn-save-tax-info-top"
-                        onClick={handleSaveTaxInfo}
-                        disabled={isSavingTaxInfo}
-                        style={{
-                          height: '30px',
-                          padding: '0 12px',
-                          borderRadius: '6px',
-                          fontSize: '0.74rem',
-                          fontWeight: 700,
-                          border: 'none',
-                          backgroundColor: '#2563eb',
-                          color: '#ffffff',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          cursor: isSavingTaxInfo ? 'not-allowed' : 'pointer'
-                        }}
-                      >
-                        <Save size={13} />
-                        <span>{isSavingTaxInfo ? 'กำลังบันทึก...' : 'บันทึก'}</span>
                       </button>
                     </div>
                   )}
@@ -582,7 +660,7 @@ export default function TaxInvoiceManagementModal({
                         <button
                           type="button"
                           id="btn-empty-tax-info"
-                          onClick={() => setIsEditingTaxInfo(true)}
+                          onClick={handleStartEditing}
                           style={{
                             height: '34px',
                             padding: '0 16px',
@@ -964,16 +1042,25 @@ export default function TaxInvoiceManagementModal({
                         </div>
                       )}
 
-                      {/* Bottom Action Buttons inside Form */}
-                      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', paddingTop: '8px', borderTop: '1px solid var(--border-color)' }}>
+                      {/* Form Actions Footer inside Section A */}
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        paddingTop: '10px',
+                        borderTop: '1px solid var(--border-color)',
+                        fontSize: '0.74rem',
+                        color: 'var(--text-muted)'
+                      }}>
+                        <span>กรุณาตรวจสอบข้อมูล แล้วกด <strong>"บันทึกข้อมูล"</strong> ที่แถบด้านล่าง</span>
                         <button
                           type="button"
-                          onClick={() => setIsEditingTaxInfo(false)}
+                          onClick={() => handleSafeClose(() => setIsEditingTaxInfo(false))}
                           style={{
-                            height: '34px',
-                            padding: '0 14px',
+                            height: '32px',
+                            padding: '0 12px',
                             borderRadius: '8px',
-                            fontSize: '0.78rem',
+                            fontSize: '0.76rem',
                             fontWeight: 700,
                             border: '1px solid var(--border-color)',
                             backgroundColor: 'var(--bg-card)',
@@ -982,29 +1069,6 @@ export default function TaxInvoiceManagementModal({
                           }}
                         >
                           ยกเลิก
-                        </button>
-                        <button
-                          type="button"
-                          id="btn-save-tax-info-bottom"
-                          onClick={handleSaveTaxInfo}
-                          disabled={isSavingTaxInfo}
-                          style={{
-                            height: '34px',
-                            padding: '0 18px',
-                            borderRadius: '8px',
-                            fontSize: '0.78rem',
-                            fontWeight: 750,
-                            border: 'none',
-                            backgroundColor: '#2563eb',
-                            color: '#ffffff',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            cursor: isSavingTaxInfo ? 'not-allowed' : 'pointer'
-                          }}
-                        >
-                          <Save size={14} />
-                          <span>{isSavingTaxInfo ? 'กำลังบันทึกข้อมูล...' : 'บันทึกข้อมูลภาษี'}</span>
                         </button>
                       </div>
                     </div>
@@ -1135,7 +1199,7 @@ export default function TaxInvoiceManagementModal({
                               }}
                             >
                               <ExternalLink size={12} />
-                              <span>เปิดดู</span>
+                              <span>ดูเอกสาร</span>
                             </a>
 
                             <button
@@ -1307,7 +1371,7 @@ export default function TaxInvoiceManagementModal({
                           }}
                         >
                           <Save size={13} />
-                          <span>{isUploadingDoc ? 'กำลังอัปโหลด...' : 'บันทึกแนบเอกสาร'}</span>
+                          <span>{isUploadingDoc ? 'กำลังอัปโหลด...' : 'แนบใบกำกับภาษีที่ออกแล้ว'}</span>
                         </button>
                       )}
                     </div>
@@ -1344,7 +1408,7 @@ export default function TaxInvoiceManagementModal({
               <>
                 <button
                   type="button"
-                  onClick={() => setIsEditingTaxInfo(false)}
+                  onClick={() => handleSafeClose(() => setIsEditingTaxInfo(false))}
                   style={{
                     height: '36px',
                     padding: '0 14px',
@@ -1380,7 +1444,7 @@ export default function TaxInvoiceManagementModal({
                   }}
                 >
                   <Save size={14} />
-                  <span>{isSavingTaxInfo ? 'กำลังบันทึก...' : 'บันทึกข้อมูลภาษี'}</span>
+                  <span>{isSavingTaxInfo ? 'กำลังบันทึก...' : 'บันทึกข้อมูล'}</span>
                 </button>
               </>
             )}
@@ -1388,7 +1452,7 @@ export default function TaxInvoiceManagementModal({
             <button
               type="button"
               id="btn-close-tax-modal"
-              onClick={onClose}
+              onClick={() => handleSafeClose(onClose)}
               style={{
                 height: '36px',
                 padding: '0 18px',

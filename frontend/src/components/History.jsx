@@ -1360,7 +1360,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                   color: isLine ? '#059669' : 'var(--primary-color)',
                                   fontWeight: 700
                                 }}>
-                                  {isLine ? '📱 LINE OA' : '🏪 POS'}
+                                  {isLine ? 'LINE OA' : 'POS'}
                                 </span>
                               </div>
                             </td>
@@ -1854,8 +1854,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   <div style={{ padding: '8px 10px', borderRadius: '10px', backgroundColor: 'var(--bg-hover)', fontSize: '0.8rem', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     <div style={{ fontWeight: 700, color: 'var(--text-main)' }}>{roomName}</div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                      <span>📅 {usage.dateStr}</span>
-                      {usage.timeStr ? <span>⏰ {usage.timeStr}</span> : null}
+                      <span>{usage.dateStr}</span>
+                      {usage.timeStr ? <span>{usage.timeStr}</span> : null}
                     </div>
                   </div>
 
@@ -2548,6 +2548,94 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 </div>
               </div>
 
+              {/* Dedicated Tax Invoice Card */}
+              <div style={{
+                borderRadius: '16px',
+                border: '1px solid var(--border-color)',
+                backgroundColor: 'var(--bg-card)',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <FileText size={18} style={{ color: '#2563eb' }} />
+                    <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                      ข้อมูลและเอกสารใบกำกับภาษี
+                    </span>
+                  </div>
+                  <span style={{
+                    fontSize: '0.72rem',
+                    fontWeight: 800,
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    backgroundColor: selectedBooking.tax_invoice_status === 'issued' ? 'rgba(16, 185, 129, 0.12)' : (selectedBooking.tax_invoice_required === 1 ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-hover)'),
+                    color: selectedBooking.tax_invoice_status === 'issued' ? '#10b981' : (selectedBooking.tax_invoice_required === 1 ? '#2563eb' : 'var(--text-muted)')
+                  }}>
+                    {selectedBooking.tax_invoice_status === 'issued' ? 'ออกเอกสารแล้ว' : (selectedBooking.tax_invoice_required === 1 ? 'ขอใบกำกับภาษี' : 'ยังไม่ขอ')}
+                  </span>
+                </div>
+
+                {selectedBooking.tax_invoice_required === 1 || selectedBooking.tax_name ? (
+                  <div style={{
+                    fontSize: '0.8rem',
+                    color: 'var(--text-main)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    backgroundColor: 'var(--bg-main)',
+                    padding: '10px 12px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <div><strong>ชื่อผู้เสียภาษี:</strong> {selectedBooking.tax_name || '-'}</div>
+                    <div><strong>เลขประจำตัวผู้เสียภาษี:</strong> <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{selectedBooking.tax_id || '-'}</span> ({selectedBooking.tax_branch === 'branch' ? `สาขา ${selectedBooking.tax_branch_number || ''}` : 'สำนักงานใหญ่'})</div>
+                    {selectedBooking.tax_address && (
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.74rem' }}>
+                        <strong>ที่อยู่:</strong> {selectedBooking.tax_address}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)',
+                    backgroundColor: 'var(--bg-main)',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: '1px dashed var(--border-color)',
+                    textAlign: 'center'
+                  }}>
+                    ยังไม่ได้ขอใบกำกับภาษีสำหรับรายการนี้ สามารถกดจัดการเพื่อบันทึกข้อมูลภาษีได้
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  id="history-btn-manage-tax-invoice"
+                  onClick={() => setSelectedTaxBooking(selectedBooking)}
+                  style={{
+                    width: '100%',
+                    height: '38px',
+                    borderRadius: '10px',
+                    backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                    border: '1px solid rgba(37, 99, 235, 0.3)',
+                    color: '#2563eb',
+                    fontSize: '0.82rem',
+                    fontWeight: 800,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <FileText size={16} />
+                  <span>จัดการใบกำกับภาษี</span>
+                </button>
+              </div>
+
               {/* Booking Actions */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: 'auto' }}>
                 {selectedBooking.payment_status === 'cancelled' ? (
@@ -2560,33 +2648,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     borderRadius: '14px',
                     border: '1px dashed var(--border-color)'
                   }}>
-                    ⚠️ รายการนี้ถูกยกเลิกแล้ว จึงไม่มีการพิมพ์หรือส่งออกใบเสร็จรับเงิน
+                    รายการนี้ถูกยกเลิกแล้ว จึงไม่มีการพิมพ์หรือส่งออกใบเสร็จรับเงิน
                   </div>
                 ) : (
                   <>
-                    <button
-                      type="button"
-                      className="btn"
-                      style={{
-                        width: '100%',
-                        padding: '12px',
-                        gap: '8px',
-                        borderRadius: '14px',
-                        backgroundColor: 'rgba(37, 99, 235, 0.08)',
-                        border: '1px solid rgba(37, 99, 235, 0.3)',
-                        color: '#2563eb',
-                        fontWeight: 800,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        cursor: 'pointer'
-                      }}
-                      onClick={() => {
-                        setSelectedTaxBooking(selectedBooking);
-                      }}
-                    >
-                      <FileText size={18} /> จัดการใบกำกับภาษี {selectedBooking.tax_invoice_required ? '(ขอแล้ว)' : ''}
-                    </button>
                     <button
                       className="btn btn-secondary"
                       style={{ width: '100%', padding: '12px', gap: '8px', borderRadius: '14px', backgroundColor: '#e2e8f0', color: '#1e293b', fontWeight: 'bold' }}
