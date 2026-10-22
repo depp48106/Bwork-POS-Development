@@ -283,6 +283,30 @@ async function initDatabase() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS tax_invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+      invoice_number TEXT,
+      tax_payer_type TEXT DEFAULT 'corporate',
+      tax_name TEXT NOT NULL,
+      tax_id TEXT NOT NULL,
+      tax_branch_type TEXT DEFAULT 'head',
+      tax_branch_number TEXT,
+      tax_address TEXT,
+      tax_email TEXT,
+      tax_phone TEXT,
+      file_url TEXT,
+      r2_object_key TEXT,
+      file_name TEXT,
+      content_type TEXT,
+      file_size INTEGER,
+      status TEXT DEFAULT 'issued',
+      notes TEXT,
+      uploaded_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS customer_audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       customer_id INTEGER,
@@ -549,6 +573,7 @@ async function initDatabase() {
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN paid_amount REAL DEFAULT 0'); } catch (e) {}
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN balance_amount REAL DEFAULT 0'); } catch (e) {}
   try { await dbQuery.run("ALTER TABLE payment_transactions ADD COLUMN transaction_type TEXT DEFAULT 'full'"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE payment_transactions ADD COLUMN slip_url TEXT"); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_slip_verifications_trans_ref ON slip_verifications(trans_ref)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_slip_verifications_booking_id ON slip_verifications(booking_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_payment_transactions_booking_id ON payment_transactions(booking_id)'); } catch (e) {}

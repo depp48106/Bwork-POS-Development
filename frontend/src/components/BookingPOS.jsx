@@ -1,3 +1,4 @@
+import POSTaxAndSlipSection from './POSTaxAndSlipSection';
 import BasecampQuotaModal from './BasecampQuotaModal';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
@@ -188,6 +189,36 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [cartPaymentMode, setCartPaymentMode] = useState('full'); // 'full' | 'deposit' | 'unpaid'
   const [cartDepositAmount, setCartDepositAmount] = useState('');
   const [isSubmittingCartBooking, setIsSubmittingCartBooking] = useState(false);
+
+  // Quick Booking Payment Slip & Tax Invoice States
+  const [quickSlipImage, setQuickSlipImage] = useState(null);
+  const [quickSlipFileName, setQuickSlipFileName] = useState('');
+  const [quickTaxRequired, setQuickTaxRequired] = useState(false);
+  const [quickTaxPayerType, setQuickTaxPayerType] = useState('corporate');
+  const [quickTaxName, setQuickTaxName] = useState('');
+  const [quickTaxId, setQuickTaxId] = useState('');
+  const [quickTaxBranchType, setQuickTaxBranchType] = useState('head');
+  const [quickTaxBranchNumber, setQuickTaxBranchNumber] = useState('');
+  const [quickTaxAddress, setQuickTaxAddress] = useState('');
+  const [quickTaxEmail, setQuickTaxEmail] = useState('');
+  const [quickTaxPhone, setQuickTaxPhone] = useState('');
+  const [quickTaxDeliveryMethod, setQuickTaxDeliveryMethod] = useState('email');
+  const [quickTaxPostalAddress, setQuickTaxPostalAddress] = useState('');
+
+  // Cart Checkout Payment Slip & Tax Invoice States
+  const [cartSlipImage, setCartSlipImage] = useState(null);
+  const [cartSlipFileName, setCartSlipFileName] = useState('');
+  const [cartTaxRequired, setCartTaxRequired] = useState(false);
+  const [cartTaxPayerType, setCartTaxPayerType] = useState('corporate');
+  const [cartTaxName, setCartTaxName] = useState('');
+  const [cartTaxId, setCartTaxId] = useState('');
+  const [cartTaxBranchType, setCartTaxBranchType] = useState('head');
+  const [cartTaxBranchNumber, setCartTaxBranchNumber] = useState('');
+  const [cartTaxAddress, setCartTaxAddress] = useState('');
+  const [cartTaxEmail, setCartTaxEmail] = useState('');
+  const [cartTaxPhone, setCartTaxPhone] = useState('');
+  const [cartTaxDeliveryMethod, setCartTaxDeliveryMethod] = useState('email');
+  const [cartTaxPostalAddress, setCartTaxPostalAddress] = useState('');
 
   // Main interactive calendar navigation (Large Calendar)
   const today = new Date();
@@ -1016,6 +1047,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     setQuickPaymentMode('full');
     setQuickDepositAmount('');
     setPaymentMethod('cash');
+    setQuickSlipImage(null);
+    setQuickSlipFileName('');
+    setQuickTaxRequired(false);
+    setQuickTaxPayerType('corporate');
+    setQuickTaxName('');
+    setQuickTaxId('');
+    setQuickTaxBranchType('head');
+    setQuickTaxBranchNumber('');
+    setQuickTaxAddress('');
+    setQuickTaxEmail('');
+    setQuickTaxPhone('');
+    setQuickTaxDeliveryMethod('email');
+    setQuickTaxPostalAddress('');
   };
 
   const resetCartFinancials = () => {
@@ -1024,6 +1068,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     setCartPaymentMode('full');
     setCartDepositAmount('');
     setCartPaymentMethod('cash');
+    setCartSlipImage(null);
+    setCartSlipFileName('');
+    setCartTaxRequired(false);
+    setCartTaxPayerType('corporate');
+    setCartTaxName('');
+    setCartTaxId('');
+    setCartTaxBranchType('head');
+    setCartTaxBranchNumber('');
+    setCartTaxAddress('');
+    setCartTaxEmail('');
+    setCartTaxPhone('');
+    setCartTaxDeliveryMethod('email');
+    setCartTaxPostalAddress('');
   };
 
   const handleCustomerTypeChange = (newType) => {
@@ -1359,7 +1416,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         discount_type: effectiveDiscountType,
         discount_value: effectiveDiscountValue,
         payment_mode: effectivePaymentMode,
-        deposit_amount: effectiveDepositAmount
+        deposit_amount: effectiveDepositAmount,
+        slip_image: quickSlipImage || null,
+        tax_invoice_required: quickTaxRequired ? 1 : 0,
+        tax_payer_type: quickTaxPayerType,
+        tax_name: quickTaxRequired ? quickTaxName.trim() : null,
+        tax_id: quickTaxRequired ? quickTaxId.trim() : null,
+        tax_branch_type: quickTaxBranchType,
+        tax_branch_number: quickTaxBranchType === 'branch' ? quickTaxBranchNumber.trim() : null,
+        tax_address: quickTaxRequired ? quickTaxAddress.trim() : null,
+        tax_email: quickTaxRequired ? quickTaxEmail.trim() : null,
+        tax_phone: quickTaxRequired ? quickTaxPhone.trim() : null,
+        tax_delivery_method: quickTaxRequired ? quickTaxDeliveryMethod : 'email',
+        tax_postal_address: (quickTaxRequired && quickTaxDeliveryMethod === 'postal') ? quickTaxPostalAddress.trim() : null
       };
 
       const res = await fetch('/api/bookings', {
@@ -3190,7 +3259,75 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       </div>
                     )}
 
-                    {/* Unpaid / Zero-Net Notice */}
+                    {/* Payment Slip & Tax Invoice Management (Phase 2 & 3) */}
+                      <POSTaxAndSlipSection
+                        paymentMethod={paymentMethod}
+                        slipImage={quickSlipImage}
+                        setSlipImage={setQuickSlipImage}
+                        slipFileName={quickSlipFileName}
+                        setSlipFileName={setQuickSlipFileName}
+                        taxInvoiceRequired={quickTaxRequired}
+                        setTaxInvoiceRequired={setQuickTaxRequired}
+                        taxPayerType={quickTaxPayerType}
+                        setTaxPayerType={setQuickTaxPayerType}
+                        taxName={quickTaxName}
+                        setTaxName={setQuickTaxName}
+                        taxId={quickTaxId}
+                        setTaxId={setQuickTaxId}
+                        taxBranchType={quickTaxBranchType}
+                        setTaxBranchType={setQuickTaxBranchType}
+                        taxBranchNumber={quickTaxBranchNumber}
+                        setTaxBranchNumber={setQuickTaxBranchNumber}
+                        taxAddress={quickTaxAddress}
+                        setTaxAddress={setQuickTaxAddress}
+                        taxEmail={quickTaxEmail}
+                        setTaxEmail={setQuickTaxEmail}
+                        taxPhone={quickTaxPhone}
+                        setTaxPhone={setQuickTaxPhone}
+                        taxDeliveryMethod={quickTaxDeliveryMethod}
+                        setTaxDeliveryMethod={setQuickTaxDeliveryMethod}
+                        taxPostalAddress={quickTaxPostalAddress}
+                        setTaxPostalAddress={setQuickTaxPostalAddress}
+                        customer={customer}
+                        sysAlert={sysAlert}
+                        isCompact={false}
+                      />
+
+                      {/* Unpaid / Zero-Net Notice */}
+                    {/* Cart Payment Slip & Tax Invoice Management */}
+                    <POSTaxAndSlipSection
+                      paymentMethod={cartPaymentMethod}
+                      slipImage={cartSlipImage}
+                      setSlipImage={setCartSlipImage}
+                      slipFileName={cartSlipFileName}
+                      setSlipFileName={setCartSlipFileName}
+                      taxInvoiceRequired={cartTaxRequired}
+                      setTaxInvoiceRequired={setCartTaxRequired}
+                      taxPayerType={cartTaxPayerType}
+                      setTaxPayerType={setCartTaxPayerType}
+                      taxName={cartTaxName}
+                      setTaxName={setCartTaxName}
+                      taxId={cartTaxId}
+                      setTaxId={setCartTaxId}
+                      taxBranchType={cartTaxBranchType}
+                      setTaxBranchType={setCartTaxBranchType}
+                      taxBranchNumber={cartTaxBranchNumber}
+                      setTaxBranchNumber={setCartTaxBranchNumber}
+                      taxAddress={cartTaxAddress}
+                      setTaxAddress={setCartTaxAddress}
+                      taxEmail={cartTaxEmail}
+                      setTaxEmail={setCartTaxEmail}
+                      taxPhone={cartTaxPhone}
+                      setTaxPhone={setCartTaxPhone}
+                      taxDeliveryMethod={cartTaxDeliveryMethod}
+                      setTaxDeliveryMethod={setCartTaxDeliveryMethod}
+                      taxPostalAddress={cartTaxPostalAddress}
+                      setTaxPostalAddress={setCartTaxPostalAddress}
+                      customer={customer}
+                      sysAlert={sysAlert}
+                      isCompact={true}
+                    />
+
                     {cartPaymentMode === 'unpaid' && (
                       <div style={{ fontSize: '0.7rem', color: '#d97706', fontWeight: 600 }}>
                         ค้างชำระ: ยังไม่ต้องเลือกช่องทางชำระเงิน

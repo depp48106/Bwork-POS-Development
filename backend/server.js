@@ -123,6 +123,26 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Initialize database before starting server
+
+function detectFileType(buffer) {
+  if (!buffer || buffer.length < 4) return null;
+  if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
+    return { ext: 'pdf', mime: 'application/pdf' };
+  }
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+    return { ext: 'png', mime: 'image/png' };
+  }
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+    return { ext: 'jpg', mime: 'image/jpeg' };
+  }
+  if (buffer.length >= 12 &&
+      buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+      buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+    return { ext: 'webp', mime: 'image/webp' };
+  }
+  return null;
+}
+
 const dbInitPromise = initDatabase().catch(err => {
   console.error('Failed to initialize database:', err);
 });
@@ -1145,7 +1165,19 @@ app.post('/api/bookings', async (req, res) => {
     discount_type = 'none',
     discount_value = 0,
     payment_mode = null,
-    deposit_amount = 0
+    deposit_amount = 0,
+    slip_image = null,
+    tax_invoice_required = 0,
+    tax_payer_type = 'corporate',
+    tax_name = null,
+    tax_id = null,
+    tax_branch_type = 'head',
+    tax_branch_number = null,
+    tax_address = null,
+    tax_email = null,
+    tax_phone = null,
+    tax_delivery_method = 'email',
+    tax_postal_address = null
   } = req.body;
 
   if (!customer_name || !items || !items.length) {
@@ -1390,15 +1422,76 @@ app.post('/api/bookings', async (req, res) => {
         ? parseInt(guest_count, 10)
         : (items.find(it => it.guest_count)?.guest_count ? parseInt(items.find(it => it.guest_count).guest_count, 10) : null);
 
-      // Insert master booking (with discount, deposit & financial snapshots)
+      // Process optional payment slip for walk-in checkout
+      let slipUrl = null;
+      if (slip_image) {
+        const matches = String(slip_image).match(/^data:([A-Za-z0-9\-+\/]+);base64,(.+)$/);
+        if (!matches) {
+          const err = new Error('รูปแบบไฟล์สลิปไม่ถูกต้อง (รองรับ JPG, PNG, WEBP)');
+          err.statusCode = 400;
+          throw err;
+        }
+        const imgBuffer = Buffer.from(matches[2], 'base64');
+        if (imgBuffer.length > 10 * 1024 * 1024) {
+          const err = new Error('ขนาดรูปภาพสลิปเกิน 10MB กรุณาอัปโหลดรูปที่มีขนาดเล็กลง');
+          err.statusCode = 400;
+          throw err;
+        }
+        const detected = detectFileType(imgBuffer);
+        if (!detected || !['jpg', 'png', 'webp'].includes(detected.ext)) {
+          const err = new Error('ชนิดไฟล์สลิปไม่ถูกต้อง (รองรับ JPG, PNG, WEBP)');
+          err.statusCode = 400;
+          throw err;
+        }
+        const slipDir = path.join(__dirname, 'uploads', 'slips');
+        if (!fs.existsSync(slipDir)) fs.mkdirSync(slipDir, { recursive: true });
+        const slipFileName = `walkin_BK_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${detected.ext}`;
+        fs.writeFileSync(path.join(slipDir, slipFileName), imgBuffer);
+        slipUrl = `/uploads/slips/${slipFileName}`;
+      }
+
+      // Tax invoice field normalization & validation
+      const isTaxReq = Number(tax_invoice_required) === 1 ? 1 : 0;
+      const cleanTaxName = String(tax_name || '').trim();
+      const cleanTaxId = String(tax_id || '').trim();
+      const cleanBranchType = tax_branch_type === 'branch' ? 'branch' : 'head';
+      const cleanBranchNo = cleanBranchType === 'branch' ? String(tax_branch_number || '').trim() : '';
+      const cleanTaxAddress = String(tax_address || '').trim();
+      const cleanTaxEmail = String(tax_email || '').trim();
+      const cleanTaxPhone = String(tax_phone || '').trim();
+      const cleanDeliveryMethod = String(tax_delivery_method || 'email').trim();
+      const cleanPostalAddress = String(tax_postal_address || '').trim();
+
+      if (isTaxReq) {
+        if (!cleanTaxName) {
+          const err = new Error('กรุณากรอกชื่อสำหรับออกใบกำกับภาษี');
+          err.statusCode = 400;
+          throw err;
+        }
+        if (cleanTaxId && !/^\d{13}$/.test(cleanTaxId.replace(/[-\s]/g, ''))) {
+          const err = new Error('เลขประจำตัวผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก');
+          err.statusCode = 400;
+          throw err;
+        }
+        if (cleanBranchType === 'branch' && !cleanBranchNo) {
+          const err = new Error('กรุณาระบุเลขที่สาขา');
+          err.statusCode = 400;
+          throw err;
+        }
+      }
+      const initialTaxStatus = isTaxReq ? 'pending' : 'not_required';
+
+      // Insert master booking (with discount, deposit, slip & tax invoice snapshots)
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings
          (customer_name, department, contact,
           subtotal_amount, discount_type, discount_value, discount_amount,
           total_amount, paid_amount, balance_amount, payment_status, payment_method,
           receipt_number, pin_code, line_user_id, guest_count, checkin_status, booking_source, booking_channel,
-          customer_type, customer_id, contract_id, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, booking_details, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          customer_type, customer_id, contract_id, basecamp_sub_type, basecamp_unit, internal_department, billing_option, quota_hours_used, booking_details,
+          slip_image_url, tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status,
+          created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customer_name,
           department || internal_department || '',
@@ -1428,6 +1521,19 @@ app.post('/api/bookings', async (req, res) => {
           effectiveBillingOption,
           quotaHoursUsed,
           normalizedDetails.value,
+          slipUrl,
+          isTaxReq,
+          tax_payer_type === 'individual' ? 'individual' : 'corporate',
+          cleanTaxName,
+          cleanTaxId,
+          cleanBranchType,
+          cleanBranchNo,
+          cleanTaxAddress,
+          cleanTaxEmail,
+          cleanTaxPhone,
+          cleanDeliveryMethod,
+          cleanPostalAddress,
+          initialTaxStatus,
           getBangkokLocalISO(new Date())
         ]
       );
@@ -1437,12 +1543,13 @@ app.post('/api/bookings', async (req, res) => {
       if (fin.transaction_needed) {
         await dbQuery.run(
           `INSERT INTO payment_transactions
-           (booking_id, amount, payment_method, transaction_type, status, created_at)
-           VALUES (?, ?, ?, ?, 'completed', ?)`,
+           (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
+           VALUES (?, ?, ?, ?, ?, 'completed', ?)`,
           [
             bookingId,
             fin.transaction_amount,
             customer_type === 'builtland' ? '' : (payment_method || 'cash'),
+            slipUrl,
             fin.transaction_type,
             getBangkokLocalISO(new Date())
           ]
@@ -3069,6 +3176,325 @@ app.post(['/api/bookings/:id/payments/:paymentId/slip', '/api/bookings/:id/attac
 });
 
 // Update booking details (notes) endpoint
+
+// ==========================================
+// TAX INVOICE & ATTACHMENT MANAGEMENT ENDPOINTS
+// ==========================================
+
+// Get Tax Invoice Details and Attached Documents for a Booking
+app.get('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ error: 'รหัสการจองไม่ถูกต้อง' });
+    }
+    const booking = await dbQuery.get(
+      `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+              tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+              tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+       FROM bookings WHERE id = ?`,
+      [bookingId]
+    );
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+    const invoices = await dbQuery.all(
+      `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+              tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+              file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
+       FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`,
+      [bookingId]
+    );
+    res.json({
+      success: true,
+      booking_id: bookingId,
+      tax_data: {
+        tax_invoice_required: Number(booking.tax_invoice_required) || 0,
+        tax_payer_type: booking.tax_payer_type || 'corporate',
+        tax_name: booking.tax_name || '',
+        tax_id: booking.tax_id || '',
+        tax_branch_type: booking.tax_branch_type || 'head',
+        tax_branch_number: booking.tax_branch_number || '',
+        tax_address: booking.tax_address || '',
+        tax_email: booking.tax_email || '',
+        tax_phone: booking.tax_phone || '',
+        tax_delivery_method: booking.tax_delivery_method || 'email',
+        tax_postal_address: booking.tax_postal_address || '',
+        tax_invoice_status: booking.tax_invoice_status || (booking.tax_invoice_required ? 'pending' : 'not_required')
+      },
+      invoices: invoices || []
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update Tax Invoice Information for a Booking
+app.put('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ error: 'รหัสการจองไม่ถูกต้อง' });
+    }
+    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    const {
+      tax_invoice_required,
+      tax_payer_type,
+      tax_name,
+      tax_id,
+      tax_branch_type,
+      tax_branch_number,
+      tax_address,
+      tax_email,
+      tax_phone,
+      tax_delivery_method,
+      tax_postal_address
+    } = req.body;
+
+    const isRequired = Number(tax_invoice_required) === 1 ? 1 : 0;
+    const payerType = tax_payer_type === 'individual' ? 'individual' : 'corporate';
+    const branchType = tax_branch_type === 'branch' ? 'branch' : 'head';
+    const cleanTaxName = String(tax_name || '').trim();
+    const cleanTaxId = String(tax_id || '').trim();
+    const cleanBranchNo = branchType === 'branch' ? String(tax_branch_number || '').trim() : '';
+    const cleanAddress = String(tax_address || '').trim();
+    const cleanEmail = String(tax_email || '').trim();
+    const cleanPhone = String(tax_phone || '').trim();
+    const deliveryMethod = String(tax_delivery_method || 'email').trim();
+    const cleanPostalAddress = String(tax_postal_address || '').trim();
+
+    if (isRequired) {
+      if (!cleanTaxName) {
+        return res.status(400).json({ error: 'กรุณากรอกชื่อสำหรับออกใบกำกับภาษี' });
+      }
+      if (cleanTaxId && !/^\d{13}$/.test(cleanTaxId.replace(/[-\s]/g, ''))) {
+        return res.status(400).json({ error: 'เลขประจำตัวผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' });
+      }
+      if (branchType === 'branch' && !cleanBranchNo) {
+        return res.status(400).json({ error: 'กรุณาระบุเลขที่สาขา' });
+      }
+    }
+
+    const existingInvoices = await dbQuery.all('SELECT id FROM tax_invoices WHERE booking_id = ?', [bookingId]);
+    const currentStatus = !isRequired
+      ? 'not_required'
+      : (existingInvoices && existingInvoices.length > 0 ? 'issued' : 'pending');
+
+    await dbQuery.run(
+      `UPDATE bookings
+       SET tax_invoice_required = ?,
+           tax_payer_type = ?,
+           tax_name = ?,
+           tax_id = ?,
+           tax_branch_type = ?,
+           tax_branch_number = ?,
+           tax_address = ?,
+           tax_email = ?,
+           tax_phone = ?,
+           tax_delivery_method = ?,
+           tax_postal_address = ?,
+           tax_invoice_status = ?
+       WHERE id = ?`,
+      [
+        isRequired,
+        payerType,
+        cleanTaxName,
+        cleanTaxId,
+        branchType,
+        cleanBranchNo,
+        cleanAddress,
+        cleanEmail,
+        cleanPhone,
+        deliveryMethod,
+        cleanPostalAddress,
+        currentStatus,
+        bookingId
+      ]
+    );
+
+    const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
+    const nowIso = getBangkokLocalISO(new Date());
+    try {
+      await dbQuery.run(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, 'update_tax_invoice', ?, ?, ?)`,
+        [bookingId, `อัปเดตข้อมูลใบกำกับภาษี: ${isRequired ? cleanTaxName : 'ยกเลิกคำขอ'}`, staffName, nowIso]
+      );
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      message: 'บันทึกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว',
+      tax_data: {
+        tax_invoice_required: isRequired,
+        tax_payer_type: payerType,
+        tax_name: cleanTaxName,
+        tax_id: cleanTaxId,
+        tax_branch_type: branchType,
+        tax_branch_number: cleanBranchNo,
+        tax_address: cleanAddress,
+        tax_email: cleanEmail,
+        tax_phone: cleanPhone,
+        tax_delivery_method: deliveryMethod,
+        tax_postal_address: cleanPostalAddress,
+        tax_invoice_status: currentStatus
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Upload Issued Tax Invoice Document (PDF, JPG, PNG, WEBP <= 10MB)
+app.post('/api/bookings/:id/tax-invoice/attachment', authenticateToken, async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ error: 'รหัสการจองไม่ถูกต้อง' });
+    }
+    const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    const { file_data, file_name, invoice_number, notes } = req.body;
+    if (!file_data) {
+      return res.status(400).json({ error: 'กรุณาแนบไฟล์เอกสารใบกำกับภาษี' });
+    }
+
+    const matches = String(file_data).match(/^data:([A-Za-z0-9\-+\/]+);base64,(.+)$/);
+    if (!matches) {
+      return res.status(400).json({ error: 'รูปแบบไฟล์ไม่ถูกต้อง กรุณาอัปโหลดไฟล์ PDF, JPG, PNG หรือ WEBP' });
+    }
+
+    const fileBuffer = Buffer.from(matches[2], 'base64');
+    if (fileBuffer.length > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: 'ขนาดไฟล์เกิน 10MB กรุณาอัปโหลดไฟล์ที่มีขนาดเล็กลง' });
+    }
+
+    const detected = detectFileType(fileBuffer);
+    if (!detected || !['pdf', 'png', 'jpg', 'webp'].includes(detected.ext)) {
+      return res.status(400).json({ error: 'ชนิดไฟล์ไม่ถูกต้องหรือไม่ได้รับอนุญาต (รองรับเฉพาะ PDF, JPG, PNG, WEBP)' });
+    }
+
+    const ext = detected.ext;
+    const invDir = path.join(__dirname, 'uploads', 'tax_invoices');
+    if (!fs.existsSync(invDir)) fs.mkdirSync(invDir, { recursive: true });
+
+    const safeCleanInvNo = (invoice_number ? String(invoice_number).replace(/[^a-zA-Z0-9_\-]/g, '') : '') || `INV${Date.now()}`;
+    const storedFileName = `tax_inv_BK${String(bookingId).padStart(6, '0')}_${safeCleanInvNo}_${Date.now()}.${ext}`;
+    fs.writeFileSync(path.join(invDir, storedFileName), fileBuffer);
+    const fileUrl = `/uploads/tax_invoices/${storedFileName}`;
+
+    const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
+    const nowIso = getBangkokLocalISO(new Date());
+
+    const result = await dbQuery.run(
+      `INSERT INTO tax_invoices
+       (booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+        tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+        file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?)`,
+      [
+        bookingId,
+        invoice_number || null,
+        booking.tax_payer_type || 'corporate',
+        booking.tax_name || booking.customer_name || 'ลูกค้า',
+        booking.tax_id || '',
+        booking.tax_branch_type || 'head',
+        booking.tax_branch_number || '',
+        booking.tax_address || '',
+        booking.tax_email || '',
+        booking.tax_phone || booking.contact || '',
+        fileUrl,
+        file_name || storedFileName,
+        detected.mime,
+        fileBuffer.length,
+        notes || null,
+        staffName,
+        nowIso,
+        nowIso
+      ]
+    );
+
+    await dbQuery.run(
+      `UPDATE bookings
+       SET tax_invoice_status = 'issued', tax_invoice_required = 1
+       WHERE id = ?`,
+      [bookingId]
+    );
+
+    try {
+      await dbQuery.run(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, 'attach_tax_invoice', ?, ?, ?)`,
+        [bookingId, `แนบไฟล์ใบกำกับภาษี #${invoice_number || result.id}: ${fileUrl}`, staffName, nowIso]
+      );
+    } catch (_) {}
+
+    const newInvoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE id = ?', [result.id]);
+
+    res.json({
+      success: true,
+      message: 'แนบไฟล์ใบกำกับภาษีเรียบร้อยแล้ว',
+      invoice: newInvoice
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete Issued Tax Invoice Attachment
+app.delete('/api/bookings/:id/tax-invoice/attachment/:invoiceId', authenticateToken, async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    const invoiceId = Number(req.params.invoiceId);
+    if (!bookingId || !invoiceId) {
+      return res.status(400).json({ error: 'พารามิเตอร์ไม่ถูกต้อง' });
+    }
+
+    const invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE id = ? AND booking_id = ?', [invoiceId, bookingId]);
+    if (!invoice) {
+      return res.status(404).json({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' });
+    }
+
+    if (invoice.file_url && invoice.file_url.startsWith('/uploads/tax_invoices/')) {
+      const diskPath = path.join(__dirname, invoice.file_url);
+      if (fs.existsSync(diskPath)) {
+        try { fs.unlinkSync(diskPath); } catch (_) {}
+      }
+    }
+
+    await dbQuery.run('DELETE FROM tax_invoices WHERE id = ?', [invoiceId]);
+
+    const remaining = await dbQuery.all('SELECT id FROM tax_invoices WHERE booking_id = ?', [bookingId]);
+    const newStatus = remaining.length > 0 ? 'issued' : 'pending';
+    await dbQuery.run('UPDATE bookings SET tax_invoice_status = ? WHERE id = ?', [newStatus, bookingId]);
+
+    const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
+    const nowIso = getBangkokLocalISO(new Date());
+    try {
+      await dbQuery.run(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, 'delete_tax_invoice', ?, ?, ?)`,
+        [bookingId, `ลบเอกสารใบกำกับภาษี #${invoice.invoice_number || invoiceId}`, staffName, nowIso]
+      );
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      message: 'ลบเอกสารใบกำกับภาษีเรียบร้อยแล้ว',
+      tax_invoice_status: newStatus
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const handleUpdateBookingDetails = async (req, res) => {
   const { id } = req.params;
   if (!id || isNaN(Number(id))) {

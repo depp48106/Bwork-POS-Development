@@ -1293,7 +1293,7 @@ async function saveUploadedFile(env, fileData, folder = 'uploads') {
     for (let i = 0; i < len; i++) {
       bytes[i] = binaryStr.charCodeAt(i);
     }
-    const ext = contentType.includes('png') ? 'png' : (contentType.includes('jpeg') || contentType.includes('jpg') ? 'jpeg' : 'bin');
+    const ext = contentType.includes('pdf') ? 'pdf' : (contentType.includes('webp') ? 'webp' : (contentType.includes('png') ? 'png' : ((contentType.includes('jpeg') || contentType.includes('jpg')) ? 'jpeg' : 'bin')));
     const filename = `${folder}/${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
 
     if (env.BUCKET) {
@@ -2417,6 +2417,12 @@ async function ensureD1Schema(env) {
     "ALTER TABLE bookings ADD COLUMN customer_email TEXT",
     "ALTER TABLE bookings ADD COLUMN booking_details TEXT",
     "ALTER TABLE bookings ADD COLUMN slip_image_url TEXT",
+    "ALTER TABLE payment_transactions ADD COLUMN slip_url TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_payer_type TEXT DEFAULT 'corporate'",
+    "ALTER TABLE bookings ADD COLUMN tax_branch_type TEXT DEFAULT 'head'",
+    "ALTER TABLE bookings ADD COLUMN tax_branch_number TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_email TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_invoice_status TEXT DEFAULT 'pending'",
     "ALTER TABLE bookings ADD COLUMN line_user_id TEXT",
     "ALTER TABLE bookings ADD COLUMN pin_code TEXT",
     "ALTER TABLE bookings ADD COLUMN qr_token TEXT",
@@ -2450,6 +2456,32 @@ async function ensureD1Schema(env) {
       // Ignored: column already exists
     }
   }
+
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tax_invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL,
+      invoice_number TEXT,
+      tax_payer_type TEXT DEFAULT 'corporate',
+      tax_name TEXT NOT NULL,
+      tax_id TEXT NOT NULL,
+      tax_branch_type TEXT DEFAULT 'head',
+      tax_branch_number TEXT,
+      tax_address TEXT,
+      tax_email TEXT,
+      tax_phone TEXT,
+      file_url TEXT,
+      r2_object_key TEXT,
+      file_name TEXT,
+      content_type TEXT,
+      file_size INTEGER,
+      status TEXT DEFAULT 'issued',
+      notes TEXT,
+      uploaded_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+  } catch (e) {}
 
   const supportTables = [
     `CREATE TABLE IF NOT EXISTS support_tickets (
@@ -4844,7 +4876,19 @@ export default {
           basecamp_unit = null,
           internal_department = null,
           billing_option = 'paid',
-          booking_details = null
+          booking_details = null,
+          slip_image = null,
+          tax_invoice_required = 0,
+          tax_payer_type = 'corporate',
+          tax_name = null,
+          tax_id = null,
+          tax_branch_type = 'head',
+          tax_branch_number = null,
+          tax_address = null,
+          tax_email = null,
+          tax_phone = null,
+          tax_delivery_method = 'email',
+          tax_postal_address = null
         } = body;
 
         if (!customer_name || !items || !items.length) {
@@ -5077,6 +5121,42 @@ export default {
 
         const nowIso = new Date().toISOString();
 
+        // Process optional slip_image for walk-in checkout
+        let slipUrl = null;
+        if (slip_image && typeof slip_image === 'string' && slip_image.startsWith('data:image/')) {
+          if (slip_image.length <= 10 * 1024 * 1024 * 1.37) {
+            try {
+              slipUrl = await saveUploadedFile(env, slip_image, 'slips');
+            } catch (sErr) {
+              console.error('[Worker Checkout] Error saving slip to R2:', sErr);
+            }
+          }
+        }
+
+        const isTaxReq = Number(tax_invoice_required) === 1 ? 1 : 0;
+        const cleanTaxName = String(tax_name || '').trim();
+        const cleanTaxId = String(tax_id || '').trim();
+        const cleanBranchType = tax_branch_type === 'branch' ? 'branch' : 'head';
+        const cleanBranchNo = cleanBranchType === 'branch' ? String(tax_branch_number || '').trim() : '';
+        const cleanTaxAddress = String(tax_address || '').trim();
+        const cleanTaxEmail = String(tax_email || '').trim();
+        const cleanTaxPhone = String(tax_phone || '').trim();
+        const cleanDeliveryMethod = String(tax_delivery_method || 'email').trim();
+        const cleanPostalAddress = String(tax_postal_address || '').trim();
+
+        if (isTaxReq) {
+          if (!cleanTaxName) {
+            return new Response(JSON.stringify({ error: 'กรุณากรอกชื่อสำหรับออกใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+          }
+          if (cleanTaxId && !/^\d{13}$/.test(cleanTaxId.replace(/[-\s]/g, ''))) {
+            return new Response(JSON.stringify({ error: 'เลขประจำตัวผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' }), { status: 400, headers: corsHeaders });
+          }
+          if (cleanBranchType === 'branch' && !cleanBranchNo) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเลขที่สาขา' }), { status: 400, headers: corsHeaders });
+          }
+        }
+        const initialTaxStatus = isTaxReq ? 'pending' : 'not_required';
+
         let insBooking;
         try {
           insBooking = await env.DB.prepare(
@@ -5086,8 +5166,10 @@ export default {
               total_amount, paid_amount, balance_amount, payment_status, payment_method,
               receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status,
               customer_type, customer_id, contract_id, basecamp_sub_type, basecamp_unit, internal_department,
-              billing_option, quota_hours_used, booking_details, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              billing_option, quota_hours_used, booking_details,
+              slip_image_url, tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status,
+              created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name,
             department || internal_department || '',
@@ -5115,6 +5197,19 @@ export default {
             effectiveBillingOption,
             quotaHoursUsed,
             normalizedDetails.value,
+            slipUrl,
+            isTaxReq,
+            tax_payer_type === 'individual' ? 'individual' : 'corporate',
+            cleanTaxName,
+            cleanTaxId,
+            cleanBranchType,
+            cleanBranchNo,
+            cleanTaxAddress,
+            cleanTaxEmail,
+            cleanTaxPhone,
+            cleanDeliveryMethod,
+            cleanPostalAddress,
+            initialTaxStatus,
             nowIso
           ).run();
         } catch (dbErr) {
@@ -5131,12 +5226,13 @@ export default {
           try {
             await env.DB.prepare(
               `INSERT INTO payment_transactions
-               (booking_id, amount, payment_method, transaction_type, status, created_at)
-               VALUES (?, ?, ?, ?, 'completed', ?)`
+               (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
+               VALUES (?, ?, ?, ?, ?, 'completed', ?)`
             ).bind(
               bookingId,
               fin.transaction_amount,
               customer_type === 'builtland' ? '' : (payment_method || 'cash'),
+              slipUrl,
               fin.transaction_type,
               nowIso
             ).run();
@@ -6080,6 +6176,326 @@ export default {
       }
 
       // Cancel booking endpoint (Soft cancel + LINE Notification)
+      
+      // ----------------------------------------------------
+      // TAX INVOICE & ATTACHMENT MANAGEMENT ENDPOINTS (PARITY)
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare(
+          `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+                  tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+                  tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+           FROM bookings WHERE id = ?`
+        ).bind(bookingId).first();
+
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        let invoices = [];
+        try {
+          const invRes = await env.DB.prepare(
+            `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                    tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                    file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
+             FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`
+          ).bind(bookingId).all();
+          invoices = invRes?.results || [];
+        } catch (_) {}
+
+        return new Response(JSON.stringify({
+          success: true,
+          booking_id: bookingId,
+          tax_data: {
+            tax_invoice_required: Number(booking.tax_invoice_required) || 0,
+            tax_payer_type: booking.tax_payer_type || 'corporate',
+            tax_name: booking.tax_name || '',
+            tax_id: booking.tax_id || '',
+            tax_branch_type: booking.tax_branch_type || 'head',
+            tax_branch_number: booking.tax_branch_number || '',
+            tax_address: booking.tax_address || '',
+            tax_email: booking.tax_email || '',
+            tax_phone: booking.tax_phone || '',
+            tax_delivery_method: booking.tax_delivery_method || 'email',
+            tax_postal_address: booking.tax_postal_address || '',
+            tax_invoice_status: booking.tax_invoice_status || (booking.tax_invoice_required ? 'pending' : 'not_required')
+          },
+          invoices
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice') && method === 'PUT') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const {
+          tax_invoice_required,
+          tax_payer_type,
+          tax_name,
+          tax_id,
+          tax_branch_type,
+          tax_branch_number,
+          tax_address,
+          tax_email,
+          tax_phone,
+          tax_delivery_method,
+          tax_postal_address
+        } = body;
+
+        const isRequired = Number(tax_invoice_required) === 1 ? 1 : 0;
+        const payerType = tax_payer_type === 'individual' ? 'individual' : 'corporate';
+        const branchType = tax_branch_type === 'branch' ? 'branch' : 'head';
+        const cleanTaxName = String(tax_name || '').trim();
+        const cleanTaxId = String(tax_id || '').trim();
+        const cleanBranchNo = branchType === 'branch' ? String(tax_branch_number || '').trim() : '';
+        const cleanAddress = String(tax_address || '').trim();
+        const cleanEmail = String(tax_email || '').trim();
+        const cleanPhone = String(tax_phone || '').trim();
+        const deliveryMethod = String(tax_delivery_method || 'email').trim();
+        const cleanPostalAddress = String(tax_postal_address || '').trim();
+
+        if (isRequired) {
+          if (!cleanTaxName) {
+            return new Response(JSON.stringify({ error: 'กรุณากรอกชื่อสำหรับออกใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+          }
+          if (cleanTaxId && !/^\d{13}$/.test(cleanTaxId.replace(/[-\s]/g, ''))) {
+            return new Response(JSON.stringify({ error: 'เลขประจำตัวผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' }), { status: 400, headers: corsHeaders });
+          }
+          if (branchType === 'branch' && !cleanBranchNo) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเลขที่สาขา' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        let existingInvoices = [];
+        try {
+          const invRes = await env.DB.prepare('SELECT id FROM tax_invoices WHERE booking_id = ?').bind(bookingId).all();
+          existingInvoices = invRes?.results || [];
+        } catch (_) {}
+
+        const currentStatus = !isRequired
+          ? 'not_required'
+          : (existingInvoices.length > 0 ? 'issued' : 'pending');
+
+        await env.DB.prepare(
+          `UPDATE bookings
+           SET tax_invoice_required = ?,
+               tax_payer_type = ?,
+               tax_name = ?,
+               tax_id = ?,
+               tax_branch_type = ?,
+               tax_branch_number = ?,
+               tax_address = ?,
+               tax_email = ?,
+               tax_phone = ?,
+               tax_delivery_method = ?,
+               tax_postal_address = ?,
+               tax_invoice_status = ?
+           WHERE id = ?`
+        ).bind(
+          isRequired,
+          payerType,
+          cleanTaxName,
+          cleanTaxId,
+          branchType,
+          cleanBranchNo,
+          cleanAddress,
+          cleanEmail,
+          cleanPhone,
+          deliveryMethod,
+          cleanPostalAddress,
+          currentStatus,
+          bookingId
+        ).run();
+
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+        try {
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'update_tax_invoice', ?, ?, ?)`
+          ).bind(bookingId, `อัปเดตข้อมูลใบกำกับภาษี: ${isRequired ? cleanTaxName : 'ยกเลิกคำขอ'}`, staffName, nowIso).run();
+        } catch (_) {}
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'บันทึกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว',
+          tax_data: {
+            tax_invoice_required: isRequired,
+            tax_payer_type: payerType,
+            tax_name: cleanTaxName,
+            tax_id: cleanTaxId,
+            tax_branch_type: branchType,
+            tax_branch_number: cleanBranchNo,
+            tax_address: cleanAddress,
+            tax_email: cleanEmail,
+            tax_phone: cleanPhone,
+            tax_delivery_method: deliveryMethod,
+            tax_postal_address: cleanPostalAddress,
+            tax_invoice_status: currentStatus
+          }
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice/attachment') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const { file_data, file_name, invoice_number, notes } = body;
+        if (!file_data) {
+          return new Response(JSON.stringify({ error: 'กรุณาแนบไฟล์เอกสารใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (typeof file_data !== 'string' || (!file_data.startsWith('data:application/pdf') && !file_data.startsWith('data:image/'))) {
+          return new Response(JSON.stringify({ error: 'รูปแบบไฟล์ไม่ถูกต้อง กรุณาอัปโหลดไฟล์ PDF, JPG, PNG หรือ WEBP' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (file_data.length > 10 * 1024 * 1024 * 1.37) {
+          return new Response(JSON.stringify({ error: 'ขนาดไฟล์เกิน 10MB กรุณาอัปโหลดไฟล์ที่มีขนาดเล็กลง' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (!env.BUCKET) {
+          return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน' }), { status: 500, headers: corsHeaders });
+        }
+
+        let fileUrl = null;
+        try {
+          fileUrl = await saveUploadedFile(env, file_data, 'tax_invoices');
+          if (!fileUrl || fileUrl.startsWith('data:')) {
+            return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกเอกสารลง R2 ได้' }), { status: 500, headers: corsHeaders });
+          }
+        } catch (r2Err) {
+          console.error('[Tax Invoice] Error saving to R2:', r2Err);
+          return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์ลงระบบจัดเก็บได้' }), { status: 500, headers: corsHeaders });
+        }
+
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+
+        const insRes = await env.DB.prepare(
+          `INSERT INTO tax_invoices
+           (booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+            tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+            file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?)`
+        ).bind(
+          bookingId,
+          invoice_number || null,
+          booking.tax_payer_type || 'corporate',
+          booking.tax_name || booking.customer_name || 'ลูกค้า',
+          booking.tax_id || '',
+          booking.tax_branch_type || 'head',
+          booking.tax_branch_number || '',
+          booking.tax_address || '',
+          booking.tax_email || '',
+          booking.tax_phone || booking.contact || '',
+          fileUrl,
+          file_name || 'tax_invoice',
+          file_data.substring(5, file_data.indexOf(';')),
+          Math.round(file_data.length * 0.75),
+          notes || null,
+          staffName,
+          nowIso,
+          nowIso
+        ).run();
+
+        await env.DB.prepare("UPDATE bookings SET tax_invoice_status = 'issued', tax_invoice_required = 1 WHERE id = ?").bind(bookingId).run();
+
+        try {
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'attach_tax_invoice', ?, ?, ?)`
+          ).bind(bookingId, `แนบไฟล์ใบกำกับภาษี #${invoice_number || insRes.meta.last_row_id}: ${fileUrl}`, staffName, nowIso).run();
+        } catch (_) {}
+
+        const newInvoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE id = ?').bind(insRes.meta.last_row_id).first();
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'แนบไฟล์ใบกำกับภาษีเรียบร้อยแล้ว',
+          invoice: newInvoice
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/bookings/') && pathname.includes('/tax-invoice/attachment/') && method === 'DELETE') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        const invoiceId = Number(parts[6]);
+        if (!bookingId || !invoiceId) {
+          return new Response(JSON.stringify({ error: 'พารามิเตอร์ไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE id = ? AND booking_id = ?').bind(invoiceId, bookingId).first();
+        if (!invoice) {
+          return new Response(JSON.stringify({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' }), { status: 404, headers: corsHeaders });
+        }
+
+        if (invoice.file_url && invoice.file_url.startsWith('/uploads/') && env.BUCKET) {
+          const r2Key = invoice.file_url.replace('/uploads/', '');
+          try { await env.BUCKET.delete(r2Key); } catch (_) {}
+        }
+
+        await env.DB.prepare('DELETE FROM tax_invoices WHERE id = ?').bind(invoiceId).run();
+
+        let remaining = [];
+        try {
+          const remRes = await env.DB.prepare('SELECT id FROM tax_invoices WHERE booking_id = ?').bind(bookingId).all();
+          remaining = remRes?.results || [];
+        } catch (_) {}
+        const newStatus = remaining.length > 0 ? 'issued' : 'pending';
+        await env.DB.prepare('UPDATE bookings SET tax_invoice_status = ? WHERE id = ?').bind(newStatus, bookingId).run();
+
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+        try {
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'delete_tax_invoice', ?, ?, ?)`
+          ).bind(bookingId, `ลบเอกสารใบกำกับภาษี #${invoice.invoice_number || invoiceId}`, staffName, nowIso).run();
+        } catch (_) {}
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'ลบเอกสารใบกำกับภาษีเรียบร้อยแล้ว',
+          tax_invoice_status: newStatus
+        }), { headers: corsHeaders });
+      }
+
       if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/cancel') && method === 'POST') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });

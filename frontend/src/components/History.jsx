@@ -1,3 +1,4 @@
+import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import {
   Search,
@@ -102,6 +103,43 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
   // Modals state
   const [selectedBooking, setSelectedBooking] = useState(null);
+  const [attachingTxId, setAttachingTxId] = useState(null);
+  const attachTxFileInputRef = useRef(null);
+
+  const handleAttachSlipToTransaction = async (bookingId, paymentId, file) => {
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      if (sysAlert) await sysAlert('ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64Data = e.target.result;
+      try {
+        const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+        const res = await fetch(`/api/bookings/${bookingId}/payments/${paymentId}/slip`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({ slip_image: base64Data })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          if (sysAlert) await sysAlert('แนบสลิปหลักฐานเรียบร้อยแล้ว');
+          fetchPaymentTransactions(bookingId);
+          fetchHistoryBookings(true);
+        } else {
+          if (sysAlert) await sysAlert(data.error || 'เกิดข้อผิดพลาดในการแนบสลิป');
+        }
+      } catch (err) {
+        console.error('Error attaching slip in history:', err);
+        if (sysAlert) await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
   const [selectedTaxBooking, setSelectedTaxBooking] = useState(null);
   const [viewingSlipBooking, setViewingSlipBooking] = useState(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
@@ -2414,7 +2452,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                 #{tx.receipt_number}
                               </div>
                             )}
-                            {tx.slip_url && (
+                            {tx.slip_url ? (
                               <button
                                 type="button"
                                 onClick={(e) => {
@@ -2442,6 +2480,31 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                               >
                                 <Eye size={10} />
                                 <span>ดูสลิป #{tx.id}</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAttachingTxId(tx.id);
+                                  attachTxFileInputRef.current?.click();
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                  padding: '2px 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'rgba(59, 130, 246, 0.08)',
+                                  color: 'var(--primary-color)',
+                                  border: '1px dashed rgba(59, 130, 246, 0.3)',
+                                  fontSize: '0.68rem',
+                                  fontWeight: 700,
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <Plus size={10} />
+                                <span>แนบสลิป</span>
                               </button>
                             )}
                           </div>
@@ -2585,182 +2648,15 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
         </div>
       )}
 
-      {/* TAX INVOICE DETAILS & PRINT MODAL */}
-      {selectedTaxBooking && (() => {
-        const handleCopyAllTaxFields = () => {
-          let lines = [];
-          if (selectedTaxBooking.tax_name) lines.push(`ชื่อผู้เสียภาษี: ${selectedTaxBooking.tax_name}`);
-          if (selectedTaxBooking.tax_id) lines.push(`เลขประจำตัวผู้เสียภาษี: ${selectedTaxBooking.tax_id}`);
-          if (selectedTaxBooking.tax_address) lines.push(`ที่อยู่: ${selectedTaxBooking.tax_address}`);
-          if (selectedTaxBooking.tax_phone || selectedTaxBooking.contact) lines.push(`เบอร์โทรศัพท์: ${selectedTaxBooking.tax_phone || selectedTaxBooking.contact}`);
-
-          const deliveryText = selectedTaxBooking.tax_delivery_method === 'postal'
-            ? `จัดส่งทางไปรษณีย์ / จดหมาย (ที่อยู่จัดส่ง: ${selectedTaxBooking.tax_postal_address || selectedTaxBooking.tax_address || '-'})`
-            : (selectedTaxBooking.tax_delivery_method === 'pickup' ? 'รับด้วยตนเองที่หน้าร้าน' : 'จัดส่งทางอีเมล (e-Tax)');
-          lines.push(`ช่องทางการจัดส่ง: ${deliveryText}`);
-
-          const fullText = lines.join('\n');
-          navigator.clipboard.writeText(fullText);
-          setTaxCopied(true);
-          setTimeout(() => setTaxCopied(false), 2500);
-          if (sysAlert) {
-            sysAlert('คัดลอกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว');
-          }
-        };
-
-        return (
-          <div style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(15, 23, 42, 0.85)',
-            backdropFilter: 'blur(8px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-            padding: '16px'
-          }}>
-            <div className="card" style={{
-              width: '100%',
-              maxWidth: '560px',
-              padding: '24px',
-              borderRadius: '20px',
-              backgroundColor: 'var(--bg-card)',
-              border: '1px solid var(--border-color)',
-              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '16px',
-              position: 'relative',
-              maxHeight: '92vh',
-              overflowY: 'auto'
-            }}>
-              <button
-                style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
-                onClick={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
-              >
-                <X size={20} />
-              </button>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ width: '46px', height: '46px', borderRadius: '14px', backgroundColor: 'rgba(37, 99, 235, 0.15)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <FileText size={24} />
-                </div>
-                <div>
-                  <h3 style={{ fontSize: '1.25rem', fontWeight: 850, margin: 0, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span>ข้อมูลใบกำกับภาษี</span>
-                    <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(37, 99, 235, 0.15)', color: '#2563eb', fontWeight: 800 }}>Tax Invoice</span>
-                  </h3>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    ใบจอง <strong>{selectedTaxBooking.receipt_number || ('#' + selectedTaxBooking.id)}</strong> · ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{selectedTaxBooking.customer_name || '-'}</strong>
-                  </span>
-                </div>
-              </div>
-
-              {/* Tax Payer Info Box */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
-                <div style={{ padding: '14px 16px', borderRadius: '14px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ชื่อบุคคล / นิติบุคคล (ตาม ภ.พ.20):</span>
-                    <div style={{ fontWeight: 850, color: 'var(--text-main)', fontSize: '1rem', marginTop: '2px' }}>
-                      {selectedTaxBooking.tax_name || '-'}
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px' }}>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>เลขประจำตัวผู้เสียภาษี (13 หลัก):</span>
-                      <div style={{ fontWeight: 900, color: 'var(--primary-color)', letterSpacing: '1.2px', marginTop: '2px', fontSize: '0.95rem' }}>
-                        {selectedTaxBooking.tax_id || '-'}
-                      </div>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>เบอร์โทรศัพท์:</span>
-                      <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
-                        {selectedTaxBooking.tax_phone || selectedTaxBooking.contact || '-'}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ที่อยู่สำหรับออกใบกำกับภาษี:</span>
-                    <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.45 }}>
-                      {selectedTaxBooking.tax_address || '-'}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Delivery details box */}
-                <div style={{ padding: '12px 16px', borderRadius: '14px', backgroundColor: 'rgba(59, 130, 246, 0.06)', border: '1px solid rgba(59, 130, 246, 0.25)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: '#2563eb', fontWeight: 800 }}>ช่องทางการจัดส่งเอกสาร:</span>
-                    <span style={{ fontWeight: 800, color: 'var(--text-main)', backgroundColor: 'rgba(255,255,255,0.8)', padding: '2px 8px', borderRadius: '6px', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
-                      {selectedTaxBooking.tax_delivery_method === 'postal' ? '📮 จัดส่งทางไปรษณีย์ / จดหมาย' : (selectedTaxBooking.tax_delivery_method === 'pickup' ? '🏢 รับด้วยตนเองที่หน้าร้าน' : '✉️ อีเมล / e-Tax')}
-                    </span>
-                  </div>
-
-                  {selectedTaxBooking.tax_delivery_method === 'postal' && (
-                    <div style={{ marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed rgba(59, 130, 246, 0.25)' }}>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ที่อยู่จัดส่งเอกสารทางไปรษณีย์:</span>
-                      <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.4 }}>
-                        {selectedTaxBooking.tax_postal_address || selectedTaxBooking.tax_address || '-'}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-                <button
-                  type="button"
-                  className="btn"
-                  style={{
-                    flex: 1.1,
-                    height: '44px',
-                    borderRadius: '12px',
-                    fontWeight: 700,
-                    fontSize: '0.85rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '6px',
-                    backgroundColor: taxCopied ? '#10b981' : 'var(--bg-hover)',
-                    color: taxCopied ? '#ffffff' : 'var(--text-main)',
-                    border: taxCopied ? '1.5px solid #10b981' : '1px solid var(--border-color)',
-                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                    cursor: 'pointer'
-                  }}
-                  onClick={handleCopyAllTaxFields}
-                >
-                  {taxCopied ? (
-                    <>
-                      <CheckCircle2 size={16} />
-                      <span>คัดลอกเรียบร้อยแล้ว!</span>
-                    </>
-                  ) : (
-                    <>
-                      <FileText size={16} />
-                      <span>คัดลอกข้อมูลใบกำกับ</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{ height: '44px', padding: '0 24px', borderRadius: '12px', fontWeight: 700, fontSize: '0.85rem' }}
-                  onClick={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
-                >
-                  ปิด
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {/* TAX INVOICE MANAGEMENT MODAL (PHASE 3 & 4) */}
+      {selectedTaxBooking && (
+        <TaxInvoiceManagementModal
+          booking={selectedTaxBooking}
+          onClose={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
+          onUpdated={() => fetchHistoryBookings(true)}
+          sysAlert={sysAlert}
+        />
+      )}
 
       {/* SLIP VIEWER MODAL (ดูสลิปย้อนหลัง) */}
       {viewingSlipBooking && (
