@@ -3798,14 +3798,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             })()}
 
             {/* 5. Tax Invoice Info */}
-            {activeActionMenuBooking.tax_invoice_required === 1 && (
+            {activeActionMenuBooking && (
               <div
                 onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); setSelectedTaxBooking(b); }}
                 className="action-menu-item"
                 style={{ color: '#2563eb', fontWeight: 700 }}
               >
                 <FileText size={14} style={{ color: '#2563eb' }} />
-                <span>ดูข้อมูลใบกำกับภาษี</span>
+                <span>{activeActionMenuBooking.tax_invoice_required === 1 ? 'ดูข้อมูลใบกำกับภาษี' : 'ขอใบกำกับภาษี / จัดการภาษี'}</span>
               </div>
             )}
 
@@ -4899,7 +4899,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                         <Eye size={10} />
                                         <span>ดูสลิป</span>
                                       </button>
-                                    ) : (tx.payment_method === 'transfer' || tx.payment_method === 'promptpay') ? (
+                                    ) : !tx.slip_url ? (
                                       <button
                                         type="button"
                                         onClick={(e) => {

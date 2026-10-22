@@ -2565,6 +2565,29 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 ) : (
                   <>
                     <button
+                      type="button"
+                      className="btn"
+                      style={{
+                        width: '100%',
+                        padding: '12px',
+                        gap: '8px',
+                        borderRadius: '14px',
+                        backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                        border: '1px solid rgba(37, 99, 235, 0.3)',
+                        color: '#2563eb',
+                        fontWeight: 800,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer'
+                      }}
+                      onClick={() => {
+                        setSelectedTaxBooking(selectedBooking);
+                      }}
+                    >
+                      <FileText size={18} /> จัดการใบกำกับภาษี {selectedBooking.tax_invoice_required ? '(ขอแล้ว)' : ''}
+                    </button>
+                    <button
                       className="btn btn-secondary"
                       style={{ width: '100%', padding: '12px', gap: '8px', borderRadius: '14px', backgroundColor: '#e2e8f0', color: '#1e293b', fontWeight: 'bold' }}
                       onClick={handleDownloadPDF}

@@ -26,15 +26,15 @@ function validateTaxDocumentSignature(file) {
       if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
         return resolve({ valid: true, ext: 'pdf', mime: 'application/pdf' });
       }
-      // Check PNG
+      // Check PNG (0x89 0x50 0x4E 0x47)
       if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
         return resolve({ valid: true, ext: 'png', mime: 'image/png' });
       }
-      // Check JPEG
+      // Check JPEG (0xFF 0xD8 0xFF)
       if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
         return resolve({ valid: true, ext: 'jpg', mime: 'image/jpeg' });
       }
-      // Check WEBP
+      // Check WEBP (RIFF....WEBP)
       if (buffer.length >= 12 &&
           buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
           buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
@@ -79,9 +79,11 @@ export default function TaxInvoiceManagementModal({
   const [uploadInvoiceNumber, setUploadInvoiceNumber] = useState('');
   const [uploadNotes, setUploadNotes] = useState('');
   const [uploadError, setUploadError] = useState(null);
+  const [isDraggingDoc, setIsDraggingDoc] = useState(false);
   const fileInputRef = useRef(null);
+  const scrollBodyRef = useRef(null);
 
-  const bookingId = booking?.id;
+  const bookingId = booking?.id || booking?.booking_id;
 
   const fetchTaxInvoiceData = async () => {
     if (!bookingId) return;
@@ -111,6 +113,8 @@ export default function TaxInvoiceManagementModal({
           setEditPhone(data.tax_data.tax_phone || '');
           setEditDeliveryMethod(data.tax_data.tax_delivery_method || 'email');
           setEditPostalAddress(data.tax_data.tax_postal_address || '');
+        } else if (booking?.customer_name) {
+          setEditName(booking.customer_name);
         }
       }
     } catch (err) {
@@ -204,31 +208,29 @@ export default function TaxInvoiceManagementModal({
     }
   };
 
-  // Handle File Selection for Attachment
-  const handleFileChange = async (e) => {
-    const file = e.target.files?.[0];
+  // Process Document Selection
+  const processDocumentFile = async (file) => {
     if (!file) return;
     setUploadError(null);
-
-    const check = await validateTaxDocumentSignature(file);
-    if (!check.valid) {
-      setUploadError(check.error);
-      if (sysAlert) sysAlert(check.error);
+    const validation = await validateTaxDocumentSignature(file);
+    if (!validation.valid) {
+      setUploadError(validation.error);
+      if (sysAlert) sysAlert(validation.error);
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
-
     setUploadFile(file);
-    if (!uploadInvoiceNumber) {
-      const suggestedInv = `INV-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(bookingId).padStart(4, '0')}`;
-      setUploadInvoiceNumber(suggestedInv);
-    }
   };
 
-  // Upload Attached Invoice Document
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    processDocumentFile(file);
+  };
+
+  // Upload Attached Document
   const handleUploadAttachment = async () => {
     if (!uploadFile) {
-      if (sysAlert) sysAlert('กรุณาเลือกไฟล์เอกสารที่ต้องการแนบ');
+      setUploadError('กรุณาเลือกไฟล์เอกสารใบกำกับภาษี');
       return;
     }
 
@@ -250,14 +252,14 @@ export default function TaxInvoiceManagementModal({
           body: JSON.stringify({
             file_data: base64Data,
             file_name: uploadFile.name,
-            invoice_number: uploadInvoiceNumber.trim() || null,
-            notes: uploadNotes.trim() || null
+            invoice_number: uploadInvoiceNumber.trim(),
+            notes: uploadNotes.trim()
           })
         });
 
         const data = await res.json();
         if (res.ok && data.success) {
-          if (sysAlert) sysAlert('แนบไฟล์ใบกำกับภาษีเรียบร้อยแล้ว');
+          if (sysAlert) sysAlert('แนบเอกสารใบกำกับภาษีเรียบร้อยแล้ว');
           setUploadFile(null);
           setUploadInvoiceNumber('');
           setUploadNotes('');
@@ -265,8 +267,8 @@ export default function TaxInvoiceManagementModal({
           fetchTaxInvoiceData();
           if (onUpdated) onUpdated();
         } else {
-          setUploadError(data.error || 'ไม่สามารถแนบเอกสารได้');
-          if (sysAlert) sysAlert(data.error || 'ไม่สามารถแนบเอกสารได้');
+          setUploadError(data.error || 'เกิดข้อผิดพลาดในการอัปโหลดเอกสาร');
+          if (sysAlert) sysAlert(data.error || 'เกิดข้อผิดพลาดในการอัปโหลด');
         }
         setIsUploadingDoc(false);
       };
@@ -305,6 +307,10 @@ export default function TaxInvoiceManagementModal({
   };
 
   const isIssued = taxData?.tax_invoice_status === 'issued' || invoices.length > 0;
+  const hasTaxInfo = Boolean(taxData?.tax_name || taxData?.tax_id);
+
+  const cleanEditTaxId = (editTaxId || '').replace(/[-\s]/g, '');
+  const isEditTaxIdValid = cleanEditTaxId.length === 13 && /^\d+$/.test(cleanEditTaxId);
 
   return (
     <div style={{
@@ -314,35 +320,40 @@ export default function TaxInvoiceManagementModal({
       right: 0,
       bottom: 0,
       backgroundColor: 'rgba(15, 23, 42, 0.75)',
-      backdropFilter: 'blur(6px)',
+      backdropFilter: 'blur(8px)',
+      WebkitBackdropFilter: 'blur(8px)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
       zIndex: 9999,
       padding: '16px'
     }}>
+      {/* 1080px Wide Modal Dialog Container */}
       <div style={{
         width: '100%',
-        maxWidth: '700px',
-        maxHeight: '92vh',
+        maxWidth: '1080px',
+        maxHeight: '90vh',
+        height: '88vh',
         backgroundColor: 'var(--bg-card, #ffffff)',
-        borderRadius: '18px',
-        border: '1px solid var(--border-color)',
-        boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.4)',
+        borderRadius: '16px',
+        border: '1px solid var(--border-color, #e2e8f0)',
+        boxShadow: '0 25px 60px -15px rgba(0, 0, 0, 0.4)',
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        position: 'relative'
       }}>
-        {/* Header */}
+        {/* Sticky Header */}
         <div style={{
-          padding: '16px 20px',
+          padding: '16px 24px',
           borderBottom: '1px solid var(--border-color)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          backgroundColor: 'var(--bg-main, #f8fafc)'
+          backgroundColor: 'var(--bg-main, #f8fafc)',
+          flexShrink: 0
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
             <div style={{
               width: '42px',
               height: '42px',
@@ -358,21 +369,21 @@ export default function TaxInvoiceManagementModal({
             </div>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                  จัดการใบกำกับภาษี
+                <h3 style={{ margin: 0, fontSize: '1.18rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                  จัดการข้อมูลและเอกสารใบกำกับภาษี
                 </h3>
                 <span style={{
-                  fontSize: '0.7rem',
-                  padding: '2px 8px',
+                  fontSize: '0.72rem',
+                  padding: '3px 10px',
                   borderRadius: '999px',
-                  backgroundColor: isIssued ? '#10b981' : '#f59e0b',
+                  backgroundColor: isIssued ? '#10b981' : (hasTaxInfo ? '#f59e0b' : '#64748b'),
                   color: '#ffffff',
                   fontWeight: 800
                 }}>
-                  {isIssued ? 'ออกเอกสารแล้ว' : 'รอออกเอกสาร'}
+                  {isIssued ? 'ออกเอกสารแล้ว' : (hasTaxInfo ? 'รอออกเอกสาร' : 'ยังไม่ขอ')}
                 </span>
               </div>
-              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                 ใบจอง <strong>{booking?.receipt_number || `#BK-${String(bookingId).padStart(6, '0')}`}</strong> · ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{booking?.customer_name || '-'}</strong>
               </div>
             </div>
@@ -381,33 +392,56 @@ export default function TaxInvoiceManagementModal({
           <button
             type="button"
             onClick={onClose}
+            aria-label="ปิดหน้าต่าง"
             style={{
               background: 'transparent',
               border: 'none',
-              padding: '6px',
+              padding: '8px',
               borderRadius: '8px',
               cursor: 'pointer',
-              color: 'var(--text-muted)'
+              color: 'var(--text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
             }}
           >
-            <X size={20} />
+            <X size={22} />
           </button>
         </div>
 
-        {/* Scrollable Modal Content */}
-        <div style={{ padding: '20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+        {/* Scrollable Modal Content Body (flex: 1 1 auto, minHeight: 0 to guarantee smooth scrolling) */}
+        <div
+          ref={scrollBodyRef}
+          id="tax-modal-scroll-body"
+          style={{
+            flex: '1 1 auto',
+            minHeight: 0,
+            overflowY: 'auto',
+            padding: '24px',
+            WebkitOverflowScrolling: 'touch'
+          }}
+        >
           {loading ? (
-            <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            <div style={{ padding: '60px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
               กำลังโหลดข้อมูลใบกำกับภาษี...
             </div>
           ) : (
-            <>
-              {/* SECTION A: TAX PAYER INFORMATION */}
+            /* Responsive 2-Column Grid on Wide Viewport */
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(460px, 1fr))',
+              gap: '24px',
+              alignItems: 'start'
+            }}>
+              {/* ========================================================= */}
+              {/* SECTION A: TAX PAYER INFORMATION                          */}
+              {/* ========================================================= */}
               <div style={{
                 borderRadius: '14px',
                 border: '1px solid var(--border-color)',
                 backgroundColor: 'var(--bg-card, #ffffff)',
-                overflow: 'hidden'
+                overflow: 'hidden',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
               }}>
                 <div style={{
                   padding: '12px 16px',
@@ -417,46 +451,49 @@ export default function TaxInvoiceManagementModal({
                   alignItems: 'center',
                   justifyContent: 'space-between'
                 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <Building size={16} style={{ color: '#2563eb' }} />
-                    <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                    <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--text-main)' }}>
                       ข้อมูลผู้เสียภาษี (ภ.พ.20)
                     </span>
                   </div>
 
                   {!isEditingTaxInfo ? (
                     <div style={{ display: 'flex', gap: '6px' }}>
-                      <button
-                        type="button"
-                        onClick={handleCopyTaxDetails}
-                        style={{
-                          height: '28px',
-                          padding: '0 10px',
-                          borderRadius: '6px',
-                          fontSize: '0.72rem',
-                          fontWeight: 700,
-                          border: taxCopied ? '1px solid #10b981' : '1px solid var(--border-color)',
-                          backgroundColor: taxCopied ? '#10b981' : 'var(--bg-card)',
-                          color: taxCopied ? '#fff' : 'var(--text-main)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          cursor: 'pointer',
-                          transition: 'all 0.2s ease'
-                        }}
-                      >
-                        {taxCopied ? <CheckCircle2 size={12} /> : <Copy size={12} />}
-                        <span>{taxCopied ? 'คัดลอกแล้ว' : 'คัดลอก'}</span>
-                      </button>
+                      {hasTaxInfo && (
+                        <button
+                          type="button"
+                          onClick={handleCopyTaxDetails}
+                          style={{
+                            height: '30px',
+                            padding: '0 10px',
+                            borderRadius: '6px',
+                            fontSize: '0.74rem',
+                            fontWeight: 700,
+                            border: taxCopied ? '1px solid #10b981' : '1px solid var(--border-color)',
+                            backgroundColor: taxCopied ? '#10b981' : 'var(--bg-card)',
+                            color: taxCopied ? '#fff' : 'var(--text-main)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          {taxCopied ? <CheckCircle2 size={13} /> : <Copy size={13} />}
+                          <span>{taxCopied ? 'คัดลอกแล้ว' : 'คัดลอก'}</span>
+                        </button>
+                      )}
 
                       <button
                         type="button"
+                        id="btn-edit-tax-info"
                         onClick={() => setIsEditingTaxInfo(true)}
                         style={{
-                          height: '28px',
-                          padding: '0 10px',
+                          height: '30px',
+                          padding: '0 12px',
                           borderRadius: '6px',
-                          fontSize: '0.72rem',
+                          fontSize: '0.74rem',
                           fontWeight: 700,
                           border: '1px solid #2563eb',
                           backgroundColor: 'rgba(37, 99, 235, 0.08)',
@@ -467,8 +504,8 @@ export default function TaxInvoiceManagementModal({
                           cursor: 'pointer'
                         }}
                       >
-                        <Edit2 size={12} />
-                        <span>แก้ไขข้อมูล</span>
+                        <Edit2 size={13} />
+                        <span>{hasTaxInfo ? 'แก้ไขข้อมูล' : 'กรอกข้อมูลภาษี'}</span>
                       </button>
                     </div>
                   ) : (
@@ -477,11 +514,11 @@ export default function TaxInvoiceManagementModal({
                         type="button"
                         onClick={() => setIsEditingTaxInfo(false)}
                         style={{
-                          height: '28px',
+                          height: '30px',
                           padding: '0 10px',
                           borderRadius: '6px',
-                          fontSize: '0.72rem',
-                          fontWeight: 600,
+                          fontSize: '0.74rem',
+                          fontWeight: 700,
                           border: '1px solid var(--border-color)',
                           backgroundColor: 'var(--bg-card)',
                           color: 'var(--text-muted)',
@@ -490,16 +527,16 @@ export default function TaxInvoiceManagementModal({
                       >
                         ยกเลิก
                       </button>
-
                       <button
                         type="button"
+                        id="btn-save-tax-info-top"
                         onClick={handleSaveTaxInfo}
                         disabled={isSavingTaxInfo}
                         style={{
-                          height: '28px',
+                          height: '30px',
                           padding: '0 12px',
                           borderRadius: '6px',
-                          fontSize: '0.72rem',
+                          fontSize: '0.74rem',
                           fontWeight: 700,
                           border: 'none',
                           backgroundColor: '#2563eb',
@@ -510,157 +547,227 @@ export default function TaxInvoiceManagementModal({
                           cursor: isSavingTaxInfo ? 'not-allowed' : 'pointer'
                         }}
                       >
-                        <Save size={12} />
+                        <Save size={13} />
                         <span>{isSavingTaxInfo ? 'กำลังบันทึก...' : 'บันทึก'}</span>
                       </button>
                     </div>
                   )}
                 </div>
 
-                {/* View / Edit Body */}
+                {/* Section A Body */}
                 <div style={{ padding: '16px' }}>
                   {!isEditingTaxInfo ? (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', fontSize: '0.82rem' }}>
-                      <div style={{ gridColumn: 'span 2' }}>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ชื่อผู้เสียภาษี:</span>
-                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
-                          {taxData?.tax_name || '-'}
+                    !hasTaxInfo ? (
+                      /* Prompt to enter tax info if empty */
+                      <div style={{
+                        padding: '24px 16px',
+                        textAlign: 'center',
+                        borderRadius: '10px',
+                        backgroundColor: 'var(--bg-main)',
+                        border: '1px dashed var(--border-color)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '10px'
+                      }}>
+                        <FileText size={32} style={{ color: 'var(--text-muted)' }} />
+                        <div>
+                          <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                            ยังไม่มีข้อมูลผู้เสียภาษีสำหรับการจองนี้
+                          </div>
+                          <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                            หากลูกค้า Walk-in ต้องการขอใบกำกับภาษี สามารถกรอกข้อมูลได้ทันที
+                          </div>
                         </div>
+                        <button
+                          type="button"
+                          id="btn-empty-tax-info"
+                          onClick={() => setIsEditingTaxInfo(true)}
+                          style={{
+                            height: '34px',
+                            padding: '0 16px',
+                            borderRadius: '8px',
+                            backgroundColor: '#2563eb',
+                            color: '#ffffff',
+                            border: 'none',
+                            fontSize: '0.78rem',
+                            fontWeight: 750,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            cursor: 'pointer',
+                            marginTop: '4px'
+                          }}
+                        >
+                          <Plus size={14} />
+                          <span>กรอกข้อมูลขอใบกำกับภาษี</span>
+                        </button>
                       </div>
+                    ) : (
+                      /* Read-Only Display */
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px', fontSize: '0.84rem' }}>
+                        <div style={{ gridColumn: 'span 2' }}>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ชื่อผู้เสียภาษี:</span>
+                          <div style={{ fontSize: '0.98rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
+                            {taxData?.tax_name || '-'}
+                          </div>
+                        </div>
 
-                      <div>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>เลขประจำตัวผู้เสียภาษี (13 หลัก):</span>
-                        <div style={{ fontSize: '0.9rem', fontWeight: 800, color: '#2563eb', letterSpacing: '0.8px', marginTop: '2px' }}>
-                          {taxData?.tax_id || '-'}
+                        <div>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>เลขประจำตัวผู้เสียภาษี (13 หลัก):</span>
+                          <div style={{ fontSize: '0.92rem', fontWeight: 800, color: '#2563eb', letterSpacing: '0.8px', marginTop: '2px' }}>
+                            {taxData?.tax_id || '-'}
+                          </div>
                         </div>
-                      </div>
 
-                      <div>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>สำนักงานใหญ่ / สาขา:</span>
-                        <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
-                          {taxData?.tax_branch_type === 'branch'
-                            ? `สาขา (เลขที่สาขา: ${taxData.tax_branch_number || '-'})`
-                            : 'สำนักงานใหญ่ (Head Office)'}
+                        <div>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>สำนักงานใหญ่ / สาขา:</span>
+                          <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                            {taxData?.tax_branch_type === 'branch'
+                              ? `สาขา (เลขที่สาขา: ${taxData.tax_branch_number || '-'})`
+                              : 'สำนักงานใหญ่ (Head Office)'}
+                          </div>
                         </div>
-                      </div>
 
-                      <div style={{ gridColumn: 'span 2' }}>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ที่อยู่ออกใบกำกับภาษี:</span>
-                        <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.45 }}>
-                          {taxData?.tax_address || '-'}
+                        <div style={{ gridColumn: 'span 2' }}>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ที่อยู่ออกใบกำกับภาษี:</span>
+                          <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.5 }}>
+                            {taxData?.tax_address || '-'}
+                          </div>
                         </div>
-                      </div>
 
-                      <div>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>อีเมลรับเอกสาร (e-Tax):</span>
-                        <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px' }}>
-                          {taxData?.tax_email || '-'}
+                        <div>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>อีเมลรับเอกสาร (e-Tax):</span>
+                          <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px' }}>
+                            {taxData?.tax_email || '-'}
+                          </div>
                         </div>
-                      </div>
 
-                      <div>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>เบอร์ติดต่อ:</span>
-                        <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px' }}>
-                          {taxData?.tax_phone || booking?.contact || '-'}
+                        <div>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>เบอร์ติดต่อ:</span>
+                          <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px' }}>
+                            {taxData?.tax_phone || booking?.contact || '-'}
+                          </div>
                         </div>
-                      </div>
 
-                      <div style={{ gridColumn: 'span 2', paddingTop: '8px', borderTop: '1px dashed var(--border-color)' }}>
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ช่องทางจัดส่งเอกสาร:</span>
-                        <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
-                          {taxData?.tax_delivery_method === 'postal'
-                            ? `จัดส่งทางไปรษณีย์ (${taxData.tax_postal_address || taxData.tax_address || '-'})`
-                            : (taxData?.tax_delivery_method === 'pickup' ? 'รับด้วยตนเองที่หน้าร้าน' : 'จัดส่งทางอีเมล (e-Tax)')}
+                        <div style={{ gridColumn: 'span 2', paddingTop: '10px', borderTop: '1px dashed var(--border-color)' }}>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ช่องทางจัดส่งเอกสาร:</span>
+                          <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                            {taxData?.tax_delivery_method === 'postal'
+                              ? `จัดส่งทางไปรษณีย์ (${taxData.tax_postal_address || taxData.tax_address || '-'})`
+                              : (taxData?.tax_delivery_method === 'pickup' ? 'รับด้วยตนเองที่หน้าร้าน' : 'จัดส่งทางอีเมล (e-Tax)')}
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    )
                   ) : (
-                    /* Edit Form */
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <button
-                          type="button"
-                          onClick={() => setEditPayerType('corporate')}
-                          style={{
-                            height: '28px',
-                            padding: '0 10px',
-                            borderRadius: '6px',
-                            fontSize: '0.74rem',
-                            fontWeight: editPayerType === 'corporate' ? 800 : 600,
-                            border: editPayerType === 'corporate' ? '1.5px solid #2563eb' : '1px solid var(--border-color)',
-                            backgroundColor: editPayerType === 'corporate' ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-main)',
-                            color: editPayerType === 'corporate' ? '#2563eb' : 'var(--text-muted)',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          นิติบุคคล
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditPayerType('individual')}
-                          style={{
-                            height: '28px',
-                            padding: '0 10px',
-                            borderRadius: '6px',
-                            fontSize: '0.74rem',
-                            fontWeight: editPayerType === 'individual' ? 800 : 600,
-                            border: editPayerType === 'individual' ? '1.5px solid #2563eb' : '1px solid var(--border-color)',
-                            backgroundColor: editPayerType === 'individual' ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-main)',
-                            color: editPayerType === 'individual' ? '#2563eb' : 'var(--text-muted)',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          บุคคลธรรมดา
-                        </button>
+                    /* Edit Mode Form */
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      {/* Payer Type Switch */}
+                      <div>
+                        <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '4px', display: 'block' }}>
+                          ประเภทผู้เสียภาษี
+                        </label>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button
+                            type="button"
+                            onClick={() => setEditPayerType('corporate')}
+                            style={{
+                              flex: 1,
+                              height: '32px',
+                              borderRadius: '8px',
+                              fontSize: '0.76rem',
+                              fontWeight: editPayerType === 'corporate' ? 800 : 600,
+                              border: editPayerType === 'corporate' ? '1.5px solid #2563eb' : '1px solid var(--border-color)',
+                              backgroundColor: editPayerType === 'corporate' ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-main)',
+                              color: editPayerType === 'corporate' ? '#2563eb' : 'var(--text-muted)',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            นิติบุคคล (Corporate)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditPayerType('individual')}
+                            style={{
+                              flex: 1,
+                              height: '32px',
+                              borderRadius: '8px',
+                              fontSize: '0.76rem',
+                              fontWeight: editPayerType === 'individual' ? 800 : 600,
+                              border: editPayerType === 'individual' ? '1.5px solid #2563eb' : '1px solid var(--border-color)',
+                              backgroundColor: editPayerType === 'individual' ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-main)',
+                              color: editPayerType === 'individual' ? '#2563eb' : 'var(--text-muted)',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            บุคคลธรรมดา (Individual)
+                          </button>
+                        </div>
                       </div>
 
+                      {/* Name */}
                       <div>
-                        <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
-                          ชื่อผู้เสียภาษี *
+                        <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '3px', display: 'block' }}>
+                          ชื่อผู้เสียภาษี / บริษัท *
                         </label>
                         <input
                           type="text"
+                          id="tax-edit-name"
                           value={editName}
                           onChange={(e) => setEditName(e.target.value)}
-                          placeholder="ชื่อบริษัท หรือ ชื่อบุคคล"
+                          placeholder="ชื่อบริษัท จำกัด หรือ ชื่อบุคคลผู้เสียภาษี"
                           style={{
                             width: '100%',
-                            height: '32px',
-                            borderRadius: '6px',
+                            height: '34px',
+                            borderRadius: '8px',
                             border: '1px solid var(--border-color)',
+                            backgroundColor: 'var(--bg-main)',
                             padding: '0 10px',
-                            fontSize: '0.8rem',
+                            fontSize: '0.82rem',
+                            color: 'var(--text-main)',
                             boxSizing: 'border-box'
                           }}
                         />
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '8px' }}>
+                      {/* Tax ID & Branch */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '10px' }}>
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
-                            เลขประจำตัวผู้เสียภาษี (13 หลัก)
-                          </label>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '3px' }}>
+                            <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                              เลขประจำตัวผู้เสียภาษี (13 หลัก)
+                            </label>
+                            {cleanEditTaxId.length > 0 && (
+                              <span style={{ fontSize: '0.68rem', fontWeight: 800, color: isEditTaxIdValid ? '#10b981' : '#ef4444' }}>
+                                {isEditTaxIdValid ? '✓ 13 หลักถูกต้อง' : `${cleanEditTaxId.length}/13`}
+                              </span>
+                            )}
+                          </div>
                           <input
                             type="text"
+                            id="tax-edit-id"
                             maxLength={17}
                             value={editTaxId}
                             onChange={(e) => setEditTaxId(e.target.value)}
                             placeholder="0105556012345"
                             style={{
                               width: '100%',
-                              height: '32px',
-                              borderRadius: '6px',
-                              border: '1px solid var(--border-color)',
+                              height: '34px',
+                              borderRadius: '8px',
+                              border: isEditTaxIdValid ? '1px solid #10b981' : '1px solid var(--border-color)',
+                              backgroundColor: 'var(--bg-main)',
                               padding: '0 10px',
-                              fontSize: '0.8rem',
+                              fontSize: '0.82rem',
                               fontWeight: 700,
+                              color: 'var(--text-main)',
                               boxSizing: 'border-box'
                             }}
                           />
                         </div>
 
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
+                          <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
                             สาขา
                           </label>
                           <div style={{ display: 'flex', gap: '4px' }}>
@@ -669,9 +776,9 @@ export default function TaxInvoiceManagementModal({
                               onClick={() => setEditBranchType('head')}
                               style={{
                                 flex: 1,
-                                height: '32px',
-                                borderRadius: '6px',
-                                fontSize: '0.7rem',
+                                height: '34px',
+                                borderRadius: '8px',
+                                fontSize: '0.72rem',
                                 fontWeight: editBranchType === 'head' ? 800 : 600,
                                 border: editBranchType === 'head' ? '1.5px solid #2563eb' : '1px solid var(--border-color)',
                                 backgroundColor: editBranchType === 'head' ? 'rgba(37, 99, 235, 0.1)' : 'var(--bg-main)',
@@ -679,16 +786,16 @@ export default function TaxInvoiceManagementModal({
                                 cursor: 'pointer'
                               }}
                             >
-                              สำนักงานใหญ่
+                              สนง.ใหญ่
                             </button>
                             <button
                               type="button"
                               onClick={() => setEditBranchType('branch')}
                               style={{
                                 flex: 1,
-                                height: '32px',
-                                borderRadius: '6px',
-                                fontSize: '0.7rem',
+                                height: '34px',
+                                borderRadius: '8px',
+                                fontSize: '0.72rem',
                                 fontWeight: editBranchType === 'branch' ? 800 : 600,
                                 border: editBranchType === 'branch' ? '1.5px solid #2563eb' : '1px solid var(--border-color)',
                                 backgroundColor: editBranchType === 'branch' ? 'rgba(37, 99, 235, 0.1)' : 'var(--bg-main)',
@@ -702,9 +809,10 @@ export default function TaxInvoiceManagementModal({
                         </div>
                       </div>
 
+                      {/* Branch Number Input if Branch */}
                       {editBranchType === 'branch' && (
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
+                          <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
                             เลขที่สาขา 5 หลัก *
                           </label>
                           <input
@@ -715,11 +823,12 @@ export default function TaxInvoiceManagementModal({
                             placeholder="เช่น 00001"
                             style={{
                               width: '100%',
-                              height: '30px',
-                              borderRadius: '6px',
+                              height: '32px',
+                              borderRadius: '8px',
                               border: '1px solid var(--border-color)',
+                              backgroundColor: 'var(--bg-main)',
                               padding: '0 10px',
-                              fontSize: '0.78rem',
+                              fontSize: '0.8rem',
                               fontWeight: 700,
                               boxSizing: 'border-box'
                             }}
@@ -727,8 +836,9 @@ export default function TaxInvoiceManagementModal({
                         </div>
                       )}
 
+                      {/* Address */}
                       <div>
-                        <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
+                        <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
                           ที่อยู่ออกใบกำกับภาษี
                         </label>
                         <textarea
@@ -738,19 +848,22 @@ export default function TaxInvoiceManagementModal({
                           placeholder="เลขที่ อาคาร ถนน แขวง/ตำบล เขต/อำเภอ จังหวัด รหัสไปรษณีย์"
                           style={{
                             width: '100%',
-                            borderRadius: '6px',
+                            borderRadius: '8px',
                             border: '1px solid var(--border-color)',
-                            padding: '6px 10px',
-                            fontSize: '0.78rem',
+                            backgroundColor: 'var(--bg-main)',
+                            padding: '8px 10px',
+                            fontSize: '0.8rem',
+                            color: 'var(--text-main)',
                             resize: 'none',
                             boxSizing: 'border-box'
                           }}
                         />
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '8px' }}>
+                      {/* Email & Phone */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '10px' }}>
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
+                          <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
                             อีเมลรับเอกสาร (e-Tax)
                           </label>
                           <input
@@ -760,18 +873,19 @@ export default function TaxInvoiceManagementModal({
                             placeholder="accounting@company.com"
                             style={{
                               width: '100%',
-                              height: '30px',
-                              borderRadius: '6px',
+                              height: '32px',
+                              borderRadius: '8px',
                               border: '1px solid var(--border-color)',
+                              backgroundColor: 'var(--bg-main)',
                               padding: '0 10px',
-                              fontSize: '0.78rem',
+                              fontSize: '0.8rem',
                               boxSizing: 'border-box'
                             }}
                           />
                         </div>
 
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
+                          <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
                             เบอร์ติดต่อ
                           </label>
                           <input
@@ -781,19 +895,21 @@ export default function TaxInvoiceManagementModal({
                             placeholder="02-123-4567"
                             style={{
                               width: '100%',
-                              height: '30px',
-                              borderRadius: '6px',
+                              height: '32px',
+                              borderRadius: '8px',
                               border: '1px solid var(--border-color)',
+                              backgroundColor: 'var(--bg-main)',
                               padding: '0 10px',
-                              fontSize: '0.78rem',
+                              fontSize: '0.8rem',
                               boxSizing: 'border-box'
                             }}
                           />
                         </div>
                       </div>
 
+                      {/* Delivery Method */}
                       <div>
-                        <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
+                        <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
                           ช่องทางจัดส่งเอกสาร
                         </label>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px' }}>
@@ -807,9 +923,9 @@ export default function TaxInvoiceManagementModal({
                               type="button"
                               onClick={() => setEditDeliveryMethod(d.key)}
                               style={{
-                                height: '28px',
-                                borderRadius: '6px',
-                                fontSize: '0.72rem',
+                                height: '30px',
+                                borderRadius: '8px',
+                                fontSize: '0.74rem',
                                 fontWeight: editDeliveryMethod === d.key ? 800 : 600,
                                 border: editDeliveryMethod === d.key ? '1.5px solid #2563eb' : '1px solid var(--border-color)',
                                 backgroundColor: editDeliveryMethod === d.key ? 'rgba(37, 99, 235, 0.1)' : 'var(--bg-main)',
@@ -822,17 +938,89 @@ export default function TaxInvoiceManagementModal({
                           ))}
                         </div>
                       </div>
+
+                      {/* Postal Address if Postal */}
+                      {editDeliveryMethod === 'postal' && (
+                        <div>
+                          <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '3px', display: 'block' }}>
+                            ที่อยู่จัดส่งทางไปรษณีย์
+                          </label>
+                          <input
+                            type="text"
+                            value={editPostalAddress}
+                            onChange={(e) => setEditPostalAddress(e.target.value)}
+                            placeholder="ระบุที่อยู่จัดส่งทางไปรษณีย์ (หากต่างจากที่อยู่ภาษี)"
+                            style={{
+                              width: '100%',
+                              height: '32px',
+                              borderRadius: '8px',
+                              border: '1px solid var(--border-color)',
+                              backgroundColor: 'var(--bg-main)',
+                              padding: '0 10px',
+                              fontSize: '0.8rem',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                        </div>
+                      )}
+
+                      {/* Bottom Action Buttons inside Form */}
+                      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', paddingTop: '8px', borderTop: '1px solid var(--border-color)' }}>
+                        <button
+                          type="button"
+                          onClick={() => setIsEditingTaxInfo(false)}
+                          style={{
+                            height: '34px',
+                            padding: '0 14px',
+                            borderRadius: '8px',
+                            fontSize: '0.78rem',
+                            fontWeight: 700,
+                            border: '1px solid var(--border-color)',
+                            backgroundColor: 'var(--bg-card)',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          ยกเลิก
+                        </button>
+                        <button
+                          type="button"
+                          id="btn-save-tax-info-bottom"
+                          onClick={handleSaveTaxInfo}
+                          disabled={isSavingTaxInfo}
+                          style={{
+                            height: '34px',
+                            padding: '0 18px',
+                            borderRadius: '8px',
+                            fontSize: '0.78rem',
+                            fontWeight: 750,
+                            border: 'none',
+                            backgroundColor: '#2563eb',
+                            color: '#ffffff',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            cursor: isSavingTaxInfo ? 'not-allowed' : 'pointer'
+                          }}
+                        >
+                          <Save size={14} />
+                          <span>{isSavingTaxInfo ? 'กำลังบันทึกข้อมูล...' : 'บันทึกข้อมูลภาษี'}</span>
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* SECTION B: ATTACHED TAX INVOICE DOCUMENTS */}
+              {/* ========================================================= */}
+              {/* SECTION B: ATTACHED TAX INVOICE DOCUMENTS                 */}
+              {/* ========================================================= */}
               <div style={{
                 borderRadius: '14px',
                 border: '1px solid var(--border-color)',
                 backgroundColor: 'var(--bg-card, #ffffff)',
-                overflow: 'hidden'
+                overflow: 'hidden',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
               }}>
                 <div style={{
                   padding: '12px 16px',
@@ -842,19 +1030,24 @@ export default function TaxInvoiceManagementModal({
                   alignItems: 'center',
                   justifyContent: 'space-between'
                 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <FileCheck size={16} style={{ color: '#16a34a' }} />
-                    <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                    <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--text-main)' }}>
                       เอกสารใบกำกับภาษีที่แนบ ({invoices.length})
                     </span>
                   </div>
+                  {invoices.length > 0 && (
+                    <span style={{ fontSize: '0.7rem', color: '#16a34a', fontWeight: 800, backgroundColor: 'rgba(22, 163, 74, 0.1)', padding: '2px 8px', borderRadius: '999px' }}>
+                      ออกเอกสารแล้ว
+                    </span>
+                  )}
                 </div>
 
-                <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
                   {/* List of Attached Documents */}
                   {invoices.length === 0 ? (
                     <div style={{
-                      padding: '20px',
+                      padding: '24px 16px',
                       borderRadius: '10px',
                       backgroundColor: 'var(--bg-main)',
                       border: '1px dashed var(--border-color)',
@@ -973,17 +1166,28 @@ export default function TaxInvoiceManagementModal({
                   )}
 
                   {/* Upload Box for New Attachment */}
-                  <div style={{
-                    padding: '12px',
-                    borderRadius: '10px',
-                    backgroundColor: 'rgba(37, 99, 235, 0.04)',
-                    border: '1.5px dashed rgba(37, 99, 235, 0.3)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '10px'
-                  }}>
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); setIsDraggingDoc(true); }}
+                    onDragLeave={() => setIsDraggingDoc(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setIsDraggingDoc(false);
+                      const file = e.dataTransfer.files?.[0];
+                      if (file) processDocumentFile(file);
+                    }}
+                    style={{
+                      padding: '14px',
+                      borderRadius: '12px',
+                      backgroundColor: isDraggingDoc ? 'rgba(37, 99, 235, 0.08)' : 'rgba(37, 99, 235, 0.03)',
+                      border: isDraggingDoc ? '1.5px dashed #2563eb' : '1.5px dashed rgba(37, 99, 235, 0.3)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span style={{ fontSize: '0.78rem', fontWeight: 800, color: '#2563eb' }}>
+                      <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#2563eb' }}>
                         แนบไฟล์ใบกำกับภาษีที่ออกแล้ว (PDF, JPG, PNG, WEBP)
                       </span>
                       <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
@@ -998,17 +1202,18 @@ export default function TaxInvoiceManagementModal({
                         </label>
                         <input
                           type="text"
+                          id="tax-upload-inv-num"
                           value={uploadInvoiceNumber}
                           onChange={(e) => setUploadInvoiceNumber(e.target.value)}
                           placeholder="เช่น INV-202610-001"
                           style={{
                             width: '100%',
-                            height: '30px',
+                            height: '32px',
                             borderRadius: '6px',
                             border: '1px solid var(--border-color)',
                             backgroundColor: 'var(--bg-card)',
                             padding: '0 8px',
-                            fontSize: '0.76rem',
+                            fontSize: '0.78rem',
                             fontWeight: 700,
                             boxSizing: 'border-box'
                           }}
@@ -1021,17 +1226,18 @@ export default function TaxInvoiceManagementModal({
                         </label>
                         <input
                           type="text"
+                          id="tax-upload-notes"
                           value={uploadNotes}
                           onChange={(e) => setUploadNotes(e.target.value)}
                           placeholder="ส่งอีเมลลูกค้าแล้ว"
                           style={{
                             width: '100%',
-                            height: '30px',
+                            height: '32px',
                             borderRadius: '6px',
                             border: '1px solid var(--border-color)',
                             backgroundColor: 'var(--bg-card)',
                             padding: '0 8px',
-                            fontSize: '0.74rem',
+                            fontSize: '0.76rem',
                             boxSizing: 'border-box'
                           }}
                         />
@@ -1042,15 +1248,16 @@ export default function TaxInvoiceManagementModal({
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
                         <button
                           type="button"
+                          id="btn-choose-tax-doc"
                           onClick={() => fileInputRef.current?.click()}
                           style={{
-                            height: '30px',
+                            height: '32px',
                             padding: '0 12px',
                             borderRadius: '6px',
                             border: '1px solid var(--border-color)',
                             backgroundColor: 'var(--bg-card)',
                             color: '#2563eb',
-                            fontSize: '0.74rem',
+                            fontSize: '0.76rem',
                             fontWeight: 700,
                             display: 'flex',
                             alignItems: 'center',
@@ -1058,7 +1265,7 @@ export default function TaxInvoiceManagementModal({
                             cursor: 'pointer'
                           }}
                         >
-                          <Upload size={12} />
+                          <Upload size={13} />
                           <span>เลือกไฟล์เอกสาร</span>
                         </button>
 
@@ -1071,7 +1278,7 @@ export default function TaxInvoiceManagementModal({
                         />
 
                         {uploadFile && (
-                          <span style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {uploadFile.name} ({(uploadFile.size / 1024).toFixed(1)} KB)
                           </span>
                         )}
@@ -1080,16 +1287,17 @@ export default function TaxInvoiceManagementModal({
                       {uploadFile && (
                         <button
                           type="button"
+                          id="btn-submit-upload-tax-doc"
                           onClick={handleUploadAttachment}
                           disabled={isUploadingDoc}
                           style={{
-                            height: '30px',
+                            height: '32px',
                             padding: '0 14px',
                             borderRadius: '6px',
                             border: 'none',
                             backgroundColor: '#2563eb',
                             color: '#ffffff',
-                            fontSize: '0.74rem',
+                            fontSize: '0.76rem',
                             fontWeight: 750,
                             display: 'flex',
                             alignItems: 'center',
@@ -1098,49 +1306,104 @@ export default function TaxInvoiceManagementModal({
                             flexShrink: 0
                           }}
                         >
-                          <Save size={12} />
+                          <Save size={13} />
                           <span>{isUploadingDoc ? 'กำลังอัปโหลด...' : 'บันทึกแนบเอกสาร'}</span>
                         </button>
                       )}
                     </div>
 
                     {uploadError && (
-                      <div style={{ fontSize: '0.7rem', color: '#ef4444', fontWeight: 600 }}>
-                        {uploadError}
+                      <div style={{ fontSize: '0.72rem', color: '#ef4444', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <AlertCircle size={13} />
+                        <span>{uploadError}</span>
                       </div>
                     )}
                   </div>
                 </div>
               </div>
-            </>
+            </div>
           )}
         </div>
 
-        {/* Modal Footer */}
+        {/* Modal Sticky Footer */}
         <div style={{
-          padding: '12px 20px',
+          padding: '14px 24px',
           borderTop: '1px solid var(--border-color)',
           display: 'flex',
-          justifyContent: 'flex-end',
-          backgroundColor: 'var(--bg-main, #f8fafc)'
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          backgroundColor: 'var(--bg-main, #f8fafc)',
+          flexShrink: 0
         }}>
-          <button
-            type="button"
-            onClick={onClose}
-            style={{
-              height: '34px',
-              padding: '0 16px',
-              borderRadius: '8px',
-              border: '1px solid var(--border-color)',
-              backgroundColor: 'var(--bg-card)',
-              color: 'var(--text-main)',
-              fontSize: '0.8rem',
-              fontWeight: 700,
-              cursor: 'pointer'
-            }}
-          >
-            ปิดหน้าต่าง
-          </button>
+          <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+            {isEditingTaxInfo ? 'กำลังแก้ไขข้อมูลผู้เสียภาษี — ตรวจสอบเลข 13 หลักและชื่อก่อนบันทึก' : 'เอกสารใบกำกับภาษีจะถูกจัดเก็บในระบบเพื่อการตรวจสอบย้อนหลัง'}
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {isEditingTaxInfo && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingTaxInfo(false)}
+                  style={{
+                    height: '36px',
+                    padding: '0 14px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-color)',
+                    backgroundColor: 'var(--bg-card)',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.8rem',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  id="btn-save-tax-info-footer"
+                  onClick={handleSaveTaxInfo}
+                  disabled={isSavingTaxInfo}
+                  style={{
+                    height: '36px',
+                    padding: '0 18px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    backgroundColor: '#2563eb',
+                    color: '#ffffff',
+                    fontSize: '0.8rem',
+                    fontWeight: 750,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    cursor: isSavingTaxInfo ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <Save size={14} />
+                  <span>{isSavingTaxInfo ? 'กำลังบันทึก...' : 'บันทึกข้อมูลภาษี'}</span>
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              id="btn-close-tax-modal"
+              onClick={onClose}
+              style={{
+                height: '36px',
+                padding: '0 18px',
+                borderRadius: '8px',
+                border: '1px solid var(--border-color)',
+                backgroundColor: 'var(--bg-card)',
+                color: 'var(--text-main)',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                cursor: 'pointer'
+              }}
+            >
+              ปิดหน้าต่าง
+            </button>
+          </div>
         </div>
       </div>
     </div>

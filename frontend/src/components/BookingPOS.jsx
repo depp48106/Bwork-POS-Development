@@ -1,4 +1,5 @@
 import POSTaxAndSlipSection from './POSTaxAndSlipSection';
+import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import BasecampQuotaModal from './BasecampQuotaModal';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
@@ -219,6 +220,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [cartTaxPhone, setCartTaxPhone] = useState('');
   const [cartTaxDeliveryMethod, setCartTaxDeliveryMethod] = useState('email');
   const [cartTaxPostalAddress, setCartTaxPostalAddress] = useState('');
+  const [selectedTaxBooking, setSelectedTaxBooking] = useState(null);
 
   // Main interactive calendar navigation (Large Calendar)
   const today = new Date();
@@ -1569,7 +1571,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         discount_type: effectiveDiscountType,
         discount_value: effectiveDiscountValue,
         payment_mode: effectivePaymentMode,
-        deposit_amount: effectiveDepositAmount
+        deposit_amount: effectiveDepositAmount,
+        slip_image: cartSlipImage || null,
+        tax_invoice_required: cartTaxRequired ? 1 : 0,
+        tax_payer_type: cartTaxPayerType,
+        tax_name: cartTaxRequired ? cartTaxName.trim() : null,
+        tax_id: cartTaxRequired ? cartTaxId.trim() : null,
+        tax_branch_type: cartTaxBranchType,
+        tax_branch_number: cartTaxBranchType === 'branch' ? cartTaxBranchNumber.trim() : null,
+        tax_address: cartTaxRequired ? cartTaxAddress.trim() : null,
+        tax_email: cartTaxRequired ? cartTaxEmail.trim() : null,
+        tax_phone: cartTaxRequired ? cartTaxPhone.trim() : null,
+        tax_delivery_method: cartTaxRequired ? cartTaxDeliveryMethod : 'email',
+        tax_postal_address: (cartTaxRequired && cartTaxDeliveryMethod === 'postal') ? cartTaxPostalAddress.trim() : null
       };
 
       const res = await fetch('/api/bookings', {
@@ -2021,6 +2035,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                           >
                             {/* Rich Room Card Cell (Left Column - Sticky Left) */}
                             <div
+                              className="timeline-room-header-cell"
                               onClick={() => openDrawerForSlot(room, 9)}
                               style={{
                                 padding: '8px 12px',
@@ -2148,6 +2163,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                   <React.Fragment key={evIdx}>
                                     {/* Booking Pill: Neutral card surface, unified payment border & rail, neutral lifecycle */}
                                     <div
+                                      className="timeline-booking-pill"
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setViewedEvent(ev);
@@ -3259,41 +3275,6 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       </div>
                     )}
 
-                    {/* Payment Slip & Tax Invoice Management (Phase 2 & 3) */}
-                      <POSTaxAndSlipSection
-                        paymentMethod={paymentMethod}
-                        slipImage={quickSlipImage}
-                        setSlipImage={setQuickSlipImage}
-                        slipFileName={quickSlipFileName}
-                        setSlipFileName={setQuickSlipFileName}
-                        taxInvoiceRequired={quickTaxRequired}
-                        setTaxInvoiceRequired={setQuickTaxRequired}
-                        taxPayerType={quickTaxPayerType}
-                        setTaxPayerType={setQuickTaxPayerType}
-                        taxName={quickTaxName}
-                        setTaxName={setQuickTaxName}
-                        taxId={quickTaxId}
-                        setTaxId={setQuickTaxId}
-                        taxBranchType={quickTaxBranchType}
-                        setTaxBranchType={setQuickTaxBranchType}
-                        taxBranchNumber={quickTaxBranchNumber}
-                        setTaxBranchNumber={setQuickTaxBranchNumber}
-                        taxAddress={quickTaxAddress}
-                        setTaxAddress={setQuickTaxAddress}
-                        taxEmail={quickTaxEmail}
-                        setTaxEmail={setQuickTaxEmail}
-                        taxPhone={quickTaxPhone}
-                        setTaxPhone={setQuickTaxPhone}
-                        taxDeliveryMethod={quickTaxDeliveryMethod}
-                        setTaxDeliveryMethod={setQuickTaxDeliveryMethod}
-                        taxPostalAddress={quickTaxPostalAddress}
-                        setTaxPostalAddress={setQuickTaxPostalAddress}
-                        customer={customer}
-                        sysAlert={sysAlert}
-                        isCompact={false}
-                      />
-
-                      {/* Unpaid / Zero-Net Notice */}
                     {/* Cart Payment Slip & Tax Invoice Management */}
                     <POSTaxAndSlipSection
                       paymentMethod={cartPaymentMethod}
@@ -3469,6 +3450,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
               <button
                 type="button"
+                id="btn-close-quick-booking"
                 onClick={closeRoomModal}
                 style={{
                   width: '32px',
@@ -4771,6 +4753,40 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                         </div>
                       )}
 
+                      {/* Payment Slip & Tax Invoice Management for Quick Booking */}
+                      <POSTaxAndSlipSection
+                        paymentMethod={paymentMethod}
+                        slipImage={quickSlipImage}
+                        setSlipImage={setQuickSlipImage}
+                        slipFileName={quickSlipFileName}
+                        setSlipFileName={setQuickSlipFileName}
+                        taxInvoiceRequired={quickTaxRequired}
+                        setTaxInvoiceRequired={setQuickTaxRequired}
+                        taxPayerType={quickTaxPayerType}
+                        setTaxPayerType={setQuickTaxPayerType}
+                        taxName={quickTaxName}
+                        setTaxName={setQuickTaxName}
+                        taxId={quickTaxId}
+                        setTaxId={setQuickTaxId}
+                        taxBranchType={quickTaxBranchType}
+                        setTaxBranchType={setQuickTaxBranchType}
+                        taxBranchNumber={quickTaxBranchNumber}
+                        setTaxBranchNumber={setQuickTaxBranchNumber}
+                        taxAddress={quickTaxAddress}
+                        setTaxAddress={setQuickTaxAddress}
+                        taxEmail={quickTaxEmail}
+                        setTaxEmail={setQuickTaxEmail}
+                        taxPhone={quickTaxPhone}
+                        setTaxPhone={setQuickTaxPhone}
+                        taxDeliveryMethod={quickTaxDeliveryMethod}
+                        setTaxDeliveryMethod={setQuickTaxDeliveryMethod}
+                        taxPostalAddress={quickTaxPostalAddress}
+                        setTaxPostalAddress={setQuickTaxPostalAddress}
+                        customer={customer}
+                        sysAlert={sysAlert}
+                        isCompact={false}
+                      />
+
                       {/* Live Snapshot Breakdown */}
                       <div style={{
                         backgroundColor: 'var(--bg-main)',
@@ -5292,6 +5308,84 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   return <span style={{ color: 'var(--primary-color)', fontWeight: 600 }}>รอเริ่มการใช้งาน</span>;
                 })()}
               </div>
+
+              {/* Payment Slip Evidence Banner if present */}
+              {viewedEvent.slip_image_url && viewedEvent.slip_image_url !== 'uploaded' && (
+                <div style={{
+                  padding: '8px 10px',
+                  borderRadius: '10px',
+                  backgroundColor: 'rgba(37, 99, 235, 0.06)',
+                  border: '1px solid rgba(37, 99, 235, 0.2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginTop: '4px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <img
+                      src={viewedEvent.slip_image_url}
+                      alt="สลิป"
+                      style={{ width: '32px', height: '32px', borderRadius: '6px', objectFit: 'cover', border: '1px solid var(--border-color)' }}
+                    />
+                    <div>
+                      <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--text-main)' }}>สลิปชำระเงิน</div>
+                      <div style={{ fontSize: '0.66rem', color: '#16a34a', fontWeight: 600 }}>มีหลักฐานการโอน</div>
+                    </div>
+                  </div>
+                  <a
+                    href={viewedEvent.slip_image_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      height: '26px',
+                      padding: '0 8px',
+                      borderRadius: '6px',
+                      backgroundColor: 'var(--bg-card)',
+                      border: '1px solid var(--border-color)',
+                      color: '#2563eb',
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      textDecoration: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <ExternalLink size={11} />
+                    <span>ดูสลิป</span>
+                  </a>
+                </div>
+              )}
+            </div>
+
+            {/* Quick Tax Invoice Button */}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                id="btn-viewed-tax-manage"
+                onClick={() => {
+                  const bId = viewedEvent.booking_id || viewedEvent.id;
+                  setSelectedTaxBooking({ ...viewedEvent, id: bId });
+                }}
+                style={{
+                  width: '100%',
+                  height: '36px',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(37, 99, 235, 0.35)',
+                  backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                  color: '#2563eb',
+                  fontSize: '0.78rem',
+                  fontWeight: 750,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  cursor: 'pointer'
+                }}
+              >
+                <FileText size={14} />
+                <span>จัดการใบกำกับภาษี {viewedEvent.tax_invoice_required ? '(ขอแล้ว)' : ''}</span>
+              </button>
             </div>
 
             {/* Actions */}
@@ -5523,6 +5617,16 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
       {/* Basecamp Quota Hub Modal */}
       <BasecampQuotaModal isOpen={showBasecampQuotaModal} onClose={() => setShowBasecampQuotaModal(false)} />
+
+      {/* Tax Invoice Management Modal (Wide Modal) */}
+      {selectedTaxBooking && (
+        <TaxInvoiceManagementModal
+          booking={selectedTaxBooking}
+          onClose={() => setSelectedTaxBooking(null)}
+          onUpdated={() => fetchCalendarEvents()}
+          sysAlert={sysAlert}
+        />
+      )}
 
     </div>
   );

@@ -84,14 +84,14 @@ export default function POSTaxAndSlipSection({
 }) {
   const [slipError, setSlipError] = useState(null);
   const [isTaxExpanded, setIsTaxExpanded] = useState(taxInvoiceRequired);
+  const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
 
   const cleanTaxId = (taxId || '').replace(/[-\s]/g, '');
   const isTaxIdValid = cleanTaxId.length === 13 && /^\d+$/.test(cleanTaxId);
 
   // Handle Slip Upload
-  const handleSlipChange = async (e) => {
-    const file = e.target.files?.[0];
+  const handleSlipFile = async (file) => {
     if (!file) return;
     setSlipError(null);
 
@@ -109,6 +109,11 @@ export default function POSTaxAndSlipSection({
       setSlipFileName(file.name);
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleSlipChange = (e) => {
+    const file = e.target.files?.[0];
+    handleSlipFile(file);
   };
 
   const handleClearSlip = () => {
@@ -159,6 +164,7 @@ export default function POSTaxAndSlipSection({
           {!slipImage ? (
             <button
               type="button"
+              id="pos-btn-select-slip"
               onClick={() => fileInputRef.current?.click()}
               style={{
                 height: '26px',
@@ -179,37 +185,93 @@ export default function POSTaxAndSlipSection({
               <span>เลือกสลิป</span>
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={handleClearSlip}
-              style={{
-                height: '24px',
-                padding: '0 8px',
-                borderRadius: '6px',
-                border: '1px solid #ef4444',
-                backgroundColor: 'rgba(239, 68, 68, 0.08)',
-                color: '#ef4444',
-                fontSize: '0.7rem',
-                fontWeight: 700,
-                display: 'flex',
-                alignItems: 'center',
-                gap: '3px',
-                cursor: 'pointer'
-              }}
-            >
-              <X size={11} />
-              <span>ลบสลิป</span>
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <button
+                type="button"
+                id="pos-btn-replace-slip"
+                onClick={() => fileInputRef.current?.click()}
+                style={{
+                  height: '24px',
+                  padding: '0 8px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border-color)',
+                  backgroundColor: 'var(--bg-card, #ffffff)',
+                  color: '#2563eb',
+                  fontSize: '0.7rem',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                เปลี่ยนรูป
+              </button>
+              <button
+                type="button"
+                id="pos-btn-clear-slip"
+                onClick={handleClearSlip}
+                style={{
+                  height: '24px',
+                  padding: '0 8px',
+                  borderRadius: '6px',
+                  border: '1px solid #ef4444',
+                  backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                  color: '#ef4444',
+                  fontSize: '0.7rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '3px',
+                  cursor: 'pointer'
+                }}
+              >
+                <X size={11} />
+                <span>ลบสลิป</span>
+              </button>
+            </div>
           )}
 
           <input
             ref={fileInputRef}
+            id="pos-file-input-slip"
             type="file"
             accept="image/png,image/jpeg,image/jpg,image/webp"
             style={{ display: 'none' }}
             onChange={handleSlipChange}
           />
         </div>
+
+        {/* Drop Zone / Upload Area when no slip attached */}
+        {!slipImage && (
+          <div
+            id="pos-slip-dropzone"
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragging(false);
+              const file = e.dataTransfer.files?.[0];
+              if (file) handleSlipFile(file);
+            }}
+            style={{
+              marginTop: '6px',
+              padding: isCompact ? '8px 10px' : '10px 12px',
+              borderRadius: '8px',
+              border: isDragging ? '1.5px dashed #2563eb' : (paymentMethod === 'transfer' ? '1.5px dashed rgba(37, 99, 235, 0.45)' : '1px dashed var(--border-color)'),
+              backgroundColor: isDragging ? 'rgba(37, 99, 235, 0.08)' : (paymentMethod === 'transfer' ? 'rgba(37, 99, 235, 0.04)' : 'transparent'),
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <Upload size={14} style={{ color: paymentMethod === 'transfer' ? '#2563eb' : 'var(--text-muted)' }} />
+            <span style={{ fontSize: '0.72rem', color: paymentMethod === 'transfer' ? '#2563eb' : 'var(--text-muted)', fontWeight: 650 }}>
+              {paymentMethod === 'transfer' ? 'ลูกค้าสแกน QR แล้ว คลิกหรือลากไฟล์สลิปมาวางที่นี่' : 'คลิกหรือลากไฟล์สลิปมาวางที่นี่ (ถ้ามี)'}
+            </span>
+          </div>
+        )}
 
         {slipError && (
           <div style={{ fontSize: '0.7rem', color: '#ef4444', fontWeight: 600, marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
