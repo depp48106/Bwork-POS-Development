@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   X, FileText, CheckCircle2, AlertCircle, Building, User, Mail, Phone,
   MapPin, Copy, Edit2, Save, Trash2, ExternalLink, Download, Upload,
@@ -396,7 +397,7 @@ export default function TaxInvoiceManagementModal({
   const cleanEditTaxId = (editTaxId || '').replace(/[-\s]/g, '');
   const isEditTaxIdValid = cleanEditTaxId.length === 13 && /^\d+$/.test(cleanEditTaxId);
 
-  return (
+  const modalNode = (
     <div
       onClick={(e) => {
         if (e.target === e.currentTarget) {
@@ -415,7 +416,7 @@ export default function TaxInvoiceManagementModal({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex: 9999,
+        zIndex: 20000,
         padding: '16px'
       }}
     >
@@ -1472,4 +1473,6 @@ export default function TaxInvoiceManagementModal({
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(modalNode, document.body) : modalNode;
 }

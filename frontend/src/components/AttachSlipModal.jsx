@@ -1,6 +1,15 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  X, Upload, Image, FileText, CheckCircle2, AlertCircle, RefreshCw, ZoomIn, ExternalLink, ShieldCheck, History as HistoryIcon
+  X,
+  Upload,
+  Image as ImageIcon,
+  Check,
+  AlertCircle,
+  RefreshCw,
+  Trash2,
+  ExternalLink,
+  ShieldCheck
 } from 'lucide-react';
 
 /**
@@ -29,9 +38,11 @@ function validateSlipFileSignature(file) {
         return resolve({ valid: true, ext: 'jpg', mime: 'image/jpeg' });
       }
       // Check WEBP (RIFF....WEBP)
-      if (buffer.length >= 12 &&
-          buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
-          buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+      if (
+        buffer.length >= 12 &&
+        buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+        buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50
+      ) {
         return resolve({ valid: true, ext: 'webp', mime: 'image/webp' });
       }
 
@@ -43,6 +54,7 @@ function validateSlipFileSignature(file) {
 }
 
 function formatFileSize(bytes) {
+  if (!bytes) return '0 B';
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
   return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
@@ -50,9 +62,9 @@ function formatFileSize(bytes) {
 
 function getTxTypeLabel(type) {
   switch (type) {
-    case 'deposit': return 'เงินมัดจำ (Deposit)';
-    case 'balance': return 'ยอดคงเหลือ (Balance)';
-    case 'full': return 'ชำระเต็มจำนวน (Full Payment)';
+    case 'deposit': return 'เงินมัดจำ';
+    case 'balance': return 'ยอดคงเหลือ';
+    case 'full': return 'ชำระเต็มจำนวน';
     default: return type || 'ชำระเงิน';
   }
 }
@@ -68,9 +80,8 @@ function getMethodLabel(method) {
 
 const REASON_OPTIONS = [
   'สลิปเดิมรูปไม่ชัดเจน',
-  'แนบสลิปผิดรายการ/ผิดธุรกรรม',
-  'ลูกค้าส่งสลิปฉบับแก้ไขมาใหม่',
-  'ยอดเงินหรือเวลาไม่ตรง',
+  'แนบสลิปผิดรายการ',
+  'ลูกค้าส่งสลิปใหม่',
   'อื่นๆ (ระบุเอง)'
 ];
 
@@ -95,11 +106,30 @@ export default function AttachSlipModal({
   const [selectedReasonOption, setSelectedReasonOption] = useState(REASON_OPTIONS[0]);
   const [customReasonText, setCustomReasonText] = useState('');
 
+  // ESC key handler & body scroll lock
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && !isUploading) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [isOpen, isUploading, onClose]);
+
   if (!isOpen || !booking) return null;
 
   const bookingId = booking.id || booking.booking_id;
-  const displayCode = booking.receipt_number || `BK-${String(bookingId).padStart(6, '0')}`;
-  const isLegacy = !targetTransaction;
+  const displayCode = booking.receipt_number || (bookingId ? `BK-${String(bookingId).padStart(6, '0')}` : '-');
 
   const handleFile = async (file) => {
     if (!file) return;
@@ -216,14 +246,26 @@ export default function AttachSlipModal({
     }
   };
 
-  return (
+  const targetAmount = targetTransaction?.amount || booking.paid_amount || booking.total_amount || 0;
+  const targetType = targetTransaction
+    ? getTxTypeLabel(targetTransaction.transaction_type)
+    : (booking.payment_status === 'paid' ? 'ชำระเต็มจำนวน' : (booking.payment_status === 'deposit' ? 'เงินมัดจำ' : 'ยอดการจอง'));
+  const targetMethod = targetTransaction
+    ? getMethodLabel(targetTransaction.payment_method)
+    : getMethodLabel(booking.payment_method);
+  const statusLabel = isReplacement
+    ? 'มีสลิปแล้ว'
+    : (booking.payment_status === 'unpaid' ? 'ยังไม่ชำระ' : 'รอตรวจสอบ');
+
+  const modalNode = (
     <div
       style={{
         position: 'fixed',
         inset: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.65)',
-        backdropFilter: 'blur(4px)',
-        zIndex: 9999,
+        backgroundColor: 'rgba(15, 23, 42, 0.65)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
+        zIndex: 20000,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -232,16 +274,19 @@ export default function AttachSlipModal({
       onClick={(e) => {
         if (e.target === e.currentTarget && !isUploading) onClose();
       }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="attach-slip-modal-title"
     >
       <div
         style={{
           width: '100%',
-          maxWidth: '580px',
-          maxHeight: '94vh',
+          maxWidth: '520px',
+          maxHeight: '92vh',
           backgroundColor: 'var(--bg-card, #ffffff)',
           color: 'var(--text-main, #0f172a)',
           borderRadius: '16px',
-          boxShadow: '0 20px 40px -8px rgba(0, 0, 0, 0.3)',
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
           border: '1px solid var(--border-color, #e2e8f0)',
           display: 'flex',
           flexDirection: 'column',
@@ -250,7 +295,7 @@ export default function AttachSlipModal({
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
+        {/* Header: Clean & Corporate */}
         <div
           style={{
             padding: '16px 20px',
@@ -258,31 +303,30 @@ export default function AttachSlipModal({
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
-            backgroundColor: 'var(--bg-hover, #f8fafc)'
+            backgroundColor: 'var(--bg-card, #ffffff)'
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div
+          <div>
+            <h3
+              id="attach-slip-modal-title"
               style={{
-                width: '36px',
-                height: '36px',
-                borderRadius: '10px',
-                backgroundColor: isReplacement ? 'rgba(217, 119, 6, 0.12)' : 'rgba(37, 99, 235, 0.12)',
-                color: isReplacement ? '#d97706' : '#2563eb',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center'
+                margin: 0,
+                fontSize: '1rem',
+                fontWeight: 800,
+                color: 'var(--text-main, #0f172a)'
               }}
             >
-              {isReplacement ? <RefreshCw size={20} /> : <FileText size={20} />}
-            </div>
-            <div>
-              <h3 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 800 }}>
-                {isReplacement ? 'เปลี่ยนสลิปหลักฐานการชำระเงิน' : 'แนบหลักฐานสลิปการชำระเงิน'}
-              </h3>
-              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted, #64748b)', marginTop: '2px' }}>
-                การจอง <strong style={{ color: 'var(--text-main)' }}>{displayCode}</strong> · {booking.customer_name || '-'}
-              </div>
+              {isReplacement ? 'เปลี่ยนสลิปการชำระเงิน' : 'แนบสลิปการชำระเงิน'}
+            </h3>
+            <div
+              style={{
+                fontSize: '0.74rem',
+                color: 'var(--text-muted, #64748b)',
+                marginTop: '3px',
+                fontWeight: 600
+              }}
+            >
+              {displayCode} • {targetTransaction ? `รายการธุรกรรม #${targetTransaction.id}` : (booking.customer_name || 'การจองทั่วไป')}
             </div>
           </div>
           <button
@@ -290,6 +334,7 @@ export default function AttachSlipModal({
             onClick={onClose}
             disabled={isUploading}
             id="btn-close-attach-slip-modal"
+            aria-label="ปิดหน้าต่าง"
             style={{
               width: '32px',
               height: '32px',
@@ -300,133 +345,158 @@ export default function AttachSlipModal({
               cursor: isUploading ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center'
+              justifyContent: 'center',
+              transition: 'background-color 0.15s'
             }}
           >
             <X size={16} />
           </button>
         </div>
 
-        {/* Target Details Card */}
-        <div style={{ padding: '14px 20px 0 20px' }}>
+        {/* Modal Body */}
+        <div
+          style={{
+            padding: '16px 20px',
+            overflowY: 'auto',
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '14px'
+          }}
+        >
+          {/* Compact Transaction Summary */}
           <div
             style={{
               padding: '12px 14px',
               borderRadius: '12px',
-              backgroundColor: isLegacy ? 'rgba(245, 158, 11, 0.08)' : 'rgba(37, 99, 235, 0.06)',
-              border: '1px solid ' + (isLegacy ? 'rgba(245, 158, 11, 0.25)' : 'rgba(37, 99, 235, 0.2)'),
-              fontSize: '0.8rem'
+              backgroundColor: 'var(--bg-hover, #f8fafc)',
+              border: '1px solid var(--border-color, #e2e8f0)',
+              fontSize: '0.78rem'
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontWeight: 800, color: isLegacy ? '#b45309' : '#1d4ed8', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <ShieldCheck size={14} />
-                {targetTransaction ? `เป้าหมาย: รายการธุรกรรม #${targetTransaction.id}` : 'เป้าหมาย: หลักฐานการจองเดิม (Legacy Booking)'}
-              </span>
-              {targetTransaction && (
-                <span style={{ fontWeight: 800, fontSize: '0.86rem', color: '#16a34a' }}>
-                  +฿{Number(targetTransaction.amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
-                </span>
-              )}
-            </div>
-
-            <div style={{ marginTop: '4px', fontSize: '0.74rem', color: 'var(--text-muted, #64748b)', lineHeight: '1.4' }}>
-              {targetTransaction ? (
-                <span>
-                  ประเภท: <strong>{getTxTypeLabel(targetTransaction.transaction_type)}</strong> · ช่องทาง: <strong>{getMethodLabel(targetTransaction.payment_method)}</strong>
-                </span>
-              ) : (
-                <span>
-                  สถานะเดิม: <strong>{booking.payment_status === 'paid' ? 'ชำระแล้ว (Paid)' : (booking.payment_status === 'unpaid' ? 'ยังไม่ชำระ (Unpaid)' : booking.payment_status)}</strong>
-                  {Number(booking.paid_amount) > 0 && ` · ยอดชำระตามบันทึกเดิม ฿${Number(booking.paid_amount).toLocaleString('th-TH', { minimumFractionDigits: 2 })}`}
-                </span>
-              )}
-            </div>
-
-            <div style={{ marginTop: '6px', fontSize: '0.7rem', color: isLegacy ? '#92400e' : '#475569', fontStyle: 'italic' }}>
-              * การแนบหรือเปลี่ยนสลิปเป็นการบันทึกเอกสารหลักฐาน จะไม่เปลี่ยนแปลงยอดรับชำระแล้ว ยอดคงเหลือ หรือสถานะทางการเงินของการจอง
-            </div>
-          </div>
-        </div>
-
-        {/* Modal Body */}
-        <div style={{ padding: '14px 20px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '14px' }}>
-
-          {/* Replacement Notice & History Preservation Banner */}
-          {isReplacement && (
             <div
               style={{
-                padding: '10px 12px',
-                borderRadius: '10px',
-                backgroundColor: 'rgba(59, 130, 246, 0.08)',
-                border: '1px solid rgba(59, 130, 246, 0.25)',
-                fontSize: '0.74rem',
-                color: '#1e40af'
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, 1fr)',
+                gap: '8px',
+                alignItems: 'center'
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 750 }}>
-                <HistoryIcon size={14} />
-                <span>การรักษาประวัติหลักฐานเดิม (Audit Trail Guaranteed)</span>
+              <div>
+                <span style={{ color: 'var(--text-muted, #64748b)', fontSize: '0.7rem' }}>ประเภท: </span>
+                <strong style={{ color: 'var(--text-main, #0f172a)' }}>{targetType}</strong>
               </div>
-              <div style={{ marginTop: '4px', fontSize: '0.7rem', color: '#3b82f6', lineHeight: '1.4' }}>
-                ไฟล์สลิปเดิมจะไม่ถูกลบหรือเขียนทับ ระบบจะบันทึกประวัติการเปลี่ยนสลิป ผู้ดำเนินการ วันเวลา และเหตุผลลงใน Audit Trail เพื่อความโปร่งใส
+              <div style={{ textAlign: 'right' }}>
+                <span style={{ color: 'var(--text-muted, #64748b)', fontSize: '0.7rem' }}>ช่องทาง: </span>
+                <strong style={{ color: 'var(--text-main, #0f172a)' }}>{targetMethod}</strong>
               </div>
-              {existingSlipUrl && (
-                <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '0.68rem', color: '#64748b' }}>สลิปปัจจุบัน:</span>
-                  <a
-                    href={existingSlipUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      fontSize: '0.68rem',
-                      fontWeight: 700,
-                      color: '#2563eb',
-                      textDecoration: 'underline',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '3px'
-                    }}
-                  >
-                    <span>คลิกเพื่อดูสลิปเดิม</span>
-                    <ExternalLink size={10} />
-                  </a>
-                </div>
+              <div>
+                <span style={{ color: 'var(--text-muted, #64748b)', fontSize: '0.7rem' }}>ยอดเงิน: </span>
+                <strong style={{ color: 'var(--primary-color, #2563eb)', fontSize: '0.88rem' }}>
+                  ฿{Number(targetAmount).toLocaleString('th-TH', { minimumFractionDigits: 2 })}
+                </strong>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <span
+                  style={{
+                    display: 'inline-block',
+                    padding: '2px 8px',
+                    borderRadius: '6px',
+                    fontSize: '0.7rem',
+                    fontWeight: 700,
+                    backgroundColor: isReplacement ? 'rgba(37, 99, 235, 0.1)' : 'rgba(245, 158, 11, 0.12)',
+                    color: isReplacement ? '#2563eb' : '#d97706',
+                    border: '1px solid ' + (isReplacement ? 'rgba(37, 99, 235, 0.25)' : 'rgba(245, 158, 11, 0.3)')
+                  }}
+                >
+                  {statusLabel}
+                </span>
+              </div>
+            </div>
+
+            {/* Concise 1-line Notice */}
+            <div
+              style={{
+                marginTop: '8px',
+                paddingTop: '8px',
+                borderTop: '1px solid var(--border-color, #e2e8f0)',
+                fontSize: '0.7rem',
+                color: isReplacement ? '#1e40af' : 'var(--text-muted, #64748b)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '6px'
+              }}
+            >
+              <span>
+                {isReplacement
+                  ? 'การเปลี่ยนสลิปจะถูกบันทึกในประวัติการตรวจสอบ (Audit Trail)'
+                  : (booking.payment_status === 'unpaid'
+                      ? 'การแนบหลักฐานเอกสารไม่เปลี่ยนแปลงยอดค้างชำระ'
+                      : 'แนบหลักฐานการชำระเงินเพื่อยืนยันรายการ')}
+              </span>
+              {isReplacement && existingSlipUrl && (
+                <a
+                  href={existingSlipUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    color: '#2563eb',
+                    fontWeight: 700,
+                    textDecoration: 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '3px',
+                    flexShrink: 0
+                  }}
+                >
+                  <span>ดูสลิปเดิม</span>
+                  <ExternalLink size={10} />
+                </a>
               )}
             </div>
-          )}
+          </div>
 
-          {/* Replacement Reason Selector */}
+          {/* Replacement Mode: Concise Reason Selector */}
           {isReplacement && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                ระบุเหตุผลในการเปลี่ยนสลิป <span style={{ color: '#ef4444' }}>*</span>
-              </label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main, #0f172a)' }}>
+                  ระบุเหตุผลในการเปลี่ยนสลิป <span style={{ color: '#ef4444' }}>*</span>
+                </label>
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted, #64748b)' }}>
+                  บันทึกลงระบบตรวจสอบ
+                </span>
+              </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                {REASON_OPTIONS.map((opt) => (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => setSelectedReasonOption(opt)}
-                    style={{
-                      padding: '4px 9px',
-                      borderRadius: '6px',
-                      border: selectedReasonOption === opt ? '1.5px solid #2563eb' : '1px solid var(--border-color, #e2e8f0)',
-                      backgroundColor: selectedReasonOption === opt ? 'rgba(37, 99, 235, 0.1)' : 'var(--bg-card, #ffffff)',
-                      color: selectedReasonOption === opt ? '#2563eb' : 'var(--text-muted, #64748b)',
-                      fontSize: '0.72rem',
-                      fontWeight: selectedReasonOption === opt ? 750 : 500,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {opt}
-                  </button>
-                ))}
+                {REASON_OPTIONS.map((opt) => {
+                  const isSelected = selectedReasonOption === opt;
+                  return (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => setSelectedReasonOption(opt)}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '6px',
+                        border: isSelected ? '1.5px solid #2563eb' : '1px solid var(--border-color, #cbd5e1)',
+                        backgroundColor: isSelected ? 'rgba(37, 99, 235, 0.08)' : 'var(--bg-card, #ffffff)',
+                        color: isSelected ? '#2563eb' : 'var(--text-main, #334155)',
+                        fontSize: '0.72rem',
+                        fontWeight: isSelected ? 750 : 500,
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      {opt}
+                    </button>
+                  );
+                })}
               </div>
               <input
                 type="text"
                 id="input-slip-replacement-reason"
-                placeholder={selectedReasonOption === 'อื่นๆ (ระบุเอง)' ? 'กรุณาระบุเหตุผลในการเปลี่ยนสลิป...' : 'ระบุรายละเอียดเพิ่มเติม (ถ้ามี)...'}
+                placeholder={selectedReasonOption === 'อื่นๆ (ระบุเอง)' ? 'ระบุเหตุผลในการเปลี่ยนสลิป...' : 'ระบุรายละเอียดเพิ่มเติม (ถ้ามี)...'}
                 value={customReasonText}
                 onChange={(e) => setCustomReasonText(e.target.value)}
                 style={{
@@ -444,7 +514,7 @@ export default function AttachSlipModal({
             </div>
           )}
 
-          {/* Dropzone / Upload Container */}
+          {/* Upload Area / Dropzone */}
           {!previewUrl ? (
             <div
               onDragOver={handleDragOver}
@@ -452,10 +522,10 @@ export default function AttachSlipModal({
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
               style={{
-                border: '2px dashed ' + (isDragging ? '#2563eb' : 'var(--border-color, #cbd5e1)'),
-                backgroundColor: isDragging ? 'rgba(37, 99, 235, 0.05)' : 'var(--bg-hover, #f8fafc)',
+                border: '1.5px dashed ' + (isDragging ? '#2563eb' : 'var(--border-color, #cbd5e1)'),
+                backgroundColor: isDragging ? 'rgba(37, 99, 235, 0.04)' : 'var(--bg-hover, #f8fafc)',
                 borderRadius: '12px',
-                padding: '30px 20px',
+                padding: '28px 16px',
                 textAlign: 'center',
                 cursor: 'pointer',
                 transition: 'all 0.15s ease'
@@ -463,28 +533,28 @@ export default function AttachSlipModal({
             >
               <div
                 style={{
-                  width: '44px',
-                  height: '44px',
-                  borderRadius: '50%',
-                  backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '10px',
+                  backgroundColor: 'rgba(37, 99, 235, 0.08)',
                   color: '#2563eb',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  margin: '0 auto 10px auto'
+                  margin: '0 auto 8px auto'
                 }}
               >
-                <Upload size={22} />
+                <Upload size={20} />
               </div>
-              <div style={{ fontSize: '0.84rem', fontWeight: 750, color: 'var(--text-main)' }}>
-                {isReplacement ? 'คลิกเพื่อเลือกไฟล์สลิปใหม่ หรือ ลากรูปภาพมาวางที่นี่' : 'คลิกเพื่อเลือกไฟล์ หรือ ลากรูปภาพมาวางที่นี่'}
+              <div style={{ fontSize: '0.82rem', fontWeight: 750, color: 'var(--text-main, #0f172a)' }}>
+                คลิกเพื่อเลือกไฟล์ หรือวางไฟล์ที่นี่
               </div>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                รองรับไฟล์ JPG, PNG, WEBP (ขนาดไม่เกิน 10MB)
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted, #64748b)', marginTop: '3px' }}>
+                รองรับ JPG, PNG, WEBP ไม่เกิน 10MB
               </div>
             </div>
           ) : (
-            /* Preview Container */
+            /* Uploaded File State */
             <div
               style={{
                 borderRadius: '12px',
@@ -496,76 +566,114 @@ export default function AttachSlipModal({
                 gap: '10px'
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Image size={14} style={{ color: '#2563eb' }} />
-                  {isReplacement ? 'ตัวอย่างรูปภาพสลิปใหม่ที่เลือก' : 'ตัวอย่างรูปภาพสลิปที่เลือก'}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleClearFile}
-                  disabled={isUploading}
-                  style={{
-                    padding: '2px 8px',
-                    borderRadius: '6px',
-                    border: '1px solid var(--border-color, #e2e8f0)',
-                    backgroundColor: 'var(--bg-card, #ffffff)',
-                    color: 'var(--text-muted)',
-                    fontSize: '0.72rem',
-                    fontWeight: 700,
-                    cursor: isUploading ? 'not-allowed' : 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px'
-                  }}
-                >
-                  <RefreshCw size={11} />
-                  <span>เปลี่ยนรูปภาพ</span>
-                </button>
-              </div>
-
-              <div
-                style={{
-                  textAlign: 'center',
-                  backgroundColor: '#000000',
-                  borderRadius: '10px',
-                  padding: '8px',
-                  maxHeight: '240px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  overflow: 'hidden'
-                }}
-              >
-                <img
-                  src={previewUrl}
-                  alt="ตัวอย่างสลิป"
-                  id="img-attach-slip-preview"
-                  style={{
-                    maxWidth: '100%',
-                    maxHeight: '224px',
-                    objectFit: 'contain',
-                    borderRadius: '6px'
-                  }}
-                />
-              </div>
-
-              {fileDetails && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                {/* Thumbnail Preview */}
                 <div
                   style={{
+                    width: '64px',
+                    height: '64px',
+                    borderRadius: '8px',
+                    backgroundColor: '#0f172a',
+                    border: '1px solid var(--border-color, #cbd5e1)',
+                    overflow: 'hidden',
                     display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: '0.72rem',
-                    color: 'var(--text-muted)',
-                    padding: '0 4px'
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
                   }}
                 >
-                  <span style={{ maxWidth: '280px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    ไฟล์: <strong>{fileDetails.name}</strong>
-                  </span>
-                  <span>ขนาด: <strong>{fileDetails.size}</strong></span>
+                  <img
+                    src={previewUrl}
+                    alt="ตัวอย่างสลิป"
+                    id="img-attach-slip-preview"
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      objectFit: 'contain'
+                    }}
+                  />
                 </div>
-              )}
+
+                {/* File Details */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: '0.78rem',
+                      fontWeight: 750,
+                      color: 'var(--text-main, #0f172a)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap'
+                    }}
+                    title={fileDetails?.name || 'ไฟล์สลิป'}
+                  >
+                    {fileDetails?.name || 'ไฟล์สลิป'}
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted, #64748b)', marginTop: '2px' }}>
+                    {fileDetails?.size || '-'} • รูปภาพพร้อมแนบ
+                  </div>
+                  <div
+                    style={{
+                      marginTop: '4px',
+                      fontSize: '0.68rem',
+                      color: '#16a34a',
+                      fontWeight: 700,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <Check size={11} />
+                    <span>ตรวจสอบชนิดไฟล์เรียบร้อย</span>
+                  </div>
+                </div>
+
+                {/* Actions: Change / Delete */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploading}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-color, #cbd5e1)',
+                      backgroundColor: 'var(--bg-card, #ffffff)',
+                      color: 'var(--text-main, #334155)',
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      cursor: isUploading ? 'not-allowed' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <RefreshCw size={11} />
+                    <span>เปลี่ยนไฟล์</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearFile}
+                    disabled={isUploading}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: '6px',
+                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                      backgroundColor: 'rgba(239, 68, 68, 0.06)',
+                      color: '#dc2626',
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      cursor: isUploading ? 'not-allowed' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <Trash2 size={11} />
+                    <span>ลบ</span>
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -586,32 +694,32 @@ export default function AttachSlipModal({
           {uploadError && (
             <div
               style={{
-                padding: '10px 12px',
+                padding: '8px 12px',
                 borderRadius: '8px',
-                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                backgroundColor: 'rgba(239, 68, 68, 0.08)',
                 border: '1px solid rgba(239, 68, 68, 0.25)',
                 color: '#dc2626',
-                fontSize: '0.76rem',
+                fontSize: '0.74rem',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '8px'
               }}
             >
-              <AlertCircle size={15} style={{ flexShrink: 0 }} />
+              <AlertCircle size={14} style={{ flexShrink: 0 }} />
               <span>{uploadError}</span>
             </div>
           )}
         </div>
 
-        {/* Footer */}
+        {/* Single Footer: Cancel (Left) | Save (Right) */}
         <div
           style={{
-            padding: '14px 20px',
+            padding: '12px 20px',
             borderTop: '1px solid var(--border-color, #e2e8f0)',
             display: 'flex',
-            justifyContent: 'flex-end',
-            gap: '10px',
-            backgroundColor: 'var(--bg-hover, #f8fafc)'
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            backgroundColor: 'var(--bg-card, #ffffff)'
           }}
         >
           <button
@@ -623,12 +731,13 @@ export default function AttachSlipModal({
               padding: '0 16px',
               height: '36px',
               borderRadius: '8px',
-              border: '1px solid var(--border-color, #e2e8f0)',
+              border: '1px solid var(--border-color, #cbd5e1)',
               backgroundColor: 'var(--bg-card, #ffffff)',
-              color: 'var(--text-main)',
+              color: 'var(--text-main, #334155)',
               fontSize: '0.8rem',
               fontWeight: 700,
-              cursor: isUploading ? 'not-allowed' : 'pointer'
+              cursor: isUploading ? 'not-allowed' : 'pointer',
+              transition: 'background-color 0.15s'
             }}
           >
             ยกเลิก
@@ -650,23 +759,24 @@ export default function AttachSlipModal({
               cursor: !previewUrl || isUploading ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '6px'
+              gap: '6px',
+              boxShadow: !previewUrl || isUploading ? 'none' : '0 2px 8px rgba(37, 99, 235, 0.25)'
             }}
           >
             {isUploading ? (
               <>
-                <RefreshCw size={14} className="spin" />
-                <span>กำลังบันทึกสลิป...</span>
+                <RefreshCw size={13} className="spin" />
+                <span>กำลังบันทึก...</span>
               </>
             ) : isReplacement ? (
               <>
-                <RefreshCw size={14} />
+                <RefreshCw size={13} />
                 <span>ยืนยันการเปลี่ยนสลิป</span>
               </>
             ) : (
               <>
-                <CheckCircle2 size={14} />
-                <span>ยืนยันการแนบสลิป</span>
+                <Check size={14} />
+                <span>บันทึกสลิป</span>
               </>
             )}
           </button>
@@ -674,4 +784,6 @@ export default function AttachSlipModal({
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(modalNode, document.body) : modalNode;
 }

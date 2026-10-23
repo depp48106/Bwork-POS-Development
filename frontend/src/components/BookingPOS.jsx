@@ -1,5 +1,6 @@
 import POSTaxAndSlipSection from './POSTaxAndSlipSection';
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
+import AttachSlipModal from './AttachSlipModal';
 import BasecampQuotaModal from './BasecampQuotaModal';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
@@ -7,7 +8,7 @@ import {
   User, Users, Building, Building2, Phone, FileText, Check, ChevronLeft, ChevronRight,
   Clock, Search, ChevronUp, ChevronDown, Image, CheckCircle2, Key, Send,
   AlertTriangle, LayoutGrid, Columns, Sparkles, Layers, Presentation, Laptop, Coffee, Car, BookmarkPlus, Zap,
-  Banknote, Smartphone, ExternalLink, Eye, EyeOff, Copy
+  Banknote, Smartphone, ExternalLink, Eye, EyeOff, Copy, RefreshCw
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import { printReceipt } from '../utils/printReceiptHelper';
@@ -246,6 +247,48 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   // Room scheduling Slide-over Drawer / Modal
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [viewedEvent, setViewedEvent] = useState(null);
+
+  // Payment slip attachment modal & transactions for viewed booking
+  const [attachSlipModalData, setAttachSlipModalData] = useState(null);
+  const [posPaymentTransactions, setPosPaymentTransactions] = useState([]);
+  const [posLoadingPayments, setPosLoadingPayments] = useState(false);
+
+  const fetchPosPaymentTransactions = async (bookingId) => {
+    if (!bookingId) {
+      setPosPaymentTransactions([]);
+      return;
+    }
+    setPosLoadingPayments(true);
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const res = await fetch(`/api/bookings/${bookingId}/payments`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPosPaymentTransactions(data.payments || []);
+      } else {
+        setPosPaymentTransactions([]);
+      }
+    } catch (err) {
+      console.error('Failed to fetch payment transactions for POS viewedEvent:', err);
+      setPosPaymentTransactions([]);
+    } finally {
+      setPosLoadingPayments(false);
+    }
+  };
+
+  useEffect(() => {
+    const bId = viewedEvent?.booking_id || viewedEvent?.id;
+    if (bId) {
+      fetchPosPaymentTransactions(bId);
+    } else {
+      setPosPaymentTransactions([]);
+    }
+  }, [viewedEvent?.booking_id, viewedEvent?.id]);
   const [bookingType, setBookingType] = useState('hourly'); // 'hourly' | 'halfday' | 'daily'
   const [dailyTimeSlot, setDailyTimeSlot] = useState('08-17'); // '08-17' | '09-18' | '08-12' | '13-17'
   const [layoutType, setLayoutType] = useState('standard'); // 'standard' | 'classroom'
@@ -538,7 +581,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         if (showReceiptModal) {
           setShowReceiptModal(false);
           setPrintBooking(null);
-        } else if (viewedEvent) {
+        } else if (viewedEvent && !attachSlipModalData && !selectedTaxBooking) {
           setViewedEvent(null);
         } else if (showServicePicker) {
           setShowServicePicker(false);
@@ -5308,54 +5351,367 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   return <span style={{ color: 'var(--primary-color)', fontWeight: 600 }}>รอเริ่มการใช้งาน</span>;
                 })()}
               </div>
+              {/* Payment Slip Evidence Section (Multi-Tx & Legacy Support) */}
+              {(() => {
+                const bId = viewedEvent.booking_id || viewedEvent.id;
+                const hasTransactions = posPaymentTransactions && posPaymentTransactions.length > 0;
+                const hasLegacySlip = Boolean(viewedEvent.slip_image_url && viewedEvent.slip_image_url !== 'uploaded');
+                const isUnpaid = (viewedEvent.payment_status || '').toLowerCase() === 'unpaid';
 
-              {/* Payment Slip Evidence Banner if present */}
-              {viewedEvent.slip_image_url && viewedEvent.slip_image_url !== 'uploaded' && (
-                <div style={{
-                  padding: '8px 10px',
-                  borderRadius: '10px',
-                  backgroundColor: 'rgba(37, 99, 235, 0.06)',
-                  border: '1px solid rgba(37, 99, 235, 0.2)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  marginTop: '4px'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <img
-                      src={viewedEvent.slip_image_url}
-                      alt="สลิป"
-                      style={{ width: '32px', height: '32px', borderRadius: '6px', objectFit: 'cover', border: '1px solid var(--border-color)' }}
-                    />
-                    <div>
-                      <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--text-main)' }}>สลิปชำระเงิน</div>
-                      <div style={{ fontSize: '0.66rem', color: '#16a34a', fontWeight: 600 }}>มีหลักฐานการโอน</div>
-                    </div>
-                  </div>
-                  <a
-                    href={viewedEvent.slip_image_url}
-                    target="_blank"
-                    rel="noreferrer"
+                return (
+                  <div
                     style={{
-                      height: '26px',
-                      padding: '0 8px',
-                      borderRadius: '6px',
-                      backgroundColor: 'var(--bg-card)',
-                      border: '1px solid var(--border-color)',
-                      color: '#2563eb',
-                      fontSize: '0.72rem',
-                      fontWeight: 700,
-                      textDecoration: 'none',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '4px'
+                      padding: '12px',
+                      borderRadius: '12px',
+                      backgroundColor: 'var(--bg-subtle, #f8fafc)',
+                      border: '1px solid var(--border-color, #e2e8f0)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px'
                     }}
                   >
-                    <ExternalLink size={11} />
-                    <span>ดูสลิป</span>
-                  </a>
-                </div>
-              )}
+                    {/* Header */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Image size={14} style={{ color: 'var(--primary-color, #2563eb)' }} />
+                        <span style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                          หลักฐานการชำระเงิน
+                        </span>
+                      </div>
+                      {posLoadingPayments ? (
+                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>กำลังโหลด...</span>
+                      ) : (
+                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                          {hasTransactions ? `${posPaymentTransactions.length} รายการธุรกรรม` : 'ระดับการจอง'}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Case 1: Booking with Multi-Transactions */}
+                    {hasTransactions ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {posPaymentTransactions.map((tx) => {
+                          const txTypeLabel = tx.payment_type === 'deposit'
+                            ? 'เงินมัดจำ'
+                            : tx.payment_type === 'balance'
+                              ? 'ยอดคงเหลือ'
+                              : tx.payment_type === 'full'
+                                ? 'ชำระเต็มจำนวน'
+                                : (tx.payment_type || 'ชำระเงิน');
+                          const hasTxSlip = Boolean(tx.slip_image_url && tx.slip_image_url !== 'uploaded');
+
+                          return (
+                            <div
+                              key={tx.id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '8px 10px',
+                                borderRadius: '8px',
+                                backgroundColor: 'var(--bg-card, #ffffff)',
+                                border: '1px solid var(--border-color, #e2e8f0)',
+                                gap: '8px'
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
+                                {hasTxSlip ? (
+                                  <img
+                                    src={tx.slip_image_url}
+                                    alt="สลิป"
+                                    style={{
+                                      width: '32px',
+                                      height: '32px',
+                                      borderRadius: '6px',
+                                      objectFit: 'cover',
+                                      border: '1px solid var(--border-color, #cbd5e1)',
+                                      flexShrink: 0
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    style={{
+                                      width: '32px',
+                                      height: '32px',
+                                      borderRadius: '6px',
+                                      backgroundColor: 'var(--bg-subtle, #f1f5f9)',
+                                      border: '1px dashed var(--border-color, #cbd5e1)',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      color: 'var(--text-muted, #94a3b8)',
+                                      flexShrink: 0
+                                    }}
+                                  >
+                                    <Image size={14} />
+                                  </div>
+                                )}
+                                <div style={{ minWidth: 0, flex: 1 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                                      {txTypeLabel}
+                                    </span>
+                                    <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--primary-color)' }}>
+                                      ฿{Number(tx.amount || 0).toLocaleString()}
+                                    </span>
+                                  </div>
+                                  <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <span>#{tx.id}</span>
+                                    <span>•</span>
+                                    <span>{tx.payment_method || '-'}</span>
+                                    {hasTxSlip && (
+                                      <>
+                                        <span>•</span>
+                                        <span style={{ color: '#16a34a', fontWeight: 700 }}>มีสลิป</span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
+                                {hasTxSlip ? (
+                                  <>
+                                    <a
+                                      href={tx.slip_image_url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      id={`btn-view-slip-tx-${tx.id}`}
+                                      style={{
+                                        height: '28px',
+                                        padding: '0 8px',
+                                        borderRadius: '6px',
+                                        backgroundColor: 'var(--bg-subtle, #f8fafc)',
+                                        border: '1px solid var(--border-color, #cbd5e1)',
+                                        color: '#2563eb',
+                                        fontSize: '0.7rem',
+                                        fontWeight: 700,
+                                        textDecoration: 'none',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px'
+                                      }}
+                                    >
+                                      <Eye size={11} />
+                                      <span>ดูสลิป</span>
+                                    </a>
+                                    <button
+                                      type="button"
+                                      id={`btn-reupload-slip-tx-${tx.id}`}
+                                      onClick={() => setAttachSlipModalData({
+                                        booking: { ...viewedEvent, id: bId },
+                                        transaction: tx
+                                      })}
+                                      style={{
+                                        height: '28px',
+                                        padding: '0 8px',
+                                        borderRadius: '6px',
+                                        backgroundColor: 'var(--bg-card, #ffffff)',
+                                        border: '1px solid var(--border-color, #cbd5e1)',
+                                        color: 'var(--text-main, #334155)',
+                                        fontSize: '0.7rem',
+                                        fontWeight: 700,
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        cursor: 'pointer'
+                                      }}
+                                    >
+                                      <RefreshCw size={10} />
+                                      <span>เปลี่ยน</span>
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    id={`btn-attach-slip-tx-${tx.id}`}
+                                    onClick={() => setAttachSlipModalData({
+                                      booking: { ...viewedEvent, id: bId },
+                                      transaction: tx
+                                    })}
+                                    style={{
+                                      height: '28px',
+                                      padding: '0 10px',
+                                      borderRadius: '6px',
+                                      backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                      border: '1px solid rgba(37, 99, 235, 0.3)',
+                                      color: '#2563eb',
+                                      fontSize: '0.72rem',
+                                      fontWeight: 750,
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    <Plus size={11} />
+                                    <span>แนบสลิป</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      /* Case 2: Legacy Booking (No payment transactions) */
+                      <div>
+                        {hasLegacySlip ? (
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              backgroundColor: 'var(--bg-card, #ffffff)',
+                              border: '1px solid var(--border-color, #e2e8f0)',
+                              gap: '8px'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
+                              <img
+                                src={viewedEvent.slip_image_url}
+                                alt="สลิป"
+                                style={{
+                                  width: '32px',
+                                  height: '32px',
+                                  borderRadius: '6px',
+                                  objectFit: 'cover',
+                                  border: '1px solid var(--border-color, #cbd5e1)',
+                                  flexShrink: 0
+                                }}
+                              />
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                  <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                                    สลิปการจอง
+                                  </span>
+                                  {isUnpaid ? (
+                                    <span
+                                      style={{
+                                        padding: '1px 6px',
+                                        borderRadius: '4px',
+                                        backgroundColor: '#fef3c7',
+                                        color: '#92400e',
+                                        fontSize: '0.62rem',
+                                        fontWeight: 700
+                                      }}
+                                    >
+                                      หลักฐานรอตรวจสอบ
+                                    </span>
+                                  ) : (
+                                    <span style={{ fontSize: '0.66rem', color: '#16a34a', fontWeight: 700 }}>
+                                      มีหลักฐาน
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>
+                                  หลักฐานแนบระดับการจอง
+                                </div>
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
+                              <a
+                                href={viewedEvent.slip_image_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                id="btn-view-legacy-slip"
+                                style={{
+                                  height: '28px',
+                                  padding: '0 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'var(--bg-subtle, #f8fafc)',
+                                  border: '1px solid var(--border-color, #cbd5e1)',
+                                  color: '#2563eb',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  textDecoration: 'none',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                              >
+                                <Eye size={11} />
+                                <span>ดูสลิป</span>
+                              </a>
+                              <button
+                                type="button"
+                                id="btn-reupload-legacy-slip"
+                                onClick={() => setAttachSlipModalData({
+                                  booking: { ...viewedEvent, id: bId },
+                                  transaction: null
+                                })}
+                                style={{
+                                  height: '28px',
+                                  padding: '0 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'var(--bg-card, #ffffff)',
+                                  border: '1px solid var(--border-color, #cbd5e1)',
+                                  color: 'var(--text-main, #334155)',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <RefreshCw size={10} />
+                                <span>เปลี่ยนสลิป</span>
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              backgroundColor: 'var(--bg-card, #ffffff)',
+                              border: '1px dashed var(--border-color, #cbd5e1)'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                ยังไม่มีหลักฐานการชำระเงิน
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              id="btn-attach-legacy-slip"
+                              onClick={() => setAttachSlipModalData({
+                                booking: { ...viewedEvent, id: bId },
+                                transaction: null
+                              })}
+                              style={{
+                                height: '28px',
+                                padding: '0 12px',
+                                borderRadius: '6px',
+                                backgroundColor: '#2563eb',
+                                border: 'none',
+                                color: '#ffffff',
+                                fontSize: '0.72rem',
+                                fontWeight: 750,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <Plus size={11} />
+                              <span>แนบสลิป</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Quick Tax Invoice Button */}
@@ -5627,6 +5983,26 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           sysAlert={sysAlert}
         />
       )}
+      {/* Attach Slip Modal (Historical / POS Slip Attachment) */}
+      {attachSlipModalData && (
+        <AttachSlipModal
+          isOpen={!!attachSlipModalData}
+          booking={attachSlipModalData.booking}
+          targetTransaction={attachSlipModalData.transaction}
+          onClose={() => setAttachSlipModalData(null)}
+          onSuccess={(resData) => {
+            const bId = attachSlipModalData.booking?.id || attachSlipModalData.booking?.booking_id;
+            if (bId) {
+              fetchPosPaymentTransactions(bId);
+              setViewedEvent(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              fetchCalendarEvents();
+            }
+            setAttachSlipModalData(null);
+          }}
+          sysAlert={sysAlert}
+        />
+      )}
+
 
     </div>
   );
