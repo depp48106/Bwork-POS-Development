@@ -1,4 +1,5 @@
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
+import AttachSlipModal from './AttachSlipModal';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useCallback } from 'react';
 import {
   RefreshCw,
@@ -160,6 +161,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
   // Payment Transactions History for Detail Modal (Phase 4)
   const [paymentTransactions, setPaymentTransactions] = useState([]);
+  const [attachSlipModalData, setAttachSlipModalData] = useState(null);
   const [isLoadingPayments, setIsLoadingPayments] = useState(false);
   const activePaymentFetchBookingIdRef = useRef(null);
 
@@ -3127,9 +3129,9 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       }}
                     >
                       {/* Column 1: Booking */}
-                      <td className="pb-td">
+                      <td className="pb-td" onClick={() => handleOpenBookingDetail(b)} style={{ cursor: 'pointer' }} title={`${displayCode} (คลิกดูรายละเอียดการจอง)`}>
                         <div className="pb-cell-booking">
-                          <span className="pb-booking-code" title={displayCode}>{displayCode}</span>
+                          <span className="pb-booking-code">{displayCode}</span>
                           <span className="pb-sub-text">{formatDate(b.created_at)}</span>
                           <span className="pb-tertiary-text">
                             {channelLabel} • {custLabel}
@@ -3237,7 +3239,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           ) : isReviewing ? (
                             <span className="pb-status-badge pb-status-reviewing">
                               <Eye size={11} />
-                              <span>รอตรวจสลิป</span>
+                              <span>{(b.payment_status === 'unpaid' && b.slip_image_url) ? 'หลักฐานรอตรวจสอบ' : 'รอตรวจสลิป'}</span>
                             </span>
                           ) : isRejected ? (
                             <span className="pb-status-badge pb-status-rejected">
@@ -3416,7 +3418,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       ) : isReviewing ? (
                         <span className="pb-status-badge pb-status-reviewing">
                           <Eye size={11} />
-                          <span>รอตรวจสลิป</span>
+                          <span>{(b.payment_status === 'unpaid' && b.slip_image_url) ? 'หลักฐานรอตรวจสอบ' : 'รอตรวจสลิป'}</span>
                         </span>
                       ) : isRejected ? (
                         <span className="pb-status-badge pb-status-rejected">
@@ -4055,7 +4057,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           statusText = 'สลิปถูกปฏิเสธ — รอหลักฐานใหม่';
           statusBadgeClass = 'pb-status-badge--rejected';
         } else if (isReviewing) {
-          statusText = 'รอตรวจสลิป';
+          statusText = (b.payment_status === 'unpaid' && b.slip_image_url) ? 'หลักฐานรอตรวจสอบ' : 'รอตรวจสลิป';
           statusBadgeClass = 'pb-status-badge--reviewing';
         }
 
@@ -4872,21 +4874,160 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                       </div>
                                     )}
                                     {tx.slip_url ? (
+                                      <div style={{ display: 'flex', gap: '4px' }}>
+                                        <button
+                                          type="button"
+                                          id={`btn-view-slip-tx-${tx.id}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setViewingSlipBooking({
+                                              ...b,
+                                              slip_image_url: tx.slip_url,
+                                              receipt_number: tx.receipt_number || b.receipt_number,
+                                              active_transaction_id: tx.id
+                                            });
+                                          }}
+                                          style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '3px',
+                                            padding: '2px 8px',
+                                            borderRadius: '6px',
+                                            backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                            color: 'var(--primary-color)',
+                                            border: '1px solid rgba(37, 99, 235, 0.25)',
+                                            fontSize: '0.7rem',
+                                            fontWeight: 700,
+                                            cursor: 'pointer'
+                                          }}
+                                        >
+                                          <Eye size={10} />
+                                          <span>ดูสลิป</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          id={`btn-reupload-slip-tx-${tx.id}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setAttachSlipModalData({ booking: b, transaction: tx });
+                                          }}
+                                          title="เปลี่ยนรูปสลิป"
+                                          style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '3px',
+                                            padding: '2px 7px',
+                                            borderRadius: '6px',
+                                            backgroundColor: 'var(--bg-card)',
+                                            color: 'var(--text-muted)',
+                                            border: '1px solid var(--border-color)',
+                                            fontSize: '0.68rem',
+                                            fontWeight: 700,
+                                            cursor: 'pointer'
+                                          }}
+                                        >
+                                          <RefreshCw size={9} />
+                                          <span>เปลี่ยน</span>
+                                        </button>
+                                      </div>
+                                    ) : (
                                       <button
                                         type="button"
+                                        id={`btn-attach-slip-tx-${tx.id}`}
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          setViewingSlipBooking({
-                                            ...b,
-                                            slip_image_url: tx.slip_url,
-                                            receipt_number: tx.receipt_number || b.receipt_number
-                                          });
+                                          setAttachSlipModalData({ booking: b, transaction: tx });
                                         }}
                                         style={{
                                           display: 'inline-flex',
                                           alignItems: 'center',
                                           gap: '3px',
                                           padding: '2px 8px',
+                                          borderRadius: '6px',
+                                          backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                                          color: '#d97706',
+                                          border: '1px solid rgba(245, 158, 11, 0.35)',
+                                          fontSize: '0.7rem',
+                                          fontWeight: 750,
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        <Plus size={10} />
+                                        <span>แนบสลิป</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div
+                              style={{
+                                padding: '10px 12px',
+                                borderRadius: '10px',
+                                backgroundColor: 'var(--bg-hover)',
+                                border: '1px solid var(--border-color)',
+                                fontSize: '0.78rem'
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+                                <div>
+                                  <div style={{ fontWeight: 750, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                    <FileText size={13} style={{ color: 'var(--text-muted)' }} />
+                                    <span>ไม่พบรายการธุรกรรมการชำระเงินแยกสำหรับการจองนี้</span>
+                                  </div>
+                                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px', lineHeight: '1.4' }}>
+                                    {b.payment_status === 'paid' || Number(b.paid_amount) > 0 ? (
+                                      <span>
+                                        ยอดชำระตามบันทึกเดิม: <strong>฿{formatMoney(b.paid_amount)}</strong> ({getPaymentMethodLabel(b.payment_method)}) — สามารถแนบหลักฐานสลิปย้อนหลังเพื่อบันทึกประวัติได้
+                                      </span>
+                                    ) : b.payment_status === 'unpaid' ? (
+                                      <span>
+                                        สถานะการจองเดิม: <strong>ยังไม่ชำระเงิน (Unpaid)</strong> — การแนบสลิปย้อนหลังเป็นการบันทึกเอกสารหลักฐาน จะไม่เปลี่ยนแปลงยอดรับชำระหรือสถานะการเงิน
+                                      </span>
+                                    ) : (
+                                      <span>
+                                        สถานะการจอง: <strong>{b.payment_status}</strong> — สามารถแนบหรือดูหลักฐานสลิปเดิมได้เพื่อการตรวจสอบย้อนหลัง
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div style={{ flexShrink: 0 }}>
+                                  {b.slip_image_url ? (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                      {b.payment_status === 'unpaid' && (
+                                        <span
+                                          id="pb-badge-legacy-slip-unpaid"
+                                          className="pb-status-badge pb-status-reviewing"
+                                          style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '4px',
+                                            padding: '2px 8px',
+                                            borderRadius: '6px',
+                                            backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                            color: '#d97706',
+                                            border: '1px solid rgba(245, 158, 11, 0.35)',
+                                            fontSize: '0.72rem',
+                                            fontWeight: 750
+                                          }}
+                                        >
+                                          <Clock size={11} />
+                                          <span>หลักฐานรอตรวจสอบ</span>
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        id="pb-btn-view-legacy-slip"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setViewingSlipBooking(b);
+                                        }}
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px',
+                                          padding: '3px 8px',
                                           borderRadius: '6px',
                                           backgroundColor: 'rgba(37, 99, 235, 0.1)',
                                           color: 'var(--primary-color)',
@@ -4896,57 +5037,62 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                           cursor: 'pointer'
                                         }}
                                       >
-                                        <Eye size={10} />
+                                        <Eye size={11} />
                                         <span>ดูสลิป</span>
                                       </button>
-                                    ) : !tx.slip_url ? (
                                       <button
                                         type="button"
+                                        id="pb-btn-reupload-legacy-slip"
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          setAttachingTxId(tx.id);
-                                          attachTxFileInputRef.current?.click();
+                                          setAttachSlipModalData({ booking: b, transaction: null });
                                         }}
                                         style={{
                                           display: 'inline-flex',
                                           alignItems: 'center',
                                           gap: '3px',
-                                          padding: '2px 8px',
+                                          padding: '3px 8px',
                                           borderRadius: '6px',
-                                          backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                                          color: '#d97706',
-                                          border: '1px solid rgba(245, 158, 11, 0.3)',
+                                          backgroundColor: 'var(--bg-card)',
+                                          color: 'var(--text-muted)',
+                                          border: '1px solid var(--border-color)',
                                           fontSize: '0.7rem',
                                           fontWeight: 700,
                                           cursor: 'pointer'
                                         }}
                                       >
-                                        <Plus size={10} />
-                                        <span>แนบสลิป</span>
+                                        <RefreshCw size={10} />
+                                        <span>เปลี่ยนสลิป</span>
                                       </button>
-                                    ) : null}
-                                  </div>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      id="pb-btn-attach-legacy-slip"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setAttachSlipModalData({ booking: b, transaction: null });
+                                      }}
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        padding: '4px 10px',
+                                        borderRadius: '6px',
+                                        backgroundColor: '#2563eb',
+                                        color: '#ffffff',
+                                        border: 'none',
+                                        fontSize: '0.72rem',
+                                        fontWeight: 750,
+                                        cursor: 'pointer'
+                                      }}
+                                    >
+                                      <Plus size={11} />
+                                      <span>แนบสลิปย้อนหลัง</span>
+                                    </button>
+                                  )}
                                 </div>
-                              ))}
-                              {/* Hidden File Input for attaching slip to specific transaction */}
-                              <input
-                                type="file"
-                                ref={attachTxFileInputRef}
-                                accept="image/png,image/jpeg,image/jpg,image/webp"
-                                style={{ display: 'none' }}
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file && attachingTxId) {
-                                    handleAttachSlipToTransaction(b.id, attachingTxId, file);
-                                  }
-                                  e.target.value = '';
-                                  setAttachingTxId(null);
-                                }}
-                              />
-                            </div>
-                          ) : (
-                            <div className="pb-detail-empty-note">
-                              ไม่มีประวัติธุรกรรมแยกรายการสำหรับการจองเดิม
+                              </div>
                             </div>
                           )}
                         </div>
@@ -9015,6 +9161,25 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       </div>
     );
   })()}
+
+      {/* ATTACH SLIP MODAL (HISTORICAL / LEGACY SLIP ATTACHMENT) */}
+      {attachSlipModalData && (
+        <AttachSlipModal
+          isOpen={!!attachSlipModalData}
+          booking={attachSlipModalData.booking}
+          targetTransaction={attachSlipModalData.transaction}
+          onClose={() => setAttachSlipModalData(null)}
+          onSuccess={(resData) => {
+            const bId = attachSlipModalData.booking?.id;
+            if (bId) {
+              fetchPaymentTransactions(bId);
+              setSelectedBooking(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              fetchBookings(true, false, true);
+            }
+          }}
+          sysAlert={sysAlert}
+        />
+      )}
 
       {/* TAX INVOICE MANAGEMENT MODAL (PHASE 3 & 4) */}
       {selectedTaxBooking && (

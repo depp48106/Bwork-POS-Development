@@ -307,6 +307,15 @@ async function initDatabase() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS booking_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+      action TEXT NOT NULL,
+      details TEXT,
+      performed_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS customer_audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       customer_id INTEGER,
@@ -586,6 +595,7 @@ async function initDatabase() {
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_contracts_dates ON customer_contracts(start_date, end_date, status)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_contracts_customer_id ON customer_contracts(customer_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_audit_logs_customer ON customer_audit_logs(customer_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_booking_history_booking_id ON booking_history(booking_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_customer_id ON bookings(customer_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_contract_id ON bookings(contract_id)'); } catch (e) {}
 

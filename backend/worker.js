@@ -1296,8 +1296,9 @@ async function saveUploadedFile(env, fileData, folder = 'uploads') {
     const ext = contentType.includes('pdf') ? 'pdf' : (contentType.includes('webp') ? 'webp' : (contentType.includes('png') ? 'png' : ((contentType.includes('jpeg') || contentType.includes('jpg')) ? 'jpeg' : 'bin')));
     const filename = `${folder}/${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
 
-    if (env.BUCKET) {
-      await env.BUCKET.put(filename, bytes.buffer, {
+    const r2Bucket = env.BUCKET || env.SLIP_BUCKET;
+    if (r2Bucket) {
+      await r2Bucket.put(filename, bytes.buffer, {
         httpMetadata: { contentType }
       });
       return `/uploads/${filename}`;
@@ -2458,6 +2459,16 @@ async function ensureD1Schema(env) {
   }
 
   try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS booking_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      details TEXT,
+      performed_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+    try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_booking_history_booking_id ON booking_history(booking_id)`).run(); } catch (_) {}
+
     await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tax_invoices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       booking_id INTEGER NOT NULL,
@@ -2701,6 +2712,8 @@ async function recordWorkerTicketEvent(env, { ticketId, actorType, actorId, acto
 // ==========================================
 export default {
   async fetch(request, env, ctx) {
+    // Ensure compatibility with both env.BUCKET and env.SLIP_BUCKET
+    if (!env.BUCKET && env.SLIP_BUCKET) env.BUCKET = env.SLIP_BUCKET;
     const url = new URL(request.url);
     const pathname = url.pathname;
     const method = request.method;
@@ -6149,29 +6162,63 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
         }
 
-        if (transaction) {
-          await env.DB.prepare('UPDATE payment_transactions SET slip_url = ? WHERE id = ? AND booking_id = ?').bind(slipUrl, transaction.id, bookingId).run();
-        }
-
-        if (!booking.slip_image_url) {
-          await env.DB.prepare('UPDATE bookings SET slip_image_url = ? WHERE id = ?').bind(slipUrl, bookingId).run();
-        }
+        const previousSlip = transaction ? transaction.slip_url : booking.slip_image_url;
+        const isReplacement = Boolean(previousSlip && previousSlip !== 'uploaded');
+        const action = isReplacement ? 'replace_slip' : 'attach_slip';
+        const replacementReason = (body.replacement_reason || body.reason || (isReplacement ? 'เปลี่ยนสลิปหลักฐาน' : 'แนบสลิปหลักฐาน')).trim();
 
         const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
         const nowIso = new Date().toISOString();
+
+        const auditPayload = {
+          action,
+          booking_id: bookingId,
+          payment_transaction_id: transaction ? transaction.id : null,
+          previous_slip_reference: previousSlip || null,
+          new_slip_reference: slipUrl,
+          uploaded_by: staffName,
+          timestamp: nowIso,
+          replacement_reason: isReplacement ? replacementReason : null,
+          attachment_reason: !isReplacement ? replacementReason : null,
+          description: isReplacement
+            ? `เปลี่ยนสลิป ${transaction ? 'ธุรกรรม #' + transaction.id : 'การจองเดิม (Legacy)'}: ${replacementReason} (เดิม: ${previousSlip} -> ใหม่: ${slipUrl})`
+            : `แนบสลิป ${transaction ? 'ธุรกรรม #' + transaction.id : 'การจองเดิม (Legacy)'} (${slipUrl})`
+        };
+        const auditDetailsJson = JSON.stringify(auditPayload);
+
         try {
-          await env.DB.prepare(
-            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
-             VALUES (?, 'attach_slip', ?, ?, ?)`
-          ).bind(bookingId, `แนบสลิปธุรกรรม #${transaction ? transaction.id : 'N/A'}`, staffName, nowIso).run();
-        } catch (_) {}
+          const statements = [];
+          if (transaction) {
+            statements.push(env.DB.prepare('UPDATE payment_transactions SET slip_url = ? WHERE id = ? AND booking_id = ?').bind(slipUrl, transaction.id, bookingId));
+            statements.push(env.DB.prepare('UPDATE bookings SET slip_image_url = ? WHERE id = ?').bind(slipUrl, bookingId));
+          } else {
+            // Legacy booking without transaction: only update bookings.slip_image_url
+            statements.push(env.DB.prepare('UPDATE bookings SET slip_image_url = ? WHERE id = ?').bind(slipUrl, bookingId));
+          }
+          statements.push(
+            env.DB.prepare(
+              `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+               VALUES (?, ?, ?, ?, ?)`
+            ).bind(bookingId, action, auditDetailsJson, staffName, nowIso)
+          );
+
+          await env.DB.batch(statements);
+        } catch (d1Err) {
+          console.error('[Attach Slip] D1 batch audit error:', d1Err);
+          return new Response(JSON.stringify({
+            error: 'เกิดข้อผิดพลาดในการบันทึกข้อมูลหรือประวัติการแนบสลิป (Audit Trail Failure) การดำเนินการถูกยกเลิกเพื่อความปลอดภัย',
+            details: d1Err.message
+          }), { status: 500, headers: corsHeaders });
+        }
 
         return new Response(JSON.stringify({
           success: true,
-          message: 'แนบหลักฐานสลิปการชำระเงินเรียบร้อยแล้ว',
+          message: isReplacement ? 'เปลี่ยนหลักฐานสลิปการชำระเงินและบันทึกประวัติเรียบร้อยแล้ว' : 'แนบหลักฐานสลิปการชำระเงินเรียบร้อยแล้ว',
           slip_url: slipUrl,
           payment_id: transaction ? transaction.id : null,
-          booking_id: bookingId
+          booking_id: bookingId,
+          action,
+          is_replacement: isReplacement
         }), { headers: corsHeaders });
       }
 

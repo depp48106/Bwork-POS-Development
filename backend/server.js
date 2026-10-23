@@ -3138,37 +3138,90 @@ app.post(['/api/bookings/:id/payments/:paymentId/slip', '/api/bookings/:id/attac
       return res.status(400).json({ error: 'ขนาดรูปภาพเกิน 10MB กรุณาอัปโหลดรูปที่มีขนาดเล็กลง' });
     }
 
-    const ext = matches[2] === 'jpeg' ? 'jpg' : matches[2];
+    // Verify magic bytes on the binary buffer
+    if (imageBuffer.length < 4) {
+      return res.status(400).json({ error: 'ไฟล์รูปภาพไม่สมบูรณ์' });
+    }
+    const isPng = imageBuffer[0] === 0x89 && imageBuffer[1] === 0x50 && imageBuffer[2] === 0x4E && imageBuffer[3] === 0x47;
+    const isJpg = imageBuffer[0] === 0xFF && imageBuffer[1] === 0xD8 && imageBuffer[2] === 0xFF;
+    const isWebp = imageBuffer.length >= 12 &&
+      imageBuffer[0] === 0x52 && imageBuffer[1] === 0x49 && imageBuffer[2] === 0x46 && imageBuffer[3] === 0x46 &&
+      imageBuffer[8] === 0x57 && imageBuffer[9] === 0x45 && imageBuffer[10] === 0x42 && imageBuffer[11] === 0x50;
+
+    if (!isPng && !isJpg && !isWebp) {
+      return res.status(400).json({ error: 'ข้อมูลไฟล์รูปภาพไม่ถูกต้อง (Magic Bytes ไม่ตรงกับ PNG, JPG หรือ WEBP)' });
+    }
+
+    const ext = isPng ? 'png' : (isWebp ? 'webp' : 'jpg');
     const slipDir = path.join(__dirname, 'uploads', 'slips');
     if (!fs.existsSync(slipDir)) fs.mkdirSync(slipDir, { recursive: true });
     const fileName = `attach_BK${String(bookingId).padStart(6, '0')}_TX${transaction ? transaction.id : 0}_${Date.now()}.${ext}`;
     fs.writeFileSync(path.join(slipDir, fileName), imageBuffer);
     const slipUrl = `/uploads/slips/${fileName}`;
 
-    if (transaction) {
-      await dbQuery.run('UPDATE payment_transactions SET slip_url = ? WHERE id = ? AND booking_id = ?', [slipUrl, transaction.id, bookingId]);
-    }
-
-    if (!booking.slip_image_url) {
-      await dbQuery.run('UPDATE bookings SET slip_image_url = ? WHERE id = ?', [slipUrl, bookingId]);
-    }
+    const previousSlip = transaction ? transaction.slip_url : booking.slip_image_url;
+    const isReplacement = Boolean(previousSlip && previousSlip !== 'uploaded');
+    const action = isReplacement ? 'replace_slip' : 'attach_slip';
+    const replacementReason = (req.body.replacement_reason || req.body.reason || (isReplacement ? 'เปลี่ยนสลิปหลักฐาน' : 'แนบสลิปหลักฐาน')).trim();
 
     const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
     const nowIso = getBangkokLocalISO(new Date());
+
+    const auditPayload = {
+      action,
+      booking_id: bookingId,
+      payment_transaction_id: transaction ? transaction.id : null,
+      previous_slip_reference: previousSlip || null,
+      new_slip_reference: slipUrl,
+      uploaded_by: staffName,
+      timestamp: nowIso,
+      replacement_reason: isReplacement ? replacementReason : null,
+      attachment_reason: !isReplacement ? replacementReason : null,
+      description: isReplacement
+        ? `เปลี่ยนสลิป ${transaction ? 'ธุรกรรม #' + transaction.id : 'การจองเดิม (Legacy)'}: ${replacementReason} (เดิม: ${previousSlip} -> ใหม่: ${slipUrl})`
+        : `แนบสลิป ${transaction ? 'ธุรกรรม #' + transaction.id : 'การจองเดิม (Legacy)'} (${slipUrl})`
+    };
+    const auditDetailsJson = JSON.stringify(auditPayload);
+
     try {
-      await dbQuery.run(
-        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
-         VALUES (?, 'attach_slip', ?, ?, ?)`,
-        [bookingId, `แนบสลิปธุรกรรม #${transaction ? transaction.id : 'N/A'}: ${slipUrl}`, staffName, nowIso]
-      );
-    } catch (_) {}
+      await dbQuery.transaction(async () => {
+        if (transaction) {
+          await dbQuery.run('UPDATE payment_transactions SET slip_url = ? WHERE id = ? AND booking_id = ?', [slipUrl, transaction.id, bookingId]);
+          await dbQuery.run('UPDATE bookings SET slip_image_url = ? WHERE id = ?', [slipUrl, bookingId]);
+        } else {
+          // Legacy booking without transaction: only update bookings.slip_image_url
+          await dbQuery.run('UPDATE bookings SET slip_image_url = ? WHERE id = ?', [slipUrl, bookingId]);
+        }
+
+        // Guaranteed audit write inside the transaction
+        await dbQuery.run(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          [bookingId, action, auditDetailsJson, staffName, nowIso]
+        );
+      });
+    } catch (dbErr) {
+      // Clean up newly written file on disk if DB transaction failed
+      try {
+        const filePath = path.join(slipDir, fileName);
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch (_) {}
+
+      console.error('[Attach Slip] Database/Audit transaction error:', dbErr);
+      return res.status(500).json({
+        error: 'เกิดข้อผิดพลาดในการบันทึกข้อมูลหรือประวัติการแนบสลิป (Audit Trail Failure) การดำเนินการถูกยกเลิกเพื่อความปลอดภัย',
+        details: dbErr.message
+      });
+    }
 
     res.json({
       success: true,
-      message: 'แนบหลักฐานสลิปการชำระเงินเรียบร้อยแล้ว',
+      message: isReplacement ? 'เปลี่ยนหลักฐานสลิปการชำระเงินและบันทึกประวัติเรียบร้อยแล้ว' : 'แนบหลักฐานสลิปการชำระเงินเรียบร้อยแล้ว',
       slip_url: slipUrl,
       payment_id: transaction ? transaction.id : null,
-      booking_id: bookingId
+      booking_id: bookingId,
+      action,
+      is_replacement: isReplacement
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

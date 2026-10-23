@@ -1,4 +1,5 @@
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
+import AttachSlipModal from './AttachSlipModal';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import {
   Search,
@@ -147,6 +148,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [basecampQuotaLoading, setBasecampQuotaLoading] = useState(false);
   const [basecampQuotaError, setBasecampQuotaError] = useState(null);
   const [paymentTransactions, setPaymentTransactions] = useState([]);
+  const [attachSlipModalData, setAttachSlipModalData] = useState(null);
   const [isLoadingPayments, setIsLoadingPayments] = useState(false);
   const activePaymentFetchIdRef = useRef(null);
 
@@ -1553,37 +1555,73 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                   <span>มัดจำ</span>
                                 </span>
                               ) : isRev ? (
-                                <span style={{
-                                  padding: '2px 8px',
-                                  borderRadius: '6px',
-                                  fontSize: '0.72rem',
-                                  fontWeight: 700,
-                                  backgroundColor: 'rgba(14, 165, 233, 0.12)',
-                                  color: '#0284c7',
-                                  border: '1px solid rgba(14, 165, 233, 0.25)',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px'
-                                }}>
-                                  <Clock size={11} />
-                                  <span>รอตรวจสลิป</span>
-                                </span>
+                                (b.payment_status === 'unpaid' && b.slip_image_url) ? (
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                    color: '#d97706',
+                                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                  }}>
+                                    <Clock size={11} />
+                                    <span>หลักฐานรอตรวจสอบ</span>
+                                  </span>
+                                ) : (
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    backgroundColor: 'rgba(14, 165, 233, 0.12)',
+                                    color: '#0284c7',
+                                    border: '1px solid rgba(14, 165, 233, 0.25)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                  }}>
+                                    <Clock size={11} />
+                                    <span>รอตรวจสลิป</span>
+                                  </span>
+                                )
                               ) : isUnpaid ? (
-                                <span style={{
-                                  padding: '2px 8px',
-                                  borderRadius: '6px',
-                                  fontSize: '0.72rem',
-                                  fontWeight: 700,
-                                  backgroundColor: 'rgba(225, 29, 72, 0.12)',
-                                  color: '#e11d48',
-                                  border: '1px solid rgba(225, 29, 72, 0.25)',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px'
-                                }}>
-                                  <Clock size={11} />
-                                  <span>รอชำระ</span>
-                                </span>
+                                b.slip_image_url ? (
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                    color: '#d97706',
+                                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                  }}>
+                                    <Clock size={11} />
+                                    <span>หลักฐานรอตรวจสอบ</span>
+                                  </span>
+                                ) : (
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    backgroundColor: 'rgba(225, 29, 72, 0.12)',
+                                    color: '#e11d48',
+                                    border: '1px solid rgba(225, 29, 72, 0.25)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                  }}>
+                                    <Clock size={11} />
+                                    <span>รอชำระ</span>
+                                  </span>
+                                )
                               ) : (
                                 <span style={{
                                   padding: '2px 8px',
@@ -1820,9 +1858,15 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                           มัดจำ
                         </span>
                       ) : fin?.is_reviewing ? (
-                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(14, 165, 233, 0.12)', color: '#0284c7', fontWeight: 800 }}>
-                          รอตรวจสลิป
-                        </span>
+                        (b.payment_status === 'unpaid' && b.slip_image_url) ? (
+                          <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#d97706', border: '1px solid rgba(245, 158, 11, 0.35)', fontWeight: 800 }}>
+                            หลักฐานรอตรวจสอบ
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(14, 165, 233, 0.12)', color: '#0284c7', fontWeight: 800 }}>
+                            รอตรวจสลิป
+                          </span>
+                        )
                       ) : fin?.is_pending ? (
                         <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(225, 29, 72, 0.12)', color: '#e11d48', fontWeight: 800 }}>
                           รอชำระ
@@ -2453,16 +2497,69 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                               </div>
                             )}
                             {tx.slip_url ? (
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <button
+                                  type="button"
+                                  id={`history-btn-view-slip-tx-${tx.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setViewingSlipBooking({
+                                      ...selectedBooking,
+                                      slip_image_url: tx.slip_url,
+                                      receipt_number: tx.receipt_number || selectedBooking.receipt_number,
+                                      active_transaction_id: tx.id
+                                    });
+                                  }}
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                    color: 'var(--primary-color)',
+                                    border: '1px solid rgba(37, 99, 235, 0.25)',
+                                    fontSize: '0.7rem',
+                                    fontWeight: 700,
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  <Eye size={10} />
+                                  <span>ดูสลิป #{tx.id}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  id={`history-btn-reupload-slip-tx-${tx.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setAttachSlipModalData({ booking: selectedBooking, transaction: tx });
+                                  }}
+                                  title="เปลี่ยนรูปสลิป"
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    padding: '2px 7px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'var(--bg-card)',
+                                    color: 'var(--text-muted)',
+                                    border: '1px solid var(--border-color)',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 700,
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  <RefreshCw size={9} />
+                                  <span>เปลี่ยน</span>
+                                </button>
+                              </div>
+                            ) : (
                               <button
                                 type="button"
+                                id={`history-btn-attach-slip-tx-${tx.id}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setViewingSlipBooking({
-                                    ...selectedBooking,
-                                    slip_image_url: tx.slip_url,
-                                    receipt_number: tx.receipt_number || selectedBooking.receipt_number,
-                                    active_transaction_id: tx.id
-                                  });
+                                  setAttachSlipModalData({ booking: selectedBooking, transaction: tx });
                                 }}
                                 style={{
                                   display: 'inline-flex',
@@ -2471,35 +2568,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                   padding: '2px 8px',
                                   borderRadius: '6px',
                                   backgroundColor: 'rgba(37, 99, 235, 0.1)',
-                                  color: 'var(--primary-color)',
-                                  border: '1px solid rgba(37, 99, 235, 0.25)',
+                                  color: '#2563eb',
+                                  border: '1px solid rgba(37, 99, 235, 0.3)',
                                   fontSize: '0.7rem',
-                                  fontWeight: 700,
-                                  cursor: 'pointer'
-                                }}
-                              >
-                                <Eye size={10} />
-                                <span>ดูสลิป #{tx.id}</span>
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setAttachingTxId(tx.id);
-                                  attachTxFileInputRef.current?.click();
-                                }}
-                                style={{
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '3px',
-                                  padding: '2px 8px',
-                                  borderRadius: '6px',
-                                  backgroundColor: 'rgba(59, 130, 246, 0.08)',
-                                  color: 'var(--primary-color)',
-                                  border: '1px dashed rgba(59, 130, 246, 0.3)',
-                                  fontSize: '0.68rem',
-                                  fontWeight: 700,
+                                  fontWeight: 750,
                                   cursor: 'pointer'
                                 }}
                               >
@@ -2511,40 +2583,152 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         </div>
                       ))}
                     </div>
-                  ) : selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' ? (
-                    <div style={{ marginTop: '4px', padding: '10px 12px', backgroundColor: 'rgba(14, 165, 233, 0.08)', borderRadius: '12px', border: '1px solid rgba(14, 165, 233, 0.25)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0284c7', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                          <Eye size={13} /> สลิปโอนเงินที่แนบมา:
-                        </span>
-                        {selectedBooking.slip_trans_ref && (
-                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                            Ref: {selectedBooking.slip_trans_ref}
-                          </span>
-                        )}
+                  ) : (
+                    <div
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: '10px',
+                        backgroundColor: 'var(--bg-hover)',
+                        border: '1px solid var(--border-color)',
+                        fontSize: '0.78rem'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+                        <div>
+                          <div style={{ fontWeight: 750, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                            <FileText size={13} style={{ color: 'var(--text-muted)' }} />
+                            <span>ไม่พบรายการธุรกรรมการชำระเงินแยกสำหรับการจองนี้</span>
+                          </div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px', lineHeight: '1.4' }}>
+                            {selectedBooking.payment_status === 'paid' || Number(selectedBooking.paid_amount) > 0 ? (
+                              <span>
+                                ยอดชำระตามบันทึกเดิม: <strong>฿{formatMoney(selectedBooking.paid_amount)}</strong> ({getPaymentMethodLabel ? getPaymentMethodLabel(selectedBooking.payment_method) : selectedBooking.payment_method}) — สามารถแนบหลักฐานสลิปย้อนหลังเพื่อบันทึกประวัติได้
+                              </span>
+                            ) : selectedBooking.payment_status === 'unpaid' ? (
+                              <span>
+                                สถานะการจองเดิม: <strong>ยังไม่ชำระเงิน (Unpaid)</strong> — การแนบสลิปย้อนหลังเป็นการบันทึกเอกสารหลักฐาน จะไม่เปลี่ยนแปลงยอดรับชำระหรือสถานะการเงิน
+                              </span>
+                            ) : (
+                              <span>
+                                สถานะการจอง: <strong>{selectedBooking.payment_status}</strong> — สามารถแนบหรือดูหลักฐานสลิปเดิมได้เพื่อการตรวจสอบย้อนหลัง
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ flexShrink: 0 }}>
+                          {selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              {selectedBooking.payment_status === 'unpaid' && (
+                                <span
+                                  id="history-badge-legacy-slip-unpaid"
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                    color: '#d97706',
+                                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 750
+                                  }}
+                                >
+                                  <Clock size={11} />
+                                  <span>หลักฐานรอตรวจสอบ</span>
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                id="history-btn-view-legacy-slip"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setViewingSlipBooking(selectedBooking);
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                  color: 'var(--primary-color)',
+                                  border: '1px solid rgba(37, 99, 235, 0.25)',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <Eye size={11} />
+                                <span>ดูสลิป</span>
+                              </button>
+                              <button
+                                type="button"
+                                id="history-btn-reupload-legacy-slip"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAttachSlipModalData({ booking: selectedBooking, transaction: null });
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'var(--bg-card)',
+                                  color: 'var(--text-muted)',
+                                  border: '1px solid var(--border-color)',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <RefreshCw size={10} />
+                                <span>เปลี่ยนสลิป</span>
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              id="history-btn-attach-legacy-slip"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAttachSlipModalData({ booking: selectedBooking, transaction: null });
+                              }}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '4px 10px',
+                                borderRadius: '6px',
+                                backgroundColor: '#2563eb',
+                                color: '#ffffff',
+                                border: 'none',
+                                fontSize: '0.72rem',
+                                fontWeight: 750,
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <Plus size={11} />
+                              <span>แนบสลิปย้อนหลัง</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <div style={{ textAlign: 'center' }}>
-                        <a href={selectedBooking.slip_image_url} target="_blank" rel="noreferrer" title="คลิกเพื่อดูรูปสลิปขนาดเต็ม">
-                          <img
-                            src={selectedBooking.slip_image_url}
-                            alt="สลิปการชำระเงิน"
-                            style={{ maxHeight: '130px', maxWidth: '100%', borderRadius: '8px', border: '1px solid var(--border-color)', objectFit: 'contain', cursor: 'zoom-in', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-                          />
-                        </a>
-                      </div>
-                      <div style={{ textAlign: 'center' }}>
-                        <a
-                          href={selectedBooking.slip_image_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={{ fontSize: '0.76rem', color: 'var(--primary-color)', textDecoration: 'none', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                        >
-                          <ExternalLink size={12} />
-                          <span>เปิดดูรูปภาพสลิปขนาดเต็ม (Full Size)</span>
-                        </a>
-                      </div>
+
+                      {selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' && (
+                        <div style={{ marginTop: '8px', textAlign: 'center', paddingTop: '8px', borderTop: '1px dashed var(--border-color)' }}>
+                          <a href={selectedBooking.slip_image_url} target="_blank" rel="noreferrer" title="คลิกเพื่อดูรูปสลิปขนาดเต็ม">
+                            <img
+                              src={selectedBooking.slip_image_url}
+                              alt="สลิปการชำระเงิน"
+                              style={{ maxHeight: '120px', maxWidth: '100%', borderRadius: '6px', border: '1px solid var(--border-color)', objectFit: 'contain' }}
+                            />
+                          </a>
+                        </div>
+                      )}
                     </div>
-                  ) : null}
+                  )}
                 </div>
               </div>
 
@@ -2734,6 +2918,25 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ATTACH SLIP MODAL (HISTORICAL / LEGACY SLIP ATTACHMENT) */}
+      {attachSlipModalData && (
+        <AttachSlipModal
+          isOpen={!!attachSlipModalData}
+          booking={attachSlipModalData.booking}
+          targetTransaction={attachSlipModalData.transaction}
+          onClose={() => setAttachSlipModalData(null)}
+          onSuccess={(resData) => {
+            const bId = attachSlipModalData.booking?.id;
+            if (bId) {
+              fetchPaymentTransactions(bId);
+              setSelectedBooking(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              fetchHistoryBookings(true);
+            }
+          }}
+          sysAlert={sysAlert}
+        />
       )}
 
       {/* TAX INVOICE MANAGEMENT MODAL (PHASE 3 & 4) */}
