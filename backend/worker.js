@@ -1238,9 +1238,9 @@ function checkStaffPosAuth(auth) {
   if (!user || (!Number.isSafeInteger(user.id)) || user.id <= 0) {
     return { error: 'Staff identity required', status: 403 };
   }
-  if (user.role !== 'admin') {
+  if (user.role !== 'admin' && user.username !== 'admin') {
     const perms = (user.permissions || '').split(',').map(p => p.trim());
-    if (!perms.includes('pos')) {
+    if (!perms.includes('hour-credits')) {
       return { error: 'ไม่มีสิทธิ์เข้าถึงระบบเครดิตชั่วโมง', status: 403 };
     }
   }
@@ -3996,7 +3996,7 @@ export default {
         const user = auth.user;
         if (user && user.role !== 'admin') {
           const perms = (user.permissions || '').split(',').map(p => p.trim());
-          if (!perms.some(p => ['pos', 'manage', 'pending', 'history', 'dashboard', 'admin-management'].includes(p))) {
+          if (!perms.some(p => ['customers', 'admin-management'].includes(p))) {
             return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงข้อมูลลูกค้า' }), { status: 403, headers: corsHeaders });
           }
         }
@@ -8541,8 +8541,32 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         if (method === 'POST') {
+          const user = auth.user;
+          const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+          const perms = new Set((user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+          const hasSettingPerm = isAdmin || perms.has('admin-management') || perms.has('admin-system') || perms.has('admin-quotation') || perms.has('admin-backup') || perms.has('admin-dooraccess') || perms.has('admin-general');
+          if (!hasSettingPerm) {
+            return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์ดำเนินการนี้' }), { status: 403, headers: corsHeaders });
+          }
           const body = await request.json();
-          for (let [k, v] of Object.entries(body)) {
+          let writableEntries = Object.entries(body);
+          if (!isAdmin && !perms.has('admin-management') && !perms.has('admin-system')) {
+            writableEntries = writableEntries.filter(([k]) =>
+              (perms.has('admin-quotation') && k.startsWith('quotation_')) ||
+              (perms.has('admin-backup') && k.startsWith('onedrive_')) ||
+              (perms.has('admin-dooraccess') && (k.includes('line_') || k.includes('door_') || k.includes('access_') || k.includes('pin_'))) ||
+              (perms.has('admin-general') && [
+                'company_name', 'company_address', 'company_tax_id', 'logo_image',
+                'receipt_header', 'receipt_footer', 'room_alert_minutes', 'cleaning_buffer_minutes',
+                'promptpay_id', 'payment_bank_name', 'payment_bank_account', 'payment_bank_account_name',
+                'payment_window_minutes', 'wifi_ssid'
+              ].includes(k))
+            );
+          }
+          if (writableEntries.length === 0) {
+            return new Response(JSON.stringify({ error: 'ไม่มีการตั้งค่าที่ได้รับอนุญาตให้แก้ไข' }), { status: 403, headers: corsHeaders });
+          }
+          for (let [k, v] of writableEntries) {
             // Guard against overwriting real secrets with mask string or empty string
             if ((k === 'line_channel_access_token' || k === 'line_channel_secret') && (
               !v ||
@@ -8598,6 +8622,12 @@ export default {
       if (pathname === '/api/settings/line/test' && method === 'POST') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        const user = auth.user;
+        const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+        const perms = new Set((user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+        if (!isAdmin && !perms.has('admin-management') && !perms.has('admin-system') && !perms.has('admin-dooraccess')) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์ดำเนินการนี้' }), { status: 403, headers: corsHeaders });
+        }
 
         try {
           const body = await request.json().catch(() => ({}));
@@ -8793,8 +8823,8 @@ export default {
         }
         const { results: roles } = await env.DB.prepare("SELECT * FROM roles").all();
         return new Response(JSON.stringify(roles && roles.length ? roles : [
-          { id: 1, name: 'admin', label: 'ผู้ดูแลระบบ (Admin)', permissions: 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation' },
-          { id: 2, name: 'staff', label: 'พนักงานต้อนรับ (Reception)', permissions: 'pos,pending,layout,manage,history,quotations' }
+          { id: 1, name: 'admin', label: 'ผู้ดูแลระบบ (Admin)', permissions: 'pos,dashboard,pending,layout,history,quotations,hour-credits,customers,tickets,manage,admin-users,admin-system,admin-promotion,admin-quotation,admin-backup,admin-dooraccess,admin-general' },
+          { id: 2, name: 'staff', label: 'พนักงานต้อนรับ (Reception)', permissions: 'pos,pending,layout,history,quotations,hour-credits,customers,tickets' }
         ]), { headers: corsHeaders });
       }
 
@@ -9464,6 +9494,17 @@ export default {
       }
 
       // 5. POS Staff Notifications Count
+      if (pathname.startsWith('/api/pos/support')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        const user = auth.user;
+        const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+        const perms = (user?.permissions || '').split(',').map(p => p.trim());
+        if (!isAdmin && !perms.some(p => ['tickets', 'admin-management'].includes(p))) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงระบบแจ้งปัญหา' }), { status: 403, headers: corsHeaders });
+        }
+      }
+
       if (pathname === '/api/pos/support/notifications/count' && method === 'GET') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });

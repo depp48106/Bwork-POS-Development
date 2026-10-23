@@ -367,8 +367,8 @@ async function initDatabase() {
 
   // Update existing users who have null permissions or fullnames
   try {
-    await dbQuery.run("UPDATE users SET permissions = 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation,admin-dooraccess' WHERE role = 'admin'");
-    await dbQuery.run("UPDATE users SET permissions = 'pos,pending,layout,history,quotations' WHERE role = 'staff'");
+    await dbQuery.run("UPDATE users SET permissions = 'pos,dashboard,pending,layout,history,quotations,hour-credits,customers,tickets,manage,admin-users,admin-system,admin-promotion,admin-quotation,admin-backup,admin-dooraccess,admin-general' WHERE role = 'admin'");
+    await dbQuery.run("UPDATE users SET permissions = 'pos,pending,layout,history,quotations,hour-credits,customers,tickets' WHERE role = 'staff'");
     await dbQuery.run("UPDATE users SET fullname = 'ผู้ดูแลระบบหลัก' WHERE username = 'admin' AND (fullname IS NULL OR fullname = '')");
     await dbQuery.run("UPDATE users SET fullname = 'พนักงานต้อนรับประจำกะ' WHERE username = 'staff' AND (fullname IS NULL OR fullname = '')");
   } catch (e) {}
@@ -717,10 +717,10 @@ async function initDatabase() {
   const roleCount = await dbQuery.get('SELECT COUNT(*) as count FROM roles');
   if (roleCount.count === 0) {
     await dbQuery.run("INSERT INTO roles (name, label, permissions, is_system) VALUES (?, ?, ?, 1)", [
-      'admin', 'ผู้ดูแลระบบ (Admin)', 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation'
+      'admin', 'ผู้ดูแลระบบ (Admin)', 'pos,dashboard,pending,layout,history,quotations,hour-credits,customers,tickets,manage,admin-users,admin-system,admin-promotion,admin-quotation,admin-backup,admin-dooraccess,admin-general'
     ]);
     await dbQuery.run("INSERT INTO roles (name, label, permissions, is_system) VALUES (?, ?, ?, 1)", [
-      'staff', 'พนักงานต้อนรับ (Reception)', 'pos,pending,layout,history,quotations'
+      'staff', 'พนักงานต้อนรับ (Reception)', 'pos,pending,layout,history,quotations,hour-credits,customers,tickets'
     ]);
   }
 
@@ -729,10 +729,10 @@ async function initDatabase() {
   if (userCount.count === 0) {
     // default user: admin / admin123
     await dbQuery.run('INSERT INTO users (username, password_hash, role, permissions, fullname) VALUES (?, ?, ?, ?, ?)', [
-      'admin', hashPassword('admin123'), 'admin', 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation', 'ผู้ดูแลระบบหลัก'
+      'admin', hashPassword('admin123'), 'admin', 'pos,dashboard,pending,layout,history,quotations,hour-credits,customers,tickets,manage,admin-users,admin-system,admin-promotion,admin-quotation,admin-backup,admin-dooraccess,admin-general', 'ผู้ดูแลระบบหลัก'
     ]);
     await dbQuery.run('INSERT INTO users (username, password_hash, role, permissions, fullname) VALUES (?, ?, ?, ?, ?)', [
-      'staff', hashPassword('staff123'), 'staff', 'pos,pending,layout,history,quotations', 'พนักงานต้อนรับประจำกะ'
+      'staff', hashPassword('staff123'), 'staff', 'pos,pending,layout,history,quotations,hour-credits,customers,tickets', 'พนักงานต้อนรับประจำกะ'
     ]);
   }
 

@@ -49,15 +49,18 @@ function App() {
   
   const getFirstAllowedSettingsTab = (currentUser) => {
     if (!currentUser) return 'manage';
-    const permString = currentUser.permissions || 'pos,pending,layout,history';
+    if (currentUser.username === 'admin' || currentUser.role === 'admin') return 'manage';
+    const permString = currentUser.permissions || '';
     const perms = permString.split(',').map(p => p.trim());
     if (perms.includes('manage')) return 'manage';
-    if (perms.includes('admin-users') || currentUser.username === 'admin') return 'users';
+    if (perms.includes('admin-users')) return 'users';
     if (perms.includes('admin-system')) return 'system';
     if (perms.includes('admin-promotion') || perms.includes('admin-promotions')) return 'promotion';
     if (perms.includes('admin-quotation')) return 'quotation';
     if (perms.includes('admin-backup')) return 'backup';
-    return 'general';
+    if (perms.includes('admin-dooraccess')) return 'dooraccess';
+    if (perms.includes('admin-general')) return 'general';
+    return '';
   };
 
   const handleNavigateToSettings = () => {
@@ -101,24 +104,23 @@ function App() {
   // Check if a user has permission to view a tab/menu
   const checkUserPermission = (currentUser, tabKey) => {
     if (!currentUser) return false;
-    if (currentUser.username === 'admin') return true;
-    if (tabKey === 'dashboard') return true;
+    if (currentUser.username === 'admin' || currentUser.role === 'admin') return true;
     const permString = typeof currentUser.permissions === 'string' ? currentUser.permissions : '';
     const perms = permString.split(',').map(p => p.trim()).filter(Boolean);
     if (tabKey === 'admin-management' || tabKey === 'settings') {
-      return perms.includes('admin-management') || perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-promotion') || perms.includes('admin-promotions') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage');
+      return perms.includes('admin-management') || perms.includes('admin-users') || perms.includes('admin-system') || perms.includes('admin-promotion') || perms.includes('admin-promotions') || perms.includes('admin-backup') || perms.includes('admin-quotation') || perms.includes('manage') || perms.includes('admin-dooraccess') || perms.includes('admin-general');
     }
     if (tabKey === 'hour-credits') {
-      return perms.includes('pos');
+      return perms.includes('hour-credits');
     }
     if (tabKey === 'customers') {
-      return perms.includes('pos') || perms.includes('manage') || perms.includes('history') || perms.includes('customers') || perms.includes('admin-management');
+      return perms.includes('customers') || perms.includes('admin-management');
     }
     if (tabKey === 'tickets') {
-      return perms.includes('pos') || perms.includes('manage') || perms.includes('pending') || perms.includes('tickets') || perms.includes('admin-management');
+      return perms.includes('tickets') || perms.includes('admin-management');
     }
-    // If checking a settings sub-tab, grant it if they have the main 'admin-management' permission
-    if (['manage', 'admin-users', 'admin-system', 'admin-promotion', 'admin-promotions', 'admin-quotation', 'admin-backup', 'admin-dooraccess'].includes(tabKey)) {
+    // If checking a settings sub-tab, grant it if they have the main 'admin-management' permission or specific key
+    if (['manage', 'admin-users', 'admin-system', 'admin-promotion', 'admin-promotions', 'admin-quotation', 'admin-backup', 'admin-dooraccess', 'admin-general'].includes(tabKey)) {
       return perms.includes('admin-management') || perms.includes(tabKey) || (tabKey === 'admin-promotion' && perms.includes('admin-promotions')) || (tabKey === 'admin-promotions' && perms.includes('admin-promotion'));
     }
     return perms.includes(tabKey);
@@ -133,9 +135,7 @@ function App() {
   // 3. first valid existing menu destination
   const getDefaultLandingTab = (currentUser) => {
     if (!currentUser) return 'dashboard';
-    if (checkUserPermission(currentUser, 'dashboard')) return 'dashboard';
-    if (checkUserPermission(currentUser, 'pos')) return 'pos';
-    const fallbackCandidates = ['pending', 'layout', 'history', 'quotations', 'hour-credits', 'settings'];
+    const fallbackCandidates = ['dashboard', 'pos', 'pending', 'layout', 'history', 'quotations', 'hour-credits', 'customers', 'tickets', 'settings'];
     for (const tab of fallbackCandidates) {
       if (checkUserPermission(currentUser, tab)) {
         return tab;
@@ -170,6 +170,31 @@ function App() {
       }
     }
   }, [user]);
+
+  // Ensure activeSettingsSubTab is permitted
+  useEffect(() => {
+    if (activeTab === 'settings' && user) {
+      const subTabPermMap = {
+        manage: 'manage',
+        users: 'admin-users',
+        system: 'admin-system',
+        promotion: 'admin-promotion',
+        quotation: 'admin-quotation',
+        backup: 'admin-backup',
+        dooraccess: 'admin-dooraccess',
+        general: 'admin-general'
+      };
+      const requiredPerm = subTabPermMap[activeSettingsSubTab];
+      if (requiredPerm && !hasPermission(requiredPerm)) {
+        const fallback = getFirstAllowedSettingsTab(user);
+        if (fallback) {
+          setActiveSettingsSubTab(fallback);
+        } else {
+          setActiveTab(getDefaultLandingTab(user));
+        }
+      }
+    }
+  }, [user, activeTab, activeSettingsSubTab]);
 
   // Synchronize browser URL bar with active view
   useEffect(() => {
@@ -774,7 +799,7 @@ function App() {
                 <span>Quotations</span>
               </button>
             )}
-            {hasPermission('pos') && (
+            {hasPermission('hour-credits') && (
               <button
                 type="button"
                 className={`top-menu-item ${activeTab === 'hour-credits' ? 'active' : ''}`}
@@ -1027,7 +1052,7 @@ function App() {
                   <span>Quotations</span>
                 </div>
               )}
-              {hasPermission('pos') && (
+              {hasPermission('hour-credits') && (
                 <button className={`menu-card ${activeTab === 'hour-credits' ? 'active' : ''}`} onClick={() => setActiveTab('hour-credits')}>
                   <div className="menu-card-icon-wrapper">
                     <Clock size={20} />
@@ -1147,7 +1172,7 @@ function App() {
           />
         )}
         {activeTab === 'history' && <HistoryLog settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} />}
-        {activeTab === 'hour-credits' && hasPermission('pos') && <HourCredits sysConfirm={customConfirm}/>}
+        {activeTab === 'hour-credits' && hasPermission('hour-credits') && <HourCredits sysConfirm={customConfirm}/>}
         {activeTab === 'quotations' && <Quotations user={user} settings={settings} sysAlert={customAlert} sysConfirm={customConfirm} quotationCartData={quotationCartData} clearQuotationCartData={() => setQuotationCartData(null)} onNavigate={setActiveTab} />}
         {activeTab === 'customers' && hasPermission('customers') && (
           <CustomerManagement
@@ -1313,41 +1338,45 @@ function App() {
                   </button>
                 )}
 
-                <button
-                  onClick={() => setActiveSettingsSubTab('dooraccess')}
-                  className={`top-menu-item ${activeSettingsSubTab === 'dooraccess' ? 'active' : ''}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '12px',
-                    width: '100%',
-                    textAlign: 'left',
-                    justifyContent: 'flex-start',
-                    boxSizing: 'border-box',
-                    height: '44px'
-                  }}
-                >
-                  <KeyRound size={16} />
-                  <span>ระบบจอง LINE & รหัสเข้าห้อง</span>
-                </button>
+                {hasPermission('admin-dooraccess') && (
+                  <button
+                    onClick={() => setActiveSettingsSubTab('dooraccess')}
+                    className={`top-menu-item ${activeSettingsSubTab === 'dooraccess' ? 'active' : ''}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      width: '100%',
+                      textAlign: 'left',
+                      justifyContent: 'flex-start',
+                      boxSizing: 'border-box',
+                      height: '44px'
+                    }}
+                  >
+                    <KeyRound size={16} />
+                    <span>ระบบจอง LINE & รหัสเข้าห้อง</span>
+                  </button>
+                )}
 
-                <button
-                  onClick={() => setActiveSettingsSubTab('general')}
-                  className={`top-menu-item ${activeSettingsSubTab === 'general' ? 'active' : ''}`}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '12px',
-                    width: '100%',
-                    textAlign: 'left',
-                    justifyContent: 'flex-start',
-                    boxSizing: 'border-box',
-                    height: '44px'
-                  }}
-                >
-                  <Sliders size={16} />
-                  <span>ทั่วไป</span>
-                </button>
+                {hasPermission('admin-general') && (
+                  <button
+                    onClick={() => setActiveSettingsSubTab('general')}
+                    className={`top-menu-item ${activeSettingsSubTab === 'general' ? 'active' : ''}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      width: '100%',
+                      textAlign: 'left',
+                      justifyContent: 'flex-start',
+                      boxSizing: 'border-box',
+                      height: '44px'
+                    }}
+                  >
+                    <Sliders size={16} />
+                    <span>ทั่วไป</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1365,8 +1394,8 @@ function App() {
               {activeSettingsSubTab === 'promotion' && (hasPermission('admin-promotion') || hasPermission('admin-promotions')) && <PromotionSettings sysAlert={customAlert} />}
               {activeSettingsSubTab === 'quotation' && hasPermission('admin-quotation') && <SettingsPanel viewMode="quotation" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
               {activeSettingsSubTab === 'backup' && hasPermission('admin-backup') && <SettingsPanel viewMode="backup" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} onClearHistory={handleClearHistory} />}
-              {activeSettingsSubTab === 'dooraccess' && <SettingsPanel viewMode="dooraccess" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
-              {activeSettingsSubTab === 'general' && <SettingsPanel viewMode="general" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'dooraccess' && hasPermission('admin-dooraccess') && <SettingsPanel viewMode="dooraccess" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
+              {activeSettingsSubTab === 'general' && hasPermission('admin-general') && <SettingsPanel viewMode="general" currentUser={user} onUserUpdate={setUser} onSettingsUpdate={fetchSettings} sysAlert={customAlert} sysConfirm={customConfirm} sysPrompt={customPrompt} />}
             </div>
           </div>
         )}

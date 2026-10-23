@@ -285,19 +285,19 @@ app.use('/api/admin', authenticateToken, requireAnyPermission('admin-management'
 app.use('/api/basecamp', authenticateToken, requireAnyPermission('pos', 'manage', 'pending', 'history'));
 const { createCustomerRouter } = require('./customerContracts/routes');
 const { calculateCustomerQuota } = require('./customerContracts/service');
-app.use('/api/customers', authenticateToken, requireAnyPermission('pos', 'manage', 'pending', 'history', 'dashboard', 'admin-management'), createCustomerRouter(dbQuery));
+app.use('/api/customers', authenticateToken, requireAnyPermission('customers', 'admin-management'), createCustomerRouter(dbQuery));
 
 const { createHourCreditService } = require('./hourCredits/service');
 const { creditRouter, creditMutationGuard } = require('./hourCredits/routes');
 const hourCredits = createHourCreditService({ filename: dbPath, overlap: checkRoomOverlap, receipt: generateReceiptNumber, pin: generateUniquePinCode });
-app.use('/api/hour-credits', authenticateToken, requireAnyPermission('pos'), creditRouter(hourCredits));
+app.use('/api/hour-credits', authenticateToken, requireAnyPermission('hour-credits'), creditRouter(hourCredits));
 app.use('/api/bookings', creditMutationGuard(dbQuery));
 app.use('/api/admin/clear-history', creditMutationGuard(dbQuery, true));
 
 // Customer Support Tickets & POS Notification System
 const { createPublicSupportRouter, createStaffSupportRouter } = require('./supportTickets/routes');
 app.use('/api/public/support', createPublicSupportRouter(dbQuery));
-app.use('/api/pos/support', authenticateToken, requireAnyPermission('pos', 'manage', 'pending', 'history', 'dashboard', 'admin-management'), createStaffSupportRouter(dbQuery));
+app.use('/api/pos/support', authenticateToken, requireAnyPermission('tickets', 'admin-management'), createStaffSupportRouter(dbQuery));
 
 // ==========================================
 // 2. ROOMS ENDPOINTS
@@ -5003,6 +5003,8 @@ app.get('/api/settings', async (req, res) => {
       const canRead = isAdmin
         || permissions.has('admin-management')
         || permissions.has('admin-system')
+        || permissions.has('admin-general')
+        || (permissions.has('admin-dooraccess') && (s.key.includes('line_') || s.key.includes('door_') || s.key.includes('access_') || s.key.includes('pin_')))
         || safeKeys.has(s.key)
         || (permissions.has('admin-quotation') && s.key.startsWith('quotation_'))
         || (permissions.has('admin-backup') && s.key.startsWith('onedrive_'));
@@ -5027,7 +5029,7 @@ app.get('/api/settings', async (req, res) => {
   }
 });
 
-app.post('/api/settings', requireAnyPermission('admin-management', 'admin-system', 'admin-quotation', 'admin-backup'), async (req, res) => {
+app.post('/api/settings', requireAnyPermission('admin-management', 'admin-system', 'admin-quotation', 'admin-backup', 'admin-dooraccess', 'admin-general'), async (req, res) => {
   const settings = req.body; // e.g. { company_name: '...', onedrive_path: '...' }
   try {
     const permissions = new Set(String(req.user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
@@ -5037,6 +5039,13 @@ app.post('/api/settings', requireAnyPermission('admin-management', 'admin-system
       writableSettings = writableSettings.filter(([key]) =>
         (permissions.has('admin-quotation') && key.startsWith('quotation_'))
         || (permissions.has('admin-backup') && key.startsWith('onedrive_'))
+        || (permissions.has('admin-dooraccess') && (key.includes('line_') || key.includes('door_') || key.includes('access_') || key.includes('pin_')))
+        || (permissions.has('admin-general') && [
+            'company_name', 'company_address', 'company_tax_id', 'logo_image',
+            'receipt_header', 'receipt_footer', 'room_alert_minutes', 'cleaning_buffer_minutes',
+            'promptpay_id', 'payment_bank_name', 'payment_bank_account', 'payment_bank_account_name',
+            'payment_window_minutes', 'wifi_ssid'
+          ].includes(key))
       );
     }
     if (writableSettings.length === 0) {
@@ -5213,7 +5222,7 @@ app.post(['/api/admin/promotion/deactivate', '/api/settings/promotion/deactivate
 
 
 // Test LINE Messaging API Connection (Bot Info & Credentials Check)
-app.post('/api/settings/line/test', requireAnyPermission('admin-management', 'admin-system'), async (req, res) => {
+app.post('/api/settings/line/test', requireAnyPermission('admin-management', 'admin-system', 'admin-dooraccess'), async (req, res) => {
   try {
     const { channel_access_token, channel_secret, liff_id } = req.body || {};
 

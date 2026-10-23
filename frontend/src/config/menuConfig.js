@@ -1,10 +1,10 @@
 /**
- * BWORK-POS Central Menu & Permission Label Configuration
+ * BWORK-POS Central Menu & Permission Configuration
  * Single Source of Truth for Navigation Labels and Role Permission Management.
  *
  * Rules:
  * - Exact match to Sidebar & Navigation labels
- * - Preserves existing Permission Keys / Database IDs without alteration
+ * - Standardized permission keys across Frontend, Backend, and Database
  */
 
 export const PERMISSION_GROUPS = [
@@ -17,7 +17,10 @@ export const PERMISSION_GROUPS = [
       { key: 'pending', label: 'Booking Management' },
       { key: 'layout', label: 'Rooms' },
       { key: 'history', label: 'Booking History' },
-      { key: 'quotations', label: 'Quotations' }
+      { key: 'quotations', label: 'Quotations' },
+      { key: 'hour-credits', label: 'Hour Credits' },
+      { key: 'customers', label: 'จัดการลูกค้า' },
+      { key: 'tickets', label: 'แจ้งปัญหา' }
     ]
   },
   {
@@ -29,52 +32,31 @@ export const PERMISSION_GROUPS = [
       { key: 'admin-system', label: 'ตั้งค่าระบบ & ใบเสร็จ' },
       { key: 'admin-promotion', label: 'ตั้งค่าโปรโมชั่น' },
       { key: 'admin-quotation', label: 'ตั้งค่าใบเสนอราคา' },
-      { key: 'admin-backup', label: 'สำรองข้อมูล (Backup)' }
+      { key: 'admin-backup', label: 'สำรองข้อมูล (Backup)' },
+      { key: 'admin-dooraccess', label: 'ระบบจอง LINE & รหัสเข้าห้อง' },
+      { key: 'admin-general', label: 'ทั่วไป' }
     ]
   }
 ];
 
 export const ALL_PERMISSION_MENUS = PERMISSION_GROUPS.flatMap(g => g.menus);
 
-/**
- * Navigation items currently governed by role or composite permissions,
- * recorded as system Gaps for future permission architecture updates.
- */
-export const UNMAPPED_NAVIGATION_ITEMS = [
-  {
-    id: 'hour-credits',
-    label: 'Hour Credits',
-    currentAuthorization: 'tied to pos permission in checkUserPermission',
-    status: 'gap'
-  },
-  {
-    id: 'customers',
-    label: 'จัดการลูกค้า',
-    currentAuthorization: 'pos || manage || history || customers || admin-management',
-    status: 'gap'
-  },
-  {
-    id: 'tickets',
-    label: 'แจ้งปัญหา',
-    currentAuthorization: 'pos || manage || pending || tickets || admin-management',
-    status: 'gap'
-  },
-  {
-    id: 'dooraccess',
-    label: 'ระบบจอง LINE & รหัสเข้าห้อง',
-    currentAuthorization: 'admin-management || admin-dooraccess',
-    status: 'gap'
-  },
-  {
-    id: 'general',
-    label: 'ทั่วไป',
-    currentAuthorization: 'admin-management',
-    status: 'gap'
-  }
+export const DEFAULT_ADMIN_PERMISSIONS = ALL_PERMISSION_MENUS.map(m => m.key);
+
+export const DEFAULT_STAFF_PERMISSIONS = [
+  'pos',
+  'pending',
+  'layout',
+  'history',
+  'quotations',
+  'hour-credits',
+  'customers',
+  'tickets'
 ];
 
 export default {
   PERMISSION_GROUPS,
   ALL_PERMISSION_MENUS,
-  UNMAPPED_NAVIGATION_ITEMS
+  DEFAULT_ADMIN_PERMISSIONS,
+  DEFAULT_STAFF_PERMISSIONS
 };
