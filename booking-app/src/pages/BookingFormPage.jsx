@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { 
-  User, Phone, Mail, Building, FileText, CheckCircle2, 
+  User, Users, Phone, Mail, Building, FileText, CheckCircle2,
   ArrowLeft, ChevronRight, ChevronDown, AlertCircle, ShieldCheck, CheckSquare, Square, MessageSquare, Send, Truck, Sparkles
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
@@ -9,6 +9,8 @@ import { API_BASE } from '../apiConfig';
 
 export default function BookingFormPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isSubmittingRef = useRef(false);
   const [bookingData, setBookingData] = useState(null);
 
   // Customer Form State
@@ -17,6 +19,7 @@ export default function BookingFormPage() {
   const [email, setEmail] = useState('');
   const [company, setCompany] = useState('');
   const [notes, setNotes] = useState('');
+  const [attendees, setAttendees] = useState('');
 
   // LINE Profile State
   const [lineUserId, setLineUserId] = useState('');
@@ -35,34 +38,48 @@ export default function BookingFormPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Load payload and LIFF profile from sessionStorage / localStorage
+  // Load payload and LIFF profile from location.state or sessionStorage / localStorage
   useEffect(() => {
-    const raw = sessionStorage.getItem('current_booking_payload');
-    if (!raw) {
-      navigate('/');
-      return;
-    }
-    try {
-      const parsed = JSON.parse(raw);
-      setBookingData(parsed);
-    } catch (e) {
-      navigate('/');
-      return;
+    // 1. Prefer React Router in-memory state (immune to storage quota or restrictions)
+    if (location.state && location.state.room_id) {
+      setBookingData(location.state);
+      if (location.state.guests) {
+        setAttendees(String(location.state.guests));
+      }
+    } else {
+      let parsed = null;
+      try {
+        const raw = typeof window !== 'undefined' ? sessionStorage.getItem('current_booking_payload') : null;
+        if (raw) parsed = JSON.parse(raw);
+      } catch (e) {
+        console.warn('[Storage] Could not read current_booking_payload:', e);
+      }
+      if (parsed) {
+        setBookingData(parsed);
+        if (parsed.guests) {
+          setAttendees(String(parsed.guests));
+        }
+      } else {
+        navigate('/');
+        return;
+      }
     }
 
     // Check LINE LIFF Profile
-    const savedLineId = sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id') || '';
-    const savedLineName = sessionStorage.getItem('line_user_name') || localStorage.getItem('line_user_name') || '';
-    const savedLinePic = sessionStorage.getItem('line_user_pic') || localStorage.getItem('line_user_pic') || '';
+    try {
+      const savedLineId = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id')) : '') || '';
+      const savedLineName = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_name') || localStorage.getItem('line_user_name')) : '') || '';
+      const savedLinePic = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_pic') || localStorage.getItem('line_user_pic')) : '') || '';
 
-    if (savedLineId) {
-      setLineUserId(savedLineId);
-      setLineUserName(savedLineName);
-      setLineUserPic(savedLinePic);
-      if (savedLineName && !name) {
-        setName(savedLineName);
+      if (savedLineId) {
+        setLineUserId(savedLineId);
+        setLineUserName(savedLineName);
+        setLineUserPic(savedLinePic);
+        if (savedLineName && !name) {
+          setName(savedLineName);
+        }
       }
-    }
+    } catch (e) {}
   }, []);
 
   const handleLineLogin = () => {
@@ -86,8 +103,14 @@ export default function BookingFormPage() {
     }
   };
 
+  const effectiveCapacity = bookingData?.effective_capacity
+    || (bookingData?.layout === 'classroom' && bookingData?.classroom_capacity ? bookingData.classroom_capacity : bookingData?.room_capacity)
+    || (bookingData?.room && bookingData.room.capacity)
+    || 100;
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading || isSubmittingRef.current) return;
     setError('');
 
     if (!name.trim()) {
@@ -96,6 +119,16 @@ export default function BookingFormPage() {
     }
     if (!contact.trim()) {
       setError('กรุณาระบุเบอร์โทรศัพท์สำหรับติดต่อและรับรหัสผ่าน');
+      return;
+    }
+
+    const parsedAttendees = parseInt(attendees, 10);
+    if (!attendees || isNaN(parsedAttendees) || parsedAttendees < 1) {
+      setError('กรุณาระบุจำนวนผู้เข้าใช้ห้องอย่างน้อย 1 ท่าน');
+      return;
+    }
+    if (parsedAttendees > effectiveCapacity) {
+      setError(`จำนวนผู้เข้าใช้งาน (${parsedAttendees} ท่าน) เกินความจุของห้องที่เลือก (รองรับสูงสุด ${effectiveCapacity} ท่าน)`);
       return;
     }
 
@@ -122,6 +155,7 @@ export default function BookingFormPage() {
       }
     }
 
+    isSubmittingRef.current = true;
     setLoading(true);
 
     try {
@@ -136,7 +170,8 @@ export default function BookingFormPage() {
         end_time: bookingData.end_time,
         booking_type: bookingData.booking_type || (bookingData.duration >= 8 ? 'daily' : (bookingData.duration === 4 && bookingData.half_day_rate > 0 ? 'halfday' : 'hourly')),
         layout: bookingData.layout || 'standard',
-        guest_count: bookingData.guests || 1,
+        guest_count: parsedAttendees,
+        guests: parsedAttendees,
         total_amount: bookingData.total_amount || 0,
         note: notes.trim(),
         line_user_id: lineUserId,
@@ -167,8 +202,21 @@ export default function BookingFormPage() {
         const deadline = data.paymentDeadline || (data.payment_window_minutes ? new Date(Date.now() + (parseInt(data.payment_window_minutes, 10) || 15) * 60 * 1000).toISOString() : null);
         const windowMins = parseInt(data.payment_window_minutes, 10) || 15;
 
-        sessionStorage.setItem('completed_booking_result', JSON.stringify({
-          ...bookingData,
+        // CRITICAL ROOT-CAUSE FIX FOR QuotaExceededError ON IPHONE / IN-APP BROWSERS:
+        // Strip heavy Base64 image data (which in Production can exceed 1.4 MB) before storage serialization.
+        // This reduces storage footprint from ~1.4 MB down to ~350 bytes (>99.9% reduction), well within iOS Safari 5 MB limit.
+        const sanitizedBookingData = { ...bookingData, guests: parsedAttendees, guest_count: parsedAttendees };
+        if (typeof sanitizedBookingData.image_url === 'string' && sanitizedBookingData.image_url.startsWith('data:')) {
+          sanitizedBookingData.image_url = '';
+        }
+        if (sanitizedBookingData.room && typeof sanitizedBookingData.room.image_url === 'string' && sanitizedBookingData.room.image_url.startsWith('data:')) {
+          sanitizedBookingData.room = { ...sanitizedBookingData.room, image_url: '' };
+        }
+
+        const completedResult = {
+          ...sanitizedBookingData,
+          guests: parsedAttendees,
+          guest_count: parsedAttendees,
           booking_id: finalBookingId,
           booking_code: finalBookingCode,
           receipt_number: data.receipt_number || data.receiptNumber,
@@ -179,25 +227,50 @@ export default function BookingFormPage() {
           payment_window_minutes: windowMins,
           customer_name: name.trim(),
           customer_contact: contact.trim(),
+          contact: contact.trim(),
           line_user_id: lineUserId
-        }));
-        localStorage.setItem('bwork_pending_booking', JSON.stringify({
+        };
+
+        const pendingBooking = {
           id: finalBookingId,
           code: finalBookingCode,
-          roomName: bookingData?.room?.name || 'ห้องประชุม',
+          roomName: bookingData?.room?.name || bookingData?.room_name || 'ห้องประชุม',
           totalAmount: data.totalAmount ?? data.total_amount ?? bookingData?.totalPrice ?? bookingData?.total_amount ?? 0,
           paymentDeadline: deadline,
           paymentWindowMinutes: windowMins,
           createdAt: Date.now(),
-          status: 'pending'
-        }));
-        navigate(`/confirm?id=${finalBookingId}&code=${encodeURIComponent(finalBookingCode)}`);
+          status: 'pending',
+          contact: contact.trim()
+        };
+
+        // Storage operations MUST NEVER throw uncaught exceptions or block navigation to payment.
+        try {
+          sessionStorage.setItem('completed_booking_result', JSON.stringify(completedResult));
+        } catch (storageErr) {
+          console.warn('[Storage] sessionStorage completed_booking_result failed (non-blocking):', storageErr);
+        }
+
+        try {
+          localStorage.setItem('bwork_pending_booking', JSON.stringify(pendingBooking));
+        } catch (storageErr) {
+          console.warn('[Storage] localStorage bwork_pending_booking failed (non-blocking):', storageErr);
+        }
+
+        // Always navigate immediately to confirmation & payment with React Router memory state
+        navigate(`/confirm?id=${finalBookingId}&code=${encodeURIComponent(finalBookingCode)}`, {
+          state: {
+            booking: completedResult,
+            contact: contact.trim()
+          }
+        });
+        return;
       } else {
         setError(data.error || 'ไม่สามารถทำรายการจองได้ กรุณาลองใหม่อีกครั้ง');
       }
     } catch (err) {
       setError('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์: ' + err.message);
     } finally {
+      isSubmittingRef.current = false;
       setLoading(false);
     }
   };
@@ -210,7 +283,7 @@ export default function BookingFormPage() {
 
       <div className="booking-form-grid">
         {/* LEFT COLUMN: STICKY BOOKING SUMMARY CARD */}
-        <div className="booking-card" style={{ position: 'sticky', top: '80px' }}>
+        <div className="booking-card booking-summary-card" style={{ position: 'sticky', top: '80px' }}>
           <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--primary)', textTransform: 'uppercase', marginBottom: '8px' }}>
             สรุปรายการจอง
           </div>
@@ -244,7 +317,9 @@ export default function BookingFormPage() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span>จำนวนผู้เข้าใช้:</span>
-              <strong style={{ color: 'var(--text-main)' }}>{bookingData.guests} ท่าน</strong>
+              <strong style={{ color: attendees ? 'var(--text-main)' : 'var(--warning)' }}>
+                {attendees ? `${attendees} ท่าน` : 'ยังไม่ได้ระบุ'}
+              </strong>
             </div>
             {bookingData.layout && (
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -395,6 +470,51 @@ export default function BookingFormPage() {
                 }}
                 className="form-input"
               />
+            </div>
+
+            {/* Attendees Count */}
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Users size={16} style={{ color: 'var(--primary)' }} />
+                  <span>จำนวนผู้เข้าใช้งาน (Attendees)</span>
+                  <span style={{ color: 'var(--danger)' }}>*</span>
+                </label>
+                <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                  ห้องนี้รองรับสูงสุด {effectiveCapacity} ท่าน
+                </span>
+              </div>
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                <Users size={18} style={{ position: 'absolute', left: '14px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+                <input
+                  type="number"
+                  min="1"
+                  max={effectiveCapacity}
+                  required
+                  placeholder={`ระบุจำนวนผู้เข้าใช้ห้อง (1 - ${effectiveCapacity} ท่าน)`}
+                  value={attendees}
+                  onChange={e => {
+                    setAttendees(e.target.value);
+                    setError('');
+                  }}
+                  className="form-input"
+                  style={{
+                    paddingLeft: '44px',
+                    paddingRight: '60px',
+                    fontWeight: 700
+                  }}
+                />
+                <span style={{
+                  position: 'absolute',
+                  right: '16px',
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  color: 'var(--text-muted)',
+                  pointerEvents: 'none'
+                }}>
+                  ท่าน
+                </span>
+              </div>
             </div>
 
             {/* Email & Company (2 columns on desktop, 1 on mobile) */}
@@ -564,13 +684,21 @@ export default function BookingFormPage() {
                       <select
                         value={taxDeliveryMethod}
                         onChange={e => setTaxDeliveryMethod(e.target.value)}
-                        className="form-input"
-                        style={{ height: '46px', fontWeight: 700, cursor: 'pointer', paddingRight: '28px' }}
+                        className="form-input custom-select-input"
+                        style={{
+                          height: '46px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          paddingRight: '36px',
+                          appearance: 'none',
+                          WebkitAppearance: 'none',
+                          MozAppearance: 'none'
+                        }}
                       >
                         <option value="online">จัดส่งออนไลน์ (E-Tax / อีเมล / LINE)</option>
                         <option value="postal">จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)</option>
                       </select>
-                      <ChevronDown size={15} style={{ position: 'absolute', right: '12px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+                      <ChevronDown size={15} style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
                     </div>
                   </div>
 

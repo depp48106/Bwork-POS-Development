@@ -148,12 +148,19 @@ export function isReceiptPrintTarget(elementOrId = 'print-receipt-area') {
   // PRIORITY 1: Explicit non-receipt print markers take absolute precedence.
   // A stale isReceiptPrintActive flag MUST NEVER override an explicit non-receipt document print.
   if (typeof document !== 'undefined' && document.body) {
-    if (document.body.classList && typeof document.body.classList.contains === 'function' && document.body.classList.contains('printing-quotation')) {
+    if (document.body.classList && typeof document.body.classList.contains === 'function' && (
+      document.body.classList.contains('printing-quotation') ||
+      document.body.classList.contains('printing-booking-confirmation')
+    )) {
       isReceiptPrintActive = false;
       return false;
     }
-    // Also check for isolated quotation iframe / canvas
+    // Also check for isolated quotation iframe / canvas or booking confirmation card overlay
     if (typeof document.getElementById === 'function') {
+      if (document.getElementById('booking-confirmation-card-overlay')) {
+        isReceiptPrintActive = false;
+        return false;
+      }
       if (document.getElementById('quotation-print-isolated-iframe') ||
           document.getElementById('quotation-printable-canvas') ||
           document.getElementById('quotation-preview-canvas')) {
@@ -286,4 +293,217 @@ if (typeof window !== 'undefined') {
     isReceiptPrintActive = false;
     cleanupDynamicReceiptPageSize();
   });
+}
+
+/**
+ * Generates a safe, sanitized JPEG filename for a Meeting Room Booking Confirmation Card.
+ * @param {string|number} bookingRef
+ * @returns {string}
+ */
+export function sanitizeConfirmationCardFilename(bookingRef) {
+  const raw = String(bookingRef || 'Booking').trim();
+  const safeRef = raw
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'Booking';
+  return `BWORK-Booking-Confirmation-${safeRef}.jpg`;
+}
+
+/**
+ * Exports the rendered Meeting Room Booking Confirmation Card DOM element as a high-resolution JPEG file.
+ * - Captures the entire #wifi-customer-card document (including all rooms when taller than viewport)
+ * - Excludes modal chrome, backdrop, and .no-print action buttons
+ * - Waits for fonts and allowed images to finish loading
+ * - Handles broken or CORS-tainted images gracefully without exporting a blank or truncated image
+ * - Never logs or transmits sensitive PINs or Wi-Fi credentials externally
+ *
+ * @param {HTMLElement} element
+ * @param {string|number} bookingRef
+ * @param {Object} [options]
+ * @returns {Promise<{filename: string, mimeType: string, byteSize: number, width: number, height: number, cssWidth: number, cssHeight: number, pixelRatio: number, dataUrl: string}>}
+ */
+export async function exportConfirmationCardAsJpg(element, bookingRef, options = {}) {
+  if (!element) {
+    throw new Error('ไม่พบเอกสารใบยืนยันการจองสำหรับการบันทึกเป็นรูปภาพ');
+  }
+
+  const filename = sanitizeConfirmationCardFilename(bookingRef);
+  const pixelRatio = Number(options.pixelRatio) > 0 ? Number(options.pixelRatio) : 2;
+  const quality = Number(options.quality) > 0 && Number(options.quality) <= 1 ? Number(options.quality) : 0.95;
+
+  // 1. Wait for web fonts (Thai glyphs) if supported
+  if (typeof document !== 'undefined' && document.fonts && document.fonts.ready) {
+    try {
+      await Promise.race([
+        document.fonts.ready,
+        new Promise((r) => setTimeout(r, 1500))
+      ]);
+    } catch (_) {}
+  }
+
+  // 2. Ensure all <img> elements inside the card have settled
+  await ensureReceiptImagesLoaded(element);
+
+  // 3. Pre-inline loaded same-origin images & guard against broken/CORS-blocked images
+  const restoredAttrs = [];
+  if (typeof element.querySelectorAll === 'function' && typeof document !== 'undefined') {
+    const imgs = Array.from(element.querySelectorAll('img'));
+    for (const img of imgs) {
+      const origSrc = img.getAttribute('src');
+      if (!img.complete || img.naturalWidth === 0 || img.naturalHeight === 0) {
+        img.setAttribute('data-export-hide', 'true');
+        restoredAttrs.push(() => img.removeAttribute('data-export-hide'));
+        continue;
+      }
+      if (origSrc && !origSrc.startsWith('data:')) {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth;
+          c.height = img.naturalHeight;
+          const ctx = c.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0);
+            const inlined = c.toDataURL('image/png');
+            if (inlined && inlined.startsWith('data:image/')) {
+              img.setAttribute('src', inlined);
+              restoredAttrs.push(() => img.setAttribute('src', origSrc));
+            }
+          }
+        } catch (_) {
+          // Cross-origin or untrusted image that cannot be drawn to canvas -> hide broken img node safely
+          img.setAttribute('data-export-hide', 'true');
+          restoredAttrs.push(() => img.removeAttribute('data-export-hide'));
+        }
+      }
+    }
+  }
+
+  try {
+    const cssWidth = Math.max(
+      Math.round(Number(element.scrollWidth) || 0),
+      Math.round(Number(element.offsetWidth) || 0),
+      320
+    );
+    const cssHeight = Math.max(
+      Math.round(Number(element.scrollHeight) || 0),
+      Math.round(Number(element.offsetHeight) || 0),
+      360
+    );
+
+    const filterFn = (node) => {
+      if (node && node.nodeType === 1) {
+        if (node.classList && (node.classList.contains('no-print') || node.classList.contains('bwork-conf-no-export'))) {
+          return false;
+        }
+        if (typeof node.getAttribute === 'function' && node.getAttribute('data-export-hide') === 'true') {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    const captureConfig = {
+      backgroundColor: '#fcfbf9',
+      pixelRatio,
+      quality,
+      cacheBust: false,
+      width: cssWidth,
+      height: cssHeight,
+      style: {
+        margin: '0',
+        transform: 'none',
+        maxHeight: 'none',
+        overflow: 'visible',
+        boxShadow: 'none'
+      },
+      filter: filterFn
+    };
+
+    let dataUrl = null;
+    let exportWidth = Math.round(cssWidth * pixelRatio);
+    let exportHeight = Math.round(cssHeight * pixelRatio);
+
+    if (typeof options.toJpegFn === 'function') {
+      dataUrl = await options.toJpegFn(element, captureConfig);
+    } else {
+      const htmlToImage = await import('html-to-image');
+      if (typeof htmlToImage.toCanvas === 'function') {
+        const canvas = await htmlToImage.toCanvas(element, captureConfig);
+        if (!canvas || canvas.width <= 0 || canvas.height <= 0) {
+          throw new Error('ไม่สามารถสร้างภาพใบยืนยันการจองได้ (Canvas มีขนาดไม่ถูกต้อง)');
+        }
+        exportWidth = canvas.width;
+        exportHeight = canvas.height;
+        dataUrl = canvas.toDataURL('image/jpeg', quality);
+      } else {
+        dataUrl = await htmlToImage.toJpeg(element, captureConfig);
+      }
+    }
+
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/jpeg;base64,')) {
+      throw new Error('รูปแบบไฟล์ภาพที่สร้างไม่ใช่ JPEG ที่ถูกต้อง');
+    }
+
+    const base64Part = dataUrl.slice('data:image/jpeg;base64,'.length);
+    const byteSize = Math.floor((base64Part.length * 3) / 4);
+    if (byteSize < 512) {
+      throw new Error('ไฟล์รูปภาพที่สร้างมีขนาดเล็กผิดปกติ กรุณาลองใหม่อีกครั้ง');
+    }
+
+    if (typeof document !== 'undefined' && typeof document.createElement === 'function' && options.triggerDownload !== false) {
+      let downloadHref = dataUrl;
+      let revokeUrl = null;
+      if (typeof window !== 'undefined' && typeof window.atob === 'function' && typeof Blob === 'function' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        try {
+          const binStr = window.atob(base64Part);
+          const bytes = new Uint8Array(binStr.length);
+          for (let i = 0; i < binStr.length; i++) {
+            bytes[i] = binStr.charCodeAt(i);
+          }
+          const blob = new Blob([bytes], { type: 'image/jpeg' });
+          downloadHref = URL.createObjectURL(blob);
+          revokeUrl = downloadHref;
+        } catch (_) {}
+      }
+
+      const link = document.createElement('a');
+      link.download = filename;
+      link.href = downloadHref;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      if (revokeUrl) {
+        setTimeout(() => {
+          try { URL.revokeObjectURL(revokeUrl); } catch (_) {}
+        }, 5000);
+      }
+    }
+
+    const meta = {
+      filename,
+      mimeType: 'image/jpeg',
+      byteSize,
+      byteLength: byteSize,
+      width: exportWidth,
+      height: exportHeight,
+      cssWidth,
+      cssHeight,
+      pixelRatio,
+      dataUrl
+    };
+
+    if (typeof window !== 'undefined') {
+      window.__lastConfirmationCardJpgExport = meta;
+    }
+    if (element && element.dataset) {
+      element.dataset.lastJpgExport = JSON.stringify(meta);
+    }
+
+    return { ...meta, dataUrl };
+  } finally {
+    for (const restore of restoredAttrs) {
+      try { restore(); } catch (_) {}
+    }
+  }
 }

@@ -2007,7 +2007,7 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 /* Printing styling - Optimized to strictly print 1 page on thermal roll paper */
 @media print {
   html,
-  body:not(.printing-quotation) {
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) {
     background: #ffffff !important;
     margin: 0 !important;
     padding: 0 !important;
@@ -2019,7 +2019,7 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     display: block !important;
   }
 
-  body:not(.printing-quotation) * {
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) * {
     visibility: hidden !important;
     background: transparent !important;
     box-shadow: none !important;
@@ -2027,13 +2027,13 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
 
   /* Reset layout constraints of all parents to shrink height to match the receipt content */
-  body:not(.printing-quotation) #root,
-  body:not(.printing-quotation) .app-container,
-  body:not(.printing-quotation) .main-content,
-  body:not(.printing-quotation) .main-content > div,
-  body:not(.printing-quotation) .pos-container,
-  body:not(.printing-quotation) .pb-console-container,
-  body:not(.printing-quotation) .history-content,
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) #root,
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .app-container,
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .main-content,
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .main-content > div,
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .pos-container,
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .pb-console-container,
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .history-content,
   .print-modal-overlay,
   .print-modal-overlay > div:not(#print-receipt-area):has(#print-receipt-area),
   .print-modal-overlay > div > div:not(#print-receipt-area):has(#print-receipt-area),
@@ -2094,10 +2094,10 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
 
   /* Robust container exclusion: hide any direct layout child that does not contain the receipt */
-  body:has(#print-receipt-area):not(.printing-quotation) .main-content > *:not(:has(#print-receipt-area)),
-  body:has(#print-receipt-area):not(.printing-quotation) .main-content > div > *:not(:has(#print-receipt-area)),
-  body:has(#print-receipt-area):not(.printing-quotation) .pb-console-container > *:not(:has(#print-receipt-area)),
-  body:has(#print-receipt-area):not(.printing-quotation) .history-content > *:not(:has(#print-receipt-area)) {
+  body:has(#print-receipt-area):not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .main-content > *:not(:has(#print-receipt-area)),
+  body:has(#print-receipt-area):not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .main-content > div > *:not(:has(#print-receipt-area)),
+  body:has(#print-receipt-area):not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .pb-console-container > *:not(:has(#print-receipt-area)),
+  body:has(#print-receipt-area):not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) .history-content > *:not(:has(#print-receipt-area)) {
     display: none !important;
   }
 
@@ -2138,12 +2138,12 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
 
   /* Print area styling - 100% Parity with PDF Export */
-  body:not(.printing-quotation) #print-receipt-area,
-  body:not(.printing-quotation) #print-receipt-area * {
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) #print-receipt-area,
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) #print-receipt-area * {
     visibility: visible !important;
   }
 
-  #print-receipt-area {
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) #print-receipt-area {
     display: block !important;
     position: relative !important;
     margin: 0 auto !important;
@@ -2166,7 +2166,7 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     print-color-adjust: exact !important;
   }
   
-  #print-receipt-area * {
+  body:not(.printing-quotation):not(.printing-booking-confirmation):not(:has(#booking-confirmation-card-overlay)) #print-receipt-area * {
     color: #000000 !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
@@ -2184,9 +2184,103 @@ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     page-break-inside: avoid !important;
     break-inside: avoid !important;
   }
-  
-  @page {
-    margin: 0;
+
+  /* =========================================================================
+   * MEETING ROOM BOOKING CONFIRMATION CARD — A4 PORTRAIT PRINT / PDF LAYOUT
+   * ========================================================================= */
+  body:has(#booking-confirmation-card-overlay),
+  body.printing-booking-confirmation {
+    background: #ffffff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body:has(#booking-confirmation-card-overlay) #root,
+  body:has(#booking-confirmation-card-overlay) .app-container,
+  body:has(#booking-confirmation-card-overlay) .main-content,
+  body:has(#booking-confirmation-card-overlay) .main-content > div,
+  body:has(#booking-confirmation-card-overlay) .pb-console-container {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  body:has(#booking-confirmation-card-overlay) .main-content > *:not(:has(#booking-confirmation-card-overlay)),
+  body:has(#booking-confirmation-card-overlay) .pb-console-container > *:not(#booking-confirmation-card-overlay):not(:has(#booking-confirmation-card-overlay)),
+  body:has(#booking-confirmation-card-overlay) #print-receipt-area,
+  body:has(#booking-confirmation-card-overlay) .print-modal-overlay,
+  #booking-confirmation-card-overlay .no-print {
+    display: none !important;
+  }
+
+  #booking-confirmation-card-overlay {
+    display: block !important;
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    overflow: visible !important;
+  }
+
+  #booking-confirmation-card-modal {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 190mm !important;
+    height: auto !important;
+    max-height: none !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+  }
+
+  #wifi-customer-card {
+    width: 100% !important;
+    max-width: 190mm !important;
+    margin: 0 auto !important;
+    box-shadow: none !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 14px !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  #wifi-customer-card * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .bwork-conf-avoid-break {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
 }
 
@@ -3229,4 +3323,133 @@ select.form-control {
 .animate-spin,
 .spin-anim {
   animation: spin 1s linear infinite;
+}
+
+/* ========================================================================== */
+/* RESPONSIVE STYLES FOR MEETING ROOM BOOKING CONFIRMATION CARD (320px - 480px) */
+/* ========================================================================== */
+@media (max-width: 480px) {
+  #booking-confirmation-card-modal {
+    padding: 10px !important;
+    border-radius: 16px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  #wifi-customer-card {
+    border-radius: 12px !important;
+  }
+
+  #booking-confirmation-header {
+    padding: 12px 14px 6px 14px !important;
+    gap: 6px !important;
+  }
+
+  #booking-confirmation-header .confirmation-doc-title {
+    font-size: 0.96rem !important;
+  }
+
+  #booking-confirmation-header .confirmation-booking-ref {
+    font-size: 0.76rem !important;
+  }
+
+  #booking-confirmation-banner {
+    min-height: 120px !important;
+    height: auto !important;
+  }
+
+  #booking-confirmation-banner .bwork-conf-hero-info {
+    width: 66% !important;
+    padding: 10px 0 12px 14px !important;
+  }
+
+  #booking-confirmation-banner .bwork-conf-hero-image-wrap {
+    width: 50% !important;
+  }
+
+  #wifi-customer-card .bwork-conf-card-body {
+    padding: 12px 14px !important;
+  }
+
+  #wifi-customer-card .confirmation-detail-row,
+  #wifi-customer-card .confirmation-item-pin-box {
+    grid-template-columns: 85px 1fr !important;
+    gap: 8px !important;
+  }
+
+  .bwork-conf-bottom-actions {
+    width: 100% !important;
+    gap: 8px !important;
+    flex-direction: column !important;
+  }
+
+  .bwork-conf-bottom-actions button {
+    width: 100% !important;
+    justify-content: center !important;
+    text-align: center !important;
+  }
+}
+
+@media (max-width: 360px) {
+  #booking-confirmation-card-modal {
+    padding: 6px !important;
+  }
+
+  #booking-confirmation-header {
+    padding: 10px 10px 4px 10px !important;
+    gap: 5px !important;
+  }
+
+  #booking-confirmation-header .confirmation-doc-title {
+    font-size: 0.88rem !important;
+  }
+
+  #booking-confirmation-header .confirmation-booking-ref {
+    font-size: 0.72rem !important;
+    letter-spacing: 0px !important;
+  }
+
+  #booking-confirmation-banner {
+    min-height: 110px !important;
+    height: auto !important;
+  }
+
+  #booking-confirmation-banner .bwork-conf-hero-info {
+    width: 70% !important;
+    padding: 8px 0 10px 10px !important;
+  }
+
+  #booking-confirmation-banner .bwork-conf-hero-image-wrap {
+    width: 46% !important;
+  }
+
+  #wifi-customer-card .bwork-conf-card-body {
+    padding: 10px 8px !important;
+  }
+
+  #wifi-customer-card .confirmation-detail-row,
+  #wifi-customer-card .confirmation-item-pin-box {
+    grid-template-columns: 78px 1fr !important;
+    gap: 6px !important;
+  }
+
+  #wifi-customer-card .bwork-conf-benefits-card {
+    padding: 8px 10px !important;
+    gap: 6px !important;
+  }
+
+  #wifi-customer-card .bwork-conf-benefits-card [data-benefit-item="true"] {
+    font-size: 0.72rem !important;
+    gap: 6px !important;
+  }
+}
+
+.bwork-conf-benefits-card {
+  transition: all 0.2s ease;
+}
+
+.bwork-conf-kookoo-tag {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  letter-spacing: -0.01em;
 }

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone, CreditCard, Building2, Download, RefreshCw, ExternalLink, ShieldCheck, Clock, FileText, UploadCloud, RotateCcw, Upload } from 'lucide-react';
 import DoorAccessSettings from './DoorAccessSettings';
 import PromotionSettings from './PromotionSettings';
+import { PERMISSION_GROUPS, DEFAULT_STAFF_PERMISSIONS } from '../config/menuConfig';
 
 function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, sysAlert, sysConfirm, sysPrompt, onClearHistory }) {
   // Config Settings
@@ -35,7 +36,8 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     payment_bank_name: '',
     payment_bank_account: '',
     payment_bank_account_name: '',
-    payment_window_minutes: '15'
+    payment_window_minutes: '15',
+    wifi_ssid: '@BWORK'
   });
 
   // DB Backup logs & OneDrive Cloud
@@ -927,7 +929,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                     setShowRolesModal(true);
                     setEditingRole(null);
                     setRoleMode(null);
-                    setRoleForm({ name: '', label: '', permissions: ['pos', 'layout', 'pending', 'history'] });
+                    setRoleForm({ name: '', label: '', permissions: DEFAULT_STAFF_PERMISSIONS });
                   }}
                 >
                   <Sliders size={14} />
@@ -1963,6 +1965,23 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                 </span>
               </div>
 
+              <div className="form-group" style={{ margin: 0 }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  ชื่อสัญญาณ Wi-Fi สำหรับผู้มาติดต่อ (Guest Wi-Fi SSID)
+                </label>
+                <input
+                  type="text"
+                  className="form-control"
+                  style={{ width: '100%', height: '40px', borderRadius: '10px' }}
+                  placeholder="เช่น @BWORK"
+                  value={configs.wifi_ssid || ''}
+                  onChange={e => setConfigs({ ...configs, wifi_ssid: e.target.value })}
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', display: 'block', lineHeight: 1.4 }}>
+                  ชื่อเครือข่าย Wi-Fi ส่วนกลางของอาคารที่ลูกค้าใช้เชื่อมต่อเพื่อเข้าสู่หน้า MikroTik Hotspot Login
+                </span>
+              </div>
+
               <button 
                 type="submit" 
                 className="btn btn-primary" 
@@ -2313,7 +2332,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                         e.stopPropagation();
                         setEditingRole(null);
                         setRoleMode('create');
-                        setRoleForm({ name: '', label: '', permissions: ['pos', 'layout', 'pending', 'history'] });
+                        setRoleForm({ name: '', label: '', permissions: DEFAULT_STAFF_PERMISSIONS });
                       }}
                     >
                       <Plus size={12} />
@@ -2433,40 +2452,36 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
 
                         <div>
                           <label style={{ fontSize: '0.775rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>สิทธิ์เข้าใช้งานเริ่มต้น (Default Permissions)</label>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', maxHeight: '220px', overflowY: 'auto', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '12px', backgroundColor: 'rgba(0,0,0,0.1)' }}>
-                            {[
-                              { key: 'pos', label: 'จุดขาย POS' },
-                              { key: 'dashboard', label: 'Dashboard' },
-                              { key: 'pending', label: 'รายการจองห้อง' },
-                              { key: 'layout', label: 'แผนผังห้อง' },
-                              { key: 'history', label: 'ประวัติย้อนหลัง' },
-                              { key: 'quotations', label: 'ใบเสนอราคา' },
-                              { key: 'manage', label: 'จัดการคลังสินค้า' },
-                              { key: 'admin-users', label: 'จัดการผู้ใช้ & บทบาท' },
-                              { key: 'admin-system', label: 'ตั้งค่าระบบ & ใบเสร็จ' },
-                              { key: 'admin-promotion', label: 'ตั้งค่าโปรโมชั่น' },
-                              { key: 'admin-quotation', label: 'ตั้งค่าใบเสนอราคา' },
-                              { key: 'admin-backup', label: 'สำรองข้อมูล (Backup)' }
-                            ].map(menu => {
-                              const checked = Array.isArray(roleForm.permissions) && roleForm.permissions.includes(menu.key);
-                              return (
-                                <label key={menu.key} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.775rem', cursor: 'pointer', color: checked ? 'var(--text-main)' : 'var(--text-muted)' }}>
-                                  <input 
-                                    type="checkbox" 
-                                    checked={checked}
-                                    onChange={() => {
-                                      const currentPerms = Array.isArray(roleForm.permissions) ? roleForm.permissions : [];
-                                      if (checked) {
-                                        setRoleForm({ ...roleForm, permissions: currentPerms.filter(k => k !== menu.key) });
-                                      } else {
-                                        setRoleForm({ ...roleForm, permissions: [...currentPerms, menu.key] });
-                                      }
-                                    }}
-                                  />
-                                  <span>{menu.label}</span>
-                                </label>
-                              );
-                            })}
+                          <div style={{ maxHeight: '280px', overflowY: 'auto', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '12px', backgroundColor: 'rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                            {PERMISSION_GROUPS.map(group => (
+                              <div key={group.groupId}>
+                                <div style={{ fontSize: '0.7rem', fontWeight: '800', letterSpacing: '0.04em', color: 'var(--primary-color)', marginBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '4px' }}>
+                                  {group.groupName}
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                  {group.menus.map(menu => {
+                                    const checked = Array.isArray(roleForm.permissions) && roleForm.permissions.includes(menu.key);
+                                    return (
+                                      <label key={menu.key} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.775rem', cursor: 'pointer', color: checked ? 'var(--text-main)' : 'var(--text-muted)' }}>
+                                        <input 
+                                          type="checkbox" 
+                                          checked={checked}
+                                          onChange={() => {
+                                            const currentPerms = Array.isArray(roleForm.permissions) ? roleForm.permissions : [];
+                                            if (checked) {
+                                              setRoleForm({ ...roleForm, permissions: currentPerms.filter(k => k !== menu.key) });
+                                            } else {
+                                              setRoleForm({ ...roleForm, permissions: [...currentPerms, menu.key] });
+                                            }
+                                          }}
+                                        />
+                                        <span style={{ fontWeight: checked ? 600 : 400 }}>{menu.label}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
 
@@ -2478,7 +2493,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                             onClick={() => {
                               setEditingRole(null);
                               setRoleMode(null);
-                              setRoleForm({ name: '', label: '', permissions: ['pos', 'layout', 'pending', 'history'] });
+                              setRoleForm({ name: '', label: '', permissions: DEFAULT_STAFF_PERMISSIONS });
                             }}
                           >
                             ล้างฟอร์ม
@@ -2526,7 +2541,7 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
                                   }
                                   setEditingRole(null);
                                   setRoleMode(null);
-                                  setRoleForm({ name: '', label: '', permissions: ['pos', 'layout', 'pending', 'history'] });
+                                  setRoleForm({ name: '', label: '', permissions: DEFAULT_STAFF_PERMISSIONS });
                                   fetchRoles();
                                   fetchUsers();
                                 } else {

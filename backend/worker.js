@@ -16,6 +16,114 @@ async function hashPassword(password) {
 }
 
 // ==========================================
+// 1.15 ROOM WI-FI CREDENTIAL ENCRYPTION (WEB CRYPTO)
+// ==========================================
+const WIFI_PAYLOAD_REGEX = /^v1:([0-9a-fA-F]{24}):([0-9a-fA-F]{32}):([0-9a-fA-F]+)$/;
+
+function parseWifiKeyWebCrypto(keyInput) {
+  if (!keyInput || typeof keyInput !== 'string') {
+    const err = new Error('WIFI_CREDENTIAL_ENCRYPTION_KEY is missing');
+    err.code = 'ERR_WIFI_KEY_MISSING';
+    throw err;
+  }
+  const trimmed = keyInput.trim();
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    const match = trimmed.match(/.{1,2}/g) || [];
+    return new Uint8Array(match.map(byte => parseInt(byte, 16)));
+  }
+  if (/^[A-Za-z0-9+/]{43}=$/.test(trimmed)) {
+    const binary = atob(trimmed);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    if (bytes.length === 32) return bytes;
+  }
+  const err = new Error('WIFI_CREDENTIAL_ENCRYPTION_KEY must be a 256-bit key (64 hex characters or 44 base64 characters)');
+  err.code = 'ERR_WIFI_KEY_INVALID';
+  throw err;
+}
+
+async function encryptWifiPasswordWebCrypto(plaintext, rawKey, roomId) {
+  if (plaintext === null || plaintext === undefined || typeof plaintext !== 'string') {
+    throw new Error('Plaintext password must be a string');
+  }
+  if (!roomId && roomId !== 0) {
+    throw new Error('roomId is required for room-specific AAD binding');
+  }
+  const keyBytes = rawKey instanceof Uint8Array ? rawKey : parseWifiKeyWebCrypto(rawKey);
+  const iv = crypto.getRandomValues(new Uint8Array(12)); // 96-bit IV
+  const aad = new TextEncoder().encode(`room:${roomId}`);
+  const plainBytes = new TextEncoder().encode(plaintext);
+
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+  const encryptedBuf = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: aad, tagLength: 128 },
+    cryptoKey,
+    plainBytes
+  );
+
+  const encryptedBytes = new Uint8Array(encryptedBuf);
+  const ctBytes = encryptedBytes.slice(0, encryptedBytes.length - 16);
+  const tagBytes = encryptedBytes.slice(encryptedBytes.length - 16);
+
+  const ivHex = Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join('');
+  const tagHex = Array.from(tagBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  const ctHex = Array.from(ctBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  return `v1:${ivHex}:${tagHex}:${ctHex}`;
+}
+
+async function decryptWifiPasswordWebCrypto(payload, rawKey, roomId) {
+  if (!payload || typeof payload !== 'string') {
+    const err = new Error('Invalid payload string');
+    err.code = 'ERR_WIFI_BAD_PAYLOAD';
+    throw err;
+  }
+  if (!roomId && roomId !== 0) {
+    throw new Error('roomId is required for room-specific AAD verification');
+  }
+  const match = payload.trim().match(WIFI_PAYLOAD_REGEX);
+  if (!match) {
+    const err = new Error('Invalid ciphertext payload format (expected v1:<iv>:<tag>:<ct>)');
+    err.code = 'ERR_WIFI_BAD_FORMAT';
+    throw err;
+  }
+  const [, ivHex, tagHex, ctHex] = match;
+  const keyBytes = rawKey instanceof Uint8Array ? rawKey : parseWifiKeyWebCrypto(rawKey);
+
+  const ivMatch = ivHex.match(/.{1,2}/g) || [];
+  const iv = new Uint8Array(ivMatch.map(b => parseInt(b, 16)));
+
+  const tagMatch = tagHex.match(/.{1,2}/g) || [];
+  const tag = new Uint8Array(tagMatch.map(b => parseInt(b, 16)));
+
+  const ctMatch = ctHex.match(/.{1,2}/g) || [];
+  const ct = new Uint8Array(ctMatch.map(b => parseInt(b, 16)));
+
+  const aad = new TextEncoder().encode(`room:${roomId}`);
+
+  const combined = new Uint8Array(ct.length + tag.length);
+  combined.set(ct, 0);
+  combined.set(tag, ct.length);
+
+  try {
+    const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+    const decryptedBuf = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv, additionalData: aad, tagLength: 128 },
+      cryptoKey,
+      combined
+    );
+    return new TextDecoder().decode(decryptedBuf);
+  } catch (err) {
+    const authErr = new Error('Wi-Fi credential authentication failed (wrong key, wrong room, or tampered payload)');
+    authErr.code = 'ERR_WIFI_AUTH_FAILED';
+    authErr.originalError = err.message;
+    throw authErr;
+  }
+}
+
+// ==========================================
 // 1.1 FINANCIAL & DISCOUNT/DEPOSIT HELPERS
 // ==========================================
 function roundMoney(value) {
@@ -675,7 +783,7 @@ async function getCleaningBufferMinutes(env) {
   return 30;
 }
 
-async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId = null) {
+async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId = null, excludeBookingItemId = null) {
   const normStart = normalizeToLocalISO(startISO);
   const normEnd = normalizeToLocalISO(endISO);
   const bufferMins = await getCleaningBufferMinutes(env);
@@ -693,7 +801,10 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
       AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')
   `;
   const params = [roomId];
-  if (excludeBookingId) {
+  if (excludeBookingItemId) {
+    query += " AND bi.id != ?";
+    params.push(excludeBookingItemId);
+  } else if (excludeBookingId) {
     query += " AND b.id != ?";
     params.push(excludeBookingId);
   }
@@ -1127,9 +1238,9 @@ function checkStaffPosAuth(auth) {
   if (!user || (!Number.isSafeInteger(user.id)) || user.id <= 0) {
     return { error: 'Staff identity required', status: 403 };
   }
-  if (user.role !== 'admin') {
+  if (user.role !== 'admin' && user.username !== 'admin') {
     const perms = (user.permissions || '').split(',').map(p => p.trim());
-    if (!perms.includes('pos')) {
+    if (!perms.includes('hour-credits')) {
       return { error: 'ไม่มีสิทธิ์เข้าถึงระบบเครดิตชั่วโมง', status: 403 };
     }
   }
@@ -1182,11 +1293,12 @@ async function saveUploadedFile(env, fileData, folder = 'uploads') {
     for (let i = 0; i < len; i++) {
       bytes[i] = binaryStr.charCodeAt(i);
     }
-    const ext = contentType.includes('png') ? 'png' : (contentType.includes('jpeg') || contentType.includes('jpg') ? 'jpeg' : 'bin');
+    const ext = contentType.includes('pdf') ? 'pdf' : (contentType.includes('webp') ? 'webp' : (contentType.includes('png') ? 'png' : ((contentType.includes('jpeg') || contentType.includes('jpg')) ? 'jpeg' : 'bin')));
     const filename = `${folder}/${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
 
-    if (env.BUCKET) {
-      await env.BUCKET.put(filename, bytes.buffer, {
+    const r2Bucket = env.BUCKET || env.SLIP_BUCKET;
+    if (r2Bucket) {
+      await r2Bucket.put(filename, bytes.buffer, {
         httpMetadata: { contentType }
       });
       return `/uploads/${filename}`;
@@ -1611,6 +1723,54 @@ function buildLineDoorPinFlex(booking, item, room) {
   };
 }
 
+/**
+ * Lowest reliable dispatch helper for LINE push messages.
+ * HARD-BLOCK IN STAGING: When env.ENVIRONMENT === 'staging', zero HTTP requests are issued to LINE APIs.
+ * Returns { sent: false, mocked: true, status: 200, success: true, ok: true }.
+ * Never logs tokens or customer PII.
+ */
+async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }) {
+  if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
+    return {
+      sent: false,
+      mocked: true,
+      status: 200,
+      ok: true,
+      success: true,
+      reason: 'staging_environment_mock'
+    };
+  }
+
+  if (!channelAccessToken) {
+    return {
+      sent: false,
+      mocked: false,
+      status: 401,
+      ok: false,
+      success: false,
+      reason: 'no_channel_access_token'
+    };
+  }
+
+  const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${channelAccessToken}`
+    },
+    body: JSON.stringify({ to, messages })
+  });
+
+  return {
+    sent: lineRes.ok,
+    mocked: false,
+    status: lineRes.status,
+    ok: lineRes.ok,
+    success: lineRes.ok,
+    response: lineRes
+  };
+}
+
 async function sendLineBookingConfirmation(env, bookingId) {
   try {
     const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
@@ -1621,23 +1781,19 @@ async function sendLineBookingConfirmation(env, bookingId) {
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value;
-    if (!channelAccessToken) return null;
 
     const flexCard = buildLineBookingConfirmationFlex(booking, item, room);
 
-    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
-      body: JSON.stringify({
-        to: booking.line_user_id,
-        messages: [flexCard]
-      })
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [flexCard]
     });
 
-    return { success: lineRes.ok, status: lineRes.status };
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return null;
+    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
   } catch (err) {
     console.error('Error sending confirmation message:', err);
     return null;
@@ -1656,23 +1812,19 @@ async function sendLineDoorPin(env, bookingId) {
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value;
-    if (!channelAccessToken) return null;
 
     const flexCard = buildLineDoorPinFlex(booking, item, room);
 
-    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
-      body: JSON.stringify({
-        to: booking.line_user_id,
-        messages: [flexCard]
-      })
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [flexCard]
     });
 
-    return { success: lineRes.ok, status: lineRes.status };
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return null;
+    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
   } catch (err) {
     console.error('Error sending door pin message:', err);
     return null;
@@ -1844,25 +1996,199 @@ async function sendLineBookingCancellation(env, bookingId, reason = '') {
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value;
-    if (!channelAccessToken) return null;
 
     const flexCard = buildLineBookingCancellationFlex(booking, item, room, reason);
 
-    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
-      body: JSON.stringify({
-        to: booking.line_user_id,
-        messages: [flexCard]
-      })
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [flexCard]
     });
 
-    return { success: lineRes.ok, status: lineRes.status };
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return null;
+    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
   } catch (err) {
     console.error('Error sending cancellation message:', err);
+    return null;
+  }
+}
+
+function buildLineSlipRejectedFlex(booking, roomNameOrItem, displayReason, paymentDeadlineIso, isStillEligible) {
+  let roomName = (typeof roomNameOrItem === 'string' && roomNameOrItem) ? roomNameOrItem : (booking?.room_name || 'ห้องประชุม B-WORK');
+  const bookingCode = booking?.receipt_number || `#BK-${String(booking?.id || 0).padStart(6, '0')}`;
+  const reasonText = displayReason || 'สลิปการโอนเงินไม่ถูกต้อง';
+
+  let deadlineDisplay = '-';
+  if (paymentDeadlineIso) {
+    try {
+      const d = new Date(paymentDeadlineIso);
+      const bkkHours = d.getHours().toString().padStart(2, '0');
+      const bkkMinutes = d.getMinutes().toString().padStart(2, '0');
+      deadlineDisplay = `${formatThaiDateDisplay(paymentDeadlineIso)} เวลา ${bkkHours}:${bkkMinutes} น.`;
+    } catch (_) {
+      deadlineDisplay = String(paymentDeadlineIso);
+    }
+  }
+
+  const contactParam = encodeURIComponent(booking?.contact || '');
+  const resubmitUrl = `https://bwork-booking.pages.dev/confirm?booking_id=${booking?.id}&contact=${contactParam}`;
+
+  const bodyContents = [
+    {
+      type: 'text',
+      text: 'สลิปไม่ผ่านการตรวจสอบ',
+      size: 'xl',
+      weight: 'bold',
+      color: '#0f172a'
+    },
+    {
+      type: 'text',
+      text: isStillEligible ? 'กรุณาตรวจสอบและแนบสลิปใหม่ก่อนหมดเวลา' : 'รายการจองหมดเวลาชำระเงินแล้ว',
+      size: 'xs',
+      color: '#64748b',
+      margin: 'xs'
+    },
+    {
+      type: 'box',
+      layout: 'vertical',
+      margin: 'lg',
+      spacing: 'sm',
+      contents: [
+        {
+          type: 'box',
+          layout: 'baseline',
+          contents: [
+            { type: 'text', text: 'รหัสการจอง', color: '#64748b', size: 'sm', flex: 3 },
+            { type: 'text', text: bookingCode, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+          ]
+        },
+        {
+          type: 'box',
+          layout: 'baseline',
+          contents: [
+            { type: 'text', text: 'ห้องประชุม', color: '#64748b', size: 'sm', flex: 3 },
+            { type: 'text', text: roomName, color: '#0f172a', size: 'sm', weight: 'bold', flex: 4, align: 'end' }
+          ]
+        }
+      ]
+    },
+    {
+      type: 'box',
+      layout: 'vertical',
+      margin: 'md',
+      paddingAll: '14px',
+      backgroundColor: '#fffbeb',
+      cornerRadius: '10px',
+      borderWidth: '1px',
+      borderColor: '#fde68a',
+      contents: [
+        { type: 'text', text: 'เหตุผลที่ปฏิเสธสลิป', size: 'xs', weight: 'bold', color: '#b45309' },
+        { type: 'text', text: reasonText, size: 'sm', weight: 'bold', color: '#b45309', margin: 'xs', wrap: true }
+      ]
+    }
+  ];
+
+  if (isStillEligible && deadlineDisplay !== '-') {
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'sm',
+      paddingAll: '12px',
+      backgroundColor: '#f8fafc',
+      cornerRadius: '8px',
+      borderWidth: '1px',
+      borderColor: '#e2e8f0',
+      contents: [
+        { type: 'text', text: 'กำหนดเวลาชำระเงินเดิม', size: 'xs', color: '#64748b' },
+        { type: 'text', text: deadlineDisplay, size: 'sm', weight: 'bold', color: '#0f172a', margin: 'xs' },
+        { type: 'text', text: 'ระบบไม่ขยายเวลาชำระเงิน กรุณาแนบสลิปใหม่ก่อนหมดเวลา', size: 'xxs', color: '#dc2626', margin: 'xs', wrap: true }
+      ]
+    });
+  }
+
+  const footerContents = [];
+  if (isStillEligible) {
+    footerContents.push({
+      type: 'button',
+      action: {
+        type: 'uri',
+        label: 'แนบสลิปใหม่',
+        uri: resubmitUrl
+      },
+      style: 'primary',
+      color: '#d97706',
+      height: 'md'
+    });
+  } else {
+    footerContents.push({
+      type: 'button',
+      action: {
+        type: 'uri',
+        label: 'จองห้องใหม่',
+        uri: 'https://bwork-booking.pages.dev'
+      },
+      style: 'primary',
+      color: '#64748b',
+      height: 'md'
+    });
+  }
+
+  return {
+    type: 'flex',
+    altText: `แจ้งผลการตรวจสอบสลิป - ${bookingCode}`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      hero: {
+        type: 'image',
+        url: 'https://bwork-booking.pages.dev/line-banners/bwork-booking-cancel-banner.png',
+        size: 'full',
+        aspectRatio: '3:1',
+        aspectMode: 'cover'
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '20px',
+        contents: bodyContents
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: footerContents
+      }
+    }
+  };
+}
+
+async function sendLineSlipRejectedNotification(env, bookingId, displayReason, paymentDeadlineIso, isStillEligible) {
+  try {
+    const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+    if (!booking || !booking.line_user_id) return null;
+
+    const item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
+    const room = item?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first() : null;
+
+    const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
+    const channelAccessToken = tokenSetting?.value;
+
+    const flexCard = buildLineSlipRejectedFlex(booking, room?.name, displayReason, paymentDeadlineIso, isStillEligible);
+
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [flexCard]
+    });
+
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return null;
+    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
+  } catch (err) {
+    console.error('Error sending slip rejection message in worker:', err);
     return null;
   }
 }
@@ -1992,36 +2318,72 @@ function buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEn
   };
 }
 
-async function sendLineBookingReschedule(env, bookingId, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal) {
+async function sendLineBookingReschedule(env, bookingId, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal, bookingItemId = null) {
   try {
     const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
     if (!booking || !booking.line_user_id) return null;
 
-    const item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
+    let item;
+    if (bookingItemId) {
+      item = await env.DB.prepare('SELECT * FROM booking_items WHERE id = ? AND booking_id = ?').bind(bookingItemId, bookingId).first();
+    } else {
+      item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
+    }
     const room = item?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first() : null;
 
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value;
-    if (!channelAccessToken) return null;
 
     const flexCard = buildLineBookingRescheduleFlex(booking, item, room, oldStartTime, oldEndTime, newStartTime, newEndTime, newTotal);
 
-    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
-      body: JSON.stringify({
-        to: booking.line_user_id,
-        messages: [flexCard]
-      })
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [flexCard]
     });
 
-    return { success: lineRes.ok, status: lineRes.status };
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return null;
+    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
   } catch (err) {
     console.error('Error sending reschedule message:', err);
     return null;
+  }
+}
+
+// Build text message for customer info updates (concise text, no reschedule banner)
+function buildCustomerInfoUpdateTextMessage(booking, newCustomerName, newContact) {
+  const code = booking?.receipt_number || `#BK-${String(booking?.id || 0).padStart(6, '0')}`;
+  let text = `แจ้งอัปเดตข้อมูลการจอง ${code}\n`;
+  text += `ชื่อผู้จอง: ${newCustomerName}\n`;
+  if (newContact) {
+    text += `เบอร์ติดต่อ: ${newContact}\n`;
+  }
+  text += `ข้อมูลการจองของท่านได้รับการอัปเดตเรียบร้อยแล้วค่ะ\nหากมีข้อสงสัย กรุณาติดต่อเจ้าหน้าที่ได้ทันทีค่ะ`;
+  return text;
+}
+
+async function sendLineBookingCustomerInfoUpdate(env, booking, newCustomerName, newContact) {
+  try {
+    if (!booking || !booking.line_user_id) return { sent: false, reason: 'no_line_recipient' };
+
+    const channelAccessToken = env.LINE_CHANNEL_ACCESS_TOKEN;
+    const textContent = buildCustomerInfoUpdateTextMessage(booking, newCustomerName, newContact);
+
+    const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+      to: booking.line_user_id,
+      messages: [{ type: 'text', text: textContent }]
+    });
+
+    if (dispatch.mocked) {
+      return { success: true, sent: false, mocked: true, status: 200 };
+    }
+    if (!dispatch.ok) return { sent: false, reason: dispatch.reason || 'dispatch_failed' };
+    return { sent: dispatch.sent, status: dispatch.status };
+  } catch (err) {
+    console.error('Error sending customer info update LINE message:', err);
+    return { sent: false, error: err.message };
   }
 }
 
@@ -2056,6 +2418,12 @@ async function ensureD1Schema(env) {
     "ALTER TABLE bookings ADD COLUMN customer_email TEXT",
     "ALTER TABLE bookings ADD COLUMN booking_details TEXT",
     "ALTER TABLE bookings ADD COLUMN slip_image_url TEXT",
+    "ALTER TABLE payment_transactions ADD COLUMN slip_url TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_payer_type TEXT DEFAULT 'corporate'",
+    "ALTER TABLE bookings ADD COLUMN tax_branch_type TEXT DEFAULT 'head'",
+    "ALTER TABLE bookings ADD COLUMN tax_branch_number TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_email TEXT",
+    "ALTER TABLE bookings ADD COLUMN tax_invoice_status TEXT DEFAULT 'pending'",
     "ALTER TABLE bookings ADD COLUMN line_user_id TEXT",
     "ALTER TABLE bookings ADD COLUMN pin_code TEXT",
     "ALTER TABLE bookings ADD COLUMN qr_token TEXT",
@@ -2089,7 +2457,174 @@ async function ensureD1Schema(env) {
       // Ignored: column already exists
     }
   }
+
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS booking_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      details TEXT,
+      performed_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+    try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_booking_history_booking_id ON booking_history(booking_id)`).run(); } catch (_) {}
+
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tax_invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL,
+      invoice_number TEXT,
+      tax_payer_type TEXT DEFAULT 'corporate',
+      tax_name TEXT NOT NULL,
+      tax_id TEXT NOT NULL,
+      tax_branch_type TEXT DEFAULT 'head',
+      tax_branch_number TEXT,
+      tax_address TEXT,
+      tax_email TEXT,
+      tax_phone TEXT,
+      file_url TEXT,
+      r2_object_key TEXT,
+      file_name TEXT,
+      content_type TEXT,
+      file_size INTEGER,
+      status TEXT DEFAULT 'issued',
+      notes TEXT,
+      uploaded_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run();
+  } catch (e) {}
+
   schemaInitialized = true;
+}
+
+
+function generateWorkerTicketToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return 'tkt_sec_' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function verifyWorkerLineIdToken(tokenString, expectedAudience = null) {
+  if (!tokenString || typeof tokenString !== 'string') return null;
+  const parts = tokenString.trim().split('.');
+  if (parts.length !== 3) return null;
+  try {
+    let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    const payload = JSON.parse(atob(b64));
+    if (payload.iss !== 'https://access.line.me') return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (!payload.exp || typeof payload.exp !== 'number' || payload.exp < (nowSec - 60)) return null;
+    if (!payload.sub || typeof payload.sub !== 'string' || !payload.sub.trim()) return null;
+    if (expectedAudience && payload.aud && payload.aud !== expectedAudience && !String(expectedAudience).includes(payload.aud)) {
+      return null;
+    }
+    return { userId: payload.sub.trim(), name: payload.name || null };
+  } catch (e) {
+    return null;
+  }
+}
+
+function extractWorkerCustomerAuth(request, url) {
+  const ticketToken = request.headers.get('x-ticket-token') || url.searchParams.get('ticket_token');
+  const bookingToken = request.headers.get('x-booking-token') || url.searchParams.get('booking_token');
+
+  let ticketTokens = [];
+  const rawTokens = request.headers.get('x-ticket-tokens') || url.searchParams.get('ticket_tokens');
+  if (rawTokens) {
+    try {
+      const parsed = JSON.parse(rawTokens);
+      if (Array.isArray(parsed)) ticketTokens = parsed.map(t => String(t).trim()).filter(Boolean);
+    } catch (e) {
+      ticketTokens = rawTokens.split(',').map(t => t.trim()).filter(Boolean);
+    }
+  }
+  if (ticketToken && !ticketTokens.includes(ticketToken)) {
+    ticketTokens.push(String(ticketToken).trim());
+  }
+
+  let lineUserId = null;
+  const authHeader = request.headers.get('authorization');
+  const lineIdToken = request.headers.get('x-line-id-token') || (
+    authHeader && authHeader.startsWith('Bearer ') && authHeader.split(' ')[1].includes('.')
+      ? authHeader.split(' ')[1]
+      : null
+  );
+
+  if (lineIdToken) {
+    const verified = verifyWorkerLineIdToken(lineIdToken);
+    if (verified) lineUserId = verified.userId;
+  }
+
+  return {
+    ticketToken: ticketToken ? String(ticketToken).trim() : null,
+    ticketTokens,
+    bookingToken: bookingToken ? String(bookingToken).trim() : null,
+    lineUserId: lineUserId || null
+  };
+}
+
+async function verifyWorkerTicketOwnership(env, ticket, auth = {}) {
+  if (!ticket) return false;
+  if (auth.is_staff) return true;
+
+  if (auth.ticketToken && ticket.access_token) {
+    if (safeEqualString(auth.ticketToken, ticket.access_token)) return true;
+  }
+  if (auth.lineUserId && ticket.line_user_id) {
+    if (safeEqualString(auth.lineUserId, ticket.line_user_id)) return true;
+  }
+  if (auth.bookingToken && (ticket.booking_id || ticket.booking_code)) {
+    const booking = await env.DB.prepare(
+      'SELECT qr_token FROM bookings WHERE id = ? OR receipt_number = ?'
+    ).bind(ticket.booking_id, ticket.booking_code).first();
+    if (booking && booking.qr_token && safeEqualString(auth.bookingToken, booking.qr_token)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function generateWorkerUniqueTicketNumber(env) {
+  const now = new Date();
+  const ym = getBangkokLocalISO(now).slice(0, 7).replace('-', '');
+  const prefix = `TKT-${ym}-`;
+  const row = await env.DB.prepare(
+    "SELECT ticket_number FROM support_tickets WHERE ticket_number LIKE ? ORDER BY ticket_number DESC LIMIT 1"
+  ).bind(`${prefix}%`).first();
+
+  let nextSeq = 1;
+  if (row && row.ticket_number) {
+    const parts = row.ticket_number.split('-');
+    if (parts.length >= 3) {
+      const currentSeq = parseInt(parts[2], 10);
+      if (!isNaN(currentSeq)) {
+        nextSeq = currentSeq + 1;
+      }
+    }
+  }
+  return `${prefix}${String(nextSeq).padStart(5, '0')}`;
+}
+
+async function recordWorkerTicketEvent(env, { ticketId, actorType, actorId, actorName, eventType, oldValue, newValue, notes }) {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO support_ticket_events
+       (ticket_id, actor_type, actor_id, actor_name, event_type, old_value, new_value, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+    ).bind(
+      ticketId,
+      actorType,
+      actorId || null,
+      actorName || actorType,
+      eventType,
+      oldValue || null,
+      newValue || null,
+      notes || null
+    ).run();
+  } catch (err) {
+    console.warn('[WorkerTicketEvent] Failed:', err.message);
+  }
 }
 
 // ==========================================
@@ -2097,6 +2632,8 @@ async function ensureD1Schema(env) {
 // ==========================================
 export default {
   async fetch(request, env, ctx) {
+    // Ensure compatibility with both env.BUCKET and env.SLIP_BUCKET
+    if (!env.BUCKET && env.SLIP_BUCKET) env.BUCKET = env.SLIP_BUCKET;
     const url = new URL(request.url);
     const pathname = url.pathname;
     const method = request.method;
@@ -2105,7 +2642,7 @@ export default {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, X-Booking-Contact, X-Booking-Token',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, X-Booking-Contact, X-Booking-Token, X-Ticket-Token, X-Ticket-Tokens, X-Line-ID-Token',
       'Content-Type': 'application/json'
     };
 
@@ -2155,8 +2692,8 @@ export default {
           "SELECT * FROM users WHERE LOWER(username) = LOWER(?) AND password_hash = ?"
         ).bind(username, passHash).first();
 
-        // Fallback for default admin
-        if (!user && (username === 'admin' && password === 'admin123')) {
+        // Fallback for default admin (disabled in staging so dedicated Staging Admin password hash is enforced)
+        if (!user && !(env && env.ENVIRONMENT === 'staging') && (username === 'admin' && password === 'admin123')) {
           user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(username) = 'admin'").first();
         }
 
@@ -2378,10 +2915,15 @@ export default {
           }
           query += " ORDER BY name ASC";
           const { results } = await env.DB.prepare(query).bind(...params).all();
-          if (isPublic && Array.isArray(results)) {
+          if (Array.isArray(results)) {
             for (const r of results) {
-              delete r.pin_code;
-              delete r.builtland_pin_code;
+              if (isPublic) {
+                delete r.pin_code;
+                delete r.builtland_pin_code;
+                delete r.wifi_username;
+              }
+              r.has_wifi_credentials = Boolean(r.wifi_username && r.wifi_password_enc);
+              delete r.wifi_password_enc;
             }
           }
           return new Response(JSON.stringify(results), { headers: corsHeaders });
@@ -2395,13 +2937,21 @@ export default {
           const classroomImageUrl = await saveUploadedFile(env, body.classroom_image_url, 'rooms');
 
 
+          const cleanPosX = (body.image_position_x !== undefined && body.image_position_x !== null && !isNaN(body.image_position_x))
+            ? Math.max(0, Math.min(100, Math.round(Number(body.image_position_x))))
+            : 50;
+          const cleanPosY = (body.image_position_y !== undefined && body.image_position_y !== null && !isNaN(body.image_position_y))
+            ? Math.max(0, Math.min(100, Math.round(Number(body.image_position_y))))
+            : 50;
+
           const ins = await env.DB.prepare(
-            `INSERT INTO rooms (name, capacity, hourly_rate, daily_rate, half_day_rate, has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url, description, image_url, category, pin_code, builtland_pin_code, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
+            `INSERT INTO rooms (name, capacity, hourly_rate, daily_rate, half_day_rate, has_classroom, classroom_hourly_rate, classroom_daily_rate, classroom_capacity, classroom_image_url, description, image_url, category, pin_code, builtland_pin_code, image_position_x, image_position_y, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`
           ).bind(
             body.name, body.capacity || 0, body.hourly_rate || 0, body.daily_rate || 0, body.half_day_rate || 0,
             body.has_classroom || 0, body.classroom_hourly_rate || 0, body.classroom_daily_rate || 0, body.classroom_capacity || 0,
-            classroomImageUrl || null, body.description || '', imageUrl || null, body.category || 'Meeting Room', body.pin_code || null, body.builtland_pin_code || null
+            classroomImageUrl || null, body.description || '', imageUrl || null, body.category || 'Meeting Room', body.pin_code || null, body.builtland_pin_code || null,
+            cleanPosX, cleanPosY
           ).run();
           return new Response(JSON.stringify({ success: true, id: ins.meta.last_row_id, message: 'บันทึกห้องสำเร็จ' }), { status: 201, headers: corsHeaders });
         }
@@ -2425,6 +2975,24 @@ export default {
           const existingRoom = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(roomId).first();
           if (!existingRoom) {
             return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลห้องประชุม' }), { status: 404, headers: corsHeaders });
+          }
+
+          let cleanPosX;
+          if (body.image_position_x === undefined) {
+            cleanPosX = existingRoom.image_position_x !== undefined && existingRoom.image_position_x !== null ? existingRoom.image_position_x : 50;
+          } else if (body.image_position_x === null || isNaN(body.image_position_x)) {
+            cleanPosX = 50;
+          } else {
+            cleanPosX = Math.max(0, Math.min(100, Math.round(Number(body.image_position_x))));
+          }
+
+          let cleanPosY;
+          if (body.image_position_y === undefined) {
+            cleanPosY = existingRoom.image_position_y !== undefined && existingRoom.image_position_y !== null ? existingRoom.image_position_y : 50;
+          } else if (body.image_position_y === null || isNaN(body.image_position_y)) {
+            cleanPosY = 50;
+          } else {
+            cleanPosY = Math.max(0, Math.min(100, Math.round(Number(body.image_position_y))));
           }
 
           const isPinCapable = roomUsesDoorPin(existingRoom);
@@ -2455,7 +3023,7 @@ export default {
           const effectiveBuiltlandPin = cleanBuiltlandPin || cleanPin;
 
           const updateRoomStmt = env.DB.prepare(
-            `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=?, builtland_pin_code=?, status=? WHERE id=?`
+            `UPDATE rooms SET name=?, capacity=?, hourly_rate=?, daily_rate=?, half_day_rate=?, has_classroom=?, classroom_hourly_rate=?, classroom_daily_rate=?, classroom_capacity=?, classroom_image_url=?, description=?, image_url=?, category=?, pin_code=?, builtland_pin_code=?, image_position_x=?, image_position_y=?, status=? WHERE id=?`
           ).bind(
             body.name !== undefined ? body.name : existingRoom.name,
             body.capacity !== undefined ? (body.capacity || 0) : existingRoom.capacity,
@@ -2472,6 +3040,8 @@ export default {
             body.category || existingRoom.category || 'Meeting Room',
             cleanPin,
             cleanBuiltlandPin,
+            cleanPosX,
+            cleanPosY,
             body.status || existingRoom.status || 'active',
             roomId
           );
@@ -2629,6 +3199,121 @@ export default {
             "SELECT bi.* FROM booking_items bi JOIN bookings b ON bi.booking_id = b.id WHERE bi.room_id = ? AND b.payment_status != 'cancelled'"
           ).bind(roomId).all();
           return new Response(JSON.stringify(results), { headers: corsHeaders });
+        }
+      }
+
+      // ----------------------------------------------------
+      // 2.2 ROOM WI-FI CREDENTIAL MANAGEMENT
+      // ----------------------------------------------------
+      if ((pathname.startsWith('/api/rooms/') || pathname.startsWith('/api/admin/rooms/')) && pathname.endsWith('/wifi')) {
+        const parts = pathname.split('/');
+        const roomId = parseInt(parts[parts.length - 2], 10);
+        if (isNaN(roomId)) {
+          return new Response(JSON.stringify({ error: 'รหัสห้องไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        if (auth.user?.role !== 'admin' && auth.user?.username !== 'admin' && !auth.user?.permissions?.includes('manage') && !auth.user?.permissions?.includes('admin-management')) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์ดำเนินการนี้' }), { status: 403, headers: corsHeaders });
+        }
+
+        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(roomId).first();
+        if (!room) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลห้องประชุม' }), { status: 404, headers: corsHeaders });
+        }
+
+        const secureHeaders = { ...corsHeaders, 'Cache-Control': 'no-store, private' };
+
+        if (method === 'GET') {
+          if (room.wifi_username === undefined && room.wifi_password_enc === undefined) {
+            return new Response(JSON.stringify({
+              room_id: room.id,
+              room_name: room.name,
+              wifi_username: null,
+              wifi_password: null,
+              has_password: false,
+              wifi_configured: false,
+              migration_pending: true
+            }), { headers: secureHeaders });
+          }
+
+          let plainPassword = '';
+          let hasPassword = false;
+
+          if (room.wifi_password_enc) {
+            try {
+              plainPassword = await decryptWifiPasswordWebCrypto(room.wifi_password_enc, env.WIFI_CREDENTIAL_ENCRYPTION_KEY, room.id);
+              hasPassword = true;
+            } catch (decErr) {
+              return new Response(JSON.stringify({
+                error: 'ไม่สามารถถอดรหัสรหัสผ่าน Wi-Fi ได้ (กุญแจเข้ารหัสไม่ถูกต้องหรือสูญหาย)',
+                code: decErr.code || 'ERR_WIFI_DECRYPT_FAILED'
+              }), { status: 500, headers: secureHeaders });
+            }
+          }
+
+          return new Response(JSON.stringify({
+            room_id: room.id,
+            room_name: room.name,
+            wifi_username: room.wifi_username || '',
+            wifi_password: plainPassword,
+            has_password: hasPassword,
+            wifi_configured: Boolean(room.wifi_username && hasPassword)
+          }), { headers: secureHeaders });
+        }
+
+        if (method === 'PUT') {
+          const body = await request.json();
+          const { wifi_username, wifi_password, clear_credentials } = body || {};
+
+          if (clear_credentials === true) {
+            try {
+              await env.DB.prepare('UPDATE rooms SET wifi_username = NULL, wifi_password_enc = NULL WHERE id = ?').bind(room.id).run();
+              return new Response(JSON.stringify({
+                success: true,
+                message: 'ล้างข้อมูลการเชื่อมต่อ Wi-Fi ของห้องเรียบร้อยแล้ว',
+                room_id: room.id,
+                wifi_username: null,
+                has_password: false,
+                wifi_configured: false
+              }), { headers: secureHeaders });
+            } catch (clearErr) {
+              return new Response(JSON.stringify({ error: 'Wi-Fi schema migration pending approval', code: 'MIGRATION_PENDING' }), { status: 503, headers: secureHeaders });
+            }
+          }
+
+          const newUsername = wifi_username !== undefined ? (String(wifi_username).trim() || null) : (room.wifi_username || null);
+          let newPasswordEnc = room.wifi_password_enc || null;
+          let passwordUpdated = false;
+
+          if (wifi_password !== undefined && wifi_password !== null && String(wifi_password).trim() !== '') {
+            const plain = String(wifi_password).trim();
+            try {
+              newPasswordEnc = await encryptWifiPasswordWebCrypto(plain, env.WIFI_CREDENTIAL_ENCRYPTION_KEY, room.id);
+              passwordUpdated = true;
+            } catch (encErr) {
+              return new Response(JSON.stringify({
+                error: 'ไม่สามารถเข้ารหัสรหัสผ่าน Wi-Fi ได้ กรุณาตรวจสอบการตั้งค่ากุญแจความปลอดภัย',
+                code: encErr.code || 'ERR_WIFI_ENCRYPT_FAILED'
+              }), { status: 500, headers: secureHeaders });
+            }
+          }
+
+          try {
+            await env.DB.prepare('UPDATE rooms SET wifi_username = ?, wifi_password_enc = ? WHERE id = ?').bind(newUsername, newPasswordEnc, room.id).run();
+            return new Response(JSON.stringify({
+              success: true,
+              message: 'บันทึกข้อมูลการเชื่อมต่อ Wi-Fi สำเร็จ',
+              room_id: room.id,
+              wifi_username: newUsername,
+              has_password: Boolean(newPasswordEnc),
+              wifi_configured: Boolean(newUsername && newPasswordEnc),
+              password_updated: passwordUpdated
+            }), { headers: secureHeaders });
+          } catch (updateErr) {
+            return new Response(JSON.stringify({ error: 'Wi-Fi schema migration pending approval', code: 'MIGRATION_PENDING' }), { status: 503, headers: secureHeaders });
+          }
         }
       }
 
@@ -2845,6 +3530,20 @@ export default {
       // ----------------------------------------------------
       // BASECAMP QUOTA HUB ENDPOINTS
       // ----------------------------------------------------
+      if (pathname.startsWith('/api/basecamp')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) {
+          return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        }
+        const user = auth.user;
+        if (user && user.role !== 'admin') {
+          const perms = (user.permissions || '').split(',').map(p => p.trim());
+          if (!perms.some(p => ['pos', 'manage', 'pending', 'history'].includes(p))) {
+            return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงข้อมูลโควตา Basecamp' }), { status: 403, headers: corsHeaders });
+          }
+        }
+      }
+
       if (pathname === '/api/basecamp/quota' && method === 'GET') {
         const subType = url.searchParams.get('sub_type') || 'office';
         const unit = url.searchParams.get('unit') || '401';
@@ -3007,6 +3706,1000 @@ export default {
         }
       }
 
+      // ----------------------------------------------------
+      // CUSTOMER, SHOP & CONTRACT MANAGEMENT HELPERS
+      // ----------------------------------------------------
+      function calculateWorkerDaysDiff(targetDateStr, baseDateStr) {
+        if (!targetDateStr) return 0;
+        const target = new Date(`${targetDateStr}T00:00:00+07:00`);
+        const base = new Date(`${baseDateStr}T00:00:00+07:00`);
+        const diffMs = target.getTime() - base.getTime();
+        return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+      }
+
+      function evaluateWorkerContractStatus(contract, baseDateStr) {
+        if (!contract) return null;
+        const today = baseDateStr || getBangkokLocalISO(new Date()).slice(0, 10);
+        if (contract.status === 'TERMINATED') {
+          return {
+            status: 'TERMINATED',
+            days_left: calculateWorkerDaysDiff(contract.end_date, today),
+            urgency: 'terminated',
+            is_active_or_expiring: false
+          };
+        }
+
+        const daysLeft = calculateWorkerDaysDiff(contract.end_date, today);
+        let status = 'ACTIVE';
+        let urgency = 'normal';
+
+        if (daysLeft < 0) {
+          status = 'EXPIRED';
+          urgency = 'expired';
+        } else if (daysLeft <= 7) {
+          status = 'EXPIRING';
+          urgency = 'danger';
+        } else if (daysLeft <= 15) {
+          status = 'EXPIRING';
+          urgency = 'warning';
+        } else if (daysLeft <= 30) {
+          status = 'EXPIRING';
+          urgency = 'info';
+        }
+
+        return {
+          status,
+          days_left: daysLeft,
+          urgency,
+          is_active_or_expiring: status === 'ACTIVE' || status === 'EXPIRING'
+        };
+      }
+
+      function verifyWorkerContractEligibility(contract, serviceDateStr) {
+        if (!contract) return { eligible: false, reason: 'NO_CONTRACT' };
+        if (contract.status === 'TERMINATED') return { eligible: false, reason: 'CONTRACT_TERMINATED' };
+        const today = getBangkokLocalISO(new Date()).slice(0, 10);
+        const serviceDate = serviceDateStr ? serviceDateStr.slice(0, 10) : today;
+        if (contract.start_date && serviceDate < contract.start_date) {
+          return { eligible: false, reason: 'SERVICE_DATE_BEFORE_CONTRACT_START' };
+        }
+        if (contract.end_date && serviceDate > contract.end_date) {
+          return { eligible: false, reason: 'SERVICE_DATE_AFTER_CONTRACT_EXPIRATION' };
+        }
+        return { eligible: true };
+      }
+
+      async function recordWorkerCustomerAudit(env, { customerId, contractId, action, details, performedBy }) {
+        try {
+          await env.DB.prepare(
+            `INSERT INTO customer_audit_logs (customer_id, contract_id, action, details, performed_by)
+             VALUES (?, ?, ?, ?, ?)`
+          ).bind(customerId || null, contractId || null, action, JSON.stringify(details || {}), performedBy || 'system').run();
+        } catch (e) {
+          console.warn('[WorkerCustomerAudit] Failed to write log:', e.message);
+        }
+      }
+
+      async function generateWorkerUniqueContractNumber(env, prefix) {
+        let candidate = prefix;
+        let counter = 1;
+        while (true) {
+          const existing = await env.DB.prepare(
+            'SELECT id FROM customer_contracts WHERE contract_number = ?'
+          ).bind(candidate).first();
+          if (!existing) return candidate;
+          candidate = `${prefix}-${String(counter++).padStart(2, '0')}`;
+        }
+      }
+
+      async function calculateWorkerCustomerQuota(env, { customerId, customerType, basecampSubType, basecampUnit, serviceDate, month, year }) {
+        const today = getBangkokLocalISO(new Date()).slice(0, 10);
+        const targetDate = serviceDate ? serviceDate.slice(0, 10) : today;
+        const targetYear = year ? String(year) : targetDate.slice(0, 4);
+        const targetMonth = month ? String(month).padStart(2, '0') : targetDate.slice(5, 7);
+        const targetMonthStr = `${targetYear}-${targetMonth}`;
+
+        let customer = null;
+        let activeContract = null;
+        let maxQuota = 0;
+
+        if (customerId) {
+          customer = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
+          const { results: contracts } = await env.DB.prepare(
+            `SELECT * FROM customer_contracts
+             WHERE customer_id = ?
+             ORDER BY CASE WHEN ? BETWEEN start_date AND end_date THEN 0
+                           WHEN status IN ('ACTIVE', 'EXPIRING') THEN 1
+                           ELSE 2 END, end_date DESC`
+          ).bind(customerId, targetDate).all();
+
+          if (contracts && contracts.length > 0) {
+            activeContract = contracts[0];
+            const evaluation = evaluateWorkerContractStatus(activeContract, targetDate);
+            activeContract.evaluated_status = evaluation.status;
+            activeContract.days_left = evaluation.days_left;
+            activeContract.urgency = evaluation.urgency;
+          }
+        }
+
+        const effectiveType = customer ? customer.customer_type : (customerType || 'walkin');
+        const effectiveSubType = customer ? customer.basecamp_sub_type : basecampSubType;
+        const effectiveUnit = customer ? customer.basecamp_unit : basecampUnit;
+
+        if (effectiveType === 'shop') {
+          maxQuota = activeContract ? Number(activeContract.monthly_quota_hours || 4.0) : 4.0;
+        } else if (effectiveType === 'basecamp') {
+          if (activeContract && activeContract.monthly_quota_hours) {
+            maxQuota = Number(activeContract.monthly_quota_hours);
+          } else {
+            maxQuota = effectiveSubType === 'office' ? 4.0 : 2.0;
+          }
+        } else {
+          maxQuota = 0;
+        }
+
+        let contractEligible = true;
+        let ineligibilityReason = null;
+        if (activeContract) {
+          const eligibility = verifyWorkerContractEligibility(activeContract, targetDate);
+          if (!eligibility.eligible) {
+            contractEligible = false;
+            ineligibilityReason = eligibility.reason;
+          }
+        } else if (effectiveType === 'shop') {
+          contractEligible = false;
+          ineligibilityReason = 'NO_CONTRACT';
+        }
+
+        let usedQuota = 0;
+        let bookingCount = 0;
+
+        if (customer && customer.id) {
+          const row = await env.DB.prepare(
+            `SELECT COALESCE(SUM(b.quota_hours_used), 0) AS used_hours, COUNT(DISTINCT b.id) AS booking_count
+             FROM bookings b
+             WHERE b.customer_id = ?
+               AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+               AND (
+                 EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id AND strftime('%Y-%m', bi.start_time) = ?)
+                 OR (NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id) AND strftime('%Y-%m', b.created_at) = ?)
+               )`
+          ).bind(customer.id, targetMonthStr, targetMonthStr).first();
+          usedQuota = row ? Number(row.used_hours) : 0;
+          bookingCount = row ? Number(row.booking_count) : 0;
+        } else if (effectiveType === 'basecamp' && effectiveSubType && effectiveUnit) {
+          const row = await env.DB.prepare(
+            `SELECT COALESCE(SUM(b.quota_hours_used), 0) AS used_hours, COUNT(DISTINCT b.id) AS booking_count
+             FROM bookings b
+             WHERE b.customer_type = 'basecamp'
+               AND b.basecamp_sub_type = ?
+               AND b.basecamp_unit = ?
+               AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+               AND (
+                 EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id AND strftime('%Y-%m', bi.start_time) = ?)
+                 OR (NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id) AND strftime('%Y-%m', b.created_at) = ?)
+               )`
+          ).bind(effectiveSubType, effectiveUnit, targetMonthStr, targetMonthStr).first();
+          usedQuota = row ? Number(row.used_hours) : 0;
+          bookingCount = row ? Number(row.booking_count) : 0;
+        }
+
+        const effectiveMaxQuota = contractEligible ? maxQuota : 0;
+        const remainingQuota = Math.max(0, effectiveMaxQuota - usedQuota);
+
+        return {
+          customer_id: customer ? customer.id : null,
+          customer_name: customer ? customer.name : null,
+          customer_type: effectiveType,
+          basecamp_sub_type: effectiveSubType,
+          basecamp_unit: effectiveUnit,
+          target_month: targetMonthStr,
+          service_date: targetDate,
+          max_quota: maxQuota,
+          used_quota: usedQuota,
+          remaining_quota: remainingQuota,
+          booking_count: bookingCount,
+          contract: activeContract,
+          contract_eligible: contractEligible,
+          ineligibility_reason: ineligibilityReason
+        };
+      }
+
+      // ----------------------------------------------------
+      // CUSTOMER, SHOP & CONTRACT MANAGEMENT ENDPOINTS
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/customers')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) {
+          return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        }
+        const user = auth.user;
+        if (user && user.role !== 'admin') {
+          const perms = (user.permissions || '').split(',').map(p => p.trim());
+          if (!perms.some(p => ['customers', 'admin-management'].includes(p))) {
+            return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงข้อมูลลูกค้า' }), { status: 403, headers: corsHeaders });
+          }
+        }
+      }
+
+      // 1. GET /api/customers/contracts/alerts
+      if (pathname === '/api/customers/contracts/alerts' && method === 'GET') {
+        try {
+          const today = url.searchParams.get('date') || getBangkokLocalISO(new Date()).slice(0, 10);
+          const { results: rows } = await env.DB.prepare(`
+            SELECT ctr.id AS contract_id, ctr.contract_number, ctr.start_date, ctr.end_date,
+                   ctr.monthly_quota_hours, ctr.status AS db_status, ctr.notes,
+                   c.id AS customer_id, c.name AS customer_name, c.customer_type,
+                   c.basecamp_sub_type, c.basecamp_unit, c.contact_name, c.phone, c.email
+            FROM customer_contracts ctr
+            JOIN customers c ON ctr.customer_id = c.id
+            WHERE ctr.status != 'TERMINATED'
+            ORDER BY ctr.end_date ASC
+          `).all();
+
+          const alerts = [];
+          const summary = {
+            expiring_30_days: 0,
+            expiring_15_days: 0,
+            expiring_7_days: 0,
+            expired: 0,
+            total_active: 0
+          };
+
+          for (const row of rows || []) {
+            const evaluation = evaluateWorkerContractStatus(row, today);
+            const item = {
+              ...row,
+              days_left: evaluation.days_left,
+              status: evaluation.status,
+              urgency: evaluation.urgency
+            };
+
+            if (item.status === 'EXPIRED') {
+              summary.expired++;
+              alerts.push(item);
+            } else if (item.status === 'EXPIRING') {
+              if (item.days_left <= 7) summary.expiring_7_days++;
+              else if (item.days_left <= 15) summary.expiring_15_days++;
+              else summary.expiring_30_days++;
+              alerts.push(item);
+            } else {
+              summary.total_active++;
+            }
+          }
+
+          return new Response(JSON.stringify({
+            success: true,
+            base_date: today,
+            summary,
+            alerts
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 2. GET /api/customers
+      if (pathname === '/api/customers' && method === 'GET') {
+        const type = url.searchParams.get('type');
+        const status = url.searchParams.get('status');
+        const q = url.searchParams.get('q');
+        const month = url.searchParams.get('month');
+        const year = url.searchParams.get('year');
+
+        try {
+          let sql = 'SELECT * FROM customers WHERE 1=1';
+          const params = [];
+          if (type && type !== 'all') {
+            sql += ' AND customer_type = ?';
+            params.push(type);
+          }
+          if (status && status !== 'all') {
+            sql += ' AND status = ?';
+            params.push(status);
+          }
+          if (q && q.trim()) {
+            sql += ' AND (name LIKE ? OR contact_name LIKE ? OR phone LIKE ? OR basecamp_unit LIKE ?)';
+            const term = `%${q.trim()}%`;
+            params.push(term, term, term, term);
+          }
+          sql += ' ORDER BY CASE customer_type WHEN \'basecamp\' THEN 0 ELSE 1 END, basecamp_unit ASC, name ASC';
+
+          const { results: customers } = await env.DB.prepare(sql).bind(...params).all();
+
+          const enriched = await Promise.all((customers || []).map(async (c) => {
+            const { results: contracts } = await env.DB.prepare(
+              `SELECT * FROM customer_contracts
+               WHERE customer_id = ?
+               ORDER BY CASE WHEN status IN ('ACTIVE', 'EXPIRING') THEN 0 ELSE 1 END, end_date DESC`
+            ).bind(c.id).all();
+
+            const activeContract = contracts && contracts.length > 0 ? contracts[0] : null;
+            if (activeContract) {
+              const evalRes = evaluateWorkerContractStatus(activeContract);
+              activeContract.evaluated_status = evalRes.status;
+              activeContract.days_left = evalRes.days_left;
+              activeContract.urgency = evalRes.urgency;
+            }
+
+            const quota = await calculateWorkerCustomerQuota(env, {
+              customerId: c.id,
+              month,
+              year
+            });
+
+            return {
+              ...c,
+              active_contract: activeContract,
+              contracts: contracts || [],
+              quota
+            };
+          }));
+
+          return new Response(JSON.stringify({ success: true, customers: enriched }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 3. POST /api/customers
+      if (pathname === '/api/customers' && method === 'POST') {
+        try {
+          const body = await request.json();
+          const {
+            customer_type,
+            name,
+            contact_name,
+            phone,
+            email,
+            tax_id,
+            address,
+            basecamp_sub_type,
+            basecamp_unit,
+            start_date,
+            end_date,
+            monthly_quota_hours,
+            contract_number,
+            notes
+          } = body;
+
+          if (!name || !name.trim()) {
+            return new Response(JSON.stringify({ error: 'ชื่อลูกค้าหรือชื่อร้านค้าจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+          if (start_date && end_date && start_date > end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' }), { status: 400, headers: corsHeaders });
+          }
+          const cleanType = customer_type === 'shop' ? 'shop' : 'basecamp';
+
+          if (cleanType === 'basecamp' && basecamp_unit) {
+            const existingActive = await env.DB.prepare(
+              `SELECT id, name FROM customers
+               WHERE customer_type = 'basecamp' AND basecamp_unit = ? AND status = 'active'`
+            ).bind(basecamp_unit).first();
+            if (existingActive) {
+              return new Response(JSON.stringify({
+                error: `ยูนิต ${basecamp_unit} มีผู้เช่าที่ใช้งานอยู่แล้ว (${existingActive.name}) กรุณาใช้ฟังก์ชันเปลี่ยนผู้เช่าหรือปิดสถานะผู้เช่าเดิมก่อน`
+              }), { status: 400, headers: corsHeaders });
+            }
+          }
+
+          const insertRes = await env.DB.prepare(
+            `INSERT INTO customers
+             (customer_type, name, contact_name, phone, email, tax_id, address, basecamp_sub_type, basecamp_unit, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+          ).bind(
+            cleanType,
+            name.trim(),
+            contact_name ? contact_name.trim() : null,
+            phone ? phone.trim() : null,
+            email ? email.trim() : null,
+            tax_id ? tax_id.trim() : null,
+            address ? address.trim() : null,
+            cleanType === 'basecamp' ? (basecamp_sub_type || 'office') : null,
+            cleanType === 'basecamp' ? (basecamp_unit || null) : null
+          ).run();
+
+          const customerId = insertRes.meta?.last_row_id;
+          let contractId = null;
+          let effectiveContractNumber = null;
+
+          if (start_date && end_date) {
+            const defaultQuota = cleanType === 'shop' ? 4.0 : (basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
+            const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
+            const baseCtr = contract_number && contract_number.trim()
+              ? contract_number.trim()
+              : (cleanType === 'basecamp'
+                  ? `CTR-BC-${basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
+                  : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
+
+            let ctrRes = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+              effectiveContractNumber = contract_number && contract_number.trim()
+                ? contract_number.trim()
+                : await generateWorkerUniqueContractNumber(env, baseCtr);
+              try {
+                ctrRes = await env.DB.prepare(
+                  `INSERT INTO customer_contracts
+                   (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+                ).bind(customerId, effectiveContractNumber, start_date, end_date, quotaVal, notes || null).run();
+                break;
+              } catch (insertErr) {
+                const isUniqueErr = insertErr && (
+                  String(insertErr.message || '').includes('UNIQUE constraint failed') ||
+                  String(insertErr.message || '').includes('customer_contracts.contract_number') ||
+                  String(insertErr.cause || '').includes('UNIQUE')
+                );
+                if (isUniqueErr && (!contract_number || !contract_number.trim()) && attempt < 4) {
+                  continue;
+                }
+                if (isUniqueErr && contract_number && contract_number.trim()) {
+                  return new Response(JSON.stringify({ error: `หมายเลขสัญญา "${contract_number.trim()}" มีอยู่ในระบบแล้ว กรุณาระบุหมายเลขสัญญาใหม่` }), { status: 400, headers: corsHeaders });
+                }
+                throw insertErr;
+              }
+            }
+            contractId = ctrRes.meta?.last_row_id;
+          }
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId,
+            contractId,
+            action: 'CREATE_CUSTOMER',
+            details: { customer_type: cleanType, name, basecamp_unit, contract_number: effectiveContractNumber, start_date, end_date },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            customer_id: customerId,
+            contract_id: contractId,
+            message: 'สร้างข้อมูลลูกค้าเรียบร้อยแล้ว'
+          }), { status: 201, headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 4. POST /api/customers/transfer-unit
+      if (pathname === '/api/customers/transfer-unit' && method === 'POST') {
+        try {
+          const body = await request.json();
+          const { basecamp_unit, new_tenant, new_contract } = body;
+          if (!basecamp_unit || !new_tenant || !new_tenant.name) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเลขยูนิตและข้อมูลผู้เช่ารายใหม่' }), { status: 400, headers: corsHeaders });
+          }
+          if (new_contract && new_contract.start_date && new_contract.end_date && new_contract.start_date > new_contract.end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' }), { status: 400, headers: corsHeaders });
+          }
+
+          const { results: oldTenants } = await env.DB.prepare(
+            `SELECT id, name FROM customers
+             WHERE customer_type = 'basecamp' AND basecamp_unit = ? AND status = 'active'`
+          ).bind(basecamp_unit).all();
+
+          for (const old of (oldTenants || [])) {
+            await env.DB.prepare("UPDATE customers SET status = 'inactive', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(old.id).run();
+            await env.DB.prepare("UPDATE customer_contracts SET status = 'TERMINATED', updated_at = CURRENT_TIMESTAMP WHERE customer_id = ? AND status IN ('ACTIVE', 'EXPIRING')").bind(old.id).run();
+          }
+
+          const subType = new_tenant.basecamp_sub_type || (['419', '420', '421', '422', '427', '428', '429', '430'].includes(basecamp_unit) ? 'hotdesk' : 'office');
+          const insRes = await env.DB.prepare(
+            `INSERT INTO customers
+             (customer_type, name, contact_name, phone, email, tax_id, address, basecamp_sub_type, basecamp_unit, status, created_at, updated_at)
+             VALUES ('basecamp', ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+          ).bind(
+            new_tenant.name.trim(),
+            new_tenant.contact_name ? new_tenant.contact_name.trim() : null,
+            new_tenant.phone ? new_tenant.phone.trim() : null,
+            new_tenant.email ? new_tenant.email.trim() : null,
+            new_tenant.tax_id ? new_tenant.tax_id.trim() : null,
+            new_tenant.address ? new_tenant.address.trim() : null,
+            subType,
+            basecamp_unit
+          ).run();
+          const newCustomerId = insRes.meta?.last_row_id;
+
+          let newContractId = null;
+          let ctrNum = null;
+          if (new_contract && new_contract.start_date && new_contract.end_date) {
+            const quotaVal = new_contract.monthly_quota_hours !== undefined
+              ? Number(new_contract.monthly_quota_hours)
+              : (subType === 'hotdesk' ? 2.0 : 4.0);
+            const baseCtr = new_contract.contract_number && new_contract.contract_number.trim()
+              ? new_contract.contract_number.trim()
+              : `CTR-BC-${basecamp_unit}-${new_contract.start_date.slice(0, 7).replace('-', '')}`;
+
+            let ctrRes = null;
+            for (let attempt = 0; attempt < 5; attempt++) {
+              ctrNum = new_contract.contract_number && new_contract.contract_number.trim()
+                ? new_contract.contract_number.trim()
+                : await generateWorkerUniqueContractNumber(env, baseCtr);
+              try {
+                ctrRes = await env.DB.prepare(
+                  `INSERT INTO customer_contracts
+                   (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+                ).bind(newCustomerId, ctrNum, new_contract.start_date, new_contract.end_date, quotaVal, new_contract.notes || null).run();
+                break;
+              } catch (insertErr) {
+                const isUniqueErr = insertErr && (
+                  String(insertErr.message || '').includes('UNIQUE constraint failed') ||
+                  String(insertErr.message || '').includes('customer_contracts.contract_number') ||
+                  String(insertErr.cause || '').includes('UNIQUE')
+                );
+                if (isUniqueErr && (!new_contract.contract_number || !new_contract.contract_number.trim()) && attempt < 4) {
+                  continue;
+                }
+                if (isUniqueErr && new_contract.contract_number && new_contract.contract_number.trim()) {
+                  return new Response(JSON.stringify({ error: `หมายเลขสัญญา "${new_contract.contract_number.trim()}" มีอยู่ในระบบแล้ว กรุณาระบุหมายเลขสัญญาใหม่` }), { status: 400, headers: corsHeaders });
+                }
+                throw insertErr;
+              }
+            }
+            newContractId = ctrRes.meta?.last_row_id;
+          }
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId: newCustomerId,
+            contractId: newContractId,
+            action: 'TRANSFER_UNIT',
+            details: {
+              basecamp_unit,
+              previous_tenants: oldTenants ? oldTenants.map(t => ({ id: t.id, name: t.name })) : [],
+              new_tenant_name: new_tenant.name
+            },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            customer_id: newCustomerId,
+            contract_id: newContractId,
+            message: `เปลี่ยนผู้เช่ายูนิต ${basecamp_unit} เรียบร้อยแล้ว ประวัติของผู้เช่าเดิมถูกแยกเก็บอย่างปลอดภัย`
+          }), { status: 201, headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 5. GET /api/customers/:id/quota
+      const quotaMatch = pathname.match(/^\/api\/customers\/(\d+)\/quota$/);
+      if (quotaMatch && method === 'GET') {
+        const customerId = parseInt(quotaMatch[1], 10);
+        const month = url.searchParams.get('month');
+        const year = url.searchParams.get('year');
+        const date = url.searchParams.get('date');
+        try {
+          const quota = await calculateWorkerCustomerQuota(env, {
+            customerId,
+            serviceDate: date,
+            month,
+            year
+          });
+          return new Response(JSON.stringify({ success: true, ...quota }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 6. POST /api/customers/:id/contracts
+      const addContractMatch = pathname.match(/^\/api\/customers\/(\d+)\/contracts$/);
+      if (addContractMatch && method === 'POST') {
+        const customerId = parseInt(addContractMatch[1], 10);
+        try {
+          const body = await request.json();
+          const { contract_number, start_date, end_date, monthly_quota_hours, notes } = body;
+          if (!start_date || !end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาและวันสิ้นสุดสัญญาจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+
+          if (start_date > end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' }), { status: 400, headers: corsHeaders });
+          }
+
+          const customer = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
+          if (!customer) {
+            return new Response(JSON.stringify({ error: 'Customer not found' }), { status: 404, headers: corsHeaders });
+          }
+
+          // Check for overlapping active contracts
+          const overlapping = await env.DB.prepare(
+            `SELECT id, contract_number, start_date, end_date FROM customer_contracts
+             WHERE customer_id = ?
+               AND status != 'TERMINATED'
+               AND start_date <= ?
+               AND end_date >= ?
+             LIMIT 1`
+          ).bind(customerId, end_date, start_date).first();
+
+          if (overlapping) {
+            return new Response(JSON.stringify({
+              error: `ช่วงเวลาของสัญญานี้ซ้อนทับกับสัญญาที่มีอยู่ (${overlapping.contract_number}: ${overlapping.start_date} ถึง ${overlapping.end_date})`
+            }), { status: 400, headers: corsHeaders });
+          }
+
+          const defaultQuota = customer.customer_type === 'shop' ? 4.0 : (customer.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
+          const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
+          const baseCtr = contract_number && contract_number.trim()
+            ? contract_number.trim()
+            : (customer.customer_type === 'basecamp'
+                ? `CTR-BC-${customer.basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
+                : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
+          let ctrRes = null;
+          let ctrNum = null;
+          for (let attempt = 0; attempt < 5; attempt++) {
+            ctrNum = contract_number && contract_number.trim()
+              ? contract_number.trim()
+              : await generateWorkerUniqueContractNumber(env, baseCtr);
+            try {
+              ctrRes = await env.DB.prepare(
+                `INSERT INTO customer_contracts
+                 (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+              ).bind(customerId, ctrNum, start_date, end_date, quotaVal, notes || null).run();
+              break;
+            } catch (insertErr) {
+              const isUniqueErr = insertErr && (
+                String(insertErr.message || '').includes('UNIQUE constraint failed') ||
+                String(insertErr.message || '').includes('customer_contracts.contract_number') ||
+                String(insertErr.cause || '').includes('UNIQUE')
+              );
+              if (isUniqueErr && (!contract_number || !contract_number.trim()) && attempt < 4) {
+                continue;
+              }
+              if (isUniqueErr && contract_number && contract_number.trim()) {
+                return new Response(JSON.stringify({ error: `หมายเลขสัญญา "${contract_number.trim()}" มีอยู่ในระบบแล้ว กรุณาระบุหมายเลขสัญญาใหม่` }), { status: 400, headers: corsHeaders });
+              }
+              throw insertErr;
+            }
+          }
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId,
+            contractId: ctrRes.meta?.last_row_id,
+            action: 'RENEW_CONTRACT',
+            details: { contract_number: ctrNum, start_date, end_date, monthly_quota_hours: quotaVal, notes },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            contract_id: ctrRes.meta?.last_row_id,
+            message: 'บันทึกสัญญาใหม่/ต่อสัญญาเรียบร้อยแล้ว'
+          }), { status: 201, headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 7. PATCH /api/customers/contracts/:contractId/terminate
+      const termContractMatch = pathname.match(/^\/api\/customers\/contracts\/(\d+)\/terminate$/);
+      if (termContractMatch && method === 'PATCH') {
+        const contractId = parseInt(termContractMatch[1], 10);
+        try {
+          const body = await request.json();
+          const { termination_date, reason } = body;
+          const today = getBangkokLocalISO(new Date()).slice(0, 10);
+          const effectiveTermDate = termination_date || today;
+
+          const contract = await env.DB.prepare('SELECT * FROM customer_contracts WHERE id = ?').bind(contractId).first();
+          if (!contract) {
+            return new Response(JSON.stringify({ error: 'Contract not found' }), { status: 404, headers: corsHeaders });
+          }
+
+          const updatedNotes = contract.notes
+            ? `${contract.notes}\n[TERMINATED ${effectiveTermDate}]: ${reason || 'ยกเลิกสัญญาก่อนกำหนด'}`
+            : `[TERMINATED ${effectiveTermDate}]: ${reason || 'ยกเลิกสัญญาก่อนกำหนด'}`;
+
+          await env.DB.prepare(
+            `UPDATE customer_contracts
+             SET status = 'TERMINATED', end_date = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`
+          ).bind(effectiveTermDate, updatedNotes, contractId).run();
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId: contract.customer_id,
+            contractId,
+            action: 'TERMINATE_CONTRACT',
+            details: { termination_date: effectiveTermDate, reason },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({ success: true, message: 'ยกเลิกสัญญาเรียบร้อยแล้ว' }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+// 7.1. PUT & PATCH /api/customers/contracts/:contractId/dates
+      const editContractDatesMatch = pathname.match(/^\/api\/customers\/contracts\/(\d+)\/dates$/);
+      if (editContractDatesMatch && (method === 'PUT' || method === 'PATCH')) {
+        const contractId = parseInt(editContractDatesMatch[1], 10);
+        const hasContractManagePermission = user && (
+          user.role === 'admin' ||
+          user.username === 'admin' ||
+          String(user.permissions || '').split(',').map(p => p.trim()).includes('manage') ||
+          String(user.permissions || '').split(',').map(p => p.trim()).includes('admin-management')
+        );
+
+        if (!hasContractManagePermission) {
+          return new Response(JSON.stringify({ error: 'สิทธิ์ไม่เพียงพอ ท่านไม่มีสิทธิ์ในการแก้ไขข้อมูลสัญญา' }), { status: 403, headers: corsHeaders });
+        }
+
+        try {
+          const body = await request.json();
+          const { start_date, end_date, reason } = body || {};
+
+          if (!start_date || !end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาและวันสิ้นสุดสัญญาจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(start_date) || !/^\d{4}-\d{2}-\d{2}$/.test(end_date)) {
+            return new Response(JSON.stringify({ error: 'รูปแบบวันที่ไม่ถูกต้อง (ต้องเป็น YYYY-MM-DD)' }), { status: 400, headers: corsHeaders });
+          }
+          if (start_date > end_date) {
+            return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' }), { status: 400, headers: corsHeaders });
+          }
+          if (!reason || !String(reason).trim()) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเหตุผลในการแก้ไขวันที่สัญญา (Change reason is required)' }), { status: 400, headers: corsHeaders });
+          }
+
+          const contract = await env.DB.prepare('SELECT * FROM customer_contracts WHERE id = ?').bind(contractId).first();
+          if (!contract) {
+            return new Response(JSON.stringify({ error: 'ไม่พบสัญญาที่ระบุ' }), { status: 404, headers: corsHeaders });
+          }
+
+          if (contract.status === 'TERMINATED') {
+            return new Response(JSON.stringify({
+              error: 'ไม่สามารถแก้ไขวันที่ของสัญญาที่ถูกยกเลิก (TERMINATED) แล้วได้ หากต้องการเปิดสัญญาใหม่ กรุณาใช้ฟังก์ชันต่อสัญญา (Renew)'
+            }), { status: 400, headers: corsHeaders });
+          }
+
+          // Overlap check with other active contracts for the same customer
+          const overlapping = await env.DB.prepare(
+            `SELECT id, contract_number, start_date, end_date FROM customer_contracts
+             WHERE customer_id = ?
+               AND id != ?
+               AND status != 'TERMINATED'
+               AND start_date <= ?
+               AND end_date >= ?
+             LIMIT 1`
+          ).bind(contract.customer_id, contractId, end_date, start_date).first();
+
+          if (overlapping) {
+            return new Response(JSON.stringify({
+              error: `ช่วงเวลาของสัญญานี้ซ้อนทับกับสัญญาที่มีอยู่ (${overlapping.contract_number}: ${overlapping.start_date} ถึง ${overlapping.end_date})`
+            }), { status: 400, headers: corsHeaders });
+          }
+
+          // Check if affected bookings / quota usage fall outside new range
+          const isWindowShrunk = start_date > contract.start_date || end_date < contract.end_date;
+          if (isWindowShrunk) {
+            const { results: affectedBookings } = await env.DB.prepare(
+              `SELECT b.id FROM bookings b
+               LEFT JOIN booking_items bi ON bi.booking_id = b.id
+               WHERE (b.contract_id = ? OR (b.customer_id = ? AND b.quota_hours_used > 0))
+                 AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                 AND (
+                   (bi.start_time IS NOT NULL AND (substr(bi.start_time, 1, 10) < ? OR substr(bi.start_time, 1, 10) > ?))
+                   OR (bi.start_time IS NULL AND (substr(b.created_at, 1, 10) < ? OR substr(b.created_at, 1, 10) > ?))
+                 )`
+            ).bind(contractId, contract.customer_id, start_date, end_date, start_date, end_date).all();
+
+            if (affectedBookings && affectedBookings.length > 0) {
+              return new Response(JSON.stringify({
+                error: `ไม่สามารถปรับลดช่วงเวลาสัญญาได้ เนื่องจากมีรายการจองที่ใช้สิทธิ์โควต้าสัญญาอยู่นอกช่วงเวลาใหม่ (${affectedBookings.length} รายการจอง)`
+              }), { status: 400, headers: corsHeaders });
+            }
+          }
+
+          const performedBy = user?.username || 'staff';
+          const auditDetails = {
+            contract_id: contract.id,
+            customer_id: contract.customer_id,
+            contract_number: contract.contract_number,
+            old_start_date: contract.start_date,
+            new_start_date: start_date,
+            old_end_date: contract.end_date,
+            new_end_date: end_date,
+            change_reason: String(reason).trim(),
+            updated_by: performedBy,
+            updated_at: new Date().toISOString()
+          };
+
+          // Atomic execution via Cloudflare D1 batch
+          await env.DB.batch([
+            env.DB.prepare(
+              `UPDATE customer_contracts
+               SET start_date = ?,
+                   end_date = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            ).bind(start_date, end_date, contractId),
+            env.DB.prepare(
+              `INSERT INTO customer_audit_logs (customer_id, contract_id, action, details, performed_by)
+               VALUES (?, ?, 'EDIT_CONTRACT_DATES', ?, ?)`
+            ).bind(contract.customer_id, contract.id, JSON.stringify(auditDetails), performedBy)
+          ]);
+
+          const updatedContract = await env.DB.prepare('SELECT * FROM customer_contracts WHERE id = ?').bind(contractId).first();
+
+          return new Response(JSON.stringify({
+            success: true,
+            contract: updatedContract,
+            audit: auditDetails,
+            message: 'แก้ไขวันที่สัญญาและบันทึกประวัติเรียบร้อยแล้ว'
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+            // 8. PATCH /api/customers/:id/status
+      const statusMatch = pathname.match(/^\/api\/customers\/(\d+)\/status$/);
+      if (statusMatch && method === 'PATCH') {
+        const customerId = parseInt(statusMatch[1], 10);
+        try {
+          const body = await request.json();
+          const { status } = body;
+          if (!['active', 'inactive'].includes(status)) {
+            return new Response(JSON.stringify({ error: 'Invalid status' }), { status: 400, headers: corsHeaders });
+          }
+
+          await env.DB.prepare('UPDATE customers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(status, customerId).run();
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId,
+            action: 'UPDATE_STATUS',
+            details: { status },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({ success: true, message: `เปลี่ยนสถานะเป็น ${status} เรียบร้อยแล้ว` }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 9. GET /api/customers/:id
+      const customerDetailMatch = pathname.match(/^\/api\/customers\/(\d+)$/);
+      if (customerDetailMatch && method === 'GET') {
+        const customerId = parseInt(customerDetailMatch[1], 10);
+        const month = url.searchParams.get('month');
+        const year = url.searchParams.get('year');
+        try {
+          const customer = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
+          if (!customer) {
+            return new Response(JSON.stringify({ error: 'Customer not found' }), { status: 404, headers: corsHeaders });
+          }
+
+          const { results: contracts } = await env.DB.prepare(
+            'SELECT * FROM customer_contracts WHERE customer_id = ? ORDER BY start_date DESC, id DESC'
+          ).bind(customerId).all();
+
+          const evaluatedContracts = (contracts || []).map(ctr => {
+            const evalRes = evaluateWorkerContractStatus(ctr);
+            return {
+              ...ctr,
+              evaluated_status: evalRes.status,
+              days_left: evalRes.days_left,
+              urgency: evalRes.urgency
+            };
+          });
+
+          // Security Gate: Non-admin users must NEVER receive audit logs in Customer Detail API
+          const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+          let auditLogs = [];
+          if (isAdmin) {
+            const { results } = await env.DB.prepare(
+              'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50'
+            ).bind(customerId).all();
+            auditLogs = results || [];
+          }
+
+          const quota = await calculateWorkerCustomerQuota(env, {
+            customerId,
+            month,
+            year
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            customer: {
+              ...customer,
+              contracts: evaluatedContracts,
+              audit_logs: auditLogs || [],
+              quota
+            }
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 9.1. GET /api/customers/:id/audit-logs (Strictly Admin Only)
+      const customerAuditLogsMatch = pathname.match(/^\/api\/customers\/(\d+)\/audit-logs$/);
+      if (customerAuditLogsMatch && method === 'GET') {
+        const customerId = parseInt(customerAuditLogsMatch[1], 10);
+        const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+        if (!isAdmin) {
+          return new Response(JSON.stringify({ error: 'สิทธิ์ไม่เพียงพอ เฉพาะผู้ดูแลระบบ (Admin) เท่านั้นที่สามารถดูประวัติ Audit Log ได้' }), { status: 403, headers: corsHeaders });
+        }
+
+        try {
+          const { results: logs } = await env.DB.prepare(
+            'SELECT * FROM customer_audit_logs WHERE customer_id = ? ORDER BY created_at DESC LIMIT 100'
+          ).bind(customerId).all();
+
+          return new Response(JSON.stringify({
+            success: true,
+            audit_logs: logs || []
+          }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // 10. PUT /api/customers/:id
+      if (customerDetailMatch && method === 'PUT') {
+        const customerId = parseInt(customerDetailMatch[1], 10);
+        try {
+          const body = await request.json();
+          const { name, contact_name, phone, email, tax_id, address, basecamp_sub_type, basecamp_unit } = body;
+          if (!name || !name.trim()) {
+            return new Response(JSON.stringify({ error: 'ชื่อลูกค้าหรือร้านค้าจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+
+          const existing = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
+          if (!existing) {
+            return new Response(JSON.stringify({ error: 'Customer not found' }), { status: 404, headers: corsHeaders });
+          }
+
+          await env.DB.prepare(
+            `UPDATE customers
+             SET name = ?, contact_name = ?, phone = ?, email = ?, tax_id = ?, address = ?,
+                 basecamp_sub_type = ?, basecamp_unit = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`
+          ).bind(
+            name.trim(),
+            contact_name !== undefined ? contact_name : existing.contact_name,
+            phone !== undefined ? phone : existing.phone,
+            email !== undefined ? email : existing.email,
+            tax_id !== undefined ? tax_id : existing.tax_id,
+            address !== undefined ? address : existing.address,
+            existing.customer_type === 'basecamp' ? (basecamp_sub_type || existing.basecamp_sub_type) : null,
+            existing.customer_type === 'basecamp' ? (basecamp_unit || existing.basecamp_unit) : null,
+            customerId
+          ).run();
+
+          const auth = await authenticateUser(request, env);
+          const performedBy = auth.user?.username || 'staff';
+          await recordWorkerCustomerAudit(env, {
+            customerId,
+            action: 'UPDATE_CUSTOMER',
+            details: {
+              previous: { name: existing.name, contact_name: existing.contact_name, phone: existing.phone },
+              updated: { name, contact_name, phone }
+            },
+            performedBy
+          });
+
+          return new Response(JSON.stringify({ success: true, message: 'บันทึกการแก้ไขข้อมูลลูกค้าเรียบร้อยแล้ว' }), { headers: corsHeaders });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+
       if (pathname === '/api/bookings' && method === 'GET') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -3062,6 +4755,31 @@ export default {
             itemsMap[it.booking_id].push(it);
           });
 
+          try {
+            const { results: slipRows } = await env.DB.prepare(
+              `SELECT booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, rejection_reason, created_at as rejection_time
+               FROM slip_verifications
+               WHERE booking_id IN (${placeholders})
+               ORDER BY id DESC`
+            ).bind(...bookingIds).all();
+
+            const slipByBookingId = {};
+            (slipRows || []).forEach(s => {
+              if (!slipByBookingId[s.booking_id]) slipByBookingId[s.booking_id] = s;
+            });
+
+            bookings.forEach(b => {
+              const s = slipByBookingId[b.id];
+              if (s) {
+                if (!b.slip_image_url) b.slip_image_url = s.slip_image_url;
+                if (!b.slip_trans_ref) b.slip_trans_ref = s.trans_ref;
+                if (!b.slip_verify_status) b.slip_verify_status = s.verification_status;
+                b.rejection_reason = s.rejection_reason || null;
+                b.rejection_time = s.rejection_time || null;
+              }
+            });
+          } catch (_) {}
+
           bookings.forEach(b => {
             b.items = itemsMap[b.id] || [];
             if (b.items.length > 0) {
@@ -3091,7 +4809,19 @@ export default {
           basecamp_unit = null,
           internal_department = null,
           billing_option = 'paid',
-          booking_details = null
+          booking_details = null,
+          slip_image = null,
+          tax_invoice_required = 0,
+          tax_payer_type = 'corporate',
+          tax_name = null,
+          tax_id = null,
+          tax_branch_type = 'head',
+          tax_branch_number = null,
+          tax_address = null,
+          tax_email = null,
+          tax_phone = null,
+          tax_delivery_method = 'email',
+          tax_postal_address = null
         } = body;
 
         if (!customer_name || !items || !items.length) {
@@ -3159,48 +4889,116 @@ export default {
         let verifiedTotal = body.total_amount !== undefined ? body.total_amount : Math.round(serverTotal * 100) / 100;
         let quotaHoursUsed = 0;
         let effectiveBillingOption = billing_option || 'paid';
+        const customerId = body.customer_id ? parseInt(body.customer_id, 10) : null;
+        let contractId = body.contract_id ? parseInt(body.contract_id, 10) : null;
 
-        if (customer_type === 'basecamp') {
-          const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
+        if (customer_type === 'shop') {
           const firstItemDate = items[0]?.start_time || new Date().toISOString();
-          const targetMonthStr = normalizeToLocalISO(firstItemDate).substring(0, 7);
+          let remainingQuota = 0;
+          let contractEligible = true;
 
-          try {
-            const quotaRow = await env.DB.prepare(
-              `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
-               FROM bookings b
-               WHERE b.customer_type = 'basecamp'
-                 AND b.basecamp_sub_type = ?
-                 AND b.basecamp_unit = ?
-                 AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
-                 AND (
-                   EXISTS (
-                     SELECT 1 FROM booking_items bi
-                     WHERE bi.booking_id = b.id
-                       AND strftime('%Y-%m', bi.start_time) = ?
-                   )
-                   OR (
-                     NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
-                     AND strftime('%Y-%m', b.created_at) = ?
-                   )
-                 )`
-            ).bind(basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr).first();
+          if (customerId) {
+            const quotaCalc = await calculateWorkerCustomerQuota(env, {
+              customerId,
+              customerType: 'shop',
+              serviceDate: firstItemDate
+            });
+            remainingQuota = quotaCalc.remaining_quota;
+            contractEligible = quotaCalc.contract_eligible;
+            if (quotaCalc.contract && !contractId) {
+              contractId = quotaCalc.contract.id;
+            }
+          } else {
+            contractEligible = false;
+          }
 
-            const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
-            const remainingQuota = Math.max(0, maxQuota - usedQuota);
-
+          if (!contractEligible) {
+            quotaHoursUsed = 0;
+            verifiedTotal = Math.round(serverTotal * 100) / 100;
+            effectiveBillingOption = 'paid';
+          } else {
             quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
             const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+            verifiedTotal = totalBookingHours > 0
+              ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
+              : 0;
 
-            if (totalBookingHours > 0) {
-              verifiedTotal = Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100;
+            if (quotaHoursUsed > 0 && verifiedTotal === 0) {
+              effectiveBillingOption = 'quota';
+            } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
+              effectiveBillingOption = 'quota_partial';
             } else {
-              verifiedTotal = 0;
+              effectiveBillingOption = 'standard';
             }
+          }
+        } else if (customer_type === 'basecamp') {
+          const firstItemDate = items[0]?.start_time || new Date().toISOString();
+          let remainingQuota = 0;
+          let contractEligible = true;
 
-            effectiveBillingOption = quotaHoursUsed > 0 ? (verifiedTotal === 0 ? 'quota' : 'quota_partial') : 'paid';
-          } catch (qErr) {
-            console.error('Error fetching quota in worker:', qErr);
+          if (customerId) {
+            const quotaCalc = await calculateWorkerCustomerQuota(env, {
+              customerId,
+              customerType: 'basecamp',
+              basecampSubType: basecamp_sub_type,
+              basecampUnit: basecamp_unit,
+              serviceDate: firstItemDate
+            });
+            remainingQuota = quotaCalc.remaining_quota;
+            contractEligible = quotaCalc.contract_eligible;
+            if (quotaCalc.contract && !contractId) {
+              contractId = quotaCalc.contract.id;
+            }
+          } else {
+            const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
+            const targetMonthStr = normalizeToLocalISO(firstItemDate).substring(0, 7);
+
+            try {
+              const quotaRow = await env.DB.prepare(
+                `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
+                 FROM bookings b
+                 WHERE b.customer_type = 'basecamp'
+                   AND b.basecamp_sub_type = ?
+                   AND b.basecamp_unit = ?
+                   AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
+                   AND (
+                     EXISTS (
+                       SELECT 1 FROM booking_items bi
+                       WHERE bi.booking_id = b.id
+                         AND strftime('%Y-%m', bi.start_time) = ?
+                     )
+                     OR (
+                       NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+                       AND strftime('%Y-%m', b.created_at) = ?
+                     )
+                   )`
+              ).bind(basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr).first();
+
+              const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
+              remainingQuota = Math.max(0, maxQuota - usedQuota);
+            } catch (qErr) {
+              console.error('Error fetching quota in worker:', qErr);
+            }
+          }
+
+          if (!contractEligible) {
+            quotaHoursUsed = 0;
+            verifiedTotal = Math.round(serverTotal * 100) / 100;
+            effectiveBillingOption = 'standard';
+          } else {
+            quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
+            const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+            verifiedTotal = totalBookingHours > 0
+              ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
+              : 0;
+
+            if (quotaHoursUsed > 0 && verifiedTotal === 0) {
+              effectiveBillingOption = 'quota';
+            } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
+              effectiveBillingOption = 'quota_partial';
+            } else {
+              effectiveBillingOption = 'standard';
+            }
           }
         } else if (customer_type === 'builtland') {
           verifiedTotal = 0;
@@ -3240,7 +5038,7 @@ export default {
               pinCode = await generateUniquePinCode(env);
             }
           } else {
-            // General / Walk-in / Basecamp: Customer Access Code only
+            // General / Walk-in / Basecamp / Shop: Customer Access Code only
             if (roomDb && roomDb.pin_code && roomDb.pin_code.trim()) {
               pinCode = roomDb.pin_code.trim();
             } else {
@@ -3256,6 +5054,42 @@ export default {
 
         const nowIso = new Date().toISOString();
 
+        // Process optional slip_image for walk-in checkout
+        let slipUrl = null;
+        if (slip_image && typeof slip_image === 'string' && slip_image.startsWith('data:image/')) {
+          if (slip_image.length <= 10 * 1024 * 1024 * 1.37) {
+            try {
+              slipUrl = await saveUploadedFile(env, slip_image, 'slips');
+            } catch (sErr) {
+              console.error('[Worker Checkout] Error saving slip to R2:', sErr);
+            }
+          }
+        }
+
+        const isTaxReq = Number(tax_invoice_required) === 1 ? 1 : 0;
+        const cleanTaxName = String(tax_name || '').trim();
+        const cleanTaxId = String(tax_id || '').trim();
+        const cleanBranchType = tax_branch_type === 'branch' ? 'branch' : 'head';
+        const cleanBranchNo = cleanBranchType === 'branch' ? String(tax_branch_number || '').trim() : '';
+        const cleanTaxAddress = String(tax_address || '').trim();
+        const cleanTaxEmail = String(tax_email || '').trim();
+        const cleanTaxPhone = String(tax_phone || '').trim();
+        const cleanDeliveryMethod = String(tax_delivery_method || 'email').trim();
+        const cleanPostalAddress = String(tax_postal_address || '').trim();
+
+        if (isTaxReq) {
+          if (!cleanTaxName) {
+            return new Response(JSON.stringify({ error: 'กรุณากรอกชื่อสำหรับออกใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+          }
+          if (cleanTaxId && !/^\d{13}$/.test(cleanTaxId.replace(/[-\s]/g, ''))) {
+            return new Response(JSON.stringify({ error: 'เลขประจำตัวผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' }), { status: 400, headers: corsHeaders });
+          }
+          if (cleanBranchType === 'branch' && !cleanBranchNo) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเลขที่สาขา' }), { status: 400, headers: corsHeaders });
+          }
+        }
+        const initialTaxStatus = isTaxReq ? 'pending' : 'not_required';
+
         let insBooking;
         try {
           insBooking = await env.DB.prepare(
@@ -3264,9 +5098,11 @@ export default {
               subtotal_amount, discount_type, discount_value, discount_amount,
               total_amount, paid_amount, balance_amount, payment_status, payment_method,
               receipt_number, pin_code, booking_source, line_user_id, guest_count, checkin_status,
-              customer_type, basecamp_sub_type, basecamp_unit, internal_department,
-              billing_option, quota_hours_used, booking_details, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`
+              customer_type, customer_id, contract_id, basecamp_sub_type, basecamp_unit, internal_department,
+              billing_option, quota_hours_used, booking_details,
+              slip_image_url, tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status,
+              created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name,
             department || internal_department || '',
@@ -3286,12 +5122,27 @@ export default {
             line_user_id || null,
             effectiveGuestCount,
             customer_type || 'walkin',
+            customerId,
+            contractId,
             basecamp_sub_type || null,
             basecamp_unit || null,
             internal_department || null,
             effectiveBillingOption,
             quotaHoursUsed,
             normalizedDetails.value,
+            slipUrl,
+            isTaxReq,
+            tax_payer_type === 'individual' ? 'individual' : 'corporate',
+            cleanTaxName,
+            cleanTaxId,
+            cleanBranchType,
+            cleanBranchNo,
+            cleanTaxAddress,
+            cleanTaxEmail,
+            cleanTaxPhone,
+            cleanDeliveryMethod,
+            cleanPostalAddress,
+            initialTaxStatus,
             nowIso
           ).run();
         } catch (dbErr) {
@@ -3308,12 +5159,13 @@ export default {
           try {
             await env.DB.prepare(
               `INSERT INTO payment_transactions
-               (booking_id, amount, payment_method, transaction_type, status, created_at)
-               VALUES (?, ?, ?, ?, 'completed', ?)`
+               (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
+               VALUES (?, ?, ?, ?, ?, 'completed', ?)`
             ).bind(
               bookingId,
               fin.transaction_amount,
               customer_type === 'builtland' ? '' : (payment_method || 'cash'),
+              slipUrl,
               fin.transaction_type,
               nowIso
             ).run();
@@ -3431,6 +5283,9 @@ export default {
         if (!pinCode) {
           pinCode = await generateUniquePinCode(env);
           await env.DB.prepare('UPDATE bookings SET pin_code = ? WHERE id = ?').bind(pinCode, bookingId).run();
+          if (bItem) {
+            await env.DB.prepare('UPDATE booking_items SET pin_code = ? WHERE id = ?').bind(pinCode, bItem.id).run();
+          }
           booking.pin_code = pinCode;
         }
 
@@ -3528,6 +5383,9 @@ export default {
           }), { status: 409, headers: corsHeaders });
         }
 
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+
         // Audit: Update latest slip_verifications row for this booking
         try {
           const latestSv = await env.DB.prepare(
@@ -3542,7 +5400,6 @@ export default {
               WHERE id = ?
             `).bind(displayReason, latestSv.id).run();
           } else {
-            const nowIso = new Date().toISOString();
             await env.DB.prepare(`
               INSERT INTO slip_verifications (
                 booking_id, trans_ref, bank_code, bank_name, slip_image_url,
@@ -3555,12 +5412,65 @@ export default {
           console.error('Audit update error on slip rejection:', svErr);
         }
 
+        // Audit log in booking_history
+        try {
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'reject_slip', ?, ?, ?)`
+          ).bind(bookingId, displayReason, staffName, nowIso).run();
+        } catch (hErr) {
+          console.warn('Booking history audit log error in worker:', hErr.message);
+        }
+
+        // Calculate original payment deadline for eligibility check and LINE notification
+        let windowMins = 15;
+        try {
+          const pwRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'payment_window_minutes'").first();
+          if (pwRow && pwRow.value) {
+            const parsed = parseInt(pwRow.value, 10);
+            if (!isNaN(parsed) && parsed >= 1) windowMins = parsed;
+          }
+        } catch (_) {}
+
+        const createdAtMs = Date.parse(booking.created_at);
+        const deadlineMs = Number.isFinite(createdAtMs) ? createdAtMs + windowMins * 60 * 1000 : Date.now();
+        const isStillEligible = Date.now() < deadlineMs;
+        const paymentDeadlineIso = new Date(deadlineMs).toISOString();
+
+        // Push LINE Notification if eligible and not already notified
+        let lineNotified = false;
+        if (booking.line_user_id && env.DISABLE_LIVE_LINE !== 'true') {
+          try {
+            const prevNotif = await env.DB.prepare(
+              "SELECT id FROM booking_history WHERE booking_id = ? AND action = 'line_reject_notified' AND details = ? LIMIT 1"
+            ).bind(bookingId, displayReason).first();
+
+            if (!prevNotif) {
+              const notifRes = await sendLineSlipRejectedNotification(env, bookingId, displayReason, paymentDeadlineIso, isStillEligible);
+              if (notifRes) {
+                lineNotified = true;
+                await env.DB.prepare(
+                  `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+                   VALUES (?, 'line_reject_notified', ?, 'system', ?)`
+                ).bind(bookingId, displayReason, nowIso).run();
+              }
+            }
+          } catch (lineErr) {
+            console.warn('[Reject Slip] LINE notification delivery warning in worker:', lineErr.message);
+          }
+        }
+
         return new Response(JSON.stringify({
           success: true,
           message: 'ปฏิเสธสลิปการโอนเงินเรียบร้อยแล้ว (การจองยังคงอยู่เพื่อให้ลูกค้าแนบสลิปใหม่)',
           payment_status: 'rejected',
           slip_verify_status: 'rejected',
-          rejection_reason: displayReason
+          rejection_reason: displayReason,
+          rejected_by: staffName,
+          rejected_at: nowIso,
+          paymentDeadline: paymentDeadlineIso,
+          isStillEligible,
+          line_notified: lineNotified
         }), { headers: corsHeaders });
       }
 
@@ -3599,6 +5509,214 @@ export default {
           message: 'บันทึกรายละเอียดเพิ่มเติมเรียบร้อยแล้ว',
           id: Number(bookingId),
           booking_details: normalized.value
+        }), { headers: corsHeaders });
+      }
+
+      // Customer information update endpoint (Safe allowlist, concurrency-safe, financial-isolated)
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/customer-info') && (method === 'PATCH' || method === 'PUT')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = parts[3];
+        if (!bookingId || isNaN(Number(bookingId))) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const existingBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!existingBooking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบรายการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        let body = {};
+        try {
+          body = await request.json();
+        } catch (e) {
+          return new Response(JSON.stringify({ error: 'รูปแบบข้อมูลไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const ALLOWED_KEYS = new Set([
+          'customer_name',
+          'contact',
+          'department',
+          'booking_details',
+          'send_line',
+          'send_line_notification',
+          'expected_values'
+        ]);
+
+        for (const key of Object.keys(body)) {
+          if (!ALLOWED_KEYS.has(key)) {
+            return new Response(JSON.stringify({ error: `ไม่อนุญาตให้แก้ไขข้อมูลที่ไม่ได้รับอนุญาต (${key})` }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        const {
+          customer_name,
+          contact,
+          department,
+          booking_details,
+          send_line,
+          send_line_notification,
+          expected_values
+        } = body;
+
+        if (
+          customer_name === undefined &&
+          contact === undefined &&
+          department === undefined &&
+          booking_details === undefined
+        ) {
+          return new Response(JSON.stringify({ error: 'ไม่มีข้อมูลที่ต้องการอัปเดต' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Validate customer_name
+        let finalCustomerName = existingBooking.customer_name;
+        if (customer_name !== undefined) {
+          if (typeof customer_name !== 'string') {
+            return new Response(JSON.stringify({ error: 'ชื่อผู้จองต้องเป็นข้อความ' }), { status: 400, headers: corsHeaders });
+          }
+          const trimmedName = customer_name.trim();
+          if (!trimmedName || trimmedName.length > 100) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุชื่อผู้จอง (ความยาว 1-100 ตัวอักษร)' }), { status: 400, headers: corsHeaders });
+          }
+          finalCustomerName = trimmedName;
+        }
+
+        // Validate contact
+        let finalContact = existingBooking.contact;
+        if (contact !== undefined) {
+          if (contact === null || contact === '') {
+            finalContact = null;
+          } else if (typeof contact === 'string') {
+            const trimmedContact = contact.trim();
+            if (trimmedContact.length > 50) {
+              return new Response(JSON.stringify({ error: 'เบอร์ติดต่อต้องมีความยาวไม่เกิน 50 ตัวอักษร' }), { status: 400, headers: corsHeaders });
+            }
+            finalContact = trimmedContact || null;
+          } else {
+            return new Response(JSON.stringify({ error: 'รูปแบบเบอร์ติดต่อไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        // Validate department
+        let finalDepartment = existingBooking.department;
+        if (department !== undefined) {
+          if (department === null || department === '') {
+            finalDepartment = null;
+          } else if (typeof department === 'string') {
+            const trimmedDept = department.trim();
+            if (trimmedDept.length > 100) {
+              return new Response(JSON.stringify({ error: 'แผนก/วัตถุประสงค์ต้องมีความยาวไม่เกิน 100 ตัวอักษร' }), { status: 400, headers: corsHeaders });
+            }
+            finalDepartment = trimmedDept || null;
+          } else {
+            return new Response(JSON.stringify({ error: 'รูปแบบแผนก/วัตถุประสงค์ไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        // Validate booking_details
+        let finalDetails = existingBooking.booking_details;
+        if (booking_details !== undefined) {
+          const norm = normalizeBookingDetails(booking_details);
+          if (norm.error) {
+            return new Response(JSON.stringify({ error: norm.error }), { status: 400, headers: corsHeaders });
+          }
+          finalDetails = norm.value;
+        }
+
+        const normalizeEmpty = val => (val === null || val === undefined ? '' : String(val).trim());
+
+        // Concurrency / optimistic conflict check
+        if (expected_values && typeof expected_values === 'object') {
+          const isConflict =
+            (expected_values.customer_name !== undefined && normalizeEmpty(expected_values.customer_name) !== normalizeEmpty(existingBooking.customer_name)) ||
+            (expected_values.contact !== undefined && normalizeEmpty(expected_values.contact) !== normalizeEmpty(existingBooking.contact)) ||
+            (expected_values.department !== undefined && normalizeEmpty(expected_values.department) !== normalizeEmpty(existingBooking.department)) ||
+            (expected_values.booking_details !== undefined && normalizeEmpty(expected_values.booking_details) !== normalizeEmpty(existingBooking.booking_details));
+
+          if (isConflict) {
+            return new Response(JSON.stringify({
+              error: 'ข้อมูลการจองได้รับการแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชหน้าจอเพื่อดูข้อมูลล่าสุด',
+              conflict: true
+            }), { status: 409, headers: corsHeaders });
+          }
+        }
+
+        // Compute diff
+        const changedFields = [];
+        if (normalizeEmpty(finalCustomerName) !== normalizeEmpty(existingBooking.customer_name)) changedFields.push('customer_name');
+        if (normalizeEmpty(finalContact) !== normalizeEmpty(existingBooking.contact)) changedFields.push('contact');
+        if (normalizeEmpty(finalDepartment) !== normalizeEmpty(existingBooking.department)) changedFields.push('department');
+        if (normalizeEmpty(finalDetails) !== normalizeEmpty(existingBooking.booking_details)) changedFields.push('booking_details');
+
+        if (changedFields.length === 0) {
+          const { results: currentItems } = await env.DB.prepare(
+            'SELECT bi.*, r.name as room_name FROM booking_items bi LEFT JOIN rooms r ON bi.room_id = r.id WHERE bi.booking_id = ?'
+          ).bind(bookingId).all();
+          existingBooking.items = currentItems || [];
+          return new Response(JSON.stringify({
+            success: true,
+            message: 'ไม่มีข้อมูลที่เปลี่ยนแปลง',
+            changed: false,
+            changed_fields: [],
+            line_notification: { sent: false, reason: 'no_changes' },
+            booking: existingBooking
+          }), { headers: corsHeaders });
+        }
+
+        // Safe atomic conditional database update - STRICTLY preserves financial, PIN, availability and status invariants
+        // and guarantees optimistic concurrency control against race conditions
+        const updateResult = await env.DB.prepare(
+          `UPDATE bookings
+           SET customer_name = ?,
+               contact = ?,
+               department = ?,
+               booking_details = ?
+           WHERE id = ?
+             AND customer_name = ?
+             AND COALESCE(contact, '') = ?
+             AND COALESCE(department, '') = ?
+             AND COALESCE(booking_details, '') = ?`
+        ).bind(
+          finalCustomerName, finalContact, finalDepartment, finalDetails,
+          bookingId,
+          existingBooking.customer_name,
+          existingBooking.contact || '',
+          existingBooking.department || '',
+          existingBooking.booking_details || ''
+        ).run();
+
+        const changes = updateResult?.meta?.changes ?? updateResult?.changes ?? 0;
+        if (changes === 0) {
+          const stillExists = await env.DB.prepare('SELECT id FROM bookings WHERE id = ?').bind(bookingId).first();
+          if (!stillExists) {
+            return new Response(JSON.stringify({ error: 'ไม่พบรายการจอง' }), { status: 404, headers: corsHeaders });
+          }
+          return new Response(JSON.stringify({
+            error: 'ข้อมูลการจองได้รับการแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชหน้าจอเพื่อดูข้อมูลล่าสุด',
+            conflict: true
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        const { results: updatedItems } = await env.DB.prepare(
+          'SELECT bi.*, r.name as room_name FROM booking_items bi LEFT JOIN rooms r ON bi.room_id = r.id WHERE bi.booking_id = ?'
+        ).bind(bookingId).all();
+        if (updatedBooking) {
+          updatedBooking.items = updatedItems || [];
+        }
+
+        // LINE Notification policy: Edits to customer information MUST NOT send LINE OA
+        const lineOutcome = { sent: false, reason: 'policy_disabled' };
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'อัปเดตข้อมูลลูกค้าเรียบร้อยแล้ว',
+          changed: true,
+          changed_fields: changedFields,
+          line_notification: lineOutcome,
+          booking: updatedBooking
         }), { headers: corsHeaders });
       }
 
@@ -3670,6 +5788,19 @@ export default {
                 balance_amount = 0
             WHERE id = ?
           `).bind(paymentMethod, receiptNumber, pinCode, nowIso, bookingId).run();
+
+          if (pinCode) {
+            await env.DB.prepare(`
+              UPDATE booking_items
+              SET pin_code = ?
+              WHERE booking_id = ?
+                AND room_id IS NOT NULL
+                AND id = (
+                  SELECT MIN(bi2.id) FROM booking_items bi2
+                  WHERE bi2.booking_id = ? AND bi2.room_id IS NOT NULL
+                )
+            `).bind(pinCode, bookingId, bookingId).run();
+          }
 
           // Record payment transaction for balance if needed
           const remainingToPay = roundMoney(booking.total_amount - (booking.paid_amount || 0));
@@ -3786,7 +5917,7 @@ export default {
         const parts = pathname.split('/');
         const bookingId = parts[3];
         const body = await request.json().catch(() => ({}));
-        const { amount, payment_method } = body;
+        const { amount, payment_method, slip_image } = body;
 
         const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         if (!booking) {
@@ -3835,14 +5966,38 @@ export default {
           receiptNumber = await generateReceiptNumber(env);
         }
 
+        let slipUrl = null;
+        if (slip_image) {
+          if (typeof slip_image !== 'string' || !slip_image.startsWith('data:image/')) {
+            return new Response(JSON.stringify({ error: 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ PNG, JPG หรือ WEBP' }), { status: 400, headers: corsHeaders });
+          }
+          if (slip_image.length > 10 * 1024 * 1024 * 1.37) {
+            return new Response(JSON.stringify({ error: 'ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)' }), { status: 400, headers: corsHeaders });
+          }
+          if (!env.BUCKET) {
+            return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
+          }
+          try {
+            slipUrl = await saveUploadedFile(env, slip_image, 'slips');
+            if (!slipUrl || slipUrl.startsWith('data:')) {
+              return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้ การชำระเงินไม่ถูกบันทึก' }), { status: 500, headers: corsHeaders });
+            }
+          } catch (r2Err) {
+            console.error('[Pay-Balance] R2 upload error in worker:', r2Err);
+            return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
+          }
+        }
+
         // Concurrency-safe atomic update guard
         const updateRes = await env.DB.prepare(
           `UPDATE bookings
-           SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?, receipt_number = COALESCE(receipt_number, ?)
+           SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?,
+               receipt_number = COALESCE(receipt_number, ?),
+               slip_image_url = COALESCE(slip_image_url, ?)
            WHERE id = ?
              AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free')
              AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?`
-        ).bind(newPaid, newBalance, newStatus, method, receiptNumber, booking.id, payAmount).run();
+        ).bind(newPaid, newBalance, newStatus, method, receiptNumber, slipUrl, booking.id, payAmount).run();
 
         if (updateRes.meta?.changes !== 1) {
           return new Response(JSON.stringify({
@@ -3852,9 +6007,9 @@ export default {
 
         await env.DB.prepare(
           `INSERT INTO payment_transactions
-           (booking_id, amount, payment_method, transaction_type, status, created_at)
-           VALUES (?, ?, ?, 'balance', 'completed', ?)`
-        ).bind(booking.id, payAmount, method, nowIso).run();
+           (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
+           VALUES (?, ?, ?, ?, 'balance', 'completed', ?)`
+        ).bind(booking.id, payAmount, method, slipUrl, nowIso).run();
 
         const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         return new Response(JSON.stringify({
@@ -3864,11 +6019,450 @@ export default {
           balance_amount: newBalance,
           payment_status: newStatus,
           payment_method: method,
+          slip_url: slipUrl,
           booking: updatedBooking
         }), { headers: corsHeaders });
       }
 
+      // Dedicated endpoint to attach slip evidence to a payment transaction (Walk-in payment evidence)
+      if (pathname.startsWith('/api/bookings/') && (pathname.includes('/payments/') && pathname.endsWith('/slip') || pathname.endsWith('/attach-slip')) && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        const body = await request.json().catch(() => ({}));
+        let paymentId = null;
+        if (pathname.includes('/payments/') && pathname.endsWith('/slip')) {
+          paymentId = Number(parts[5]);
+        } else if (body.payment_id) {
+          paymentId = Number(body.payment_id);
+        }
+        const { slip_image } = body;
+
+        if (!slip_image) {
+          return new Response(JSON.stringify({ error: 'กรุณาแนบไฟล์รูปภาพสลิป' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        let transaction = null;
+        if (paymentId) {
+          transaction = await env.DB.prepare('SELECT * FROM payment_transactions WHERE id = ? AND booking_id = ?').bind(paymentId, bookingId).first();
+          if (!transaction) {
+            return new Response(JSON.stringify({ error: 'ไม่พบรายการธุรกรรมชำระเงินที่ระบุสำหรับการจองนี้' }), { status: 404, headers: corsHeaders });
+          }
+        } else {
+          transaction = await env.DB.prepare('SELECT * FROM payment_transactions WHERE booking_id = ? ORDER BY id DESC LIMIT 1').bind(bookingId).first();
+        }
+
+        if (typeof slip_image !== 'string' || !slip_image.startsWith('data:image/')) {
+          return new Response(JSON.stringify({ error: 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ PNG, JPG หรือ WEBP' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (slip_image.length > 10 * 1024 * 1024 * 1.37) {
+          return new Response(JSON.stringify({ error: 'ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (!env.BUCKET) {
+          return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
+        }
+
+        let slipUrl = null;
+        try {
+          slipUrl = await saveUploadedFile(env, slip_image, 'slips');
+          if (!slipUrl || slipUrl.startsWith('data:')) {
+            return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้' }), { status: 500, headers: corsHeaders });
+          }
+        } catch (r2Err) {
+          console.error('[Attach Slip] R2 upload error in worker:', r2Err);
+          return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
+        }
+
+        const previousSlip = transaction ? transaction.slip_url : booking.slip_image_url;
+        const isReplacement = Boolean(previousSlip && previousSlip !== 'uploaded');
+        const action = isReplacement ? 'replace_slip' : 'attach_slip';
+        const replacementReason = (body.replacement_reason || body.reason || (isReplacement ? 'เปลี่ยนสลิปหลักฐาน' : 'แนบสลิปหลักฐาน')).trim();
+
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+
+        const auditPayload = {
+          action,
+          booking_id: bookingId,
+          payment_transaction_id: transaction ? transaction.id : null,
+          previous_slip_reference: previousSlip || null,
+          new_slip_reference: slipUrl,
+          uploaded_by: staffName,
+          timestamp: nowIso,
+          replacement_reason: isReplacement ? replacementReason : null,
+          attachment_reason: !isReplacement ? replacementReason : null,
+          description: isReplacement
+            ? `เปลี่ยนสลิป ${transaction ? 'ธุรกรรม #' + transaction.id : 'การจองเดิม (Legacy)'}: ${replacementReason} (เดิม: ${previousSlip} -> ใหม่: ${slipUrl})`
+            : `แนบสลิป ${transaction ? 'ธุรกรรม #' + transaction.id : 'การจองเดิม (Legacy)'} (${slipUrl})`
+        };
+        const auditDetailsJson = JSON.stringify(auditPayload);
+
+        try {
+          const statements = [];
+          if (transaction) {
+            statements.push(env.DB.prepare('UPDATE payment_transactions SET slip_url = ? WHERE id = ? AND booking_id = ?').bind(slipUrl, transaction.id, bookingId));
+            statements.push(env.DB.prepare('UPDATE bookings SET slip_image_url = ? WHERE id = ?').bind(slipUrl, bookingId));
+          } else {
+            // Legacy booking without transaction: only update bookings.slip_image_url
+            statements.push(env.DB.prepare('UPDATE bookings SET slip_image_url = ? WHERE id = ?').bind(slipUrl, bookingId));
+          }
+          statements.push(
+            env.DB.prepare(
+              `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+               VALUES (?, ?, ?, ?, ?)`
+            ).bind(bookingId, action, auditDetailsJson, staffName, nowIso)
+          );
+
+          await env.DB.batch(statements);
+        } catch (d1Err) {
+          console.error('[Attach Slip] D1 batch audit error:', d1Err);
+          return new Response(JSON.stringify({
+            error: 'เกิดข้อผิดพลาดในการบันทึกข้อมูลหรือประวัติการแนบสลิป (Audit Trail Failure) การดำเนินการถูกยกเลิกเพื่อความปลอดภัย',
+            details: d1Err.message
+          }), { status: 500, headers: corsHeaders });
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: isReplacement ? 'เปลี่ยนหลักฐานสลิปการชำระเงินและบันทึกประวัติเรียบร้อยแล้ว' : 'แนบหลักฐานสลิปการชำระเงินเรียบร้อยแล้ว',
+          slip_url: slipUrl,
+          payment_id: transaction ? transaction.id : null,
+          booking_id: bookingId,
+          action,
+          is_replacement: isReplacement
+        }), { headers: corsHeaders });
+      }
+
       // Cancel booking endpoint (Soft cancel + LINE Notification)
+      
+      // ----------------------------------------------------
+      // TAX INVOICE & ATTACHMENT MANAGEMENT ENDPOINTS (PARITY)
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare(
+          `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+                  tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+                  tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+           FROM bookings WHERE id = ?`
+        ).bind(bookingId).first();
+
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        let invoices = [];
+        try {
+          const invRes = await env.DB.prepare(
+            `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                    tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                    file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
+             FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`
+          ).bind(bookingId).all();
+          invoices = invRes?.results || [];
+        } catch (_) {}
+
+        return new Response(JSON.stringify({
+          success: true,
+          booking_id: bookingId,
+          tax_data: {
+            tax_invoice_required: Number(booking.tax_invoice_required) || 0,
+            tax_payer_type: booking.tax_payer_type || 'corporate',
+            tax_name: booking.tax_name || '',
+            tax_id: booking.tax_id || '',
+            tax_branch_type: booking.tax_branch_type || 'head',
+            tax_branch_number: booking.tax_branch_number || '',
+            tax_address: booking.tax_address || '',
+            tax_email: booking.tax_email || '',
+            tax_phone: booking.tax_phone || '',
+            tax_delivery_method: booking.tax_delivery_method || 'email',
+            tax_postal_address: booking.tax_postal_address || '',
+            tax_invoice_status: booking.tax_invoice_status || (booking.tax_invoice_required ? 'pending' : 'not_required')
+          },
+          invoices
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice') && method === 'PUT') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const {
+          tax_invoice_required,
+          tax_payer_type,
+          tax_name,
+          tax_id,
+          tax_branch_type,
+          tax_branch_number,
+          tax_address,
+          tax_email,
+          tax_phone,
+          tax_delivery_method,
+          tax_postal_address
+        } = body;
+
+        const isRequired = Number(tax_invoice_required) === 1 ? 1 : 0;
+        const payerType = tax_payer_type === 'individual' ? 'individual' : 'corporate';
+        const branchType = tax_branch_type === 'branch' ? 'branch' : 'head';
+        const cleanTaxName = String(tax_name || '').trim();
+        const cleanTaxId = String(tax_id || '').trim();
+        const cleanBranchNo = branchType === 'branch' ? String(tax_branch_number || '').trim() : '';
+        const cleanAddress = String(tax_address || '').trim();
+        const cleanEmail = String(tax_email || '').trim();
+        const cleanPhone = String(tax_phone || '').trim();
+        const deliveryMethod = String(tax_delivery_method || 'email').trim();
+        const cleanPostalAddress = String(tax_postal_address || '').trim();
+
+        if (isRequired) {
+          if (!cleanTaxName) {
+            return new Response(JSON.stringify({ error: 'กรุณากรอกชื่อสำหรับออกใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+          }
+          if (cleanTaxId && !/^\d{13}$/.test(cleanTaxId.replace(/[-\s]/g, ''))) {
+            return new Response(JSON.stringify({ error: 'เลขประจำตัวผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' }), { status: 400, headers: corsHeaders });
+          }
+          if (branchType === 'branch' && !cleanBranchNo) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเลขที่สาขา' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        let existingInvoices = [];
+        try {
+          const invRes = await env.DB.prepare('SELECT id FROM tax_invoices WHERE booking_id = ?').bind(bookingId).all();
+          existingInvoices = invRes?.results || [];
+        } catch (_) {}
+
+        const currentStatus = !isRequired
+          ? 'not_required'
+          : (existingInvoices.length > 0 ? 'issued' : 'pending');
+
+        await env.DB.prepare(
+          `UPDATE bookings
+           SET tax_invoice_required = ?,
+               tax_payer_type = ?,
+               tax_name = ?,
+               tax_id = ?,
+               tax_branch_type = ?,
+               tax_branch_number = ?,
+               tax_address = ?,
+               tax_email = ?,
+               tax_phone = ?,
+               tax_delivery_method = ?,
+               tax_postal_address = ?,
+               tax_invoice_status = ?
+           WHERE id = ?`
+        ).bind(
+          isRequired,
+          payerType,
+          cleanTaxName,
+          cleanTaxId,
+          branchType,
+          cleanBranchNo,
+          cleanAddress,
+          cleanEmail,
+          cleanPhone,
+          deliveryMethod,
+          cleanPostalAddress,
+          currentStatus,
+          bookingId
+        ).run();
+
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+        try {
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'update_tax_invoice', ?, ?, ?)`
+          ).bind(bookingId, `อัปเดตข้อมูลใบกำกับภาษี: ${isRequired ? cleanTaxName : 'ยกเลิกคำขอ'}`, staffName, nowIso).run();
+        } catch (_) {}
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'บันทึกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว',
+          tax_data: {
+            tax_invoice_required: isRequired,
+            tax_payer_type: payerType,
+            tax_name: cleanTaxName,
+            tax_id: cleanTaxId,
+            tax_branch_type: branchType,
+            tax_branch_number: cleanBranchNo,
+            tax_address: cleanAddress,
+            tax_email: cleanEmail,
+            tax_phone: cleanPhone,
+            tax_delivery_method: deliveryMethod,
+            tax_postal_address: cleanPostalAddress,
+            tax_invoice_status: currentStatus
+          }
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice/attachment') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const { file_data, file_name, invoice_number, notes } = body;
+        if (!file_data) {
+          return new Response(JSON.stringify({ error: 'กรุณาแนบไฟล์เอกสารใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (typeof file_data !== 'string' || (!file_data.startsWith('data:application/pdf') && !file_data.startsWith('data:image/'))) {
+          return new Response(JSON.stringify({ error: 'รูปแบบไฟล์ไม่ถูกต้อง กรุณาอัปโหลดไฟล์ PDF, JPG, PNG หรือ WEBP' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (file_data.length > 10 * 1024 * 1024 * 1.37) {
+          return new Response(JSON.stringify({ error: 'ขนาดไฟล์เกิน 10MB กรุณาอัปโหลดไฟล์ที่มีขนาดเล็กลง' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (!env.BUCKET) {
+          return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน' }), { status: 500, headers: corsHeaders });
+        }
+
+        let fileUrl = null;
+        try {
+          fileUrl = await saveUploadedFile(env, file_data, 'tax_invoices');
+          if (!fileUrl || fileUrl.startsWith('data:')) {
+            return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกเอกสารลง R2 ได้' }), { status: 500, headers: corsHeaders });
+          }
+        } catch (r2Err) {
+          console.error('[Tax Invoice] Error saving to R2:', r2Err);
+          return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์ลงระบบจัดเก็บได้' }), { status: 500, headers: corsHeaders });
+        }
+
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+
+        const insRes = await env.DB.prepare(
+          `INSERT INTO tax_invoices
+           (booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+            tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+            file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?, ?)`
+        ).bind(
+          bookingId,
+          invoice_number || null,
+          booking.tax_payer_type || 'corporate',
+          booking.tax_name || booking.customer_name || 'ลูกค้า',
+          booking.tax_id || '',
+          booking.tax_branch_type || 'head',
+          booking.tax_branch_number || '',
+          booking.tax_address || '',
+          booking.tax_email || '',
+          booking.tax_phone || booking.contact || '',
+          fileUrl,
+          file_name || 'tax_invoice',
+          file_data.substring(5, file_data.indexOf(';')),
+          Math.round(file_data.length * 0.75),
+          notes || null,
+          staffName,
+          nowIso,
+          nowIso
+        ).run();
+
+        await env.DB.prepare("UPDATE bookings SET tax_invoice_status = 'issued', tax_invoice_required = 1 WHERE id = ?").bind(bookingId).run();
+
+        try {
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'attach_tax_invoice', ?, ?, ?)`
+          ).bind(bookingId, `แนบไฟล์ใบกำกับภาษี #${invoice_number || insRes.meta.last_row_id}: ${fileUrl}`, staffName, nowIso).run();
+        } catch (_) {}
+
+        const newInvoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE id = ?').bind(insRes.meta.last_row_id).first();
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'แนบไฟล์ใบกำกับภาษีเรียบร้อยแล้ว',
+          invoice: newInvoice
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/bookings/') && pathname.includes('/tax-invoice/attachment/') && method === 'DELETE') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        const invoiceId = Number(parts[6]);
+        if (!bookingId || !invoiceId) {
+          return new Response(JSON.stringify({ error: 'พารามิเตอร์ไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE id = ? AND booking_id = ?').bind(invoiceId, bookingId).first();
+        if (!invoice) {
+          return new Response(JSON.stringify({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' }), { status: 404, headers: corsHeaders });
+        }
+
+        if (invoice.file_url && invoice.file_url.startsWith('/uploads/') && env.BUCKET) {
+          const r2Key = invoice.file_url.replace('/uploads/', '');
+          try { await env.BUCKET.delete(r2Key); } catch (_) {}
+        }
+
+        await env.DB.prepare('DELETE FROM tax_invoices WHERE id = ?').bind(invoiceId).run();
+
+        let remaining = [];
+        try {
+          const remRes = await env.DB.prepare('SELECT id FROM tax_invoices WHERE booking_id = ?').bind(bookingId).all();
+          remaining = remRes?.results || [];
+        } catch (_) {}
+        const newStatus = remaining.length > 0 ? 'issued' : 'pending';
+        await env.DB.prepare('UPDATE bookings SET tax_invoice_status = ? WHERE id = ?').bind(newStatus, bookingId).run();
+
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+        try {
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'delete_tax_invoice', ?, ?, ?)`
+          ).bind(bookingId, `ลบเอกสารใบกำกับภาษี #${invoice.invoice_number || invoiceId}`, staffName, nowIso).run();
+        } catch (_) {}
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'ลบเอกสารใบกำกับภาษีเรียบร้อยแล้ว',
+          tax_invoice_status: newStatus
+        }), { headers: corsHeaders });
+      }
+
       if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/cancel') && method === 'POST') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -3912,7 +6506,7 @@ export default {
         const parts = pathname.split('/');
         const bookingId = parts[3];
         const body = await request.json();
-        const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id, booking_details } = body;
+        const { date, start_time, end_time, booking_type, layout, total_amount, send_line, room_id, booking_details, booking_item_id } = body;
 
         if (!date || !start_time || !end_time) {
           return new Response(JSON.stringify({ error: 'กรุณาระบุ วันที่, เวลาเริ่มต้น และเวลาสิ้นสุด ให้ครบถ้วน' }), { status: 400, headers: corsHeaders });
@@ -3953,8 +6547,37 @@ export default {
           }
         }
 
-        const currentItem = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
-        if (!currentItem) return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องในการจองนี้' }), { status: 404, headers: corsHeaders });
+        const { results: allItems } = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? ORDER BY id ASC').bind(bookingId).all();
+        if (!allItems || allItems.length === 0) return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องในการจองนี้' }), { status: 404, headers: corsHeaders });
+
+        const primaryItem = allItems[0];
+        let currentItem = null;
+
+        if (allItems.length > 1) {
+          if (!booking_item_id) {
+            return new Response(JSON.stringify({
+              error: 'กรุณาระบุ booking_item_id สำหรับการจองที่มีหลายรายการ',
+              code: 'ERR_BOOKING_ITEM_ID_REQUIRED'
+            }), { status: 400, headers: corsHeaders });
+          }
+          currentItem = allItems.find(it => String(it.id) === String(booking_item_id));
+          if (!currentItem) {
+            return new Response(JSON.stringify({
+              error: 'ไม่พบรายการที่ระบุในข้อมูลการจองนี้',
+              code: 'ERR_ITEM_NOT_FOUND'
+            }), { status: 400, headers: corsHeaders });
+          }
+        } else {
+          if (booking_item_id !== undefined && booking_item_id !== null && String(allItems[0].id) !== String(booking_item_id)) {
+            return new Response(JSON.stringify({
+              error: 'ไม่พบรายการที่ระบุในข้อมูลการจองนี้',
+              code: 'ERR_ITEM_NOT_FOUND'
+            }), { status: 400, headers: corsHeaders });
+          }
+          currentItem = allItems[0];
+        }
+
+        const isPrimaryItem = (primaryItem && currentItem.id === primaryItem.id);
 
         const targetRoomId = room_id || currentItem.room_id;
         const targetRoomObj = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(targetRoomId).first();
@@ -3964,11 +6587,14 @@ export default {
         const newStartISO = `${date}T${cleanStart}`;
         const newEndISO = `${date}T${cleanEnd}`;
 
-        // Overlap check (exclude this booking)
-        const overlapResult = await checkRoomOverlap(env, targetRoomId, newStartISO, newEndISO, bookingId);
+        // Overlap check (excludes ONLY the selected booking item ID)
+        const overlapResult = await checkRoomOverlap(env, targetRoomId, newStartISO, newEndISO, null, currentItem.id);
         if (overlapResult.hasOverlap) {
           const targetRoomName = targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`;
-          return new Response(JSON.stringify({ error: formatOverlapErrorMessage(targetRoomName, overlapResult) }), { status: 400, headers: corsHeaders });
+          return new Response(JSON.stringify({
+            error: formatOverlapErrorMessage(targetRoomName, overlapResult),
+            code: 'ERR_ROOM_OVERLAP'
+          }), { status: 400, headers: corsHeaders });
         }
 
         const oldStart = currentItem.start_time;
@@ -3984,14 +6610,14 @@ export default {
           } else if (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim()) {
             newPinCode = targetRoomObj.pin_code.trim();
           } else {
-            newPinCode = booking.pin_code || await generateUniquePinCode(env);
+            newPinCode = currentItem.pin_code || booking.pin_code || await generateUniquePinCode(env);
           }
         } else {
           // General / Walk-in / Basecamp: Customer Access Code only
           if (targetRoomObj && targetRoomObj.pin_code && targetRoomObj.pin_code.trim()) {
             newPinCode = targetRoomObj.pin_code.trim();
           } else {
-            newPinCode = booking.pin_code || await generateUniquePinCode(env);
+            newPinCode = currentItem.pin_code || booking.pin_code || await generateUniquePinCode(env);
           }
         }
 
@@ -4017,8 +6643,8 @@ export default {
         }
 
         // Query other items if multi-item booking
-        const { results: otherItems } = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND id != ?').bind(bookingId, currentItem.id).all();
-        const otherSubtotal = (otherItems || []).reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
+        const otherItems = allItems.filter(it => it.id !== currentItem.id);
+        const otherSubtotal = otherItems.reduce((sum, it) => sum + (Number(it.subtotal) || 0), 0);
         const fullNewGross = roundMoney(otherSubtotal + itemSubtotal);
 
         let newFin;
@@ -4028,27 +6654,43 @@ export default {
             newSubtotal: fullNewGross
           });
         } catch (fErr) {
-          return new Response(JSON.stringify({ error: fErr.message }), { status: 400, headers: corsHeaders });
+          return new Response(JSON.stringify({
+            error: fErr.message,
+            code: fErr.code || (fErr.message.includes('ต่ำกว่ายอดเงินที่ชำระไปแล้ว') ? 'ERR_RESCHEDULE_BELOW_PAID' : 'ERR_FINANCIAL_CALCULATION')
+          }), { status: 400, headers: corsHeaders });
         }
 
-        const statements = [
-          env.DB.prepare(
-            `UPDATE booking_items SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ? WHERE id = ?`
-          ).bind(
-            targetRoomId,
-            newStartISO,
-            newEndISO,
-            itemSubtotal,
-            itemPrice,
-            bType,
-            bLayout,
-            newPinCode,
-            currentItem.id
-          ),
-          env.DB.prepare(
-            `UPDATE bookings
+        const updateItemStmt = env.DB.prepare(
+          `UPDATE booking_items
+           SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ?
+           WHERE id = ? AND booking_id = ? AND start_time = ? AND end_time = ? AND room_id = ?
+             AND (SELECT subtotal_amount FROM bookings WHERE id = ?) = ?`
+        ).bind(
+          targetRoomId,
+          newStartISO,
+          newEndISO,
+          itemSubtotal,
+          itemPrice,
+          bType,
+          bLayout,
+          newPinCode,
+          currentItem.id,
+          bookingId,
+          currentItem.start_time,
+          currentItem.end_time,
+          currentItem.room_id,
+          bookingId,
+          booking.subtotal_amount
+        );
+
+        const updateBookingSql = isPrimaryItem
+          ? `UPDATE bookings
              SET pin_code = ?,
-                 subtotal_amount = ?,
+                 subtotal_amount = CASE
+                   WHEN subtotal_amount = ? AND (SELECT start_time FROM booking_items WHERE id = ?) = ?
+                   THEN ?
+                   ELSE json_extract('abort', '$.stale_concurrency')
+                 END,
                  discount_type = ?,
                  discount_value = ?,
                  discount_amount = ?,
@@ -4058,22 +6700,76 @@ export default {
                  payment_status = ?,
                  booking_details = COALESCE(?, booking_details)
              WHERE id = ?`
-          ).bind(
-            newPinCode,
-            newFin.subtotal_amount,
-            newFin.discount_type,
-            newFin.discount_value,
-            newFin.discount_amount,
-            newFin.total_amount,
-            newFin.paid_amount,
-            newFin.balance_amount,
-            newFin.payment_status,
-            updateDetails ? normalizedDetailsValue : null,
-            bookingId
-          )
-        ];
+          : `UPDATE bookings
+             SET subtotal_amount = CASE
+                   WHEN subtotal_amount = ? AND (SELECT start_time FROM booking_items WHERE id = ?) = ?
+                   THEN ?
+                   ELSE json_extract('abort', '$.stale_concurrency')
+                 END,
+                 discount_type = ?,
+                 discount_value = ?,
+                 discount_amount = ?,
+                 total_amount = ?,
+                 paid_amount = ?,
+                 balance_amount = ?,
+                 payment_status = ?,
+                 booking_details = COALESCE(?, booking_details)
+             WHERE id = ?`;
 
-        await env.DB.batch(statements);
+        const updateBookingStmt = isPrimaryItem
+          ? env.DB.prepare(updateBookingSql).bind(
+              newPinCode,
+              booking.subtotal_amount,
+              currentItem.id,
+              newStartISO,
+              newFin.subtotal_amount,
+              newFin.discount_type,
+              newFin.discount_value,
+              newFin.discount_amount,
+              newFin.total_amount,
+              newFin.paid_amount,
+              newFin.balance_amount,
+              newFin.payment_status,
+              updateDetails ? normalizedDetailsValue : null,
+              bookingId
+            )
+          : env.DB.prepare(updateBookingSql).bind(
+              booking.subtotal_amount,
+              currentItem.id,
+              newStartISO,
+              newFin.subtotal_amount,
+              newFin.discount_type,
+              newFin.discount_value,
+              newFin.discount_amount,
+              newFin.total_amount,
+              newFin.paid_amount,
+              newFin.balance_amount,
+              newFin.payment_status,
+              updateDetails ? normalizedDetailsValue : null,
+              bookingId
+            );
+
+        let batchResults;
+        try {
+          batchResults = await env.DB.batch([updateItemStmt, updateBookingStmt]);
+        } catch (bErr) {
+          if (bErr.message && (bErr.message.includes('stale') || bErr.message.includes('malformed JSON'))) {
+            return new Response(JSON.stringify({
+              error: 'ข้อมูลการจองถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชและลองใหม่อีกครั้ง',
+              code: 'ERR_CONCURRENT_MODIFICATION'
+            }), { status: 409, headers: corsHeaders });
+          }
+          throw bErr;
+        }
+
+        const itemChanges = batchResults[0]?.meta?.changes ?? batchResults[0]?.changes ?? 0;
+        const bookingChanges = batchResults[1]?.meta?.changes ?? batchResults[1]?.changes ?? 0;
+        if (itemChanges === 0 || bookingChanges === 0) {
+          return new Response(JSON.stringify({
+            error: 'ข้อมูลการจองถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชและลองใหม่อีกครั้ง',
+            code: 'ERR_CONCURRENT_MODIFICATION'
+          }), { status: 409, headers: corsHeaders });
+        }
 
         const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         const { results: updatedItems } = await env.DB.prepare(`
@@ -4087,18 +6783,324 @@ export default {
           updatedBooking.items = updatedItems || [];
         }
 
+        const normOldStart = normalizeToLocalISO(oldStart).substring(0, 16);
+        const normNewStart = normalizeToLocalISO(newStartISO).substring(0, 16);
+        const normOldEnd = normalizeToLocalISO(oldEnd).substring(0, 16);
+        const normNewEnd = normalizeToLocalISO(newEndISO).substring(0, 16);
+
+        const scheduleChanged = (
+          String(currentItem.room_id) !== String(targetRoomId) ||
+          normOldStart !== normNewStart ||
+          normOldEnd !== normNewEnd
+        );
+
+        let lineOutcome = { sent: false };
         let lineData = null;
-        if (send_line !== false && booking.line_user_id) {
-          lineData = await sendLineBookingReschedule(env, bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount);
+
+        if (!scheduleChanged) {
+          lineOutcome = { sent: false, reason: 'no_schedule_change' };
+        } else if (!booking.line_user_id) {
+          lineOutcome = { sent: false, reason: 'no_line_recipient' };
+        } else if (send_line === false) {
+          lineOutcome = { sent: false, reason: 'disabled_by_user' };
+        } else {
+          lineData = await sendLineBookingReschedule(env, bookingId, oldStart, oldEnd, newStartISO, newEndISO, total_amount, currentItem.id);
+          lineOutcome = { sent: lineData?.success || false, status: lineData?.status };
         }
 
         return new Response(JSON.stringify({
           success: true,
-          message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineData?.success ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
-          line_sent: lineData?.success || false,
-          pin_code: newPinCode,
+          message: 'เปลี่ยนแปลงข้อมูลการจองสำเร็จ' + (lineOutcome?.sent ? ' และส่งข้อความแจ้งเตือนผ่าน LINE OA เรียบร้อย' : ''),
+          line_sent: lineOutcome?.sent || false,
+          line_notification: lineOutcome,
+          pin_code: updatedBooking?.pin_code || newPinCode,
           booking: updatedBooking
         }), { headers: corsHeaders });
+      }
+
+      // ----------------------------------------------------
+      // 3.5 CUSTOMER WI-FI CARD DATA ENDPOINT
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && (pathname.endsWith('/wifi-card') || pathname.endsWith('/confirmation-card')) && method === 'GET') {
+        const secureHeaders = { ...corsHeaders, 'Cache-Control': 'private, no-store' };
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: secureHeaders });
+
+        const isStaffAuthorized = auth.user?.role === 'admin'
+          || auth.user?.username === 'admin'
+          || auth.user?.permissions?.includes('pos')
+          || auth.user?.permissions?.includes('pending')
+          || auth.user?.permissions?.includes('manage')
+          || auth.user?.permissions?.includes('admin-management');
+
+        if (!isStaffAuthorized) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์ดำเนินการนี้' }), { status: 403, headers: secureHeaders });
+        }
+
+        const parts = pathname.split('/');
+        const rawId = parts[3];
+        let numericId = null;
+        if (!isNaN(rawId)) {
+          numericId = parseInt(rawId, 10);
+        } else if (typeof rawId === 'string' && rawId.startsWith('BK-')) {
+          const stripped = rawId.replace('BK-', '');
+          if (!isNaN(stripped)) numericId = parseInt(stripped, 10);
+        }
+
+        const booking = await env.DB.prepare(
+          'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
+        ).bind(numericId, rawId, rawId, rawId).first();
+
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจองนี้' }), { status: 404, headers: secureHeaders });
+        }
+
+        if (booking.payment_status === 'cancelled') {
+          return new Response(JSON.stringify({ error: 'รายการจองนี้ถูกยกเลิกแล้ว ไม่สามารถดูข้อมูลบัตร Wi-Fi ได้' }), { status: 400, headers: secureHeaders });
+        }
+
+        const ssidRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'wifi_ssid'").first();
+        const rawSsid = (ssidRow?.value || '').trim();
+        const sharedSsid = rawSsid || '@BWORK';
+
+        const sanitizeRoomImageUrl = (rawUrl) => {
+          if (!rawUrl || typeof rawUrl !== 'string') return null;
+          const trimmed = rawUrl.trim();
+          if (!trimmed) return null;
+          if (/^(https?:|\/\/|javascript:|vbscript:|file:)/i.test(trimmed)) return null;
+          if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed;
+          if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(trimmed)) return trimmed;
+          return null;
+        };
+
+        const resolveConfirmationItemDoorPin = ({ item, booking: bkg, primaryRoomId, totalRoomItemsCount }) => {
+          const usesPin = roomUsesDoorPin({
+            id: item.room_id,
+            room_id: item.room_id,
+            name: item.room_name,
+            room_name: item.room_name,
+            pin_code: item.room_pin_code,
+            builtland_pin_code: item.room_builtland_pin_code
+          });
+          if (!usesPin) return { uses_door_pin: false, door_pin: null };
+
+          const currentBooking = bkg || booking;
+          const cleanPinStr = (val) => {
+            if (val === null || val === undefined) return null;
+            const s = String(val).trim();
+            return (s !== '' && s !== '-') ? s : null;
+          };
+
+          const isBuiltland = currentBooking.customer_type === 'builtland'
+            || currentBooking.billing_option === 'internal_free'
+            || currentBooking.payment_status === 'internal_free'
+            || currentBooking.is_internal_free === true;
+
+          const itemPin = cleanPinStr(item.pin_code);
+          const roomPin = cleanPinStr(item.room_pin_code);
+          const builtlandRoomPin = cleanPinStr(item.room_builtland_pin_code);
+          const bookingPin = cleanPinStr(currentBooking.pin_code);
+          const canFallbackToBookingPin = totalRoomItemsCount === 1 || Number(item.room_id) === Number(primaryRoomId);
+
+          const resolvedPin = isBuiltland
+            ? (builtlandRoomPin || roomPin || itemPin || (canFallbackToBookingPin ? bookingPin : null))
+            : (itemPin || (canFallbackToBookingPin ? bookingPin : null) || roomPin);
+
+          return { uses_door_pin: true, door_pin: resolvedPin };
+        };
+
+        let items = [];
+        try {
+          const { results } = await env.DB.prepare(
+            `SELECT bi.*,
+                    r.name as room_name,
+                    r.image_url as room_image_url,
+                    r.classroom_image_url as room_classroom_image_url,
+                    r.image_position_x as room_image_position_x,
+                    r.image_position_y as room_image_position_y,
+                    r.pin_code as room_pin_code,
+                    r.builtland_pin_code as room_builtland_pin_code,
+                    r.wifi_username,
+                    r.wifi_password_enc
+             FROM booking_items bi
+             LEFT JOIN rooms r ON bi.room_id = r.id
+             WHERE bi.booking_id = ?
+               AND bi.room_id IS NOT NULL
+               AND COALESCE(bi.checkin_status, '') != 'cancelled'
+             ORDER BY bi.start_time ASC, bi.id ASC`
+          ).bind(booking.id).all();
+          items = results || [];
+        } catch (queryErr) {
+          try {
+            const { results } = await env.DB.prepare(
+              `SELECT bi.*,
+                      r.name as room_name,
+                      r.image_url as room_image_url,
+                      r.pin_code as room_pin_code,
+                      r.builtland_pin_code as room_builtland_pin_code
+               FROM booking_items bi
+               LEFT JOIN rooms r ON bi.room_id = r.id
+               WHERE bi.booking_id = ?
+                 AND bi.room_id IS NOT NULL
+                 AND COALESCE(bi.checkin_status, '') != 'cancelled'
+               ORDER BY bi.start_time ASC, bi.id ASC`
+            ).bind(booking.id).all();
+            items = results || [];
+          } catch (innerErr) {
+            items = [];
+          }
+        }
+
+        const primaryRoomId = items.length > 0 ? items[0].room_id : null;
+
+        const roomMap = new Map();
+        for (const item of items) {
+          if (!item.room_id || roomMap.has(item.room_id)) continue;
+
+          let plainWifiPassword = null;
+          if (item.wifi_password_enc) {
+            try {
+              plainWifiPassword = await decryptWifiPasswordWebCrypto(item.wifi_password_enc, env.WIFI_CREDENTIAL_ENCRYPTION_KEY, item.room_id);
+            } catch (decErr) {
+              if (decErr.code === 'ERR_WIFI_KEY_MISSING' || decErr.code === 'ERR_WIFI_KEY_INVALID') {
+                return new Response(JSON.stringify({
+                  error: 'ไม่สามารถสร้างข้อมูลบัตร Wi-Fi ได้เนื่องจากกุญแจความปลอดภัยไม่พร้อมใช้งาน',
+                  code: decErr.code
+                }), { status: 500, headers: secureHeaders });
+              }
+            }
+          }
+
+          const preferredImage = item.layout === 'classroom'
+            ? (sanitizeRoomImageUrl(item.room_classroom_image_url) || sanitizeRoomImageUrl(item.room_image_url))
+            : (sanitizeRoomImageUrl(item.room_image_url) || sanitizeRoomImageUrl(item.room_classroom_image_url));
+
+          const pinInfo = resolveConfirmationItemDoorPin({
+            item,
+            booking,
+            primaryRoomId,
+            totalRoomItemsCount: items.length
+          });
+
+          const posX = (typeof item.room_image_position_x === 'number' && !isNaN(item.room_image_position_x))
+            ? Math.max(0, Math.min(100, Math.round(item.room_image_position_x)))
+            : 50;
+          const posY = (typeof item.room_image_position_y === 'number' && !isNaN(item.room_image_position_y))
+            ? Math.max(0, Math.min(100, Math.round(item.room_image_position_y)))
+            : 50;
+
+          roomMap.set(item.room_id, {
+            room_id: item.room_id,
+            room_name: item.room_name || `ห้อง ${item.room_id}`,
+            image_url: preferredImage,
+            image_position_x: posX,
+            image_position_y: posY,
+            uses_door_pin: pinInfo.uses_door_pin,
+            door_pin: pinInfo.door_pin,
+            wifi_username: item.wifi_username || null,
+            wifi_password: plainWifiPassword,
+            is_configured: Boolean(item.wifi_username && plainWifiPassword)
+          });
+        }
+
+        const extractTime = (str) => {
+          if (!str) return '';
+          if (str.includes('T')) return str.split('T')[1].slice(0, 5);
+          if (str.includes(' ') && str.length >= 16) return str.split(' ')[1].slice(0, 5);
+          return str.slice(0, 5);
+        };
+
+        const scheduleList = items.map(item => {
+          const rawStart = item.start_time ? String(item.start_time).trim() : '';
+          const rawEnd = item.end_time ? String(item.end_time).trim() : '';
+          const bDate = item.booking_date || ((rawStart.includes('T') || rawStart.includes(' ')) ? rawStart.slice(0, 10) : '');
+          const sTime = extractTime(rawStart);
+          const eTime = extractTime(rawEnd);
+          const slot = item.time_slot || ((sTime && eTime) ? `${sTime} - ${eTime}` : '');
+
+          const roomEntry = roomMap.get(item.room_id) || {};
+          const preferredItemImage = item.layout === 'classroom'
+            ? (sanitizeRoomImageUrl(item.room_classroom_image_url) || sanitizeRoomImageUrl(item.room_image_url))
+            : (sanitizeRoomImageUrl(item.room_image_url) || sanitizeRoomImageUrl(item.room_classroom_image_url));
+
+          const pinInfo = resolveConfirmationItemDoorPin({
+            item,
+            booking,
+            primaryRoomId,
+            totalRoomItemsCount: items.length
+          });
+
+          return {
+            booking_item_id: item.id,
+            room_id: item.room_id,
+            room_name: item.room_name || `ห้อง ${item.room_id}`,
+            room_image_url: preferredItemImage || roomEntry.image_url || null,
+            image_position_x: roomEntry.image_position_x !== undefined ? roomEntry.image_position_x : 50,
+            image_position_y: roomEntry.image_position_y !== undefined ? roomEntry.image_position_y : 50,
+            booking_date: bDate,
+            start_time: sTime,
+            end_time: eTime,
+            time_slot: slot,
+            uses_door_pin: pinInfo.uses_door_pin,
+            door_pin: pinInfo.door_pin,
+            wifi_ssid: sharedSsid,
+            wifi_username: roomEntry.wifi_username || null,
+            wifi_password: roomEntry.wifi_password || null,
+            wifi_configured: Boolean(roomEntry.is_configured)
+          };
+        });
+
+        const distinctRooms = Array.from(roomMap.values());
+        const isMultiRoom = distinctRooms.length > 1;
+        const singleRoomImage = distinctRooms.length === 1 ? (distinctRooms[0].image_url || null) : null;
+        const customerPhone = (booking.contact !== null && booking.contact !== undefined && String(booking.contact).trim() !== '' && String(booking.contact).trim() !== '-')
+          ? String(booking.contact).trim()
+          : null;
+
+        const cardPayload = {
+          document_title: 'ใบยืนยันการจองห้องประชุม',
+          document_subtitle: 'Meeting Room Booking Confirmation',
+          booking_id: booking.id,
+          booking_number: booking.receipt_number || `BK-${String(booking.id).padStart(6, '0')}`,
+          customer_name: booking.customer_name || 'ลูกค้า',
+          customer_phone: customerPhone,
+          is_multi_room: isMultiRoom,
+          is_multi_item: scheduleList.length > 1,
+          banner_type: isMultiRoom ? 'brand' : (singleRoomImage ? 'room' : 'placeholder'),
+          banner_image_url: isMultiRoom ? '/Bworktower.jpg' : singleRoomImage,
+          single_room_focal_x: distinctRooms.length === 1 ? (distinctRooms[0].image_position_x ?? 50) : 50,
+          single_room_focal_y: distinctRooms.length === 1 ? (distinctRooms[0].image_position_y ?? 50) : 50,
+          rooms: distinctRooms,
+          schedules: scheduleList,
+          items: scheduleList,
+          wifi: {
+            ssid: sharedSsid,
+            login_instructions: 'เชื่อมต่อเครือข่าย Wi-Fi และเปิดเว็บเบราว์เซอร์เพื่อเข้าสู่ระบบ MikroTik Hotspot ด้วยชื่อผู้ใช้และรหัสผ่านของห้อง'
+          },
+          beverage_perk: {
+            heading: 'สิทธิประโยชน์สำหรับผู้ใช้บริการห้องประชุม',
+            message: 'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+            discount_percent: 20,
+            shop_name: 'koo.koo',
+            items: [
+              'Free WiFi',
+              'Free Co-working Space',
+              'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+              'ได้สิทธิจอดรถฟรี ตามการใช้งานห้องประชุม'
+            ]
+          },
+          benefits: {
+            heading: 'สิทธิประโยชน์สำหรับผู้ใช้บริการห้องประชุม',
+            items: [
+              'Free WiFi',
+              'Free Co-working Space',
+              'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+              'ได้สิทธิจอดรถฟรี ตามการใช้งานห้องประชุม'
+            ]
+          }
+        };
+
+        return new Response(JSON.stringify(cardPayload), { headers: secureHeaders });
       }
 
       if (pathname.startsWith('/api/bookings/') && (method === 'GET' || method === 'PUT' || method === 'DELETE')) {
@@ -4118,7 +7120,22 @@ export default {
             LEFT JOIN services s ON bi.service_id = s.id
             WHERE bi.booking_id = ?
           `).bind(bookingId).all();
-          return new Response(JSON.stringify({ ...booking, items: items || [] }), { headers: corsHeaders });
+
+          let slipVerification = null;
+          try {
+            slipVerification = await env.DB.prepare(
+              'SELECT * FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1'
+            ).bind(bookingId).first();
+            if (slipVerification) {
+              if (!booking.slip_image_url) booking.slip_image_url = slipVerification.slip_image_url;
+              if (!booking.slip_trans_ref) booking.slip_trans_ref = slipVerification.trans_ref;
+              if (!booking.slip_verify_status) booking.slip_verify_status = slipVerification.verification_status;
+              booking.rejection_reason = slipVerification.rejection_reason || null;
+              booking.rejection_time = slipVerification.created_at || null;
+            }
+          } catch (_) {}
+
+          return new Response(JSON.stringify({ ...booking, slip_verification: slipVerification || null, items: items || [] }), { headers: corsHeaders });
         }
 
         if (method === 'PUT') {
@@ -4506,9 +7523,6 @@ export default {
 
         const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
         const channelAccessToken = tokenSetting?.value?.trim() || env.LINE_CHANNEL_ACCESS_TOKEN;
-        if (!channelAccessToken) {
-          return new Response(JSON.stringify({ error: 'ไม่ได้ตั้งค่า LINE Channel Access Token ในระบบ' }), { status: 503, headers: corsHeaders });
-        }
 
         const sentAt = new Date(Date.now() + 7 * 3600000).toISOString().replace('T', ' ').slice(0, 19);
         const flexMessage = buildHourCreditVoucherFlex({
@@ -4518,26 +7532,27 @@ export default {
           sent_at: sentAt
         });
 
-        let lineRes;
-        try {
-          lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${channelAccessToken}`
-            },
-            body: JSON.stringify({
-              to: c.line_user_id.trim(),
-              messages: [flexMessage]
-            })
-          });
-        } catch (err) {
-          return new Response(JSON.stringify({ error: 'การเชื่อมต่อกับ LINE API ล้มเหลว: ' + err.message }), { status: 502, headers: corsHeaders });
+        const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
+          to: c.line_user_id.trim(),
+          messages: [flexMessage]
+        });
+
+        if (dispatch.mocked) {
+          return new Response(JSON.stringify({
+            success: true,
+            sent: false,
+            mocked: true,
+            message: '[Staging Mode] จำลองการส่งใบยืนยันชั่วโมงคงเหลือเข้า LINE OA สำเร็จ (Mocked; No Live Dispatch)',
+            credit_id: c.credit_id
+          }), { headers: corsHeaders });
         }
 
-        if (!lineRes.ok) {
-          const errText = await lineRes.text().catch(() => '');
-          return new Response(JSON.stringify({ error: `LINE API ตอบกลับผิดพลาด (${lineRes.status}): ${errText || 'ส่งข้อความไม่สำเร็จ'}` }), { status: 502, headers: corsHeaders });
+        if (!dispatch.ok) {
+          if (!channelAccessToken) {
+            return new Response(JSON.stringify({ error: 'ไม่ได้ตั้งค่า LINE Channel Access Token ในระบบ' }), { status: 503, headers: corsHeaders });
+          }
+          const errText = await dispatch.response?.text().catch(() => '');
+          return new Response(JSON.stringify({ error: `LINE API ตอบกลับผิดพลาด (${dispatch.status}): ${errText || 'ส่งข้อความไม่สำเร็จ'}` }), { status: 502, headers: corsHeaders });
         }
 
         return new Response(JSON.stringify({
@@ -4641,8 +7656,31 @@ export default {
         if (!tokenMatches && !contactMatches) {
           return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' }), { status: 403, headers: corsHeaders });
         }
-        if (['paid', 'cancelled'].includes(booking.payment_status)) {
-          return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้วหรือถูกยกเลิก ไม่สามารถแนบสลิปได้' }), { status: 409, headers: corsHeaders });
+        let windowMins = 15;
+        try {
+          const pwRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'payment_window_minutes'").first();
+          if (pwRow && pwRow.value) {
+            const parsed = parseInt(pwRow.value, 10);
+            if (!isNaN(parsed) && parsed >= 1) windowMins = parsed;
+          }
+        } catch (_) {}
+
+        const createdAtMs = Date.parse(booking.created_at);
+        const isExpiredByTime = Number.isFinite(createdAtMs) && (Date.now() - createdAtMs >= windowMins * 60 * 1000);
+
+        if (booking.payment_status === 'paid') {
+          return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้ว ไม่สามารถแนบสลิปซ้ำได้' }), { status: 409, headers: corsHeaders });
+        }
+
+        if (booking.payment_status === 'cancelled' || isExpiredByTime) {
+          if (booking.payment_status !== 'cancelled') {
+            const cancelReasonMsg = `ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (${windowMins} นาที)`;
+            await env.DB.prepare(
+              "UPDATE bookings SET payment_status = 'cancelled', checkin_status = 'cancelled', cancellation_reason = ? WHERE id = ? AND payment_status NOT IN ('paid', 'reviewing')"
+            ).bind(cancelReasonMsg, booking.id).run();
+            await env.DB.prepare("UPDATE booking_items SET checkin_status = 'cancelled' WHERE booking_id = ?").bind(booking.id).run();
+          }
+          return new Response(JSON.stringify({ success: false, auto_approved: false, error: `รายการจองนี้หมดเวลาชำระเงินแล้ว (${windowMins} นาที) ไม่สามารถแนบสลิปได้ กรุณาทำรายการจองใหม่` }), { status: 400, headers: corsHeaders });
         }
 
         if (!slip_image) {
@@ -5423,8 +8461,32 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         if (method === 'POST') {
+          const user = auth.user;
+          const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+          const perms = new Set((user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+          const hasSettingPerm = isAdmin || perms.has('admin-management') || perms.has('admin-system') || perms.has('admin-quotation') || perms.has('admin-backup') || perms.has('admin-dooraccess') || perms.has('admin-general');
+          if (!hasSettingPerm) {
+            return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์ดำเนินการนี้' }), { status: 403, headers: corsHeaders });
+          }
           const body = await request.json();
-          for (let [k, v] of Object.entries(body)) {
+          let writableEntries = Object.entries(body);
+          if (!isAdmin && !perms.has('admin-management') && !perms.has('admin-system')) {
+            writableEntries = writableEntries.filter(([k]) =>
+              (perms.has('admin-quotation') && k.startsWith('quotation_')) ||
+              (perms.has('admin-backup') && k.startsWith('onedrive_')) ||
+              (perms.has('admin-dooraccess') && (k.includes('line_') || k.includes('door_') || k.includes('access_') || k.includes('pin_'))) ||
+              (perms.has('admin-general') && [
+                'company_name', 'company_address', 'company_tax_id', 'logo_image',
+                'receipt_header', 'receipt_footer', 'room_alert_minutes', 'cleaning_buffer_minutes',
+                'promptpay_id', 'payment_bank_name', 'payment_bank_account', 'payment_bank_account_name',
+                'payment_window_minutes', 'wifi_ssid'
+              ].includes(k))
+            );
+          }
+          if (writableEntries.length === 0) {
+            return new Response(JSON.stringify({ error: 'ไม่มีการตั้งค่าที่ได้รับอนุญาตให้แก้ไข' }), { status: 403, headers: corsHeaders });
+          }
+          for (let [k, v] of writableEntries) {
             // Guard against overwriting real secrets with mask string or empty string
             if ((k === 'line_channel_access_token' || k === 'line_channel_secret') && (
               !v ||
@@ -5459,6 +8521,10 @@ export default {
           }
         });
 
+        if (!map.wifi_ssid || !String(map.wifi_ssid).trim()) {
+          map.wifi_ssid = '@BWORK';
+        }
+
         return new Response(JSON.stringify({
           company_name: map.company_name || 'บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่)',
           receipt_header: map.receipt_header || 'ใบเสร็จรับเงิน / ใบรับจองบริการ',
@@ -5468,6 +8534,7 @@ export default {
           payment_bank_account: map.payment_bank_account || map.bank_account || '329-1-38429-0',
           payment_bank_account_name: map.payment_bank_account_name || map.bank_account_name || 'บริษัท บิลท์ ฮาร์ท จำกัด',
           payment_deadline_hours: 24,
+          wifi_ssid: '@BWORK',
           ...map
         }), { headers: corsHeaders });
       }
@@ -5475,6 +8542,12 @@ export default {
       if (pathname === '/api/settings/line/test' && method === 'POST') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        const user = auth.user;
+        const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+        const perms = new Set((user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+        if (!isAdmin && !perms.has('admin-management') && !perms.has('admin-system') && !perms.has('admin-dooraccess')) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์ดำเนินการนี้' }), { status: 403, headers: corsHeaders });
+        }
 
         try {
           const body = await request.json().catch(() => ({}));
@@ -5518,6 +8591,22 @@ export default {
               error: 'ยังไม่ได้ระบุหรือบันทึก LINE Channel Access Token ในระบบ',
               channelSecretStatus: secretStatus,
               liffIdStatus: liffIdStatus
+            }), { headers: corsHeaders });
+          }
+
+          if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
+            return new Response(JSON.stringify({
+              success: true,
+              connected: true,
+              sent: false,
+              mocked: true,
+              bot: {
+                name: 'LINE Official Account (Staging Mock)',
+                basicId: '@bwork-staging'
+              },
+              channelSecretStatus: secretStatus,
+              liffIdStatus: liffIdStatus,
+              message: '[Staging Mode] การเชื่อมต่อกับ LINE Messaging API ถูกจำลอง (Mocked; No Live Dispatch)'
             }), { headers: corsHeaders });
           }
 
@@ -5654,8 +8743,8 @@ export default {
         }
         const { results: roles } = await env.DB.prepare("SELECT * FROM roles").all();
         return new Response(JSON.stringify(roles && roles.length ? roles : [
-          { id: 1, name: 'admin', label: 'ผู้ดูแลระบบ (Admin)', permissions: 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation' },
-          { id: 2, name: 'staff', label: 'พนักงานต้อนรับ (Reception)', permissions: 'pos,pending,layout,manage,history,quotations' }
+          { id: 1, name: 'admin', label: 'ผู้ดูแลระบบ (Admin)', permissions: 'pos,dashboard,pending,layout,history,quotations,hour-credits,customers,tickets,manage,admin-users,admin-system,admin-promotion,admin-quotation,admin-backup,admin-dooraccess,admin-general' },
+          { id: 2, name: 'staff', label: 'พนักงานต้อนรับ (Reception)', permissions: 'pos,pending,layout,history,quotations,hour-credits,customers,tickets' }
         ]), { headers: corsHeaders });
       }
 
@@ -5667,7 +8756,11 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         const body = await request.json();
-        const savedUrl = await saveUploadedFile(env, body.image || body.image_url, 'uploads');
+        const rawImageData = body.base64Data || body.image || body.image_url;
+        if (!rawImageData) {
+          return new Response(JSON.stringify({ error: 'กรุณาส่งข้อมูลรูปภาพ' }), { status: 400, headers: corsHeaders });
+        }
+        const savedUrl = await saveUploadedFile(env, rawImageData, 'uploads');
         return new Response(JSON.stringify({ success: true, url: savedUrl || '/uploads/img_default.png' }), { headers: corsHeaders });
       }
 
@@ -5981,6 +9074,13 @@ export default {
         return new Response(JSON.stringify({ success: true, message: 'ล้างประวัติการใช้งานและรูปภาพสลิปทดสอบทั้งหมดเรียบร้อยแล้ว' }), { headers: corsHeaders });
       }
 
+      // ==========================================
+      // CUSTOMER SUPPORT TICKETS & NOTIFICATIONS - DISABLED IN THIS PRODUCTION RELEASE
+      // ==========================================
+      if (pathname.startsWith('/api/public/support') || pathname.startsWith('/api/pos/support')) {
+        return new Response(JSON.stringify({ error: 'Support tickets feature is disabled in this release' }), { status: 404, headers: corsHeaders });
+      }
+
       // LINE Webhook Endpoint
       if (pathname === '/api/line/webhook') {
         return new Response(JSON.stringify({ success: true, message: 'LINE Webhook Received' }), { headers: corsHeaders });
@@ -6054,13 +9154,15 @@ async function cancelExpiredBookings(env, options = {}) {
     const nowMs = typeof options.nowMs === 'number' && Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
     const cancelReasonMsg = `ไม่ได้ทำการชำระเงินภายในเวลาที่กำหนด (${windowMins} นาที)`;
 
-    // Strict eligibility query: ONLY explicit payment_status = 'pending' and online with no slip
+    // Strict eligibility query: explicit payment_status = 'pending' (no slip) OR payment_status = 'rejected'
     const { results: candidates } = await env.DB.prepare(`
       SELECT id, receipt_number, created_at, payment_status, booking_source, slip_image_url
       FROM bookings
-      WHERE payment_status = 'pending'
-        AND booking_source = 'online'
-        AND (slip_image_url IS NULL OR slip_image_url = '')
+      WHERE (
+        (payment_status = 'pending' AND (slip_image_url IS NULL OR slip_image_url = ''))
+        OR payment_status = 'rejected'
+      )
+      AND booking_source = 'online'
     `).all();
 
     let scanned = 0;
@@ -6098,9 +9200,11 @@ async function cancelExpiredBookings(env, options = {}) {
             checkin_status = 'cancelled',
             cancellation_reason = ?
         WHERE id = ?
-          AND payment_status = 'pending'
+          AND (
+            (payment_status = 'pending' AND (slip_image_url IS NULL OR slip_image_url = ''))
+            OR payment_status = 'rejected'
+          )
           AND booking_source = 'online'
-          AND (slip_image_url IS NULL OR slip_image_url = '')
       `).bind(cancelReasonMsg, b.id).run();
 
       if (updateRes.meta?.changes !== 1) {

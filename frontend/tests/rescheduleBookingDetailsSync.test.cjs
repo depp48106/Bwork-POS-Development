@@ -7,29 +7,32 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const PENDING_BOOKINGS_PATH = path.join(ROOT_DIR, 'src/components/PendingBookings.jsx');
 const PENDING_BOOKINGS_CSS_PATH = path.join(ROOT_DIR, 'src/components/PendingBookings.css');
 
-test('1. Reschedule Modal directly embeds booking_details textarea with live character counter', () => {
+test('1. Phase EDIT-4D: Reschedule Modal isolates schedule flow and preserves booking_details via separate details modal', () => {
   const code = fs.readFileSync(PENDING_BOOKINGS_PATH, 'utf8');
 
-  // Verify state
-  assert.ok(code.includes("const [rescheduleDetails, setRescheduleDetails] = useState('');"), 'Must define rescheduleDetails state');
-
-  // Verify embedding inside showRescheduleModal
+  // Verify embedding inside showRescheduleModal does NOT include details editing textarea
   const modalStart = code.indexOf('{showRescheduleModal && rescheduleTarget && (() => {');
   assert.ok(modalStart > 0, 'showRescheduleModal must exist');
   const modalEnd = code.indexOf('{/* TAX INVOICE DETAILS & PRINT MODAL */}', modalStart);
   assert.ok(modalEnd > modalStart, 'showRescheduleModal end boundary found');
   const modalSnippet = code.substring(modalStart, modalEnd);
 
-  // Label and textarea
-  assert.ok(modalSnippet.includes('รายละเอียดเพิ่มเติม (ไม่บังคับ)'), 'Modal must contain label "รายละเอียดเพิ่มเติม (ไม่บังคับ)"');
-  assert.ok(modalSnippet.includes('value={rescheduleDetails}'), 'Textarea must be bound to rescheduleDetails');
-  assert.ok(modalSnippet.includes('onChange={(e) => setRescheduleDetails(e.target.value)}'), 'Textarea must have onChange handler');
-  assert.ok(modalSnippet.includes('maxLength={1000}'), 'Textarea must have maxLength 1000');
-  assert.ok(modalSnippet.includes('{rescheduleDetails.length}/1000'), 'Must render live counter {rescheduleDetails.length}/1000');
-  assert.ok(modalSnippet.includes('placeholder="เช่น รายละเอียดบริการเพิ่มเติม, ความต้องการของลูกค้า, หมายเหตุการจอง"'), 'Must have expected placeholder');
+  // Reschedule modal must NOT have booking_details textarea
+  assert.ok(!modalSnippet.includes('value={rescheduleDetails}'), 'Reschedule modal must not contain rescheduleDetails textarea');
+
+  // Dedicated showEditDetailsModal must contain the details editing textarea
+  const detailsModalStart = code.indexOf('{showEditDetailsModal && editDetailsTarget && (');
+  assert.ok(detailsModalStart > 0, 'showEditDetailsModal must exist');
+  const detailsModalEnd = code.indexOf('{showCustomerInfoModal && customerInfoTarget && (', detailsModalStart);
+  assert.ok(detailsModalEnd > detailsModalStart, 'showEditDetailsModal end boundary found');
+  const detailsModalSnippet = code.substring(detailsModalStart, detailsModalEnd);
+
+  assert.ok(detailsModalSnippet.includes('value={editDetailsText}'), 'Dedicated modal must bind editDetailsText');
+  assert.ok(detailsModalSnippet.includes('maxLength={1000}'), 'Dedicated modal textarea must have maxLength 1000');
+  assert.ok(detailsModalSnippet.includes('{editDetailsText.length}/1000'), 'Dedicated modal must render live counter {editDetailsText.length}/1000');
 });
 
-test('2. Reschedule PUT payload includes booking_details and enforces 1000 char limit', () => {
+test('2. Phase EDIT-4D: Reschedule PUT payload preserves booking_details silently without overwriting', () => {
   const code = fs.readFileSync(PENDING_BOOKINGS_PATH, 'utf8');
 
   const submitFnStart = code.indexOf('const submitRescheduleBooking = async () => {');
@@ -38,10 +41,9 @@ test('2. Reschedule PUT payload includes booking_details and enforces 1000 char 
   assert.ok(submitFnEnd > submitFnStart, 'submitRescheduleBooking function end boundary found');
   const submitSnippet = code.substring(submitFnStart, submitFnEnd);
 
-  // Validation
-  assert.ok(submitSnippet.includes('rescheduleDetails.length > 1000'), 'Must validate length <= 1000');
-  // Payload
-  assert.ok(submitSnippet.includes('booking_details: rescheduleDetails'), 'Must send booking_details in payload');
+  // PUT payload must NOT include booking_details so backend silently preserves existing details
+  assert.ok(!submitSnippet.includes('booking_details: rescheduleDetails'), 'Reschedule payload must not overwrite booking_details');
+  assert.ok(submitSnippet.includes('booking_details: rescheduleTarget.booking_details'), 'Local state must preserve existing booking_details');
 });
 
 test('3. Immediate UI State Synchronization on Reschedule Success', () => {

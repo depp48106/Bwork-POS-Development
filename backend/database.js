@@ -146,6 +146,8 @@ async function initDatabase() {
       category TEXT DEFAULT 'Meeting Room',
       pin_code TEXT,
       builtland_pin_code TEXT,
+      image_position_x INTEGER DEFAULT 50,
+      image_position_y INTEGER DEFAULT 50,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -251,6 +253,78 @@ async function initDatabase() {
       status TEXT DEFAULT 'completed',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS customers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      contact_name TEXT,
+      phone TEXT,
+      email TEXT,
+      tax_id TEXT,
+      address TEXT,
+      basecamp_sub_type TEXT,
+      basecamp_unit TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS customer_contracts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+      contract_number TEXT UNIQUE,
+      start_date DATE NOT NULL,
+      end_date DATE NOT NULL,
+      monthly_quota_hours REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS tax_invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+      invoice_number TEXT,
+      tax_payer_type TEXT DEFAULT 'corporate',
+      tax_name TEXT NOT NULL,
+      tax_id TEXT NOT NULL,
+      tax_branch_type TEXT DEFAULT 'head',
+      tax_branch_number TEXT,
+      tax_address TEXT,
+      tax_email TEXT,
+      tax_phone TEXT,
+      file_url TEXT,
+      r2_object_key TEXT,
+      file_name TEXT,
+      content_type TEXT,
+      file_size INTEGER,
+      status TEXT DEFAULT 'issued',
+      notes TEXT,
+      uploaded_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS booking_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+      action TEXT NOT NULL,
+      details TEXT,
+      performed_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS customer_audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER,
+      contract_id INTEGER,
+      action TEXT NOT NULL,
+      details TEXT,
+      performed_by TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Migration: Add permissions column to users if not exists
@@ -293,8 +367,8 @@ async function initDatabase() {
 
   // Update existing users who have null permissions or fullnames
   try {
-    await dbQuery.run("UPDATE users SET permissions = 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation,admin-dooraccess' WHERE role = 'admin'");
-    await dbQuery.run("UPDATE users SET permissions = 'pos,pending,layout,history,quotations' WHERE role = 'staff'");
+    await dbQuery.run("UPDATE users SET permissions = 'pos,dashboard,pending,layout,history,quotations,hour-credits,customers,tickets,manage,admin-users,admin-system,admin-promotion,admin-quotation,admin-backup,admin-dooraccess,admin-general' WHERE role = 'admin'");
+    await dbQuery.run("UPDATE users SET permissions = 'pos,pending,layout,history,quotations,hour-credits,customers,tickets' WHERE role = 'staff'");
     await dbQuery.run("UPDATE users SET fullname = 'ผู้ดูแลระบบหลัก' WHERE username = 'admin' AND (fullname IS NULL OR fullname = '')");
     await dbQuery.run("UPDATE users SET fullname = 'พนักงานต้อนรับประจำกะ' WHERE username = 'staff' AND (fullname IS NULL OR fullname = '')");
   } catch (e) {}
@@ -349,6 +423,14 @@ async function initDatabase() {
     if (!roomCols.some(c => c.name === 'builtland_pin_code')) {
       await dbQuery.run("ALTER TABLE rooms ADD COLUMN builtland_pin_code TEXT");
       console.log('Migration: Added builtland_pin_code column to rooms table.');
+    }
+    if (!roomCols.some(c => c.name === 'image_position_x')) {
+      await dbQuery.run("ALTER TABLE rooms ADD COLUMN image_position_x INTEGER DEFAULT 50");
+      console.log('Migration: Added image_position_x column to rooms table.');
+    }
+    if (!roomCols.some(c => c.name === 'image_position_y')) {
+      await dbQuery.run("ALTER TABLE rooms ADD COLUMN image_position_y INTEGER DEFAULT 50");
+      console.log('Migration: Added image_position_y column to rooms table.');
     }
   } catch (e) {}
 
@@ -500,10 +582,22 @@ async function initDatabase() {
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN paid_amount REAL DEFAULT 0'); } catch (e) {}
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN balance_amount REAL DEFAULT 0'); } catch (e) {}
   try { await dbQuery.run("ALTER TABLE payment_transactions ADD COLUMN transaction_type TEXT DEFAULT 'full'"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE payment_transactions ADD COLUMN slip_url TEXT"); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_slip_verifications_trans_ref ON slip_verifications(trans_ref)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_slip_verifications_booking_id ON slip_verifications(booking_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_payment_transactions_booking_id ON payment_transactions(booking_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_balance_amount ON bookings(balance_amount)'); } catch (e) {}
+
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN customer_id INTEGER'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN contract_id INTEGER'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_customers_type_status ON customers(customer_type, status)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_customers_unit ON customers(basecamp_unit)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_contracts_dates ON customer_contracts(start_date, end_date, status)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_contracts_customer_id ON customer_contracts(customer_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_audit_logs_customer ON customer_audit_logs(customer_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_booking_history_booking_id ON booking_history(booking_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_customer_id ON bookings(customer_id)'); } catch (e) {}
+  try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_contract_id ON bookings(contract_id)'); } catch (e) {}
 
   // Performance: Database Indexes for High-Speed Queries
   try {
@@ -613,16 +707,20 @@ async function initDatabase() {
     if (!checkBuffer) {
       await dbQuery.run("INSERT INTO settings (key, value) VALUES ('cleaning_buffer_minutes', '30')");
     }
+    const checkWifiSsid = await dbQuery.get("SELECT value FROM settings WHERE key = 'wifi_ssid'");
+    if (!checkWifiSsid || !String(checkWifiSsid.value || '').trim()) {
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('wifi_ssid', '@BWORK')");
+    }
   } catch (e) {}
 
   // Seed default roles if empty
   const roleCount = await dbQuery.get('SELECT COUNT(*) as count FROM roles');
   if (roleCount.count === 0) {
     await dbQuery.run("INSERT INTO roles (name, label, permissions, is_system) VALUES (?, ?, ?, 1)", [
-      'admin', 'ผู้ดูแลระบบ (Admin)', 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation'
+      'admin', 'ผู้ดูแลระบบ (Admin)', 'pos,dashboard,pending,layout,history,quotations,hour-credits,customers,tickets,manage,admin-users,admin-system,admin-promotion,admin-quotation,admin-backup,admin-dooraccess,admin-general'
     ]);
     await dbQuery.run("INSERT INTO roles (name, label, permissions, is_system) VALUES (?, ?, ?, 1)", [
-      'staff', 'พนักงานต้อนรับ (Reception)', 'pos,pending,layout,history,quotations'
+      'staff', 'พนักงานต้อนรับ (Reception)', 'pos,pending,layout,history,quotations,hour-credits,customers,tickets'
     ]);
   }
 
@@ -631,10 +729,10 @@ async function initDatabase() {
   if (userCount.count === 0) {
     // default user: admin / admin123
     await dbQuery.run('INSERT INTO users (username, password_hash, role, permissions, fullname) VALUES (?, ?, ?, ?, ?)', [
-      'admin', hashPassword('admin123'), 'admin', 'pos,dashboard,pending,layout,manage,history,quotations,admin-users,admin-system,admin-backup,admin-quotation', 'ผู้ดูแลระบบหลัก'
+      'admin', hashPassword('admin123'), 'admin', 'pos,dashboard,pending,layout,history,quotations,hour-credits,customers,tickets,manage,admin-users,admin-system,admin-promotion,admin-quotation,admin-backup,admin-dooraccess,admin-general', 'ผู้ดูแลระบบหลัก'
     ]);
     await dbQuery.run('INSERT INTO users (username, password_hash, role, permissions, fullname) VALUES (?, ?, ?, ?, ?)', [
-      'staff', hashPassword('staff123'), 'staff', 'pos,pending,layout,history,quotations', 'พนักงานต้อนรับประจำกะ'
+      'staff', hashPassword('staff123'), 'staff', 'pos,pending,layout,history,quotations,hour-credits,customers,tickets', 'พนักงานต้อนรับประจำกะ'
     ]);
   }
 

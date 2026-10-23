@@ -104,4 +104,4 @@ async function runMigrations(dbQuery) {
   }
 }
 
-module.exports = { runMigrations };
+module.exports = { runMigrations, executeMigrationSql };

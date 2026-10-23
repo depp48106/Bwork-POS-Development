@@ -1,3 +1,5 @@
+import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
+import AttachSlipModal from './AttachSlipModal';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import {
   Search,
@@ -25,7 +27,8 @@ import {
   Phone,
   User,
   Copy,
-  Check
+  Check,
+  AlertCircle
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import ReceiptPrint from './ReceiptPrint';
@@ -46,7 +49,13 @@ import {
   getDateOffsetBangkok,
   getStartOfMonthBangkok
 } from '../utils/dashboardExport';
-import { normalizeBookingFinancials } from '../utils/financialUtils';
+import {
+  normalizeBookingFinancials,
+  formatMoney,
+  getPaymentMethodLabel,
+  getTransactionTypeLabel
+} from '../utils/financialUtils';
+import { API_BASE } from '../apiConfig';
 
 const CUSTOMER_TYPE_OPTIONS = [
   { value: 'all', label: 'ทุกประเภท' },
@@ -95,10 +104,53 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
   // Modals state
   const [selectedBooking, setSelectedBooking] = useState(null);
+  const [attachingTxId, setAttachingTxId] = useState(null);
+  const attachTxFileInputRef = useRef(null);
+
+  const handleAttachSlipToTransaction = async (bookingId, paymentId, file) => {
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      if (sysAlert) await sysAlert('ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64Data = e.target.result;
+      try {
+        const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+        const res = await fetch(`/api/bookings/${bookingId}/payments/${paymentId}/slip`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({ slip_image: base64Data })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          if (sysAlert) await sysAlert('แนบสลิปหลักฐานเรียบร้อยแล้ว');
+          fetchPaymentTransactions(bookingId);
+          fetchHistoryBookings(true);
+        } else {
+          if (sysAlert) await sysAlert(data.error || 'เกิดข้อผิดพลาดในการแนบสลิป');
+        }
+      } catch (err) {
+        console.error('Error attaching slip in history:', err);
+        if (sysAlert) await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
   const [selectedTaxBooking, setSelectedTaxBooking] = useState(null);
   const [viewingSlipBooking, setViewingSlipBooking] = useState(null);
-  const [taxCopied, setTaxCopied] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [basecampQuota, setBasecampQuota] = useState(null);
+  const [basecampQuotaLoading, setBasecampQuotaLoading] = useState(false);
+  const [basecampQuotaError, setBasecampQuotaError] = useState(null);
+  const [paymentTransactions, setPaymentTransactions] = useState([]);
+  const [attachSlipModalData, setAttachSlipModalData] = useState(null);
+  const [isLoadingPayments, setIsLoadingPayments] = useState(false);
+  const activePaymentFetchIdRef = useRef(null);
 
   // Dashboard Export Modal State
   const [showExportModal, setShowExportModal] = useState(false);
@@ -242,6 +294,117 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       sysAlert('ไม่สามารถโหลดรายละเอียดใบจองนี้ได้');
     }
   };
+
+  useEffect(() => {
+    if (showDetailsModal && selectedBooking?.customer_type === 'basecamp') {
+      const b = selectedBooking;
+      const subType = b.basecamp_sub_type || 'office';
+      const unit = b.basecamp_unit;
+      if (!unit) {
+        setBasecampQuota(null);
+        setBasecampQuotaLoading(false);
+        setBasecampQuotaError('missing_unit');
+        return;
+      }
+      setBasecampQuotaLoading(true);
+      setBasecampQuotaError(null);
+
+      const firstItem = b.items?.[0] || {};
+      const serviceTimeStr = firstItem.start_time || b.start_time || b.booking_date || b.created_at;
+      let month, year;
+      if (serviceTimeStr) {
+        const cleanStr = String(serviceTimeStr).replace(' ', 'T');
+        const [dPart] = cleanStr.split('T');
+        if (dPart && dPart.includes('-')) {
+          const parts = dPart.split('-');
+          if (parts.length >= 2) {
+            year = parseInt(parts[0], 10);
+            month = parseInt(parts[1], 10);
+          }
+        }
+      }
+      if (!month || !year || isNaN(month) || isNaN(year)) {
+        const now = new Date();
+        month = now.getMonth() + 1;
+        year = now.getFullYear();
+      }
+
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+      fetch(`${API_BASE}/api/basecamp/quota?sub_type=${encodeURIComponent(subType)}&unit=${encodeURIComponent(unit)}&month=${month}&year=${year}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      })
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then(data => {
+          setBasecampQuota(data);
+        })
+        .catch(err => {
+          console.error('Failed to load Basecamp quota:', err);
+          setBasecampQuota(null);
+          setBasecampQuotaError(err.message || 'load_failed');
+        })
+        .finally(() => {
+          setBasecampQuotaLoading(false);
+        });
+    } else if (!showDetailsModal) {
+      setBasecampQuota(null);
+      setBasecampQuotaLoading(false);
+      setBasecampQuotaError(null);
+    }
+  }, [showDetailsModal, selectedBooking?.id, selectedBooking?.customer_type, selectedBooking?.basecamp_unit, selectedBooking?.basecamp_sub_type]);
+
+  // Payment transactions synchronization for History Detail Modal (P3)
+  const fetchPaymentTransactions = async (bookingId) => {
+    if (!bookingId) {
+      setPaymentTransactions([]);
+      return;
+    }
+    activePaymentFetchIdRef.current = bookingId;
+    setIsLoadingPayments(true);
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const res = await fetch(`/api/bookings/${bookingId}/payments`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (activePaymentFetchIdRef.current === bookingId) {
+          setPaymentTransactions(data.payments || []);
+        }
+      } else {
+        if (activePaymentFetchIdRef.current === bookingId) {
+          setPaymentTransactions([]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch payment transactions in History:', err);
+      if (activePaymentFetchIdRef.current === bookingId) {
+        setPaymentTransactions([]);
+      }
+    } finally {
+      if (activePaymentFetchIdRef.current === bookingId) {
+        setIsLoadingPayments(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const targetId = (showDetailsModal && selectedBooking?.id) || viewingSlipBooking?.id;
+    if (targetId) {
+      fetchPaymentTransactions(targetId);
+    } else {
+      activePaymentFetchIdRef.current = null;
+      setPaymentTransactions([]);
+    }
+  }, [showDetailsModal, selectedBooking?.id, viewingSlipBooking?.id]);
 
   const triggerPrint = () => {
     printReceipt('print-receipt-area');
@@ -1199,7 +1362,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                   color: isLine ? '#059669' : 'var(--primary-color)',
                                   fontWeight: 700
                                 }}>
-                                  {isLine ? '📱 LINE OA' : '🏪 POS'}
+                                  {isLine ? 'LINE OA' : 'POS'}
                                 </span>
                               </div>
                             </td>
@@ -1321,6 +1484,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         if (key === 'payment_status') {
                           const fin = normalizeBookingFinancials(b);
                           const isDep = fin ? fin.is_deposit : (b.payment_status === 'deposit');
+                          const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
                           const isUnpaid = fin ? fin.is_pending : (b.payment_status === 'pending' || b.payment_status === 'unpaid');
                           const isRev = fin ? fin.is_reviewing : (b.payment_status === 'reviewing');
 
@@ -1358,6 +1522,22 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                   <CheckCircle2 size={11} />
                                   <span>สิทธิ์ภายใน</span>
                                 </span>
+                              ) : isRejected ? (
+                                <span style={{
+                                  padding: '2px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                                  color: '#dc2626',
+                                  border: '1px solid rgba(239, 68, 68, 0.25)',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}>
+                                  <AlertCircle size={11} />
+                                  <span>สลิปถูกปฏิเสธ — รอหลักฐานใหม่</span>
+                                </span>
                               ) : isDep ? (
                                 <span style={{
                                   padding: '2px 8px',
@@ -1375,37 +1555,73 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                   <span>มัดจำ</span>
                                 </span>
                               ) : isRev ? (
-                                <span style={{
-                                  padding: '2px 8px',
-                                  borderRadius: '6px',
-                                  fontSize: '0.72rem',
-                                  fontWeight: 700,
-                                  backgroundColor: 'rgba(14, 165, 233, 0.12)',
-                                  color: '#0284c7',
-                                  border: '1px solid rgba(14, 165, 233, 0.25)',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px'
-                                }}>
-                                  <Clock size={11} />
-                                  <span>รอตรวจสลิป</span>
-                                </span>
+                                (b.payment_status === 'unpaid' && b.slip_image_url) ? (
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                    color: '#d97706',
+                                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                  }}>
+                                    <Clock size={11} />
+                                    <span>หลักฐานรอตรวจสอบ</span>
+                                  </span>
+                                ) : (
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    backgroundColor: 'rgba(14, 165, 233, 0.12)',
+                                    color: '#0284c7',
+                                    border: '1px solid rgba(14, 165, 233, 0.25)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                  }}>
+                                    <Clock size={11} />
+                                    <span>รอตรวจสลิป</span>
+                                  </span>
+                                )
                               ) : isUnpaid ? (
-                                <span style={{
-                                  padding: '2px 8px',
-                                  borderRadius: '6px',
-                                  fontSize: '0.72rem',
-                                  fontWeight: 700,
-                                  backgroundColor: 'rgba(225, 29, 72, 0.12)',
-                                  color: '#e11d48',
-                                  border: '1px solid rgba(225, 29, 72, 0.25)',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px'
-                                }}>
-                                  <Clock size={11} />
-                                  <span>รอชำระ</span>
-                                </span>
+                                b.slip_image_url ? (
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                    color: '#d97706',
+                                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                  }}>
+                                    <Clock size={11} />
+                                    <span>หลักฐานรอตรวจสอบ</span>
+                                  </span>
+                                ) : (
+                                  <span style={{
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    backgroundColor: 'rgba(225, 29, 72, 0.12)',
+                                    color: '#e11d48',
+                                    border: '1px solid rgba(225, 29, 72, 0.25)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                  }}>
+                                    <Clock size={11} />
+                                    <span>รอชำระ</span>
+                                  </span>
+                                )
                               ) : (
                                 <span style={{
                                   padding: '2px 8px',
@@ -1633,14 +1849,24 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(249, 115, 22, 0.12)', color: '#ea580c', fontWeight: 800 }}>
                           สิทธิ์ภายใน
                         </span>
+                      ) : (fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected')) ? (
+                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(239, 68, 68, 0.12)', color: '#dc2626', fontWeight: 800 }}>
+                          สลิปถูกปฏิเสธ — รอหลักฐานใหม่
+                        </span>
                       ) : fin?.is_deposit ? (
                         <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(245, 158, 11, 0.12)', color: '#d97706', fontWeight: 800 }}>
                           มัดจำ
                         </span>
                       ) : fin?.is_reviewing ? (
-                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(14, 165, 233, 0.12)', color: '#0284c7', fontWeight: 800 }}>
-                          รอตรวจสลิป
-                        </span>
+                        (b.payment_status === 'unpaid' && b.slip_image_url) ? (
+                          <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#d97706', border: '1px solid rgba(245, 158, 11, 0.35)', fontWeight: 800 }}>
+                            หลักฐานรอตรวจสอบ
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(14, 165, 233, 0.12)', color: '#0284c7', fontWeight: 800 }}>
+                            รอตรวจสลิป
+                          </span>
+                        )
                       ) : fin?.is_pending ? (
                         <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(225, 29, 72, 0.12)', color: '#e11d48', fontWeight: 800 }}>
                           รอชำระ
@@ -1672,8 +1898,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   <div style={{ padding: '8px 10px', borderRadius: '10px', backgroundColor: 'var(--bg-hover)', fontSize: '0.8rem', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     <div style={{ fontWeight: 700, color: 'var(--text-main)' }}>{roomName}</div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                      <span>📅 {usage.dateStr}</span>
-                      {usage.timeStr ? <span>⏰ {usage.timeStr}</span> : null}
+                      <span>{usage.dateStr}</span>
+                      {usage.timeStr ? <span>{usage.timeStr}</span> : null}
                     </div>
                   </div>
 
@@ -1975,6 +2201,34 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     </span>
                   </div>
                 </div>
+              ) : (selectedBooking.payment_status === 'rejected' || selectedBooking.slip_verify_status === 'rejected') ? (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  color: '#dc2626',
+                  fontWeight: '700',
+                  fontSize: '0.875rem',
+                  backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                  padding: '14px 18px',
+                  borderRadius: '16px',
+                  border: '1px solid rgba(239, 68, 68, 0.25)'
+                }}>
+                  <AlertCircle size={20} />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                    <span>สลิปถูกปฏิเสธ — รอหลักฐานใหม่</span>
+                    {selectedBooking.rejection_reason && (
+                      <span style={{ fontSize: '0.8rem', color: '#991b1b', fontWeight: 600 }}>
+                        <strong>เหตุผล:</strong> {selectedBooking.rejection_reason}
+                      </span>
+                    )}
+                    {selectedBooking.rejection_time && (
+                      <span style={{ fontSize: '0.72rem', color: '#7f1d1d' }}>
+                        เวลาที่ปฏิเสธ: {formatTransactionDateTime(selectedBooking.rejection_time)}
+                      </span>
+                    )}
+                  </div>
+                </div>
               ) : selectedBooking.payment_status === 'internal_free' ? (
                 <div style={{
                   display: 'flex',
@@ -2028,9 +2282,10 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 {selectedBooking.customer_type && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
                     <span style={{ color: 'var(--text-muted)' }}>ประเภทลูกค้า:</span>
-                    <strong style={{ color: selectedBooking.customer_type === 'builtland' ? '#fb923c' : selectedBooking.customer_type === 'basecamp' ? '#c084fc' : '#60a5fa' }}>
+                    <strong style={{ color: selectedBooking.customer_type === 'builtland' ? '#fb923c' : selectedBooking.customer_type === 'basecamp' ? '#c084fc' : selectedBooking.customer_type === 'shop' ? '#10b981' : '#60a5fa' }}>
                       {selectedBooking.customer_type === 'builtland' ? 'พนักงาน Builtland' :
                        selectedBooking.customer_type === 'basecamp' ? `ผู้เช่า Basecamp (${selectedBooking.basecamp_sub_type === 'hotdesk' ? 'Hotdesk ' : 'Office '}${selectedBooking.basecamp_unit || ''})` :
+                       selectedBooking.customer_type === 'shop' ? 'ร้านค้าพันธมิตร (Shop)' :
                        selectedBooking.customer_type === 'online' ? 'จองออนไลน์' : 'ลูกค้า Walk-in'}
                     </strong>
                   </div>
@@ -2039,6 +2294,105 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
                     <span style={{ color: 'var(--text-muted)' }}>โควต้าฟรีที่ใช้:</span>
                     <strong style={{ color: '#10b981' }}>{selectedBooking.quota_hours_used} ชั่วโมง (ฟรี)</strong>
+                  </div>
+                )}
+                {selectedBooking.customer_type === 'basecamp' && (
+                  <div style={{
+                    marginTop: '4px',
+                    padding: '12px 14px',
+                    backgroundColor: 'rgba(168, 85, 247, 0.05)',
+                    borderRadius: '14px',
+                    border: '1px solid rgba(168, 85, 247, 0.2)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.80rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                        โควตาการใช้งานห้องประชุม
+                      </span>
+                      <span style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        color: '#9333ea',
+                        background: 'rgba(168, 85, 247, 0.12)',
+                        padding: '2px 6px',
+                        borderRadius: '999px',
+                        border: '1px solid rgba(168, 85, 247, 0.25)'
+                      }}>
+                        Basecamp Quota
+                      </span>
+                    </div>
+
+                    {basecampQuotaLoading && !basecampQuota && (
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center', padding: '6px' }}>
+                        กำลังโหลดข้อมูลโควตา...
+                      </div>
+                    )}
+
+                    {!basecampQuotaLoading && basecampQuotaError && (
+                      <div style={{ fontSize: '0.75rem', color: 'var(--danger-color)' }}>
+                        {basecampQuotaError === 'missing_unit'
+                          ? 'ไม่พบข้อมูลยูนิต Basecamp ในรายการจองนี้'
+                          : 'ไม่สามารถโหลดข้อมูลโควตาได้'}
+                      </div>
+                    )}
+
+                    {basecampQuota && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', textAlign: 'center' }}>
+                        <div style={{ backgroundColor: 'var(--bg-card)', padding: '6px 8px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>ทั้งหมด</div>
+                          <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)' }}>{basecampQuota.max_quota} ชม.</div>
+                        </div>
+                        <div style={{ backgroundColor: 'var(--bg-card)', padding: '6px 8px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>ใช้ไปแล้ว</div>
+                          <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)' }}>{basecampQuota.used_quota} ชม.</div>
+                        </div>
+                        <div style={{
+                          backgroundColor: basecampQuota.remaining_quota === 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                          padding: '6px 8px',
+                          borderRadius: '8px',
+                          border: `1px solid ${basecampQuota.remaining_quota === 0 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(34, 197, 94, 0.3)'}`
+                        }}>
+                          <div style={{ fontSize: '0.68rem', color: basecampQuota.remaining_quota === 0 ? '#ef4444' : '#16a34a', fontWeight: 600 }}>คงเหลือ</div>
+                          <div style={{ fontSize: '0.82rem', fontWeight: 800, color: basecampQuota.remaining_quota === 0 ? '#dc2626' : '#15803d' }}>{basecampQuota.remaining_quota} ชม.</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {selectedBooking.customer_type === 'shop' && (
+                  <div style={{
+                    marginTop: '4px',
+                    padding: '12px 14px',
+                    backgroundColor: 'rgba(5, 150, 105, 0.05)',
+                    borderRadius: '14px',
+                    border: '1px solid rgba(5, 150, 105, 0.2)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.80rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                        สิทธิ์โควตาร้านค้าพันธมิตร (Shop)
+                      </span>
+                      <span style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        color: '#059669',
+                        background: 'rgba(5, 150, 105, 0.12)',
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(5, 150, 105, 0.25)'
+                      }}>
+                        4 ชม./เดือน
+                      </span>
+                    </div>
+                    {Number(selectedBooking.quota_hours_used) > 0 && (
+                      <div style={{ fontSize: '0.78rem', color: '#059669', fontWeight: 600 }}>
+                        การจองนี้ตัดโควตา: {selectedBooking.quota_hours_used} ชั่วโมง
+                      </div>
+                    )}
                   </div>
                 )}
                 {selectedBooking.contact && (
@@ -2095,40 +2449,375 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   );
                 })()}
 
-                {selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' && (
-                  <div style={{ marginTop: '4px', padding: '10px 12px', backgroundColor: 'rgba(14, 165, 233, 0.08)', borderRadius: '12px', border: '1px solid rgba(14, 165, 233, 0.25)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#0284c7', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                        <Eye size={13} /> สลิปโอนเงินที่แนบมา:
-                      </span>
-                      {selectedBooking.slip_trans_ref && (
-                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                          Ref: {selectedBooking.slip_trans_ref}
-                        </span>
+                {/* Payment Transactions & Historical Evidence (P3) */}
+                <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <FileText size={13} style={{ color: 'var(--primary-color)' }} /> รายการธุรกรรมและหลักฐานสลิป:
+                    </span>
+                    {isLoadingPayments && (
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>กำลังโหลด...</span>
+                    )}
+                  </div>
+
+                  {paymentTransactions && paymentTransactions.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {paymentTransactions.map((tx) => (
+                        <div
+                          key={tx.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '8px 10px',
+                            borderRadius: '8px',
+                            background: 'var(--bg-hover)',
+                            border: '1px solid var(--border-color)',
+                            fontSize: '0.78rem'
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span>{getTransactionTypeLabel ? getTransactionTypeLabel(tx.transaction_type) : tx.transaction_type}</span>
+                              <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(37, 99, 235, 0.12)', color: 'var(--primary-color)', fontWeight: 600 }}>
+                                {getPaymentMethodLabel ? getPaymentMethodLabel(tx.payment_method) : tx.payment_method}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                              {formatTransactionDateTime(tx.payment_time || tx.created_at)}
+                            </div>
+                          </div>
+                          <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px' }}>
+                            <div style={{ fontWeight: 800, color: '#16a34a', fontSize: '0.86rem' }}>
+                              +฿{formatMoney(tx.amount)}
+                            </div>
+                            {tx.receipt_number && (
+                              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                #{tx.receipt_number}
+                              </div>
+                            )}
+                            {tx.slip_url ? (
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <button
+                                  type="button"
+                                  id={`history-btn-view-slip-tx-${tx.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setViewingSlipBooking({
+                                      ...selectedBooking,
+                                      slip_image_url: tx.slip_url,
+                                      receipt_number: tx.receipt_number || selectedBooking.receipt_number,
+                                      active_transaction_id: tx.id
+                                    });
+                                  }}
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                    color: 'var(--primary-color)',
+                                    border: '1px solid rgba(37, 99, 235, 0.25)',
+                                    fontSize: '0.7rem',
+                                    fontWeight: 700,
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  <Eye size={10} />
+                                  <span>ดูสลิป #{tx.id}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  id={`history-btn-reupload-slip-tx-${tx.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setAttachSlipModalData({ booking: selectedBooking, transaction: tx });
+                                  }}
+                                  title="เปลี่ยนรูปสลิป"
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    padding: '2px 7px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'var(--bg-card)',
+                                    color: 'var(--text-muted)',
+                                    border: '1px solid var(--border-color)',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 700,
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  <RefreshCw size={9} />
+                                  <span>เปลี่ยน</span>
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                id={`history-btn-attach-slip-tx-${tx.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAttachSlipModalData({ booking: selectedBooking, transaction: tx });
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                  padding: '2px 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                  color: '#2563eb',
+                                  border: '1px solid rgba(37, 99, 235, 0.3)',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 750,
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <Plus size={10} />
+                                <span>แนบสลิป</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: '10px',
+                        backgroundColor: 'var(--bg-hover)',
+                        border: '1px solid var(--border-color)',
+                        fontSize: '0.78rem'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+                        <div>
+                          <div style={{ fontWeight: 750, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                            <FileText size={13} style={{ color: 'var(--text-muted)' }} />
+                            <span>ไม่พบรายการธุรกรรมการชำระเงินแยกสำหรับการจองนี้</span>
+                          </div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px', lineHeight: '1.4' }}>
+                            {selectedBooking.payment_status === 'paid' || Number(selectedBooking.paid_amount) > 0 ? (
+                              <span>
+                                ยอดชำระตามบันทึกเดิม: <strong>฿{formatMoney(selectedBooking.paid_amount)}</strong> ({getPaymentMethodLabel ? getPaymentMethodLabel(selectedBooking.payment_method) : selectedBooking.payment_method}) — สามารถแนบหลักฐานสลิปย้อนหลังเพื่อบันทึกประวัติได้
+                              </span>
+                            ) : selectedBooking.payment_status === 'unpaid' ? (
+                              <span>
+                                สถานะการจองเดิม: <strong>ยังไม่ชำระเงิน (Unpaid)</strong> — การแนบสลิปย้อนหลังเป็นการบันทึกเอกสารหลักฐาน จะไม่เปลี่ยนแปลงยอดรับชำระหรือสถานะการเงิน
+                              </span>
+                            ) : (
+                              <span>
+                                สถานะการจอง: <strong>{selectedBooking.payment_status}</strong> — สามารถแนบหรือดูหลักฐานสลิปเดิมได้เพื่อการตรวจสอบย้อนหลัง
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ flexShrink: 0 }}>
+                          {selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                              {selectedBooking.payment_status === 'unpaid' && (
+                                <span
+                                  id="history-badge-legacy-slip-unpaid"
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                    color: '#d97706',
+                                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 750
+                                  }}
+                                >
+                                  <Clock size={11} />
+                                  <span>หลักฐานรอตรวจสอบ</span>
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                id="history-btn-view-legacy-slip"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setViewingSlipBooking(selectedBooking);
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                  color: 'var(--primary-color)',
+                                  border: '1px solid rgba(37, 99, 235, 0.25)',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <Eye size={11} />
+                                <span>ดูสลิป</span>
+                              </button>
+                              <button
+                                type="button"
+                                id="history-btn-reupload-legacy-slip"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setAttachSlipModalData({ booking: selectedBooking, transaction: null });
+                                }}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'var(--bg-card)',
+                                  color: 'var(--text-muted)',
+                                  border: '1px solid var(--border-color)',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <RefreshCw size={10} />
+                                <span>เปลี่ยนสลิป</span>
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              id="history-btn-attach-legacy-slip"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setAttachSlipModalData({ booking: selectedBooking, transaction: null });
+                              }}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '4px 10px',
+                                borderRadius: '6px',
+                                backgroundColor: '#2563eb',
+                                color: '#ffffff',
+                                border: 'none',
+                                fontSize: '0.72rem',
+                                fontWeight: 750,
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <Plus size={11} />
+                              <span>แนบสลิปย้อนหลัง</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' && (
+                        <div style={{ marginTop: '8px', textAlign: 'center', paddingTop: '8px', borderTop: '1px dashed var(--border-color)' }}>
+                          <a href={selectedBooking.slip_image_url} target="_blank" rel="noreferrer" title="คลิกเพื่อดูรูปสลิปขนาดเต็ม">
+                            <img
+                              src={selectedBooking.slip_image_url}
+                              alt="สลิปการชำระเงิน"
+                              style={{ maxHeight: '120px', maxWidth: '100%', borderRadius: '6px', border: '1px solid var(--border-color)', objectFit: 'contain' }}
+                            />
+                          </a>
+                        </div>
                       )}
                     </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <a href={selectedBooking.slip_image_url} target="_blank" rel="noreferrer" title="คลิกเพื่อดูรูปสลิปขนาดเต็ม">
-                        <img
-                          src={selectedBooking.slip_image_url}
-                          alt="สลิปการชำระเงิน"
-                          style={{ maxHeight: '130px', maxWidth: '100%', borderRadius: '8px', border: '1px solid var(--border-color)', objectFit: 'contain', cursor: 'zoom-in', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-                        />
-                      </a>
-                    </div>
-                    <div style={{ textAlign: 'center' }}>
-                      <a
-                        href={selectedBooking.slip_image_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ fontSize: '0.76rem', color: 'var(--primary-color)', textDecoration: 'none', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                      >
-                        <ExternalLink size={12} />
-                        <span>เปิดดูรูปภาพสลิปขนาดเต็ม (Full Size)</span>
-                      </a>
-                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Dedicated Tax Invoice Card */}
+              <div style={{
+                borderRadius: '16px',
+                border: '1px solid var(--border-color)',
+                backgroundColor: 'var(--bg-card)',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <FileText size={18} style={{ color: '#2563eb' }} />
+                    <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                      ข้อมูลและเอกสารใบกำกับภาษี
+                    </span>
+                  </div>
+                  <span style={{
+                    fontSize: '0.72rem',
+                    fontWeight: 800,
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    backgroundColor: selectedBooking.tax_invoice_status === 'issued' ? 'rgba(16, 185, 129, 0.12)' : (selectedBooking.tax_invoice_required === 1 ? 'rgba(37, 99, 235, 0.12)' : 'var(--bg-hover)'),
+                    color: selectedBooking.tax_invoice_status === 'issued' ? '#10b981' : (selectedBooking.tax_invoice_required === 1 ? '#2563eb' : 'var(--text-muted)')
+                  }}>
+                    {selectedBooking.tax_invoice_status === 'issued' ? 'ออกเอกสารแล้ว' : (selectedBooking.tax_invoice_required === 1 ? 'ขอใบกำกับภาษี' : 'ยังไม่ขอ')}
+                  </span>
+                </div>
+
+                {selectedBooking.tax_invoice_required === 1 || selectedBooking.tax_name ? (
+                  <div style={{
+                    fontSize: '0.8rem',
+                    color: 'var(--text-main)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    backgroundColor: 'var(--bg-main)',
+                    padding: '10px 12px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <div><strong>ชื่อผู้เสียภาษี:</strong> {selectedBooking.tax_name || '-'}</div>
+                    <div><strong>เลขประจำตัวผู้เสียภาษี:</strong> <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{selectedBooking.tax_id || '-'}</span> ({selectedBooking.tax_branch === 'branch' ? `สาขา ${selectedBooking.tax_branch_number || ''}` : 'สำนักงานใหญ่'})</div>
+                    {selectedBooking.tax_address && (
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.74rem' }}>
+                        <strong>ที่อยู่:</strong> {selectedBooking.tax_address}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)',
+                    backgroundColor: 'var(--bg-main)',
+                    padding: '12px',
+                    borderRadius: '10px',
+                    border: '1px dashed var(--border-color)',
+                    textAlign: 'center'
+                  }}>
+                    ยังไม่ได้ขอใบกำกับภาษีสำหรับรายการนี้ สามารถกดจัดการเพื่อบันทึกข้อมูลภาษีได้
                   </div>
                 )}
+
+                <button
+                  type="button"
+                  id="history-btn-manage-tax-invoice"
+                  onClick={() => setSelectedTaxBooking(selectedBooking)}
+                  style={{
+                    width: '100%',
+                    height: '38px',
+                    borderRadius: '10px',
+                    backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                    border: '1px solid rgba(37, 99, 235, 0.3)',
+                    color: '#2563eb',
+                    fontSize: '0.82rem',
+                    fontWeight: 800,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <FileText size={16} />
+                  <span>จัดการใบกำกับภาษี</span>
+                </button>
               </div>
 
               {/* Booking Actions */}
@@ -2143,7 +2832,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     borderRadius: '14px',
                     border: '1px dashed var(--border-color)'
                   }}>
-                    ⚠️ รายการนี้ถูกยกเลิกแล้ว จึงไม่มีการพิมพ์หรือส่งออกใบเสร็จรับเงิน
+                    รายการนี้ถูกยกเลิกแล้ว จึงไม่มีการพิมพ์หรือส่งออกใบเสร็จรับเงิน
                   </div>
                 ) : (
                   <>
@@ -2231,182 +2920,34 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
         </div>
       )}
 
-      {/* TAX INVOICE DETAILS & PRINT MODAL */}
-      {selectedTaxBooking && (() => {
-        const handleCopyAllTaxFields = () => {
-          let lines = [];
-          if (selectedTaxBooking.tax_name) lines.push(`ชื่อผู้เสียภาษี: ${selectedTaxBooking.tax_name}`);
-          if (selectedTaxBooking.tax_id) lines.push(`เลขประจำตัวผู้เสียภาษี: ${selectedTaxBooking.tax_id}`);
-          if (selectedTaxBooking.tax_address) lines.push(`ที่อยู่: ${selectedTaxBooking.tax_address}`);
-          if (selectedTaxBooking.tax_phone || selectedTaxBooking.contact) lines.push(`เบอร์โทรศัพท์: ${selectedTaxBooking.tax_phone || selectedTaxBooking.contact}`);
+      {/* ATTACH SLIP MODAL (HISTORICAL / LEGACY SLIP ATTACHMENT) */}
+      {attachSlipModalData && (
+        <AttachSlipModal
+          isOpen={!!attachSlipModalData}
+          booking={attachSlipModalData.booking}
+          targetTransaction={attachSlipModalData.transaction}
+          onClose={() => setAttachSlipModalData(null)}
+          onSuccess={(resData) => {
+            const bId = attachSlipModalData.booking?.id;
+            if (bId) {
+              fetchPaymentTransactions(bId);
+              setSelectedBooking(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              fetchHistoryBookings(true);
+            }
+          }}
+          sysAlert={sysAlert}
+        />
+      )}
 
-          const deliveryText = selectedTaxBooking.tax_delivery_method === 'postal'
-            ? `จัดส่งทางไปรษณีย์ / จดหมาย (ที่อยู่จัดส่ง: ${selectedTaxBooking.tax_postal_address || selectedTaxBooking.tax_address || '-'})`
-            : (selectedTaxBooking.tax_delivery_method === 'pickup' ? 'รับด้วยตนเองที่หน้าร้าน' : 'จัดส่งทางอีเมล (e-Tax)');
-          lines.push(`ช่องทางการจัดส่ง: ${deliveryText}`);
-
-          const fullText = lines.join('\n');
-          navigator.clipboard.writeText(fullText);
-          setTaxCopied(true);
-          setTimeout(() => setTaxCopied(false), 2500);
-          if (sysAlert) {
-            sysAlert('คัดลอกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว');
-          }
-        };
-
-        return (
-          <div style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(15, 23, 42, 0.85)',
-            backdropFilter: 'blur(8px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-            padding: '16px'
-          }}>
-            <div className="card" style={{
-              width: '100%',
-              maxWidth: '560px',
-              padding: '24px',
-              borderRadius: '20px',
-              backgroundColor: 'var(--bg-card)',
-              border: '1px solid var(--border-color)',
-              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '16px',
-              position: 'relative',
-              maxHeight: '92vh',
-              overflowY: 'auto'
-            }}>
-              <button
-                style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
-                onClick={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
-              >
-                <X size={20} />
-              </button>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ width: '46px', height: '46px', borderRadius: '14px', backgroundColor: 'rgba(37, 99, 235, 0.15)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <FileText size={24} />
-                </div>
-                <div>
-                  <h3 style={{ fontSize: '1.25rem', fontWeight: 850, margin: 0, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span>ข้อมูลใบกำกับภาษี</span>
-                    <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(37, 99, 235, 0.15)', color: '#2563eb', fontWeight: 800 }}>Tax Invoice</span>
-                  </h3>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    ใบจอง <strong>{selectedTaxBooking.receipt_number || ('#' + selectedTaxBooking.id)}</strong> · ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{selectedTaxBooking.customer_name || '-'}</strong>
-                  </span>
-                </div>
-              </div>
-
-              {/* Tax Payer Info Box */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
-                <div style={{ padding: '14px 16px', borderRadius: '14px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ชื่อบุคคล / นิติบุคคล (ตาม ภ.พ.20):</span>
-                    <div style={{ fontWeight: 850, color: 'var(--text-main)', fontSize: '1rem', marginTop: '2px' }}>
-                      {selectedTaxBooking.tax_name || '-'}
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px' }}>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>เลขประจำตัวผู้เสียภาษี (13 หลัก):</span>
-                      <div style={{ fontWeight: 900, color: 'var(--primary-color)', letterSpacing: '1.2px', marginTop: '2px', fontSize: '0.95rem' }}>
-                        {selectedTaxBooking.tax_id || '-'}
-                      </div>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>เบอร์โทรศัพท์:</span>
-                      <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
-                        {selectedTaxBooking.tax_phone || selectedTaxBooking.contact || '-'}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ที่อยู่สำหรับออกใบกำกับภาษี:</span>
-                    <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.45 }}>
-                      {selectedTaxBooking.tax_address || '-'}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Delivery details box */}
-                <div style={{ padding: '12px 16px', borderRadius: '14px', backgroundColor: 'rgba(59, 130, 246, 0.06)', border: '1px solid rgba(59, 130, 246, 0.25)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: '#2563eb', fontWeight: 800 }}>ช่องทางการจัดส่งเอกสาร:</span>
-                    <span style={{ fontWeight: 800, color: 'var(--text-main)', backgroundColor: 'rgba(255,255,255,0.8)', padding: '2px 8px', borderRadius: '6px', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
-                      {selectedTaxBooking.tax_delivery_method === 'postal' ? '📮 จัดส่งทางไปรษณีย์ / จดหมาย' : (selectedTaxBooking.tax_delivery_method === 'pickup' ? '🏢 รับด้วยตนเองที่หน้าร้าน' : '✉️ อีเมล / e-Tax')}
-                    </span>
-                  </div>
-
-                  {selectedTaxBooking.tax_delivery_method === 'postal' && (
-                    <div style={{ marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed rgba(59, 130, 246, 0.25)' }}>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ที่อยู่จัดส่งเอกสารทางไปรษณีย์:</span>
-                      <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.4 }}>
-                        {selectedTaxBooking.tax_postal_address || selectedTaxBooking.tax_address || '-'}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-                <button
-                  type="button"
-                  className="btn"
-                  style={{
-                    flex: 1.1,
-                    height: '44px',
-                    borderRadius: '12px',
-                    fontWeight: 700,
-                    fontSize: '0.85rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '6px',
-                    backgroundColor: taxCopied ? '#10b981' : 'var(--bg-hover)',
-                    color: taxCopied ? '#ffffff' : 'var(--text-main)',
-                    border: taxCopied ? '1.5px solid #10b981' : '1px solid var(--border-color)',
-                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                    cursor: 'pointer'
-                  }}
-                  onClick={handleCopyAllTaxFields}
-                >
-                  {taxCopied ? (
-                    <>
-                      <CheckCircle2 size={16} />
-                      <span>คัดลอกเรียบร้อยแล้ว!</span>
-                    </>
-                  ) : (
-                    <>
-                      <FileText size={16} />
-                      <span>คัดลอกข้อมูลใบกำกับ</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{ height: '44px', padding: '0 24px', borderRadius: '12px', fontWeight: 700, fontSize: '0.85rem' }}
-                  onClick={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
-                >
-                  ปิด
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {/* TAX INVOICE MANAGEMENT MODAL (PHASE 3 & 4) */}
+      {selectedTaxBooking && (
+        <TaxInvoiceManagementModal
+          booking={selectedTaxBooking}
+          onClose={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
+          onUpdated={() => fetchHistoryBookings(true)}
+          sysAlert={sysAlert}
+        />
+      )}
 
       {/* SLIP VIEWER MODAL (ดูสลิปย้อนหลัง) */}
       {viewingSlipBooking && (
@@ -2471,6 +3012,40 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 <X size={18} />
               </button>
             </div>
+
+            {/* Multiple Transaction Slips Selector (P3) */}
+            {paymentTransactions && paymentTransactions.filter(t => t.slip_url).length > 1 && (
+              <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '4px' }}>
+                {paymentTransactions.filter(t => t.slip_url).map((tx, idx) => {
+                  const isActive = viewingSlipBooking.slip_image_url === tx.slip_url;
+                  return (
+                    <button
+                      key={tx.id}
+                      type="button"
+                      onClick={() => setViewingSlipBooking(prev => ({
+                        ...prev,
+                        slip_image_url: tx.slip_url,
+                        receipt_number: tx.receipt_number || prev.receipt_number,
+                        active_transaction_id: tx.id
+                      }))}
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '8px',
+                        fontSize: '0.74rem',
+                        fontWeight: 700,
+                        backgroundColor: isActive ? 'var(--primary-color)' : 'var(--bg-hover)',
+                        color: isActive ? '#ffffff' : 'var(--text-main)',
+                        border: '1px solid ' + (isActive ? 'var(--primary-color)' : 'var(--border-color)'),
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      สลิป #{idx + 1} (+฿{formatMoney(tx.amount)})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Slip Image Container */}
             <div style={{

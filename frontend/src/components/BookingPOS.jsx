@@ -1,3 +1,6 @@
+import POSTaxAndSlipSection from './POSTaxAndSlipSection';
+import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
+import AttachSlipModal from './AttachSlipModal';
 import BasecampQuotaModal from './BasecampQuotaModal';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
@@ -5,7 +8,7 @@ import {
   User, Users, Building, Building2, Phone, FileText, Check, ChevronLeft, ChevronRight,
   Clock, Search, ChevronUp, ChevronDown, Image, CheckCircle2, Key, Send,
   AlertTriangle, LayoutGrid, Columns, Sparkles, Layers, Presentation, Laptop, Coffee, Car, BookmarkPlus, Zap,
-  Banknote, Smartphone, ExternalLink, Eye, EyeOff, Copy
+  Banknote, Smartphone, ExternalLink, Eye, EyeOff, Copy, RefreshCw
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import { printReceipt } from '../utils/printReceiptHelper';
@@ -87,7 +90,7 @@ const getUnifiedPaymentStatus = (ev) => {
   if (pStatus === 'rejected') {
     return {
       key: 'rejected',
-      label: 'ปฏิเสธสลิป',
+      label: 'สลิปถูกปฏิเสธ — รอหลักฐานใหม่',
       color: '#ef4444',
       bgLight: 'rgba(239, 68, 68, 0.12)',
       border: 'rgba(239, 68, 68, 0.35)',
@@ -145,7 +148,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     name: '',
     department: '',
     contact: '',
-    customer_type: 'walkin', // 'walkin', 'builtland', 'basecamp'
+    customer_type: 'walkin', // 'walkin', 'builtland', 'basecamp', 'shop'
+    customer_id: null,
+    contract_id: null,
     basecamp_sub_type: 'office', // 'office', 'hotdesk'
     basecamp_unit: '401', // Office 401-414, Hotdesk 419-422, 427-430
     internal_department: 'ฝ่ายการเงินและบัญชี',
@@ -155,6 +160,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [bookingDetails, setBookingDetails] = useState('');
 
   const [basecampQuota, setBasecampQuota] = useState({ max_quota: 4, used_quota: 0, remaining_quota: 4 });
+  const [shopQuota, setShopQuota] = useState({ max_quota: 4, used_quota: 0, remaining_quota: 4, contract_eligible: true });
+  const [registeredShops, setRegisteredShops] = useState([]);
+  const [registeredBasecamps, setRegisteredBasecamps] = useState([]);
 
   const BASECAMP_OFFICE_UNITS = ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'];
   const BASECAMP_HOTDESK_UNITS = ['419', '420', '421', '422', '427', '428', '429', '430'];
@@ -184,6 +192,37 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [cartDepositAmount, setCartDepositAmount] = useState('');
   const [isSubmittingCartBooking, setIsSubmittingCartBooking] = useState(false);
 
+  // Quick Booking Payment Slip & Tax Invoice States
+  const [quickSlipImage, setQuickSlipImage] = useState(null);
+  const [quickSlipFileName, setQuickSlipFileName] = useState('');
+  const [quickTaxRequired, setQuickTaxRequired] = useState(false);
+  const [quickTaxPayerType, setQuickTaxPayerType] = useState('corporate');
+  const [quickTaxName, setQuickTaxName] = useState('');
+  const [quickTaxId, setQuickTaxId] = useState('');
+  const [quickTaxBranchType, setQuickTaxBranchType] = useState('head');
+  const [quickTaxBranchNumber, setQuickTaxBranchNumber] = useState('');
+  const [quickTaxAddress, setQuickTaxAddress] = useState('');
+  const [quickTaxEmail, setQuickTaxEmail] = useState('');
+  const [quickTaxPhone, setQuickTaxPhone] = useState('');
+  const [quickTaxDeliveryMethod, setQuickTaxDeliveryMethod] = useState('email');
+  const [quickTaxPostalAddress, setQuickTaxPostalAddress] = useState('');
+
+  // Cart Checkout Payment Slip & Tax Invoice States
+  const [cartSlipImage, setCartSlipImage] = useState(null);
+  const [cartSlipFileName, setCartSlipFileName] = useState('');
+  const [cartTaxRequired, setCartTaxRequired] = useState(false);
+  const [cartTaxPayerType, setCartTaxPayerType] = useState('corporate');
+  const [cartTaxName, setCartTaxName] = useState('');
+  const [cartTaxId, setCartTaxId] = useState('');
+  const [cartTaxBranchType, setCartTaxBranchType] = useState('head');
+  const [cartTaxBranchNumber, setCartTaxBranchNumber] = useState('');
+  const [cartTaxAddress, setCartTaxAddress] = useState('');
+  const [cartTaxEmail, setCartTaxEmail] = useState('');
+  const [cartTaxPhone, setCartTaxPhone] = useState('');
+  const [cartTaxDeliveryMethod, setCartTaxDeliveryMethod] = useState('email');
+  const [cartTaxPostalAddress, setCartTaxPostalAddress] = useState('');
+  const [selectedTaxBooking, setSelectedTaxBooking] = useState(null);
+
   // Main interactive calendar navigation (Large Calendar)
   const today = new Date();
   const [calendarYear, setCalendarYear] = useState(today.getFullYear());
@@ -208,6 +247,48 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   // Room scheduling Slide-over Drawer / Modal
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [viewedEvent, setViewedEvent] = useState(null);
+
+  // Payment slip attachment modal & transactions for viewed booking
+  const [attachSlipModalData, setAttachSlipModalData] = useState(null);
+  const [posPaymentTransactions, setPosPaymentTransactions] = useState([]);
+  const [posLoadingPayments, setPosLoadingPayments] = useState(false);
+
+  const fetchPosPaymentTransactions = async (bookingId) => {
+    if (!bookingId) {
+      setPosPaymentTransactions([]);
+      return;
+    }
+    setPosLoadingPayments(true);
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const res = await fetch(`/api/bookings/${bookingId}/payments`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPosPaymentTransactions(data.payments || []);
+      } else {
+        setPosPaymentTransactions([]);
+      }
+    } catch (err) {
+      console.error('Failed to fetch payment transactions for POS viewedEvent:', err);
+      setPosPaymentTransactions([]);
+    } finally {
+      setPosLoadingPayments(false);
+    }
+  };
+
+  useEffect(() => {
+    const bId = viewedEvent?.booking_id || viewedEvent?.id;
+    if (bId) {
+      fetchPosPaymentTransactions(bId);
+    } else {
+      setPosPaymentTransactions([]);
+    }
+  }, [viewedEvent?.booking_id, viewedEvent?.id]);
   const [bookingType, setBookingType] = useState('hourly'); // 'hourly' | 'halfday' | 'daily'
   const [dailyTimeSlot, setDailyTimeSlot] = useState('08-17'); // '08-17' | '09-18' | '08-12' | '13-17'
   const [layoutType, setLayoutType] = useState('standard'); // 'standard' | 'classroom'
@@ -403,15 +484,36 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   };
 
 
-  // Fetch Basecamp Quota when unit/subtype changes
+  // Fetch registered customers (Shop and Basecamp) on mount
   useEffect(() => {
+    const token = localStorage.getItem('token') || '';
+    const authHeader = token ? { 'Authorization': `Bearer ${token}` } : {};
+    fetch('/api/customers?status=active', { headers: authHeader })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.customers) {
+          setRegisteredShops(data.customers.filter(c => c.customer_type === 'shop'));
+          setRegisteredBasecamps(data.customers.filter(c => c.customer_type === 'basecamp'));
+        }
+      })
+      .catch(err => console.error('Failed to load registered customers in POS:', err));
+  }, []);
+
+  // Fetch Basecamp or Shop Quota when unit/customer changes
+  useEffect(() => {
+    const curMonth = roomSchedule.date ? roomSchedule.date.substring(5, 7) : String(new Date().getMonth() + 1).padStart(2, '0');
+    const curYear = roomSchedule.date ? roomSchedule.date.substring(0, 4) : String(new Date().getFullYear());
+    const targetDate = roomSchedule.date || '';
+
     if (customer.customer_type === 'basecamp') {
       const subType = customer.basecamp_sub_type || 'office';
       const unit = customer.basecamp_unit || (subType === 'office' ? '401' : '419');
-      const curMonth = roomSchedule.date ? roomSchedule.date.substring(5, 7) : String(new Date().getMonth() + 1).padStart(2, '0');
-      const curYear = roomSchedule.date ? roomSchedule.date.substring(0, 4) : String(new Date().getFullYear());
 
-      fetch(`/api/basecamp/quota?sub_type=${subType}&unit=${unit}&month=${curMonth}&year=${curYear}`)
+      const url = customer.customer_id
+        ? `/api/customers/${customer.customer_id}/quota?month=${curMonth}&year=${curYear}&date=${targetDate}`
+        : `/api/basecamp/quota?sub_type=${subType}&unit=${unit}&month=${curMonth}&year=${curYear}`;
+
+      fetch(url)
         .then(res => res.json())
         .then(data => {
           if (data && !data.error) {
@@ -419,8 +521,21 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           }
         })
         .catch(err => console.error('Failed to fetch quota:', err));
+    } else if (customer.customer_type === 'shop') {
+      if (customer.customer_id) {
+        fetch(`/api/customers/${customer.customer_id}/quota?month=${curMonth}&year=${curYear}&date=${targetDate}`)
+          .then(res => res.json())
+          .then(data => {
+            if (data && !data.error) {
+              setShopQuota(data);
+            }
+          })
+          .catch(err => console.error('Failed to fetch shop quota:', err));
+      } else {
+        setShopQuota({ max_quota: 4, used_quota: 0, remaining_quota: 0, contract_eligible: false });
+      }
     }
-  }, [customer.customer_type, customer.basecamp_sub_type, customer.basecamp_unit, roomSchedule.date]);
+  }, [customer.customer_type, customer.customer_id, customer.basecamp_sub_type, customer.basecamp_unit, roomSchedule.date]);
 
   // Service selection modal
   const [showServicePicker, setShowServicePicker] = useState(false);
@@ -466,7 +581,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         if (showReceiptModal) {
           setShowReceiptModal(false);
           setPrintBooking(null);
-        } else if (viewedEvent) {
+        } else if (viewedEvent && !attachSlipModalData && !selectedTaxBooking) {
           setViewedEvent(null);
         } else if (showServicePicker) {
           setShowServicePicker(false);
@@ -977,6 +1092,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     setQuickPaymentMode('full');
     setQuickDepositAmount('');
     setPaymentMethod('cash');
+    setQuickSlipImage(null);
+    setQuickSlipFileName('');
+    setQuickTaxRequired(false);
+    setQuickTaxPayerType('corporate');
+    setQuickTaxName('');
+    setQuickTaxId('');
+    setQuickTaxBranchType('head');
+    setQuickTaxBranchNumber('');
+    setQuickTaxAddress('');
+    setQuickTaxEmail('');
+    setQuickTaxPhone('');
+    setQuickTaxDeliveryMethod('email');
+    setQuickTaxPostalAddress('');
   };
 
   const resetCartFinancials = () => {
@@ -985,19 +1113,63 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     setCartPaymentMode('full');
     setCartDepositAmount('');
     setCartPaymentMethod('cash');
+    setCartSlipImage(null);
+    setCartSlipFileName('');
+    setCartTaxRequired(false);
+    setCartTaxPayerType('corporate');
+    setCartTaxName('');
+    setCartTaxId('');
+    setCartTaxBranchType('head');
+    setCartTaxBranchNumber('');
+    setCartTaxAddress('');
+    setCartTaxEmail('');
+    setCartTaxPhone('');
+    setCartTaxDeliveryMethod('email');
+    setCartTaxPostalAddress('');
   };
 
   const handleCustomerTypeChange = (newType) => {
+    let newCustomerId = null;
+    let newContractId = null;
+    let newName = '';
+    let newContact = '';
+    let newSubType = 'office';
+    let newUnit = '401';
+
+    if (newType === 'shop') {
+      const firstShop = registeredShops[0];
+      if (firstShop) {
+        newCustomerId = firstShop.id;
+        newContractId = firstShop.active_contract?.id || null;
+        newName = firstShop.name;
+        newContact = firstShop.phone || firstShop.contact_name || '';
+      }
+    } else if (newType === 'basecamp') {
+      const matched = registeredBasecamps.find(b => b.basecamp_unit === '401');
+      if (matched) {
+        newCustomerId = matched.id;
+        newContractId = matched.active_contract?.id || null;
+        newName = matched.name;
+        newContact = matched.phone || matched.contact_name || '';
+      }
+    }
+
     setCustomer(prev => ({
       ...prev,
       customer_type: newType,
+      customer_id: newCustomerId,
+      contract_id: newContractId,
+      name: newName,
+      contact: newContact,
+      basecamp_sub_type: newSubType,
+      basecamp_unit: newUnit,
       billing_option: newType === 'builtland' ? 'internal_free' : 'paid'
     }));
     resetQuickFinancials();
     resetCartFinancials();
-    if (newType === 'builtland' || newType === 'basecamp') {
-      setPaymentMethod('');
-      setCartPaymentMethod('');
+    if (newType === 'builtland' || newType === 'basecamp' || newType === 'shop') {
+      setPaymentMethod('cash');
+      setCartPaymentMethod('cash');
     } else {
       setPaymentMethod('cash');
       setCartPaymentMethod('cash');
@@ -1239,8 +1411,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
     const isBuiltland = customer.customer_type === 'builtland';
     const isBasecamp = customer.customer_type === 'basecamp';
+    const isShop = customer.customer_type === 'shop';
 
-    if (!isBuiltland && !isBasecamp) {
+    if (!isBuiltland && !isBasecamp && !isShop) {
       if (quickFinancialPreview.discount_error) {
         sysAlert(quickFinancialPreview.discount_error);
         return;
@@ -1265,12 +1438,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       const effectiveDiscountValue = isBuiltland ? 0 : quickFinancialPreview.discount_value;
       const effectiveDepositAmount = (isBuiltland || quickPaymentMode !== 'deposit') ? 0 : (Number(quickDepositAmount) || 0);
 
-      const effectivePaymentMethod = (isBuiltland || isBasecamp || effectivePaymentMode === 'unpaid' || quickFinancialPreview.total_amount === 0)
-        ? ''
+      const effectivePaymentMethod = (isBuiltland || isBasecamp || isShop || effectivePaymentMode === 'unpaid' || quickFinancialPreview.total_amount === 0)
+        ? (paymentMethod || 'cash')
         : paymentMethod;
 
       const payload = {
         customer_name: customer.name,
+        customer_id: customer.customer_id || null,
+        contract_id: customer.contract_id || null,
         department: customer.department || '',
         contact: customer.contact || '',
         booking_details: bookingDetails.trim() || null,
@@ -1286,7 +1461,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         discount_type: effectiveDiscountType,
         discount_value: effectiveDiscountValue,
         payment_mode: effectivePaymentMode,
-        deposit_amount: effectiveDepositAmount
+        deposit_amount: effectiveDepositAmount,
+        slip_image: quickSlipImage || null,
+        tax_invoice_required: quickTaxRequired ? 1 : 0,
+        tax_payer_type: quickTaxPayerType,
+        tax_name: quickTaxRequired ? quickTaxName.trim() : null,
+        tax_id: quickTaxRequired ? quickTaxId.trim() : null,
+        tax_branch_type: quickTaxBranchType,
+        tax_branch_number: quickTaxBranchType === 'branch' ? quickTaxBranchNumber.trim() : null,
+        tax_address: quickTaxRequired ? quickTaxAddress.trim() : null,
+        tax_email: quickTaxRequired ? quickTaxEmail.trim() : null,
+        tax_phone: quickTaxRequired ? quickTaxPhone.trim() : null,
+        tax_delivery_method: quickTaxRequired ? quickTaxDeliveryMethod : 'email',
+        tax_postal_address: (quickTaxRequired && quickTaxDeliveryMethod === 'postal') ? quickTaxPostalAddress.trim() : null
       };
 
       const res = await fetch('/api/bookings', {
@@ -1380,8 +1567,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
     const isBuiltland = customer.customer_type === 'builtland';
     const isBasecamp = customer.customer_type === 'basecamp';
+    const isShop = customer.customer_type === 'shop';
 
-    if (!isBuiltland && !isBasecamp) {
+    if (!isBuiltland && !isBasecamp && !isShop) {
       if (cartFinancialPreview.discount_error) {
         sysAlert(cartFinancialPreview.discount_error);
         return;
@@ -1403,12 +1591,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       const effectiveDiscountValue = isBuiltland ? 0 : cartFinancialPreview.discount_value;
       const effectiveDepositAmount = (isBuiltland || cartPaymentMode !== 'deposit') ? 0 : (Number(cartDepositAmount) || 0);
 
-      const effectivePaymentMethod = (isBuiltland || isBasecamp || effectivePaymentMode === 'unpaid' || cartFinancialPreview.total_amount === 0)
-        ? ''
+      const effectivePaymentMethod = (isBuiltland || isBasecamp || isShop || effectivePaymentMode === 'unpaid' || cartFinancialPreview.total_amount === 0)
+        ? (cartPaymentMethod || 'cash')
         : (cartPaymentMethod || 'cash');
 
       const payload = {
         customer_name: customer.name,
+        customer_id: customer.customer_id || null,
+        contract_id: customer.contract_id || null,
         department: customer.department || '',
         contact: customer.contact || '',
         booking_details: bookingDetails.trim() || null,
@@ -1424,7 +1614,19 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         discount_type: effectiveDiscountType,
         discount_value: effectiveDiscountValue,
         payment_mode: effectivePaymentMode,
-        deposit_amount: effectiveDepositAmount
+        deposit_amount: effectiveDepositAmount,
+        slip_image: cartSlipImage || null,
+        tax_invoice_required: cartTaxRequired ? 1 : 0,
+        tax_payer_type: cartTaxPayerType,
+        tax_name: cartTaxRequired ? cartTaxName.trim() : null,
+        tax_id: cartTaxRequired ? cartTaxId.trim() : null,
+        tax_branch_type: cartTaxBranchType,
+        tax_branch_number: cartTaxBranchType === 'branch' ? cartTaxBranchNumber.trim() : null,
+        tax_address: cartTaxRequired ? cartTaxAddress.trim() : null,
+        tax_email: cartTaxRequired ? cartTaxEmail.trim() : null,
+        tax_phone: cartTaxRequired ? cartTaxPhone.trim() : null,
+        tax_delivery_method: cartTaxRequired ? cartTaxDeliveryMethod : 'email',
+        tax_postal_address: (cartTaxRequired && cartTaxDeliveryMethod === 'postal') ? cartTaxPostalAddress.trim() : null
       };
 
       const res = await fetch('/api/bookings', {
@@ -1876,6 +2078,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                           >
                             {/* Rich Room Card Cell (Left Column - Sticky Left) */}
                             <div
+                              className="timeline-room-header-cell"
                               onClick={() => openDrawerForSlot(room, 9)}
                               style={{
                                 padding: '8px 12px',
@@ -2003,6 +2206,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                   <React.Fragment key={evIdx}>
                                     {/* Booking Pill: Neutral card surface, unified payment border & rail, neutral lifecycle */}
                                     <div
+                                      className="timeline-booking-pill"
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setViewedEvent(ev);
@@ -3114,7 +3318,40 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       </div>
                     )}
 
-                    {/* Unpaid / Zero-Net Notice */}
+                    {/* Cart Payment Slip & Tax Invoice Management */}
+                    <POSTaxAndSlipSection
+                      paymentMethod={cartPaymentMethod}
+                      slipImage={cartSlipImage}
+                      setSlipImage={setCartSlipImage}
+                      slipFileName={cartSlipFileName}
+                      setSlipFileName={setCartSlipFileName}
+                      taxInvoiceRequired={cartTaxRequired}
+                      setTaxInvoiceRequired={setCartTaxRequired}
+                      taxPayerType={cartTaxPayerType}
+                      setTaxPayerType={setCartTaxPayerType}
+                      taxName={cartTaxName}
+                      setTaxName={setCartTaxName}
+                      taxId={cartTaxId}
+                      setTaxId={setCartTaxId}
+                      taxBranchType={cartTaxBranchType}
+                      setTaxBranchType={setCartTaxBranchType}
+                      taxBranchNumber={cartTaxBranchNumber}
+                      setTaxBranchNumber={setCartTaxBranchNumber}
+                      taxAddress={cartTaxAddress}
+                      setTaxAddress={setCartTaxAddress}
+                      taxEmail={cartTaxEmail}
+                      setTaxEmail={setCartTaxEmail}
+                      taxPhone={cartTaxPhone}
+                      setTaxPhone={setCartTaxPhone}
+                      taxDeliveryMethod={cartTaxDeliveryMethod}
+                      setTaxDeliveryMethod={setCartTaxDeliveryMethod}
+                      taxPostalAddress={cartTaxPostalAddress}
+                      setTaxPostalAddress={setCartTaxPostalAddress}
+                      customer={customer}
+                      sysAlert={sysAlert}
+                      isCompact={true}
+                    />
+
                     {cartPaymentMode === 'unpaid' && (
                       <div style={{ fontSize: '0.7rem', color: '#d97706', fontWeight: 600 }}>
                         ค้างชำระ: ยังไม่ต้องเลือกช่องทางชำระเงิน
@@ -3256,6 +3493,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
               <button
                 type="button"
+                id="btn-close-quick-booking"
                 onClick={closeRoomModal}
                 style={{
                   width: '32px',
@@ -3658,6 +3896,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                             <span style={{ color: '#ea580c', fontSize: '0.88rem' }}>฿0 (สิทธิ์ Builtland)</span>
                           ) : customer.customer_type === 'basecamp' ? (
                             <span style={{ color: '#9333ea', fontSize: '0.88rem' }}>โควต้า Basecamp</span>
+                          ) : customer.customer_type === 'shop' ? (
+                            <span style={{ color: '#059669', fontSize: '0.88rem' }}>โควต้า Shop</span>
                           ) : (
                             `฿${Number(estSubtotal).toLocaleString()}`
                           )}
@@ -3687,10 +3927,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     ประเภทลูกค้า (Customer Type) <span style={{ color: 'var(--danger-color)' }}>*</span>
                   </label>
 
-                  {/* 3-Way Segmented Switcher */}
+                  {/* 4-Way Segmented Switcher */}
                   <div style={{
                     display: 'grid',
-                    gridTemplateColumns: '1fr 1fr 1fr',
+                    gridTemplateColumns: '1fr 1fr 1fr 1fr',
                     gap: '6px',
                     backgroundColor: 'var(--bg-main)',
                     padding: '4px',
@@ -3771,6 +4011,31 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       <span>Basecamp</span>
                       <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'basecamp' ? 0.95 : 0.7 }}>ผู้เช่าชั้น 4</span>
                     </button>
+
+                    {/* 4. Shop */}
+                    <button
+                      type="button"
+                      onClick={() => handleCustomerTypeChange('shop')}
+                      style={{
+                        padding: '10px 4px',
+                        borderRadius: '9px',
+                        border: customer.customer_type === 'shop' ? '1px solid #059669' : '1px solid transparent',
+                        backgroundColor: customer.customer_type === 'shop' ? '#059669' : 'transparent',
+                        color: customer.customer_type === 'shop' ? '#ffffff' : 'var(--text-muted)',
+                        fontWeight: customer.customer_type === 'shop' ? 800 : 600,
+                        fontSize: '0.78rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '2px',
+                        transition: 'all 0.15s ease',
+                        boxShadow: customer.customer_type === 'shop' ? '0 2px 8px rgba(5,150,105,0.3)' : 'none'
+                      }}
+                    >
+                      <span>Shop</span>
+                      <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'shop' ? 0.95 : 0.7 }}>ร้านค้า</span>
+                    </button>
                   </div>
                 </div>
 
@@ -3835,7 +4100,16 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       </label>
                       <CustomSelect
                         value={customer.basecamp_unit || (customer.basecamp_sub_type === 'office' ? '401' : '419')}
-                        onChange={val => setCustomer({ ...customer, basecamp_unit: val })}
+                        onChange={val => {
+                          const matched = registeredBasecamps.find(b => b.basecamp_unit === val);
+                          setCustomer(prev => ({
+                            ...prev,
+                            basecamp_unit: val,
+                            customer_id: matched ? matched.id : null,
+                            contract_id: matched?.active_contract?.id || null,
+                            name: matched ? matched.name : prev.name
+                          }));
+                        }}
                         options={customer.basecamp_sub_type === 'office' ? (
                           BASECAMP_OFFICE_UNITS.map(u => ({
                             value: u,
@@ -3917,6 +4191,122 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       fontWeight: 700
                     }}>
                       ระบบจะทำการตัดชั่วโมงโควต้าให้อัตโนมัติเมื่อกดยืนยันการจอง
+                    </div>
+                  </div>
+                )}
+
+                {/* --- CASE D: SHOP (Partner / Merchant) --- */}
+                {customer.customer_type === 'shop' && (
+                  <div style={{
+                    backgroundColor: 'var(--bg-main)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '14px',
+                    padding: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px'
+                  }}>
+                    {/* Shop Selection Dropdown */}
+                    <div>
+                      <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                        เลือกร้านค้าพันธมิตร (Shop) <span style={{ color: 'var(--danger-color)' }}>*</span>
+                      </label>
+                      <CustomSelect
+                        value={customer.customer_id ? String(customer.customer_id) : (registeredShops[0]?.id ? String(registeredShops[0].id) : '')}
+                        onChange={val => {
+                          const s = registeredShops.find(item => String(item.id) === String(val));
+                          if (s) {
+                            setCustomer(prev => ({
+                              ...prev,
+                              customer_id: s.id,
+                              contract_id: s.active_contract?.id || null,
+                              name: s.name,
+                              contact: s.phone || s.contact_name || ''
+                            }));
+                          }
+                        }}
+                        options={registeredShops.map(s => ({
+                          value: String(s.id),
+                          label: `${s.name}${s.category ? ` (${s.category})` : ''}`
+                        }))}
+                        placeholder="-- เลือกร้านค้าพันธมิตร --"
+                      />
+                    </div>
+
+                    {/* Monthly Quota & Contract Status Info Card */}
+                    <div style={{
+                      padding: '10px 14px',
+                      backgroundColor: 'var(--bg-card)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '10px',
+                      fontSize: '0.78rem',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}>
+                      <div>
+                        <div style={{ fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span>สิทธิ์โควต้าประจำเดือน: 4 ชม./เดือน</span>
+                          {shopQuota.contract_eligible === false && (
+                            <span style={{ fontSize: '0.7rem', color: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', padding: '2px 6px', borderRadius: '4px' }}>
+                              (สัญญาสิ้นสุดก่อนวันใช้งาน)
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          ใช้ไปแล้ว {shopQuota.used_quota || 0} ชม. | คงเหลือ {shopQuota.remaining_quota || 0} ชม.
+                        </div>
+                      </div>
+                      <span style={{
+                        fontWeight: 800,
+                        fontSize: '0.76rem',
+                        color: (shopQuota.contract_eligible && (shopQuota.remaining_quota || 0) > 0) ? '#10b981' : '#ef4444',
+                        backgroundColor: (shopQuota.contract_eligible && (shopQuota.remaining_quota || 0) > 0) ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                        border: (shopQuota.contract_eligible && (shopQuota.remaining_quota || 0) > 0) ? '1px solid rgba(16, 185, 129, 0.25)' : '1px solid rgba(239, 68, 68, 0.25)',
+                        padding: '4px 10px',
+                        borderRadius: '6px'
+                      }}>
+                        {!shopQuota.contract_eligible
+                          ? 'หมดสัญญา (คิดราคาเต็ม)'
+                          : ((shopQuota.remaining_quota || 0) > 0 ? `เหลือ ${shopQuota.remaining_quota} ชม.` : 'โควต้าหมดแล้ว')}
+                      </span>
+                    </div>
+
+                    {/* Shop Contact / Rep Name */}
+                    <div>
+                      <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                        ชื่อผู้ติดต่อ / ตัวแทนร้านค้า
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="ชื่อตัวแทนผู้มาใช้งานหรือติดต่อ"
+                        value={customer.contact}
+                        onChange={e => setCustomer({ ...customer, contact: e.target.value })}
+                        style={{
+                          width: '100%',
+                          height: '40px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--border-color)',
+                          backgroundColor: 'var(--bg-card)',
+                          padding: '0 12px',
+                          fontSize: '0.84rem',
+                          color: 'var(--text-main)',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+
+                    {/* Auto-Deduct Quota Notice */}
+                    <div style={{
+                      backgroundColor: 'rgba(5, 150, 105, 0.08)',
+                      border: '1px solid rgba(5, 150, 105, 0.25)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      fontSize: '0.74rem',
+                      color: '#059669',
+                      fontWeight: 700
+                    }}>
+                      ระบบจะทำการตัดชั่วโมงโควต้าของร้านค้าให้อัตโนมัติ (หากวันใช้งานอยู่ในอายุสัญญา)
                     </div>
                   </div>
                 )}
@@ -4406,6 +4796,40 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                         </div>
                       )}
 
+                      {/* Payment Slip & Tax Invoice Management for Quick Booking */}
+                      <POSTaxAndSlipSection
+                        paymentMethod={paymentMethod}
+                        slipImage={quickSlipImage}
+                        setSlipImage={setQuickSlipImage}
+                        slipFileName={quickSlipFileName}
+                        setSlipFileName={setQuickSlipFileName}
+                        taxInvoiceRequired={quickTaxRequired}
+                        setTaxInvoiceRequired={setQuickTaxRequired}
+                        taxPayerType={quickTaxPayerType}
+                        setTaxPayerType={setQuickTaxPayerType}
+                        taxName={quickTaxName}
+                        setTaxName={setQuickTaxName}
+                        taxId={quickTaxId}
+                        setTaxId={setQuickTaxId}
+                        taxBranchType={quickTaxBranchType}
+                        setTaxBranchType={setQuickTaxBranchType}
+                        taxBranchNumber={quickTaxBranchNumber}
+                        setTaxBranchNumber={setQuickTaxBranchNumber}
+                        taxAddress={quickTaxAddress}
+                        setTaxAddress={setQuickTaxAddress}
+                        taxEmail={quickTaxEmail}
+                        setTaxEmail={setQuickTaxEmail}
+                        taxPhone={quickTaxPhone}
+                        setTaxPhone={setQuickTaxPhone}
+                        taxDeliveryMethod={quickTaxDeliveryMethod}
+                        setTaxDeliveryMethod={setQuickTaxDeliveryMethod}
+                        taxPostalAddress={quickTaxPostalAddress}
+                        setTaxPostalAddress={setQuickTaxPostalAddress}
+                        customer={customer}
+                        sysAlert={sysAlert}
+                        isCompact={false}
+                      />
+
                       {/* Live Snapshot Breakdown */}
                       <div style={{
                         backgroundColor: 'var(--bg-main)',
@@ -4446,6 +4870,22 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   }}>
                     <CheckCircle2 size={16} style={{ color: '#ea580c', flexShrink: 0 }} />
                     <span>สิทธิ์การใช้งานภายใน Builtland: ฟรี ไม่คิดค่าบริการ (บันทึกเป็นการใช้งานภายใน)</span>
+                  </div>
+                ) : customer.customer_type === 'shop' ? (
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '12px',
+                    backgroundColor: 'rgba(5, 150, 105, 0.08)',
+                    border: '1px solid rgba(5, 150, 105, 0.25)',
+                    color: '#059669',
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <CheckCircle2 size={16} style={{ color: '#059669', flexShrink: 0 }} />
+                    <span>สิทธิ์ร้านค้าพันธมิตร (Shop): ตัดชั่วโมงโควต้าประจำเดือนอัตโนมัติ (4 ชม./เดือน)</span>
                   </div>
                 ) : (
                   <div style={{
@@ -4911,6 +5351,397 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   return <span style={{ color: 'var(--primary-color)', fontWeight: 600 }}>รอเริ่มการใช้งาน</span>;
                 })()}
               </div>
+              {/* Payment Slip Evidence Section (Multi-Tx & Legacy Support) */}
+              {(() => {
+                const bId = viewedEvent.booking_id || viewedEvent.id;
+                const hasTransactions = posPaymentTransactions && posPaymentTransactions.length > 0;
+                const hasLegacySlip = Boolean(viewedEvent.slip_image_url && viewedEvent.slip_image_url !== 'uploaded');
+                const isUnpaid = (viewedEvent.payment_status || '').toLowerCase() === 'unpaid';
+
+                return (
+                  <div
+                    style={{
+                      padding: '12px',
+                      borderRadius: '12px',
+                      backgroundColor: 'var(--bg-subtle, #f8fafc)',
+                      border: '1px solid var(--border-color, #e2e8f0)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px'
+                    }}
+                  >
+                    {/* Header */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Image size={14} style={{ color: 'var(--primary-color, #2563eb)' }} />
+                        <span style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                          หลักฐานการชำระเงิน
+                        </span>
+                      </div>
+                      {posLoadingPayments ? (
+                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>กำลังโหลด...</span>
+                      ) : (
+                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                          {hasTransactions ? `${posPaymentTransactions.length} รายการธุรกรรม` : 'ระดับการจอง'}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Case 1: Booking with Multi-Transactions */}
+                    {hasTransactions ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {posPaymentTransactions.map((tx) => {
+                          const txTypeLabel = tx.payment_type === 'deposit'
+                            ? 'เงินมัดจำ'
+                            : tx.payment_type === 'balance'
+                              ? 'ยอดคงเหลือ'
+                              : tx.payment_type === 'full'
+                                ? 'ชำระเต็มจำนวน'
+                                : (tx.payment_type || 'ชำระเงิน');
+                          const hasTxSlip = Boolean(tx.slip_image_url && tx.slip_image_url !== 'uploaded');
+
+                          return (
+                            <div
+                              key={tx.id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '8px 10px',
+                                borderRadius: '8px',
+                                backgroundColor: 'var(--bg-card, #ffffff)',
+                                border: '1px solid var(--border-color, #e2e8f0)',
+                                gap: '8px'
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
+                                {hasTxSlip ? (
+                                  <img
+                                    src={tx.slip_image_url}
+                                    alt="สลิป"
+                                    style={{
+                                      width: '32px',
+                                      height: '32px',
+                                      borderRadius: '6px',
+                                      objectFit: 'cover',
+                                      border: '1px solid var(--border-color, #cbd5e1)',
+                                      flexShrink: 0
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    style={{
+                                      width: '32px',
+                                      height: '32px',
+                                      borderRadius: '6px',
+                                      backgroundColor: 'var(--bg-subtle, #f1f5f9)',
+                                      border: '1px dashed var(--border-color, #cbd5e1)',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      color: 'var(--text-muted, #94a3b8)',
+                                      flexShrink: 0
+                                    }}
+                                  >
+                                    <Image size={14} />
+                                  </div>
+                                )}
+                                <div style={{ minWidth: 0, flex: 1 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                                      {txTypeLabel}
+                                    </span>
+                                    <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--primary-color)' }}>
+                                      ฿{Number(tx.amount || 0).toLocaleString()}
+                                    </span>
+                                  </div>
+                                  <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                    <span>#{tx.id}</span>
+                                    <span>•</span>
+                                    <span>{tx.payment_method || '-'}</span>
+                                    {hasTxSlip && (
+                                      <>
+                                        <span>•</span>
+                                        <span style={{ color: '#16a34a', fontWeight: 700 }}>มีสลิป</span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
+                                {hasTxSlip ? (
+                                  <>
+                                    <a
+                                      href={tx.slip_image_url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      id={`btn-view-slip-tx-${tx.id}`}
+                                      style={{
+                                        height: '28px',
+                                        padding: '0 8px',
+                                        borderRadius: '6px',
+                                        backgroundColor: 'var(--bg-subtle, #f8fafc)',
+                                        border: '1px solid var(--border-color, #cbd5e1)',
+                                        color: '#2563eb',
+                                        fontSize: '0.7rem',
+                                        fontWeight: 700,
+                                        textDecoration: 'none',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px'
+                                      }}
+                                    >
+                                      <Eye size={11} />
+                                      <span>ดูสลิป</span>
+                                    </a>
+                                    <button
+                                      type="button"
+                                      id={`btn-reupload-slip-tx-${tx.id}`}
+                                      onClick={() => setAttachSlipModalData({
+                                        booking: { ...viewedEvent, id: bId },
+                                        transaction: tx
+                                      })}
+                                      style={{
+                                        height: '28px',
+                                        padding: '0 8px',
+                                        borderRadius: '6px',
+                                        backgroundColor: 'var(--bg-card, #ffffff)',
+                                        border: '1px solid var(--border-color, #cbd5e1)',
+                                        color: 'var(--text-main, #334155)',
+                                        fontSize: '0.7rem',
+                                        fontWeight: 700,
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        cursor: 'pointer'
+                                      }}
+                                    >
+                                      <RefreshCw size={10} />
+                                      <span>เปลี่ยน</span>
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    id={`btn-attach-slip-tx-${tx.id}`}
+                                    onClick={() => setAttachSlipModalData({
+                                      booking: { ...viewedEvent, id: bId },
+                                      transaction: tx
+                                    })}
+                                    style={{
+                                      height: '28px',
+                                      padding: '0 10px',
+                                      borderRadius: '6px',
+                                      backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                      border: '1px solid rgba(37, 99, 235, 0.3)',
+                                      color: '#2563eb',
+                                      fontSize: '0.72rem',
+                                      fontWeight: 750,
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    <Plus size={11} />
+                                    <span>แนบสลิป</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      /* Case 2: Legacy Booking (No payment transactions) */
+                      <div>
+                        {hasLegacySlip ? (
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              backgroundColor: 'var(--bg-card, #ffffff)',
+                              border: '1px solid var(--border-color, #e2e8f0)',
+                              gap: '8px'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
+                              <img
+                                src={viewedEvent.slip_image_url}
+                                alt="สลิป"
+                                style={{
+                                  width: '32px',
+                                  height: '32px',
+                                  borderRadius: '6px',
+                                  objectFit: 'cover',
+                                  border: '1px solid var(--border-color, #cbd5e1)',
+                                  flexShrink: 0
+                                }}
+                              />
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                  <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                                    สลิปการจอง
+                                  </span>
+                                  {isUnpaid ? (
+                                    <span
+                                      style={{
+                                        padding: '1px 6px',
+                                        borderRadius: '4px',
+                                        backgroundColor: '#fef3c7',
+                                        color: '#92400e',
+                                        fontSize: '0.62rem',
+                                        fontWeight: 700
+                                      }}
+                                    >
+                                      หลักฐานรอตรวจสอบ
+                                    </span>
+                                  ) : (
+                                    <span style={{ fontSize: '0.66rem', color: '#16a34a', fontWeight: 700 }}>
+                                      มีหลักฐาน
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>
+                                  หลักฐานแนบระดับการจอง
+                                </div>
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
+                              <a
+                                href={viewedEvent.slip_image_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                id="btn-view-legacy-slip"
+                                style={{
+                                  height: '28px',
+                                  padding: '0 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'var(--bg-subtle, #f8fafc)',
+                                  border: '1px solid var(--border-color, #cbd5e1)',
+                                  color: '#2563eb',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  textDecoration: 'none',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                              >
+                                <Eye size={11} />
+                                <span>ดูสลิป</span>
+                              </a>
+                              <button
+                                type="button"
+                                id="btn-reupload-legacy-slip"
+                                onClick={() => setAttachSlipModalData({
+                                  booking: { ...viewedEvent, id: bId },
+                                  transaction: null
+                                })}
+                                style={{
+                                  height: '28px',
+                                  padding: '0 8px',
+                                  borderRadius: '6px',
+                                  backgroundColor: 'var(--bg-card, #ffffff)',
+                                  border: '1px solid var(--border-color, #cbd5e1)',
+                                  color: 'var(--text-main, #334155)',
+                                  fontSize: '0.7rem',
+                                  fontWeight: 700,
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                <RefreshCw size={10} />
+                                <span>เปลี่ยนสลิป</span>
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '8px 10px',
+                              borderRadius: '8px',
+                              backgroundColor: 'var(--bg-card, #ffffff)',
+                              border: '1px dashed var(--border-color, #cbd5e1)'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                ยังไม่มีหลักฐานการชำระเงิน
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              id="btn-attach-legacy-slip"
+                              onClick={() => setAttachSlipModalData({
+                                booking: { ...viewedEvent, id: bId },
+                                transaction: null
+                              })}
+                              style={{
+                                height: '28px',
+                                padding: '0 12px',
+                                borderRadius: '6px',
+                                backgroundColor: '#2563eb',
+                                border: 'none',
+                                color: '#ffffff',
+                                fontSize: '0.72rem',
+                                fontWeight: 750,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <Plus size={11} />
+                              <span>แนบสลิป</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Quick Tax Invoice Button */}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                id="btn-viewed-tax-manage"
+                onClick={() => {
+                  const bId = viewedEvent.booking_id || viewedEvent.id;
+                  setSelectedTaxBooking({ ...viewedEvent, id: bId });
+                }}
+                style={{
+                  width: '100%',
+                  height: '36px',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(37, 99, 235, 0.35)',
+                  backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                  color: '#2563eb',
+                  fontSize: '0.78rem',
+                  fontWeight: 750,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  cursor: 'pointer'
+                }}
+              >
+                <FileText size={14} />
+                <span>จัดการใบกำกับภาษี {viewedEvent.tax_invoice_required ? '(ขอแล้ว)' : ''}</span>
+              </button>
             </div>
 
             {/* Actions */}
@@ -5142,6 +5973,36 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
       {/* Basecamp Quota Hub Modal */}
       <BasecampQuotaModal isOpen={showBasecampQuotaModal} onClose={() => setShowBasecampQuotaModal(false)} />
+
+      {/* Tax Invoice Management Modal (Wide Modal) */}
+      {selectedTaxBooking && (
+        <TaxInvoiceManagementModal
+          booking={selectedTaxBooking}
+          onClose={() => setSelectedTaxBooking(null)}
+          onUpdated={() => fetchCalendarEvents()}
+          sysAlert={sysAlert}
+        />
+      )}
+      {/* Attach Slip Modal (Historical / POS Slip Attachment) */}
+      {attachSlipModalData && (
+        <AttachSlipModal
+          isOpen={!!attachSlipModalData}
+          booking={attachSlipModalData.booking}
+          targetTransaction={attachSlipModalData.transaction}
+          onClose={() => setAttachSlipModalData(null)}
+          onSuccess={(resData) => {
+            const bId = attachSlipModalData.booking?.id || attachSlipModalData.booking?.booking_id;
+            if (bId) {
+              fetchPosPaymentTransactions(bId);
+              setViewedEvent(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              fetchCalendarEvents();
+            }
+            setAttachSlipModalData(null);
+          }}
+          sysAlert={sysAlert}
+        />
+      )}
+
 
     </div>
   );

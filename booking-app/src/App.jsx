@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import { Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import { Search, CreditCard, ChevronRight, X, Clock } from 'lucide-react';
 import HomePage from './pages/HomePage';
 import RoomListPage from './pages/RoomListPage';
@@ -289,6 +289,8 @@ function App() {
           <Route path="/confirm" element={<ConfirmPage />} />
           <Route path="/confirm/:bookingId" element={<ConfirmPage />} />
           <Route path="/status" element={<StatusPage />} />
+          <Route path="/support/*" element={<Navigate to="/" replace />} />
+          <Route path="/support" element={<Navigate to="/" replace />} />
           {import.meta.env.DEV && <Route path="/line-preview" element={<LinePreviewPage />} />}
         </Routes>
       </main>

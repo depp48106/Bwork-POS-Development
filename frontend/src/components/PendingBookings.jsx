@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
+import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
+import AttachSlipModal from './AttachSlipModal';
+import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useCallback } from 'react';
 import {
   RefreshCw,
   Clock,
@@ -16,6 +18,7 @@ import {
   ArrowUp,
   ArrowDown,
   ChevronDown,
+  ChevronLeft,
   Filter,
   Key,
   ShieldCheck,
@@ -34,10 +37,15 @@ import {
   ZoomOut,
   EyeOff,
   Copy,
-  Check
+  Check,
+  Wifi,
+  Coffee,
+  Download,
+  Car,
+  Users
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
-import { printReceipt } from '../utils/printReceiptHelper';
+import { printReceipt, exportConfirmationCardAsJpg } from '../utils/printReceiptHelper';
 import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { API_BASE } from '../apiConfig';
@@ -59,6 +67,21 @@ import {
   getBookingTableSummary
 } from '../utils/bookingScheduleHelper';
 import './PendingBookings.css';
+
+function formatThaiQuotaPeriod(targetMonthStr) {
+  if (!targetMonthStr || typeof targetMonthStr !== 'string') return '';
+  const [yStr, mStr] = targetMonthStr.split('-');
+  const y = parseInt(yStr, 10);
+  const m = parseInt(mStr, 10);
+  if (isNaN(y) || isNaN(m)) return targetMonthStr;
+  const THAI_MONTHS_FULL = [
+    'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+    'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'
+  ];
+  const thaiMonth = THAI_MONTHS_FULL[m - 1] || mStr;
+  const thaiYear = y + 543;
+  return `${thaiMonth} ${thaiYear}`;
+}
 
 const DATE_TYPE_OPTIONS = [
   { value: 'usage_date', label: 'วันที่ใช้งาน' },
@@ -129,13 +152,24 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [collectBalanceBooking, setCollectBalanceBooking] = useState(null);
   const [collectBalanceAmount, setCollectBalanceAmount] = useState('');
   const [collectBalanceMethod, setCollectBalanceMethod] = useState('cash');
+  const [collectBalanceSlipBase64, setCollectBalanceSlipBase64] = useState(null);
+  const [collectBalanceSlipName, setCollectBalanceSlipName] = useState('');
   const [isCollectingBalance, setIsCollectingBalance] = useState(false);
   const [collectBalanceError, setCollectBalanceError] = useState(null);
+  const [attachingTxId, setAttachingTxId] = useState(null);
+  const attachTxFileInputRef = useRef(null);
 
   // Payment Transactions History for Detail Modal (Phase 4)
   const [paymentTransactions, setPaymentTransactions] = useState([]);
+  const [attachSlipModalData, setAttachSlipModalData] = useState(null);
   const [isLoadingPayments, setIsLoadingPayments] = useState(false);
   const activePaymentFetchBookingIdRef = useRef(null);
+
+  // Basecamp Quota State for Booking Details
+  const [basecampQuota, setBasecampQuota] = useState(null);
+  const [basecampQuotaLoading, setBasecampQuotaLoading] = useState(false);
+  const [basecampQuotaError, setBasecampQuotaError] = useState(null);
+  const activeBasecampQuotaBookingRef = useRef(null);
 
   // Reject Slip Modal states
   const [showRejectSlipModal, setShowRejectSlipModal] = useState(false);
@@ -193,6 +227,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   // Reschedule Modal state
   const [showRescheduleModal, setShowRescheduleModal] = useState(false);
   const [rescheduleTarget, setRescheduleTarget] = useState(null);
+  const [selectedRescheduleItemId, setSelectedRescheduleItemId] = useState(null);
   const [rescheduleRoomId, setRescheduleRoomId] = useState('');
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleStartHour, setRescheduleStartHour] = useState('09');
@@ -219,6 +254,34 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const [editDetailsText, setEditDetailsText] = useState('');
   const [editDetailsLoading, setEditDetailsLoading] = useState(false);
   const [returnToDetailAfterEditDetails, setReturnToDetailAfterEditDetails] = useState(false);
+
+  // Customer Information Edit Modal state
+  const [showCustomerInfoModal, setShowCustomerInfoModal] = useState(false);
+  const [customerInfoTarget, setCustomerInfoTarget] = useState(null);
+  const [customerInfoName, setCustomerInfoName] = useState('');
+  const [customerInfoContact, setCustomerInfoContact] = useState('');
+  const [customerInfoDepartment, setCustomerInfoDepartment] = useState('');
+  const [customerInfoDetails, setCustomerInfoDetails] = useState('');
+  const [customerInfoSendLine, setCustomerInfoSendLine] = useState(true);
+  const [customerInfoLoading, setCustomerInfoLoading] = useState(false);
+  const [returnToDetailAfterCustomerInfo, setReturnToDetailAfterCustomerInfo] = useState(false);
+  // Pre-save Review Diff Modal state
+  const [showCustomerInfoDiffModal, setShowCustomerInfoDiffModal] = useState(false);
+
+  // Unified Booking Editor (แก้ไขการจอง) state
+  const [showUnifiedEditModal, setShowUnifiedEditModal] = useState(false);
+  const [unifiedEditTarget, setUnifiedEditTarget] = useState(null);
+  const [unifiedActiveTab, setUnifiedActiveTab] = useState('customer'); // 'customer' | 'schedule' | 'details'
+  const [returnToDetailAfterUnified, setReturnToDetailAfterUnified] = useState(false);
+
+  // Room Wi-Fi Customer Card Preview modal state
+  const [showWifiCardModal, setShowWifiCardModal] = useState(false);
+  const [wifiCardData, setWifiCardData] = useState(null);
+  const [wifiCardLoading, setWifiCardLoading] = useState(false);
+  const [wifiCardOriginModal, setWifiCardOriginModal] = useState(false);
+  const [wifiCopiedKey, setWifiCopiedKey] = useState(null);
+  const [failedCardImages, setFailedCardImages] = useState({});
+  const [wifiCardExportingJpg, setWifiCardExportingJpg] = useState(false);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -521,6 +584,91 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     }
   }, [showDetailModal, selectedBooking?.id]);
 
+  const fetchBasecampQuota = useCallback(async (booking) => {
+    if (!booking || booking.customer_type !== 'basecamp') {
+      activeBasecampQuotaBookingRef.current = null;
+      setBasecampQuota(null);
+      setBasecampQuotaLoading(false);
+      setBasecampQuotaError(null);
+      return;
+    }
+
+    const subType = booking.basecamp_sub_type || 'office';
+    const unit = booking.basecamp_unit;
+    if (!unit) {
+      activeBasecampQuotaBookingRef.current = null;
+      setBasecampQuota(null);
+      setBasecampQuotaLoading(false);
+      setBasecampQuotaError('missing_unit');
+      return;
+    }
+
+    const bookingKey = `${booking.id}_${subType}_${unit}`;
+    activeBasecampQuotaBookingRef.current = bookingKey;
+    setBasecampQuotaLoading(true);
+    setBasecampQuotaError(null);
+
+    try {
+      const firstItem = booking.items?.[0] || {};
+      const serviceTimeStr = firstItem.start_time || booking.start_time || booking.booking_date || booking.created_at;
+      let month, year;
+      if (serviceTimeStr) {
+        const cleanStr = String(serviceTimeStr).replace(' ', 'T');
+        const [dPart] = cleanStr.split('T');
+        if (dPart && dPart.includes('-')) {
+          const parts = dPart.split('-');
+          if (parts.length >= 2) {
+            year = parseInt(parts[0], 10);
+            month = parseInt(parts[1], 10);
+          }
+        }
+      }
+      if (!month || !year || isNaN(month) || isNaN(year)) {
+        const now = new Date();
+        month = now.getMonth() + 1;
+        year = now.getFullYear();
+      }
+
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/api/basecamp/quota?sub_type=${encodeURIComponent(subType)}&unit=${encodeURIComponent(unit)}&month=${month}&year=${year}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (activeBasecampQuotaBookingRef.current === bookingKey) {
+        setBasecampQuota(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch Basecamp quota:', err);
+      if (activeBasecampQuotaBookingRef.current === bookingKey) {
+        setBasecampQuota(null);
+        setBasecampQuotaError(err.message || 'load_failed');
+      }
+    } finally {
+      if (activeBasecampQuotaBookingRef.current === bookingKey) {
+        setBasecampQuotaLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showDetailModal && selectedBooking?.id && selectedBooking?.customer_type === 'basecamp') {
+      fetchBasecampQuota(selectedBooking);
+    } else if (!showDetailModal) {
+      activeBasecampQuotaBookingRef.current = null;
+      setBasecampQuota(null);
+      setBasecampQuotaLoading(false);
+      setBasecampQuotaError(null);
+    }
+  }, [showDetailModal, selectedBooking?.id, selectedBooking?.customer_type, selectedBooking?.basecamp_unit, selectedBooking?.basecamp_sub_type, fetchBasecampQuota]);
+
   const handleOpenCollectBalance = (booking) => {
     if (!booking) return;
     const fresh = bookings.find(b => b.id === booking.id) || booking;
@@ -528,6 +676,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     setCollectBalanceBooking(fresh);
     setCollectBalanceAmount(String(fin.balance_amount || 0));
     setCollectBalanceMethod('cash');
+    setCollectBalanceSlipBase64(null);
+    setCollectBalanceSlipName('');
     setCollectBalanceError(null);
     setShowCollectBalanceModal(true);
   };
@@ -801,16 +951,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
     try {
       const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const payload = {
+        amount: amountNum,
+        payment_method: collectBalanceMethod
+      };
+      if (collectBalanceSlipBase64 && (collectBalanceMethod === 'transfer' || collectBalanceMethod === 'promptpay')) {
+        payload.slip_image = collectBalanceSlipBase64;
+      }
+
       const res = await fetch(`/api/bookings/${collectBalanceBooking.id}/pay-balance`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
-        body: JSON.stringify({
-          amount: amountNum,
-          payment_method: collectBalanceMethod
-        })
+        body: JSON.stringify(payload)
       });
 
       const data = await res.json();
@@ -855,6 +1010,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
         setShowCollectBalanceModal(false);
         setCollectBalanceBooking(null);
+        setCollectBalanceSlipBase64(null);
+        setCollectBalanceSlipName('');
 
         await sysAlert(data.message || 'บันทึกการชำระเงินสำเร็จแล้ว');
         fetchBookings(true, false, true);
@@ -867,6 +1024,42 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     } finally {
       setIsCollectingBalance(false);
     }
+  };
+
+  // Staff attaches slip to a specific payment transaction (POST /api/bookings/:id/payments/:paymentId/slip)
+  const handleAttachSlipToTransaction = async (bookingId, paymentId, file) => {
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      if (sysAlert) await sysAlert('ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const base64Data = e.target.result;
+      try {
+        const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+        const res = await fetch(`/api/bookings/${bookingId}/payments/${paymentId}/slip`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({ slip_image: base64Data })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          if (sysAlert) await sysAlert('แนบสลิปหลักฐานเรียบร้อยแล้ว');
+          fetchPaymentTransactions(bookingId);
+          fetchBookings(true, false, true);
+        } else {
+          if (sysAlert) await sysAlert(data.error || 'เกิดข้อผิดพลาดในการแนบสลิป');
+        }
+      } catch (err) {
+        console.error('Error attaching slip to transaction:', err);
+        if (sysAlert) await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   // Legacy fallback payment handler (routes to submitCollectBalance if collectible)
@@ -1077,14 +1270,16 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           setSelectedBooking(freshBooking);
         }
         setShowEditDetailsModal(false);
+        setShowUnifiedEditModal(false);
         setEditDetailsTarget(null);
         setEditDetailsText('');
-        if (returnToDetailAfterEditDetails) {
+        if (returnToDetailAfterEditDetails || returnToDetailAfterUnified) {
           if (freshBooking) {
             setSelectedBooking(freshBooking);
           }
           setShowDetailModal(true);
           setReturnToDetailAfterEditDetails(false);
+          setReturnToDetailAfterUnified(false);
         }
         await sysAlert('บันทึกรายละเอียดเพิ่มเติมเรียบร้อยแล้ว');
         fetchBookings(true, false, true);
@@ -1100,16 +1295,307 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     }
   };
 
-  // 3. Reschedule Booking (แก้ไขวัน/เวลาการจอง)
-  const handleOpenReschedule = async (booking, fromDetail = false) => {
+  // 1.2 Customer Information Edit (แก้ไขข้อมูลผู้จอง)
+  const handleOpenCustomerInfoEdit = (booking, fromDetail = false) => {
     if (!booking) return;
-    setReturnToDetailAfterReschedule(!!fromDetail);
+    setReturnToDetailAfterCustomerInfo(!!fromDetail);
+    setCustomerInfoTarget(booking);
+    setCustomerInfoName(booking.customer_name || '');
+    setCustomerInfoContact(booking.contact || '');
+    setCustomerInfoDepartment(booking.department || '');
+    setCustomerInfoDetails(typeof booking.booking_details === 'string' ? booking.booking_details : '');
+    setCustomerInfoSendLine(Boolean(booking.line_user_id));
+    setShowCustomerInfoModal(true);
+    setShowCustomerInfoDiffModal(false);
+  };
+
+  const handleCloseCustomerInfoModal = () => {
+    if (customerInfoLoading) return;
+    setShowCustomerInfoModal(false);
+    setShowCustomerInfoDiffModal(false);
+    setCustomerInfoTarget(null);
+    setCustomerInfoName('');
+    setCustomerInfoContact('');
+    setCustomerInfoDepartment('');
+    setCustomerInfoDetails('');
+    if (returnToDetailAfterCustomerInfo) {
+      setShowDetailModal(true);
+      setReturnToDetailAfterCustomerInfo(false);
+    }
+  };
+
+  const handleOpenWifiCard = async (booking, fromDetail = false) => {
+    if (!booking) return;
+    if (fromDetail) {
+      setShowDetailModal(false);
+      setWifiCardOriginModal(true);
+    } else {
+      setWifiCardOriginModal(false);
+    }
+    setWifiCardLoading(true);
+    setWifiCardData(null);
+    setFailedCardImages({});
+    setShowWifiCardModal(true);
+
     try {
-      // Fetch full details to ensure item structure
-      const res = await fetch(`/api/bookings/${booking.id}`);
-      const fullBooking = res.ok ? await res.json() : booking;
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/api/bookings/${booking.id}/wifi-card`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'ไม่สามารถโหลดข้อมูลใบยืนยันการจองได้');
+      }
+      setWifiCardData(data);
+    } catch (err) {
+      sysAlert(err.message || 'เกิดข้อผิดพลาดในการโหลดใบยืนยันการจอง', 'error');
+      setShowWifiCardModal(false);
+      if (fromDetail) {
+        setShowDetailModal(true);
+      }
+    } finally {
+      setWifiCardLoading(false);
+    }
+  };
+
+  const handleCloseWifiCardModal = () => {
+    setShowWifiCardModal(false);
+    setWifiCardData(null);
+    setFailedCardImages({});
+    if (typeof document !== 'undefined' && document.body) {
+      document.body.classList.remove('printing-booking-confirmation');
+    }
+    if (wifiCardOriginModal) {
+      setShowDetailModal(true);
+      setWifiCardOriginModal(false);
+    }
+  };
+
+  const handleCopyWifiText = (text, key) => {
+    if (!text) return;
+    navigator.clipboard?.writeText(text);
+    setWifiCopiedKey(key);
+    setTimeout(() => {
+      setWifiCopiedKey(null);
+    }, 2000);
+  };
+
+  const handlePrintConfirmationCard = async () => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+    const cardEl = document.getElementById('wifi-customer-card');
+    if (cardEl) {
+      const imgs = Array.from(cardEl.querySelectorAll('img'));
+      await Promise.all(
+        imgs.map((img) => {
+          if (img.complete) return Promise.resolve();
+          return new Promise((resolve) => {
+            const timer = setTimeout(resolve, 1500);
+            img.addEventListener('load', () => { clearTimeout(timer); resolve(); }, { once: true });
+            img.addEventListener('error', () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+        })
+      );
+    }
+    document.body.classList.add('printing-booking-confirmation');
+    const cleanup = () => {
+      document.body.classList.remove('printing-booking-confirmation');
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    setTimeout(() => {
+      window.print();
+      setTimeout(cleanup, 800);
+    }, 60);
+  };
+
+  const handleExportConfirmationCardJpg = async () => {
+    if (typeof window === 'undefined' || typeof document === 'undefined' || wifiCardExportingJpg) return;
+    const cardEl = document.getElementById('wifi-customer-card');
+    if (!cardEl) return;
+    setWifiCardExportingJpg(true);
+    try {
+      const bookingRef = wifiCardData?.booking_number || wifiCardData?.booking_id || 'Booking';
+      await exportConfirmationCardAsJpg(cardEl, bookingRef);
+    } catch (err) {
+      if (sysAlert) {
+        await sysAlert(err.message || 'ไม่สามารถบันทึกไฟล์รูปภาพ JPG ได้', 'error');
+      }
+    } finally {
+      setWifiCardExportingJpg(false);
+    }
+  };
+
+  const customerInfoDiff = useMemo(() => {
+    if (!customerInfoTarget) return { hasChanged: false, changedFields: [], hasIdentityChange: false };
+    const origName = (customerInfoTarget.customer_name || '').trim();
+    const origContact = (customerInfoTarget.contact || '').trim();
+    const origDept = (customerInfoTarget.department || '').trim();
+    const origDetails = (customerInfoTarget.booking_details || '').trim();
+
+    const newName = customerInfoName.trim();
+    const newContact = customerInfoContact.trim();
+    const newDept = customerInfoDepartment.trim();
+    const newDetails = customerInfoDetails.trim();
+
+    const changedFields = [];
+    if (newName !== origName) changedFields.push({ key: 'customer_name', label: 'ชื่อผู้จอง', oldVal: origName || '-', newVal: newName || '-' });
+    if (newContact !== origContact) changedFields.push({ key: 'contact', label: 'เบอร์ติดต่อ', oldVal: origContact || '-', newVal: newContact || '-' });
+    if (newDept !== origDept) changedFields.push({ key: 'department', label: 'แผนก/วัตถุประสงค์', oldVal: origDept || '-', newVal: newDept || '-' });
+    if (newDetails !== origDetails) changedFields.push({ key: 'booking_details', label: 'รายละเอียดเพิ่มเติม', oldVal: origDetails || '-', newVal: newDetails || '-' });
+
+    return {
+      hasChanged: changedFields.length > 0,
+      changedFields,
+      hasIdentityChange: changedFields.some(f => f.key === 'customer_name' || f.key === 'contact')
+    };
+  }, [customerInfoTarget, customerInfoName, customerInfoContact, customerInfoDepartment, customerInfoDetails]);
+
+  const handleReviewCustomerInfo = async () => {
+    if (!customerInfoTarget) return;
+    const trimmedName = customerInfoName.trim();
+    if (!trimmedName) {
+      if (sysAlert) await sysAlert('กรุณาระบุชื่อผู้จอง');
+      return;
+    }
+    if (trimmedName.length > 100) {
+      if (sysAlert) await sysAlert('ชื่อผู้จองต้องมีความยาวไม่เกิน 100 ตัวอักษร');
+      return;
+    }
+    if (customerInfoContact.trim().length > 50) {
+      if (sysAlert) await sysAlert('เบอร์ติดต่อต้องมีความยาวไม่เกิน 50 ตัวอักษร');
+      return;
+    }
+    if (customerInfoDepartment.trim().length > 100) {
+      if (sysAlert) await sysAlert('แผนก/วัตถุประสงค์ต้องมีความยาวไม่เกิน 100 ตัวอักษร');
+      return;
+    }
+    if (customerInfoDetails.length > 1000) {
+      if (sysAlert) await sysAlert('รายละเอียดเพิ่มเติมต้องมีความยาวไม่เกิน 1,000 ตัวอักษร');
+      return;
+    }
+    if (!customerInfoDiff.hasChanged) {
+      if (sysAlert) await sysAlert('ไม่มีข้อมูลที่เปลี่ยนแปลง');
+      return;
+    }
+    setShowCustomerInfoDiffModal(true);
+  };
+
+  const handleSaveCustomerInfo = async () => {
+    if (!customerInfoTarget) return;
+    setCustomerInfoLoading(true);
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const payload = {
+        customer_name: customerInfoName.trim(),
+        contact: customerInfoContact.trim() || null,
+        department: customerInfoDepartment.trim() || null,
+        booking_details: customerInfoDetails.trim() || null,
+        send_line: customerInfoSendLine,
+        expected_values: {
+          customer_name: customerInfoTarget.customer_name || '',
+          contact: customerInfoTarget.contact || '',
+          department: customerInfoTarget.department || '',
+          booking_details: customerInfoTarget.booking_details || ''
+        }
+      };
+
+      const res = await fetch(`/api/bookings/${customerInfoTarget.id}/customer-info`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.status === 409) {
+        if (sysAlert) await sysAlert('ข้อมูลการจองได้รับการแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชหน้าจอเพื่อดูข้อมูลล่าสุด');
+        setShowCustomerInfoDiffModal(false);
+        setShowCustomerInfoModal(false);
+        fetchBookings(true, false, true);
+        return;
+      }
+
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const updatedBookingData = data.booking || {
+          ...customerInfoTarget,
+          customer_name: payload.customer_name,
+          contact: payload.contact,
+          department: payload.department,
+          booking_details: payload.booking_details
+        };
+
+        setBookings(prev => prev.map(item => item.id === customerInfoTarget.id ? { ...item, ...updatedBookingData } : item));
+        let freshBooking = null;
+        if (selectedBooking && selectedBooking.id === customerInfoTarget.id) {
+          freshBooking = { ...selectedBooking, ...updatedBookingData };
+          setSelectedBooking(freshBooking);
+        }
+
+        setShowCustomerInfoDiffModal(false);
+        setShowCustomerInfoModal(false);
+        setShowUnifiedEditModal(false);
+        setCustomerInfoTarget(null);
+
+        if (returnToDetailAfterCustomerInfo || returnToDetailAfterUnified) {
+          if (freshBooking) {
+            setSelectedBooking(freshBooking);
+          }
+          setShowDetailModal(true);
+          setReturnToDetailAfterCustomerInfo(false);
+          setReturnToDetailAfterUnified(false);
+        }
+
+        const successMsg = data.message || 'บันทึกข้อมูลผู้จองเรียบร้อยแล้ว';
+        if (sysAlert) await sysAlert(successMsg);
+        fetchBookings(true, false, true);
+      } else {
+        if (sysAlert) await sysAlert(data.error || 'เกิดข้อผิดพลาดในการบันทึกข้อมูลผู้จอง');
+      }
+    } catch (err) {
+      console.error('Failed to update customer info:', err);
+      if (sysAlert) await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setCustomerInfoLoading(false);
+    }
+  };
+
+  // 2.5 Unified Booking Editor (แก้ไขการจอง) Handlers
+  const handleOpenUnifiedEdit = async (booking, initialTab = 'schedule', fromDetail = false) => {
+    if (!booking) return;
+    setReturnToDetailAfterUnified(!!fromDetail);
+    setUnifiedActiveTab(initialTab);
+
+    // Initialize Section B (Customer Info)
+    setReturnToDetailAfterCustomerInfo(!!fromDetail);
+    setCustomerInfoTarget(booking);
+    setCustomerInfoName(booking.customer_name || '');
+    setCustomerInfoContact(booking.contact || '');
+    setCustomerInfoDepartment(booking.department || '');
+    setCustomerInfoDetails(typeof booking.booking_details === 'string' ? booking.booking_details : '');
+    setCustomerInfoSendLine(Boolean(booking.line_user_id));
+    setShowCustomerInfoDiffModal(false);
+
+    // Initialize Section C (Additional Details)
+    setReturnToDetailAfterEditDetails(!!fromDetail);
+    setEditDetailsTarget(booking);
+    setEditDetailsText(typeof booking.booking_details === 'string' ? booking.booking_details : '');
+
+    // Initialize Section B (Schedule)
+    try {
+      let fullBooking = booking;
+      if (!booking.items || booking.items.length === 0) {
+        const res = await fetch(`/api/bookings/${booking.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.booking) fullBooking = data.booking;
+        }
+      }
       setRescheduleTarget(fullBooking);
-      setRescheduleDetails(typeof fullBooking.booking_details === 'string' ? fullBooking.booking_details : (typeof booking.booking_details === 'string' ? booking.booking_details : ''));
+      setUnifiedEditTarget(fullBooking);
 
       const item = fullBooking.items?.[0] || fullBooking;
       let initDate = new Date().toISOString().split('T')[0];
@@ -1158,8 +1644,102 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       setRescheduleLayout(bLayout);
       setRescheduleDailySlot(dailySlot);
       setRescheduleReason('');
-      setRescheduleSendLine(!!fullBooking.line_user_id);
-      setShowRescheduleModal(true);
+      setRescheduleSendLine(Boolean(fullBooking.line_user_id));
+      setRescheduleDetails(typeof fullBooking.booking_details === 'string' ? fullBooking.booking_details : (typeof booking.booking_details === 'string' ? booking.booking_details : ''));
+      setReturnToDetailAfterReschedule(!!fromDetail);
+    } catch (err) {
+      console.error('Error initializing schedule in unified editor:', err);
+      setUnifiedEditTarget(booking);
+    }
+
+    setShowUnifiedEditModal(true);
+  };
+
+  const handleCloseUnifiedEditModal = () => {
+    if (customerInfoLoading || rescheduleLoading || editDetailsLoading) return;
+    setShowUnifiedEditModal(false);
+    setUnifiedEditTarget(null);
+    if (returnToDetailAfterUnified) {
+      setShowDetailModal(true);
+      setReturnToDetailAfterUnified(false);
+    }
+  };
+
+  // 3. Reschedule Booking (แก้ไขวัน/เวลาการจอง)
+  const initRescheduleFields = (item, parentBooking = rescheduleTarget) => {
+    if (!item) return;
+    let initDate = new Date().toISOString().split('T')[0];
+    let initSHour = '09';
+    let initSMin = '00';
+    let initEHour = '10';
+    let initEMin = '00';
+    let bType = item.booking_type || 'hourly';
+    let bLayout = item.layout || 'standard';
+    let dailySlot = '08-17';
+
+    if (item.start_time) {
+      const sStr = String(item.start_time).replace(' ', 'T');
+      if (sStr.includes('T')) {
+        const [d, t] = sStr.split('T');
+        initDate = d;
+        const [h, m] = t.substring(0, 5).split(':');
+        initSHour = h || '09';
+        initSMin = m || '00';
+      }
+    }
+    if (item.end_time) {
+      const eStr = String(item.end_time).replace(' ', 'T');
+      if (eStr.includes('T')) {
+        const [, t] = eStr.split('T');
+        const [h, m] = t.substring(0, 5).split(':');
+        initEHour = h || '10';
+        initEMin = m || '00';
+      }
+    }
+
+    if (bType === 'halfday') {
+      dailySlot = initSHour === '13' ? '13-17' : '08-12';
+    } else if (bType === 'daily') {
+      dailySlot = initSHour === '09' ? '09-18' : '08-17';
+    }
+
+    const initRoomId = item.room_id || parentBooking?.room_id || (roomsList[0]?.id ? String(roomsList[0].id) : '');
+    setRescheduleRoomId(String(initRoomId));
+    setRescheduleDate(initDate);
+    setRescheduleStartHour(initSHour);
+    setRescheduleStartMinute(initSMin);
+    setRescheduleEndHour(initEHour);
+    setRescheduleEndMinute(initEMin);
+    setRescheduleBookingType(bType);
+    setRescheduleLayout(bLayout);
+    setRescheduleDailySlot(dailySlot);
+    setRescheduleReason('');
+    setRescheduleSendLine(Boolean(parentBooking?.line_user_id));
+  };
+
+  const handleOpenReschedule = async (booking, fromDetail = false) => {
+    if (!booking) return;
+    setReturnToDetailAfterReschedule(!!fromDetail);
+    try {
+      // Fetch full details to ensure item structure
+      const res = await fetch(`/api/bookings/${booking.id}`);
+      const fullBooking = res.ok ? await res.json() : booking;
+
+      setRescheduleTarget(fullBooking);
+      setRescheduleDetails(typeof fullBooking.booking_details === 'string' ? fullBooking.booking_details : (typeof booking.booking_details === 'string' ? booking.booking_details : ''));
+      setRescheduleReason('');
+      setRescheduleSendLine(Boolean(fullBooking.line_user_id));
+
+      // Multi-item safety guard: handle multi-item bookings via item selection
+      if (Array.isArray(fullBooking.items) && fullBooking.items.length > 1) {
+        setSelectedRescheduleItemId(null);
+        setShowRescheduleModal(true);
+      } else {
+        const item = fullBooking.items?.[0] || fullBooking;
+        setSelectedRescheduleItemId(item.id || null);
+        initRescheduleFields(item, fullBooking);
+        setShowRescheduleModal(true);
+      }
     } catch (err) {
       console.error('Error opening reschedule modal:', err);
       if (fromDetail) setShowDetailModal(true);
@@ -1170,6 +1750,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const handleCloseRescheduleModal = () => {
     if (rescheduleLoading) return;
     setShowRescheduleModal(false);
+    setSelectedRescheduleItemId(null);
     setRescheduleTarget(null);
     setRescheduleDetails('');
     if (returnToDetailAfterReschedule) {
@@ -1182,10 +1763,37 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   const reschedulePriceCalc = useMemo(() => {
     if (!rescheduleTarget) return { newTotal: 0, oldTotal: 0, diff: 0, isValid: true };
     const oldTotal = Number(rescheduleTarget.total_amount) || 0;
-    const roomId = rescheduleRoomId || rescheduleTarget.items?.[0]?.room_id || rescheduleTarget.room_id;
+    const items = rescheduleTarget.items || [];
+    const isMulti = items.length > 1;
+
+    // If multi-item and no item selected yet, return baseline
+    if (isMulti && !selectedRescheduleItemId) {
+      return {
+        newItemSubtotal: 0,
+        oldItemSubtotal: 0,
+        newGross: oldTotal,
+        newTotal: oldTotal,
+        oldTotal,
+        diff: 0,
+        paidAmount: Number(rescheduleTarget.paid_amount) || 0,
+        balanceAmount: Number(rescheduleTarget.balance_amount) || 0,
+        discountAmount: Number(rescheduleTarget.discount_amount) || 0,
+        discountType: rescheduleTarget.discount_type || 'none',
+        discountValue: Number(rescheduleTarget.discount_value) || 0,
+        financialStatus: rescheduleTarget.payment_status,
+        financialError: null,
+        isValid: true
+      };
+    }
+
+    const targetItem = selectedRescheduleItemId
+      ? (items.find(it => String(it.id) === String(selectedRescheduleItemId)) || items[0] || rescheduleTarget)
+      : (items[0] || rescheduleTarget);
+
+    const roomId = rescheduleRoomId || targetItem?.room_id || rescheduleTarget.room_id;
     const room = roomsList.find(r => String(r.id) === String(roomId)) || {};
 
-    let newGross = oldTotal;
+    let newGross = Number(targetItem?.subtotal || targetItem?.price || 0);
     let isValid = true;
 
     if (rescheduleBookingType === 'daily') {
@@ -1207,11 +1815,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const hourlyRate = rescheduleLayout === 'classroom'
           ? (room.classroom_hourly_rate || room.hourly_rate || 0)
           : (room.hourly_rate || 0);
-        newGross = totalHours * (hourlyRate || (oldTotal / (totalHours || 1)));
+        newGross = totalHours * (hourlyRate || ((Number(targetItem?.subtotal) || oldTotal) / (totalHours || 1)));
       }
     }
 
-    const otherItems = (rescheduleTarget.items || []).filter(it => it.id !== rescheduleTarget.items?.[0]?.id);
+    const otherItems = items.filter(it => String(it.id) !== String(targetItem?.id));
     const otherSubtotal = otherItems.reduce((sum, it) => sum + (Number(it.subtotal || it.price) || 0), 0);
     const totalGross = roundMoney(newGross + otherSubtotal);
 
@@ -1224,6 +1832,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     const diff = roundMoney(newTotal - oldTotal);
 
     return {
+      newItemSubtotal: newGross,
+      oldItemSubtotal: Number(targetItem?.subtotal || targetItem?.price || 0),
       newGross: totalGross,
       newTotal,
       oldTotal,
@@ -1237,14 +1847,26 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       financialError: fin.error,
       isValid: isValid && !fin.error
     };
-  }, [rescheduleTarget, rescheduleRoomId, rescheduleBookingType, rescheduleLayout, rescheduleDailySlot, rescheduleStartHour, rescheduleStartMinute, rescheduleEndHour, rescheduleEndMinute, roomsList]);
+  }, [rescheduleTarget, selectedRescheduleItemId, rescheduleRoomId, rescheduleBookingType, rescheduleLayout, rescheduleDailySlot, rescheduleStartHour, rescheduleStartMinute, rescheduleEndHour, rescheduleEndMinute, roomsList]);
 
   // Real-time Overlap Checker for Reschedule
   const rescheduleOverlapInfo = useMemo(() => {
     if (!showRescheduleModal || !rescheduleTarget || !rescheduleDate) {
       return { isValid: true, isOverlap: false, booking: null };
     }
-    const roomId = rescheduleRoomId || rescheduleTarget.items?.[0]?.room_id || rescheduleTarget.room_id;
+    const items = rescheduleTarget.items || [];
+    const isMulti = items.length > 1;
+
+    // If multi-item and no item selected yet
+    if (isMulti && !selectedRescheduleItemId) {
+      return { isValid: true, isOverlap: false, booking: null };
+    }
+
+    const targetItem = selectedRescheduleItemId
+      ? (items.find(it => String(it.id) === String(selectedRescheduleItemId)) || items[0] || rescheduleTarget)
+      : (items[0] || rescheduleTarget);
+
+    const roomId = rescheduleRoomId || targetItem?.room_id || rescheduleTarget.room_id;
     if (!roomId) return { isValid: true, isOverlap: false, booking: null };
 
     let sTime = null;
@@ -1276,6 +1898,23 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       return { isValid: false, isOverlap: false, booking: null };
     }
 
+    // Check overlap with other items within the same booking (for the same room)
+    if (isMulti) {
+      const internalOverlap = items.find(otherIt => {
+        if (String(otherIt.id) === String(targetItem?.id)) return false;
+        if (Number(otherIt.room_id) !== Number(roomId)) return false;
+        if (!otherIt.start_time || !otherIt.end_time) return false;
+        const sStr = String(otherIt.start_time).replace(' ', 'T').replace('Z', '');
+        const eStr = String(otherIt.end_time).replace(' ', 'T').replace('Z', '');
+        const bStart = new Date(sStr);
+        const bEnd = new Date(eStr);
+        return sTime < bEnd && eTime > bStart;
+      });
+      if (internalOverlap) {
+        return { isValid: true, isOverlap: true, booking: { customer_name: 'รายการอื่นในใบจองนี้' } };
+      }
+    }
+
     // Check overlap with other active bookings for the same room
     const foundOverlap = bookings.find(b => {
       if (String(b.id) === String(rescheduleTarget.id)) return false;
@@ -1296,15 +1935,20 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       return { isValid: true, isOverlap: true, booking: foundOverlap };
     }
     return { isValid: true, isOverlap: false, booking: null };
-  }, [showRescheduleModal, rescheduleTarget, rescheduleRoomId, rescheduleDate, rescheduleStartHour, rescheduleStartMinute, rescheduleEndHour, rescheduleEndMinute, rescheduleBookingType, rescheduleDailySlot, bookings]);
+  }, [showRescheduleModal, rescheduleTarget, selectedRescheduleItemId, rescheduleRoomId, rescheduleDate, rescheduleStartHour, rescheduleStartMinute, rescheduleEndHour, rescheduleEndMinute, rescheduleBookingType, rescheduleDailySlot, bookings]);
 
   // Submit Reschedule
   const submitRescheduleBooking = async () => {
-    if (!rescheduleTarget || !reschedulePriceCalc.isValid || rescheduleOverlapInfo.isOverlap) return;
-    if (rescheduleDetails && rescheduleDetails.length > 1000) {
-      await sysAlert('รายละเอียดเพิ่มเติมต้องมีความยาวไม่เกิน 1,000 ตัวอักษร');
+    if (!rescheduleTarget || !reschedulePriceCalc.isValid || rescheduleOverlapInfo.isOverlap || (reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount)) return;
+    const items = rescheduleTarget.items || [];
+    const isMulti = items.length > 1;
+    const targetItemId = selectedRescheduleItemId || (items.length === 1 ? items[0].id : undefined);
+
+    if (isMulti && !targetItemId) {
+      await sysAlert('กรุณาเลือกรายการห้องที่ต้องการแก้ไขวัน/เวลา');
       return;
     }
+
     setRescheduleLoading(true);
 
     let start_time = `${String(rescheduleStartHour).padStart(2, '0')}:${String(rescheduleStartMinute).padStart(2, '0')}`;
@@ -1321,6 +1965,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          booking_item_id: targetItemId,
           room_id: Number(rescheduleRoomId),
           date: rescheduleDate,
           start_time,
@@ -1329,8 +1974,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           layout: rescheduleLayout,
           total_amount: reschedulePriceCalc.newTotal,
           reason: rescheduleReason,
-          send_line: rescheduleSendLine,
-          booking_details: rescheduleDetails
+          send_line: rescheduleSendLine
         })
       });
 
@@ -1339,7 +1983,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const targetId = rescheduleTarget.id;
         const freshBooking = data.booking || {
           ...rescheduleTarget,
-          booking_details: rescheduleDetails.trim() || null,
+          booking_details: rescheduleTarget.booking_details,
           booking_date: rescheduleDate,
           start_time: `${rescheduleDate} ${start_time}:00`,
           end_time: `${rescheduleDate} ${end_time}:00`,
@@ -1364,6 +2008,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         }
 
         setShowRescheduleModal(false);
+        setShowUnifiedEditModal(false);
+        setSelectedRescheduleItemId(null);
         setRescheduleTarget(null);
         setRescheduleDetails('');
 
@@ -1373,11 +2019,38 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           setShowDetailModal(true);
           setReturnToDetailAfterReschedule(false);
         }
+        if (returnToDetailAfterUnified) {
+          setSelectedBooking(freshBooking);
+          setShowDetailModal(true);
+          setReturnToDetailAfterUnified(false);
+        }
 
         await sysAlert(data.message || 'เปลี่ยนแปลงวันและเวลาการจองสำเร็จแล้ว');
         fetchBookings(true, false, true);
       } else {
-        await sysAlert('' + (data.error || 'ไม่สามารถแก้ไขวัน/เวลาการจองได้'));
+        if (res.status === 409 || data.code === 'ERR_CONCURRENT_MODIFICATION') {
+          await sysAlert('ข้อมูลการจองมีการเปลี่ยนแปลงจากผู้ใช้อื่น กรุณาตรวจสอบข้อมูลล่าสุดและลองใหม่อีกครั้ง');
+          try {
+            const refreshRes = await fetch(`/api/bookings/${rescheduleTarget.id}`);
+            if (refreshRes.ok) {
+              const fresh = await refreshRes.json();
+              setRescheduleTarget(fresh);
+              setSelectedRescheduleItemId(null);
+              setBookings(prev => prev.map(item => item.id === fresh.id ? { ...item, ...fresh } : item));
+              if (selectedBooking && selectedBooking.id === fresh.id) {
+                setSelectedBooking(fresh);
+              }
+            }
+          } catch (e) {
+            console.error('Failed to reload fresh booking after 409:', e);
+          }
+        } else if (data.code === 'ERR_RESCHEDULE_BELOW_PAID') {
+          await sysAlert('ไม่สามารถลดเวลาการจองได้ เนื่องจากยอดใหม่ต่ำกว่ายอดเงินที่ลูกค้าชำระแล้ว');
+        } else if (data.code === 'ERR_ROOM_OVERLAP') {
+          await sysAlert(data.error || 'ห้องและช่วงเวลาที่เลือกใหม่นี้มีการจองซ้ำซ้อน');
+        } else {
+          await sysAlert('' + (data.error || 'ไม่สามารถแก้ไขวัน/เวลาการจองได้'));
+        }
       }
     } catch (err) {
       console.error(err);
@@ -2400,7 +3073,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
                   const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
 
-                  const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
+                  const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : (b.customer_type === 'shop' ? 'Shop' : 'ทั่วไป'));
                   const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
                   const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
@@ -2456,9 +3129,9 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       }}
                     >
                       {/* Column 1: Booking */}
-                      <td className="pb-td">
+                      <td className="pb-td" onClick={() => handleOpenBookingDetail(b)} style={{ cursor: 'pointer' }} title={`${displayCode} (คลิกดูรายละเอียดการจอง)`}>
                         <div className="pb-cell-booking">
-                          <span className="pb-booking-code" title={displayCode}>{displayCode}</span>
+                          <span className="pb-booking-code">{displayCode}</span>
                           <span className="pb-sub-text">{formatDate(b.created_at)}</span>
                           <span className="pb-tertiary-text">
                             {channelLabel} • {custLabel}
@@ -2566,12 +3239,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           ) : isReviewing ? (
                             <span className="pb-status-badge pb-status-reviewing">
                               <Eye size={11} />
-                              <span>รอตรวจสลิป</span>
+                              <span>{(b.payment_status === 'unpaid' && b.slip_image_url) ? 'หลักฐานรอตรวจสอบ' : 'รอตรวจสลิป'}</span>
                             </span>
                           ) : isRejected ? (
                             <span className="pb-status-badge pb-status-rejected">
                               <AlertCircle size={11} />
-                              <span>สลิปไม่ผ่าน</span>
+                              <span>สลิปถูกปฏิเสธ — รอหลักฐานใหม่</span>
                             </span>
                           ) : fin?.is_deposit ? (
                             <span className="pb-status-badge pb-status-deposit">
@@ -2708,7 +3381,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               const rawBookingCode = b.receipt_number || b.booking_code || (b.id ? `BK-${String(b.id).padStart(6, '0')}` : '-');
               const displayCode = rawBookingCode.startsWith('#') ? rawBookingCode : `#${rawBookingCode}`;
 
-              const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
+              const custLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : (b.customer_type === 'shop' ? 'Shop' : 'ทั่วไป'));
               const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : 'POS';
 
               const usesDoorPin = roomUsesDoorPin(roomObj || firstItem || b);
@@ -2745,12 +3418,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       ) : isReviewing ? (
                         <span className="pb-status-badge pb-status-reviewing">
                           <Eye size={11} />
-                          <span>รอตรวจสลิป</span>
+                          <span>{(b.payment_status === 'unpaid' && b.slip_image_url) ? 'หลักฐานรอตรวจสอบ' : 'รอตรวจสลิป'}</span>
                         </span>
                       ) : isRejected ? (
                         <span className="pb-status-badge pb-status-rejected">
                           <AlertCircle size={11} />
-                          <span>สลิปไม่ผ่าน</span>
+                          <span>สลิปถูกปฏิเสธ — รอหลักฐานใหม่</span>
                         </span>
                       ) : fin?.is_deposit ? (
                         <span className="pb-status-badge pb-status-deposit">
@@ -3032,40 +3705,56 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               การดำเนินการ (#{activeActionMenuBooking.id})
             </div>
 
-            {/* 1. Reschedule (active bookings only) */}
+            {/* 1. View Booking Details */}
+            <div
+              onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenBookingDetail(b); }}
+              className="action-menu-item"
+            >
+              <FileText size={14} style={{ color: 'var(--primary-color)' }} />
+              <span>ดูรายละเอียดการจอง</span>
+            </div>
+
+            {/* 2. Edit Schedule (แก้ไขวัน/เวลา) */}
             {activeActionMenuBooking.payment_status !== 'cancelled' && (
               <div
                 onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenReschedule(b); }}
                 className="action-menu-item"
               >
-                <Edit3 size={14} style={{ color: '#6366f1' }} />
-                <span>แก้ไขวัน/เวลาการจอง</span>
+                <Calendar size={14} style={{ color: 'var(--primary-color)' }} />
+                <span>แก้ไขวัน/เวลา</span>
               </div>
             )}
 
-            {/* 1.1 Edit Booking Details (active bookings only) */}
+            {/* 3. Edit Customer Info (แก้ไขข้อมูลผู้จอง) */}
+            {activeActionMenuBooking.payment_status !== 'cancelled' && (
+              <div
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenCustomerInfoEdit(b); }}
+                className="action-menu-item"
+              >
+                <User size={14} style={{ color: 'var(--text-muted)' }} />
+                <span>แก้ไขข้อมูลผู้จอง</span>
+              </div>
+            )}
+
+            {/* 4. Edit Additional Details (แก้ไขรายละเอียดเพิ่มเติม) */}
             {activeActionMenuBooking.payment_status !== 'cancelled' && (
               <div
                 onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenEditDetails(b); }}
                 className="action-menu-item"
               >
-                <FileText size={14} style={{ color: '#0284c7' }} />
+                <Edit3 size={14} style={{ color: 'var(--text-muted)' }} />
                 <span>แก้ไขรายละเอียดเพิ่มเติม</span>
               </div>
             )}
 
-            {/* 2. View Operational Booking Detail (when not already primary action) */}
-            {activeActionMenuBooking.payment_status !== 'paid' &&
-             activeActionMenuBooking.payment_status !== 'internal_free' &&
-             activeActionMenuBooking.payment_status !== 'rejected' &&
-             activeActionMenuBooking.payment_status !== 'cancelled' &&
-             activeActionMenuBooking.slip_verify_status !== 'rejected' && (
+            {/* 4.1 Meeting Room Booking Confirmation Card (ใบยืนยันการจองห้องประชุม) */}
+            {activeActionMenuBooking.payment_status !== 'cancelled' && (
               <div
-                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenBookingDetail(b); }}
+                onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); handleOpenWifiCard(b); }}
                 className="action-menu-item"
               >
                 <FileText size={14} style={{ color: 'var(--primary-color)' }} />
-                <span>ดูรายละเอียดการจอง</span>
+                <span>ใบยืนยันการจอง / Wi-Fi</span>
               </div>
             )}
 
@@ -3111,14 +3800,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             })()}
 
             {/* 5. Tax Invoice Info */}
-            {activeActionMenuBooking.tax_invoice_required === 1 && (
+            {activeActionMenuBooking && (
               <div
                 onClick={() => { const b = activeActionMenuBooking; setActiveActionMenuBooking(null); setActionMenuPos(null); setSelectedTaxBooking(b); }}
                 className="action-menu-item"
                 style={{ color: '#2563eb', fontWeight: 700 }}
               >
                 <FileText size={14} style={{ color: '#2563eb' }} />
-                <span>ดูข้อมูลใบกำกับภาษี</span>
+                <span>{activeActionMenuBooking.tax_invoice_required === 1 ? 'ดูข้อมูลใบกำกับภาษี' : 'ขอใบกำกับภาษี / จัดการภาษี'}</span>
               </div>
             )}
 
@@ -3218,7 +3907,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             {/* Tax Invoice Request Info */}
             {selectedBooking?.tax_invoice_required === 1 && (
               <div style={{ padding: '10px 12px', borderRadius: '10px', backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.25)', fontSize: '0.8rem' }}>
-                <div style={{ color: '#3b82f6', fontWeight: 800, marginBottom: '4px' }}>📄 ลูกค้าขอใบกำกับภาษี (Tax Invoice):</div>
+                <div style={{ color: '#3b82f6', fontWeight: 800, marginBottom: '4px' }}>ลูกค้าขอใบกำกับภาษี (Tax Invoice):</div>
                 <div style={{ color: 'var(--text-main)' }}><strong>ชื่อ:</strong> {selectedBooking.tax_name} | <strong>เลข 13 หลัก:</strong> {selectedBooking.tax_id}</div>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '2px' }}><strong>ที่อยู่:</strong> {selectedBooking.tax_address}</div>
                 <div style={{ color: '#3b82f6', fontSize: '0.75rem', marginTop: '2px' }}>
@@ -3333,7 +4022,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
         const customerName = b.customer_name || b.contact_name || '-';
         const contactPhone = b.contact || b.phone || '-';
-        const custTypeLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : 'ทั่วไป');
+        const custTypeLabel = b.customer_type === 'builtland' ? 'Builtland' : (b.customer_type === 'basecamp' ? 'Basecamp' : (b.customer_type === 'shop' ? 'Shop (ร้านค้าพันธมิตร)' : 'ทั่วไป'));
         const channelLabel = (b.booking_channel === 'line_oa' || b.booking_source === 'online') ? 'LINE OA' : (b.booking_source === 'pos' ? 'POS' : (b.booking_source || 'Walk-in'));
         const paymentMethodLabel = getPaymentMethodLabel(b.payment_method);
 
@@ -3365,10 +4054,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           statusText = 'ยกเลิกการจอง';
           statusBadgeClass = 'pb-status-badge--cancelled';
         } else if (isRejected) {
-          statusText = 'สลิปถูกปฏิเสธ';
+          statusText = 'สลิปถูกปฏิเสธ — รอหลักฐานใหม่';
           statusBadgeClass = 'pb-status-badge--rejected';
         } else if (isReviewing) {
-          statusText = 'รอตรวจสลิป';
+          statusText = (b.payment_status === 'unpaid' && b.slip_image_url) ? 'หลักฐานรอตรวจสอบ' : 'รอตรวจสลิป';
           statusBadgeClass = 'pb-status-badge--reviewing';
         }
 
@@ -3408,6 +4097,35 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
               {/* BODY: 2-COLUMN GRID */}
               <div className="pb-detail-modal-body">
+                {/* Rejection Banner */}
+                {isRejected && (
+                  <div style={{
+                    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                    border: '1.5px solid #ef4444',
+                    borderRadius: '12px',
+                    padding: '12px 16px',
+                    marginBottom: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <AlertCircle size={18} color="#dc2626" />
+                      <span style={{ fontWeight: 800, color: '#dc2626', fontSize: '0.88rem' }}>
+                        สลิปถูกปฏิเสธ — รอหลักฐานใหม่
+                      </span>
+                    </div>
+                    {b.rejection_reason && (
+                      <div style={{ fontSize: '0.82rem', color: '#991b1b', fontWeight: 600 }}>
+                        <strong>เหตุผลที่ปฏิเสธ:</strong> {b.rejection_reason}
+                      </div>
+                    )}
+                    <div style={{ fontSize: '0.74rem', color: '#7f1d1d', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                      {b.rejection_time && <span>เวลาที่ปฏิเสธ: {formatCreatedDateTime(b.rejection_time)}</span>}
+                      {b.rejected_by && <span>เจ้าหน้าที่ผู้ตรวจสอบ: {b.rejected_by}</span>}
+                    </div>
+                  </div>
+                )}
                 <div className="pb-detail-grid">
                   {/* LEFT COLUMN */}
                   <div className="pb-detail-col">
@@ -3606,8 +4324,34 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
 
                     {/* 2. CUSTOMER SECTION */}
                     <div className="pb-detail-card">
-                      <div className="pb-detail-card-header">
+                      <div className="pb-detail-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span className="pb-detail-card-title">ข้อมูลผู้จอง</span>
+                        {!isCancelled && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowDetailModal(false);
+                              handleOpenCustomerInfoEdit(b, true);
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--primary-color)',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem',
+                              fontWeight: 700,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              padding: '2px 6px',
+                              borderRadius: '4px'
+                            }}
+                            aria-label="แก้ไขข้อมูลผู้จอง"
+                          >
+                            <Edit3 size={12} />
+                            <span>แก้ไข</span>
+                          </button>
+                        )}
                       </div>
                       <div className="pb-detail-content">
                         <div className="pb-detail-field-group">
@@ -3637,35 +4381,37 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               </span>
                             </div>
                           )}
-                          {b.booking_details && (
-                            <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span className="pb-detail-label">รายละเอียดเพิ่มเติม:</span>
-                                {!isCancelled && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setShowDetailModal(false);
-                                      handleOpenEditDetails(b, true);
-                                    }}
-                                    style={{
-                                      background: 'none',
-                                      border: 'none',
-                                      color: 'var(--primary-color)',
-                                      cursor: 'pointer',
-                                      fontSize: '0.72rem',
-                                      fontWeight: 700,
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: '3px',
-                                      padding: 0
-                                    }}
-                                  >
-                                    <Edit3 size={11} />
-                                    <span>แก้ไข</span>
-                                  </button>
-                                )}
-                              </div>
+                          <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span className="pb-detail-label">รายละเอียดเพิ่มเติม:</span>
+                              {!isCancelled && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowDetailModal(false);
+                                    handleOpenEditDetails(b, true);
+                                  }}
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--primary-color)',
+                                    cursor: 'pointer',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px'
+                                  }}
+                                  aria-label="แก้ไขรายละเอียดเพิ่มเติม"
+                                >
+                                  <Edit3 size={11} />
+                                  <span>{b.booking_details ? 'แก้ไข' : '+ เพิ่ม'}</span>
+                                </button>
+                              )}
+                            </div>
+                            {b.booking_details ? (
                               <span
                                 className="pb-detail-val"
                                 style={{
@@ -3679,11 +4425,182 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               >
                                 {b.booking_details}
                               </span>
+                            ) : (
+                              <span className="pb-detail-val" style={{ color: 'var(--text-muted)', fontSize: '0.78rem', fontStyle: 'italic', marginTop: '2px', display: 'block' }}>
+                                - ไม่มีรายละเอียดเพิ่มเติม -
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 2.5 BASECAMP QUOTA SECTION (Rendered ONLY for Basecamp bookings) */}
+                    {b.customer_type === 'basecamp' && (
+                      <div className="pb-detail-card pb-detail-basecamp-quota-card" id="pb-detail-basecamp-quota-card">
+                        <div className="pb-detail-card-header">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span className="pb-detail-card-title">โควตาการใช้งานห้องประชุม</span>
+                            <span className="pb-quota-badge">Basecamp Quota</span>
+                          </div>
+                          <button
+                            type="button"
+                            className="pb-quota-refresh-btn"
+                            onClick={() => fetchBasecampQuota(b)}
+                            disabled={basecampQuotaLoading}
+                            title="รีเฟรชข้อมูลโควตา"
+                            aria-label="รีเฟรชข้อมูลโควตา"
+                          >
+                            <RotateCcw size={12} className={basecampQuotaLoading ? 'spin' : ''} />
+                          </button>
+                        </div>
+
+                        <div className="pb-detail-content">
+                          <div className="pb-quota-header-info">
+                            <div className="pb-quota-account-row">
+                              <span className="pb-quota-account-name">
+                                Basecamp ({b.basecamp_sub_type === 'hotdesk' ? 'Hotdesk' : 'Office'} {b.basecamp_unit || '-'})
+                              </span>
+                              <span className="pb-quota-room-name">
+                                — {summary?.uniqueRoomsList?.length ? summary.uniqueRoomsList.join(', ') : roomName}
+                              </span>
+                            </div>
+                            {basecampQuota?.target_month && (
+                              <div className="pb-quota-period-tag">
+                                <span>รอบเดือน: {formatThaiQuotaPeriod(basecampQuota.target_month)}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Loading State */}
+                          {basecampQuotaLoading && !basecampQuota && (
+                            <div className="pb-quota-loading">
+                              <RotateCcw size={15} className="spin" />
+                              <span>กำลังโหลดข้อมูลโควตา...</span>
+                            </div>
+                          )}
+
+                          {/* Error / Missing Unit State */}
+                          {!basecampQuotaLoading && basecampQuotaError && (
+                            <div className="pb-quota-alert pb-quota-alert--error">
+                              <span>
+                                {basecampQuotaError === 'missing_unit'
+                                  ? 'ไม่พบข้อมูลยูนิต Basecamp ในรายการจองนี้ จึงไม่สามารถตรวจสอบโควตาได้'
+                                  : 'ไม่สามารถโหลดข้อมูลโควตาได้ กรุณาลองใหม่อีกครั้ง'}
+                              </span>
+                              {basecampQuotaError !== 'missing_unit' && (
+                                <button
+                                  type="button"
+                                  className="pb-quota-retry-btn"
+                                  onClick={() => fetchBasecampQuota(b)}
+                                >
+                                  ลองใหม่
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Authoritative Quota Display */}
+                          {basecampQuota && (
+                            <>
+                              <div className="pb-quota-stat-grid">
+                                <div className="pb-quota-stat-box">
+                                  <span className="pb-quota-stat-label">โควตาทั้งหมด</span>
+                                  <span className="pb-quota-stat-val">
+                                    <strong>{basecampQuota.max_quota}</strong> ชั่วโมง
+                                  </span>
+                                </div>
+                                <div className="pb-quota-stat-box">
+                                  <span className="pb-quota-stat-label">ใช้ไปแล้ว</span>
+                                  <span className="pb-quota-stat-val">
+                                    <strong>{basecampQuota.used_quota}</strong> ชั่วโมง
+                                  </span>
+                                </div>
+                                <div
+                                  className={`pb-quota-stat-box pb-quota-stat-box--remaining ${
+                                    basecampQuota.remaining_quota === 0
+                                      ? 'is-depleted'
+                                      : basecampQuota.remaining_quota <= 1
+                                      ? 'is-low'
+                                      : 'is-available'
+                                  }`}
+                                >
+                                  <span className="pb-quota-stat-label">คงเหลือ</span>
+                                  <span className="pb-quota-stat-val">
+                                    <strong>{basecampQuota.remaining_quota}</strong> ชั่วโมง
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* This Booking Usage Breakdown */}
+                              {Number(b.quota_hours_used) > 0 && (
+                                <div className="pb-quota-booking-consumed">
+                                  <span className="pb-quota-consumed-dot" />
+                                  <span>
+                                    การจองนี้ใช้โควตา: <strong>{b.quota_hours_used} ชั่วโมง</strong> (รวมอยู่ในยอดใช้ไปแล้ว)
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Multi-room clarification note */}
+                              {summary?.uniqueRoomCount > 1 && (
+                                <div className="pb-quota-pool-note">
+                                  <span>* สิทธิ์โควตาใช้งานร่วมกันทุกห้องประชุมในรอบเดือนเดียวกัน</span>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 2.6 SHOP QUOTA SECTION (Rendered ONLY for Shop bookings) */}
+                    {b.customer_type === 'shop' && (
+                      <div className="pb-detail-card pb-detail-basecamp-quota-card" style={{ borderColor: 'rgba(5, 150, 105, 0.3)' }}>
+                        <div className="pb-detail-card-header">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span className="pb-detail-card-title">โควตาการใช้งานห้องประชุม</span>
+                            <span className="pb-quota-badge" style={{ backgroundColor: 'rgba(5, 150, 105, 0.12)', color: '#059669', border: '1px solid rgba(5, 150, 105, 0.3)' }}>
+                              Shop Quota
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="pb-detail-content">
+                          <div className="pb-quota-header-info">
+                            <div className="pb-quota-account-row">
+                              <span className="pb-quota-account-name" style={{ color: '#059669' }}>
+                                ร้านค้าพันธมิตร (Shop): {b.customer_name || '-'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="pb-quota-stat-grid" style={{ marginTop: '10px' }}>
+                            <div className="pb-quota-stat-box">
+                              <span className="pb-quota-stat-label">โควตาร้านค้า</span>
+                              <span className="pb-quota-stat-val">
+                                <strong>4</strong> ชั่วโมง/เดือน
+                              </span>
+                            </div>
+                            <div className="pb-quota-stat-box">
+                              <span className="pb-quota-stat-label">การจองนี้ตัดโควตา</span>
+                              <span className="pb-quota-stat-val" style={{ color: '#059669' }}>
+                                <strong>{b.quota_hours_used || 0}</strong> ชั่วโมง
+                              </span>
+                            </div>
+                          </div>
+
+                          {Number(b.quota_hours_used) > 0 && (
+                            <div className="pb-quota-booking-consumed" style={{ backgroundColor: 'rgba(5, 150, 105, 0.08)', borderColor: 'rgba(5, 150, 105, 0.25)', color: '#059669', marginTop: '10px' }}>
+                              <span className="pb-quota-consumed-dot" style={{ backgroundColor: '#059669' }} />
+                              <span>
+                                รายการนี้ใช้สิทธิ์โควต้าร้านค้า <strong>{b.quota_hours_used} ชั่วโมง</strong>
+                              </span>
                             </div>
                           )}
                         </div>
                       </div>
-                    </div>
+                    )}
 
                     {/* 3. ACCESS / PIN SECTION */}
                     <div className="pb-detail-card">
@@ -3947,7 +4864,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                       {formatCreatedDateTime(tx.payment_time || tx.created_at)}
                                     </div>
                                   </div>
-                                  <div style={{ textAlign: 'right' }}>
+                                  <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px' }}>
                                     <div style={{ fontWeight: 800, color: '#16a34a', fontSize: '0.86rem' }}>
                                       +฿{formatMoney(tx.amount)}
                                     </div>
@@ -3956,13 +4873,226 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                         #{tx.receipt_number}
                                       </div>
                                     )}
+                                    {tx.slip_url ? (
+                                      <div style={{ display: 'flex', gap: '4px' }}>
+                                        <button
+                                          type="button"
+                                          id={`btn-view-slip-tx-${tx.id}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setViewingSlipBooking({
+                                              ...b,
+                                              slip_image_url: tx.slip_url,
+                                              receipt_number: tx.receipt_number || b.receipt_number,
+                                              active_transaction_id: tx.id
+                                            });
+                                          }}
+                                          style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '3px',
+                                            padding: '2px 8px',
+                                            borderRadius: '6px',
+                                            backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                            color: 'var(--primary-color)',
+                                            border: '1px solid rgba(37, 99, 235, 0.25)',
+                                            fontSize: '0.7rem',
+                                            fontWeight: 700,
+                                            cursor: 'pointer'
+                                          }}
+                                        >
+                                          <Eye size={10} />
+                                          <span>ดูสลิป</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          id={`btn-reupload-slip-tx-${tx.id}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setAttachSlipModalData({ booking: b, transaction: tx });
+                                          }}
+                                          title="เปลี่ยนรูปสลิป"
+                                          style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '3px',
+                                            padding: '2px 7px',
+                                            borderRadius: '6px',
+                                            backgroundColor: 'var(--bg-card)',
+                                            color: 'var(--text-muted)',
+                                            border: '1px solid var(--border-color)',
+                                            fontSize: '0.68rem',
+                                            fontWeight: 700,
+                                            cursor: 'pointer'
+                                          }}
+                                        >
+                                          <RefreshCw size={9} />
+                                          <span>เปลี่ยน</span>
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        id={`btn-attach-slip-tx-${tx.id}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setAttachSlipModalData({ booking: b, transaction: tx });
+                                        }}
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px',
+                                          padding: '2px 8px',
+                                          borderRadius: '6px',
+                                          backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                                          color: '#d97706',
+                                          border: '1px solid rgba(245, 158, 11, 0.35)',
+                                          fontSize: '0.7rem',
+                                          fontWeight: 750,
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        <Plus size={10} />
+                                        <span>แนบสลิป</span>
+                                      </button>
+                                    )}
                                   </div>
                                 </div>
                               ))}
                             </div>
                           ) : (
-                            <div className="pb-detail-empty-note">
-                              ไม่มีประวัติธุรกรรมแยกรายการสำหรับการจองเดิม
+                            <div
+                              style={{
+                                padding: '10px 12px',
+                                borderRadius: '10px',
+                                backgroundColor: 'var(--bg-hover)',
+                                border: '1px solid var(--border-color)',
+                                fontSize: '0.78rem'
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px' }}>
+                                <div>
+                                  <div style={{ fontWeight: 750, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                    <FileText size={13} style={{ color: 'var(--text-muted)' }} />
+                                    <span>ไม่พบรายการธุรกรรมการชำระเงินแยกสำหรับการจองนี้</span>
+                                  </div>
+                                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '3px', lineHeight: '1.4' }}>
+                                    {b.payment_status === 'paid' || Number(b.paid_amount) > 0 ? (
+                                      <span>
+                                        ยอดชำระตามบันทึกเดิม: <strong>฿{formatMoney(b.paid_amount)}</strong> ({getPaymentMethodLabel(b.payment_method)}) — สามารถแนบหลักฐานสลิปย้อนหลังเพื่อบันทึกประวัติได้
+                                      </span>
+                                    ) : b.payment_status === 'unpaid' ? (
+                                      <span>
+                                        สถานะการจองเดิม: <strong>ยังไม่ชำระเงิน (Unpaid)</strong> — การแนบสลิปย้อนหลังเป็นการบันทึกเอกสารหลักฐาน จะไม่เปลี่ยนแปลงยอดรับชำระหรือสถานะการเงิน
+                                      </span>
+                                    ) : (
+                                      <span>
+                                        สถานะการจอง: <strong>{b.payment_status}</strong> — สามารถแนบหรือดูหลักฐานสลิปเดิมได้เพื่อการตรวจสอบย้อนหลัง
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div style={{ flexShrink: 0 }}>
+                                  {b.slip_image_url ? (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                      {b.payment_status === 'unpaid' && (
+                                        <span
+                                          id="pb-badge-legacy-slip-unpaid"
+                                          className="pb-status-badge pb-status-reviewing"
+                                          style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '4px',
+                                            padding: '2px 8px',
+                                            borderRadius: '6px',
+                                            backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                                            color: '#d97706',
+                                            border: '1px solid rgba(245, 158, 11, 0.35)',
+                                            fontSize: '0.72rem',
+                                            fontWeight: 750
+                                          }}
+                                        >
+                                          <Clock size={11} />
+                                          <span>หลักฐานรอตรวจสอบ</span>
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        id="pb-btn-view-legacy-slip"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setViewingSlipBooking(b);
+                                        }}
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px',
+                                          padding: '3px 8px',
+                                          borderRadius: '6px',
+                                          backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                          color: 'var(--primary-color)',
+                                          border: '1px solid rgba(37, 99, 235, 0.25)',
+                                          fontSize: '0.7rem',
+                                          fontWeight: 700,
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        <Eye size={11} />
+                                        <span>ดูสลิป</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        id="pb-btn-reupload-legacy-slip"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setAttachSlipModalData({ booking: b, transaction: null });
+                                        }}
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px',
+                                          padding: '3px 8px',
+                                          borderRadius: '6px',
+                                          backgroundColor: 'var(--bg-card)',
+                                          color: 'var(--text-muted)',
+                                          border: '1px solid var(--border-color)',
+                                          fontSize: '0.7rem',
+                                          fontWeight: 700,
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        <RefreshCw size={10} />
+                                        <span>เปลี่ยนสลิป</span>
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      id="pb-btn-attach-legacy-slip"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setAttachSlipModalData({ booking: b, transaction: null });
+                                      }}
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        padding: '4px 10px',
+                                        borderRadius: '6px',
+                                        backgroundColor: '#2563eb',
+                                        color: '#ffffff',
+                                        border: 'none',
+                                        fontSize: '0.72rem',
+                                        fontWeight: 750,
+                                        cursor: 'pointer'
+                                      }}
+                                    >
+                                      <Plus size={11} />
+                                      <span>แนบสลิปย้อนหลัง</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -4022,16 +5152,50 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       </div>
                     </div>
 
-                    {/* 6. TAX INVOICE SECTION (Conditional) */}
-                    {b.tax_invoice_required === 1 && (
-                      <div className="pb-detail-card">
-                        <div className="pb-detail-card-header">
-                          <span className="pb-detail-card-title">ข้อมูลใบกำกับภาษี</span>
-                          <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: '5px', backgroundColor: 'rgba(37, 99, 235, 0.1)', color: '#2563eb' }}>
-                            ขอกำกับภาษี
-                          </span>
+                    {/* 6. TAX INVOICE SECTION (Always Visible in Details) */}
+                    <div className="pb-detail-card">
+                      <div className="pb-detail-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <FileText size={16} style={{ color: '#2563eb' }} />
+                          <span className="pb-detail-card-title">ข้อมูลและเอกสารใบกำกับภาษี</span>
                         </div>
-                        <div className="pb-detail-content">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            padding: '2px 8px',
+                            borderRadius: '5px',
+                            backgroundColor: b.tax_invoice_status === 'issued' ? 'rgba(16, 185, 129, 0.1)' : (b.tax_invoice_required === 1 ? 'rgba(37, 99, 235, 0.1)' : 'var(--bg-hover)'),
+                            color: b.tax_invoice_status === 'issued' ? '#10b981' : (b.tax_invoice_required === 1 ? '#2563eb' : 'var(--text-muted)')
+                          }}>
+                            {b.tax_invoice_status === 'issued' ? 'ออกเอกสารแล้ว' : (b.tax_invoice_required === 1 ? 'ขอใบกำกับภาษี' : 'ยังไม่ขอ')}
+                          </span>
+                          <button
+                            type="button"
+                            id="pb-btn-manage-tax-invoice"
+                            onClick={() => setSelectedTaxBooking(b)}
+                            style={{
+                              height: '26px',
+                              padding: '0 10px',
+                              borderRadius: '6px',
+                              border: '1px solid rgba(37, 99, 235, 0.3)',
+                              backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                              color: '#2563eb',
+                              fontSize: '0.72rem',
+                              fontWeight: 750,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            <FileText size={12} />
+                            <span>จัดการใบกำกับภาษี</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div className="pb-detail-content">
+                        {b.tax_invoice_required === 1 || b.tax_name ? (
                           <div className="pb-detail-field-group">
                             <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
                               <span className="pb-detail-label">ชื่อ / บริษัท</span>
@@ -4058,9 +5222,46 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               </span>
                             </div>
                           </div>
-                        </div>
+                        ) : (
+                          <div style={{
+                            padding: '16px',
+                            textAlign: 'center',
+                            borderRadius: '8px',
+                            backgroundColor: 'var(--bg-main)',
+                            border: '1px dashed var(--border-color)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            gap: '8px'
+                          }}>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              ยังไม่ได้ขอใบกำกับภาษีสำหรับรายการนี้
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedTaxBooking(b)}
+                              style={{
+                                height: '30px',
+                                padding: '0 12px',
+                                borderRadius: '6px',
+                                backgroundColor: '#2563eb',
+                                color: '#fff',
+                                border: 'none',
+                                fontSize: '0.74rem',
+                                fontWeight: 700,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <Plus size={12} />
+                              <span>จัดการใบกำกับภาษี</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -4094,7 +5295,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     ปิดหน้าต่าง
                   </button>
 
-                  {/* Operational contextual actions */}
+                  {/* Separate Edit: แก้ไขวัน/เวลา */}
                   {!isCancelled && (
                     <button
                       type="button"
@@ -4105,23 +5306,21 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       }}
                       aria-label="แก้ไขวันหรือเวลาการจอง"
                     >
-                      <Edit3 size={14} />
+                      <Calendar size={14} style={{ color: 'var(--primary-color)' }} />
                       <span>แก้ไขวัน/เวลา</span>
                     </button>
                   )}
 
+                  {/* Meeting Room Booking Confirmation Card */}
                   {!isCancelled && (
                     <button
                       type="button"
                       className="pb-detail-btn-secondary"
-                      onClick={() => {
-                        setShowDetailModal(false);
-                        handleOpenEditDetails(b, true);
-                      }}
-                      aria-label="แก้ไขรายละเอียดเพิ่มเติม"
+                      onClick={() => handleOpenWifiCard(b, true)}
+                      aria-label="ดูใบยืนยันการจองห้องประชุม"
                     >
-                      <FileText size={14} />
-                      <span>{b.booking_details ? 'แก้ไขรายละเอียด' : '+ เพิ่มรายละเอียด'}</span>
+                      <FileText size={14} style={{ color: 'var(--primary-color)' }} />
+                      <span>ใบยืนยันการจอง / Wi-Fi</span>
                     </button>
                   )}
 
@@ -4447,6 +5646,40 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 </div>
               </div>
 
+              {/* Optional Walk-in Transfer Slip Attachment */}
+              {collectBalanceMethod === 'transfer' && (
+                <div style={{ marginTop: '4px' }}>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                    แนบสลิปหลักฐานการโอน (ตัวเลือกเพิ่มเติม, ไม่เกิน 10MB)
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      if (file.size > 10 * 1024 * 1024) {
+                        setCollectBalanceError('ไฟล์รูปภาพมีขนาดเกิน 10MB กรุณาเลือกไฟล์ใหม่');
+                        e.target.value = '';
+                        return;
+                      }
+                      const reader = new FileReader();
+                      reader.onload = (ev) => {
+                        setCollectBalanceSlipBase64(ev.target.result);
+                        setCollectBalanceSlipName(file.name);
+                      };
+                      reader.readAsDataURL(file);
+                    }}
+                    style={{ fontSize: '0.8rem', width: '100%' }}
+                  />
+                  {collectBalanceSlipName && (
+                    <div style={{ fontSize: '0.74rem', color: '#16a34a', marginTop: '4px', fontWeight: 600 }}>
+                      ✓ เลือกไฟล์: {collectBalanceSlipName}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Error Banner */}
               {collectBalanceError && (
                 <div
@@ -4477,6 +5710,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   onClick={() => {
                     setShowCollectBalanceModal(false);
                     setCollectBalanceBooking(null);
+                    setCollectBalanceSlipBase64(null);
+                    setCollectBalanceSlipName('');
                     setCollectBalanceError(null);
                   }}
                   disabled={isCollectingBalance}
@@ -5606,6 +6841,992 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       )}
 
       {/* ========================================================= */}
+      {/*  UNIFIED BOOKING EDITOR MODAL (แก้ไขการจอง)                  */}
+      {/*  Section A: ข้อมูลลูกค้า                                       */}
+      {/*  Section B: วัน / เวลา / ห้อง                                */}
+      {/*  Section C: รายละเอียดเพิ่มเติม                               */}
+      {/* ========================================================= */}
+      {showUnifiedEditModal && unifiedEditTarget && (() => {
+        const isMultiItem = Array.isArray(unifiedEditTarget.items) && unifiedEditTarget.items.length > 1;
+
+        // Schedule items info
+        const origRoomId = rescheduleRoomId || unifiedEditTarget.items?.[0]?.room_id || unifiedEditTarget.room_id;
+        const origRoomObj = roomsList.find(r => String(r.id) === String(origRoomId));
+        const origRoomFullName = origRoomObj?.name || unifiedEditTarget.items?.[0]?.room_name || unifiedEditTarget.room_name || (origRoomId ? ('ห้อง ' + origRoomId) : '-');
+
+        const origItem = unifiedEditTarget.items?.[0] || unifiedEditTarget;
+        let origTimeFormatted = formatDate(origItem?.start_time);
+        if (origItem?.end_time) {
+          const eStr = String(origItem.end_time);
+          const endTimeOnly = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : eStr.includes(' ') ? eStr.split(' ')[1].substring(0, 5) : '';
+          if (endTimeOnly) {
+            origTimeFormatted += ' - ' + endTimeOnly + ' น.';
+          }
+        }
+        const origStart = origItem?.start_time ? String(origItem.start_time).replace(' ', 'T').substring(0, 16) : '';
+        const origEnd = origItem?.end_time ? String(origItem.end_time).replace(' ', 'T').substring(0, 16) : '';
+        const curNewStart = `${rescheduleDate}T${rescheduleStartHour}:${rescheduleStartMinute}`;
+        const curNewEnd = `${rescheduleDate}T${rescheduleEndHour}:${rescheduleEndMinute}`;
+        const isScheduleLogisticsChanged = (
+          String(origItem?.room_id) !== String(rescheduleRoomId) ||
+          origStart !== curNewStart ||
+          origEnd !== curNewEnd
+        );
+        const hasLineRecipient = Boolean(unifiedEditTarget.line_user_id);
+
+        return (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.85)',
+            backdropFilter: 'blur(10px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 14000,
+            padding: '16px'
+          }}>
+            <div className="card" style={{
+              width: '100%',
+              maxWidth: '620px',
+              padding: '24px',
+              borderRadius: '20px',
+              backgroundColor: 'var(--bg-card)',
+              border: '1px solid var(--border-color)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+              position: 'relative',
+              maxHeight: '92vh',
+              overflowY: 'auto'
+            }}>
+              {/* Close Button */}
+              <button
+                style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
+                onClick={handleCloseUnifiedEditModal}
+                disabled={customerInfoLoading || rescheduleLoading || editDetailsLoading}
+                aria-label="ปิดหน้าต่าง"
+              >
+                <X size={20} />
+              </button>
+
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ width: '44px', height: '44px', borderRadius: '12px', backgroundColor: 'rgba(2, 132, 199, 0.15)', color: '#0284c7', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <Edit3 size={22} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <span>แก้ไขการจอง</span>
+                    <span style={{ fontSize: '0.78rem', fontWeight: 700, padding: '2px 8px', borderRadius: '6px', backgroundColor: 'rgba(2, 132, 199, 0.12)', color: '#0284c7' }}>
+                      #{unifiedEditTarget.id}
+                    </span>
+                  </h3>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{unifiedEditTarget.customer_name || '-'}</strong> · แหล่งที่มา: <strong style={{ color: 'var(--text-main)' }}>{unifiedEditTarget.booking_source || 'walk-in'}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Segmented Section Navigation Tabs */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                gap: '6px',
+                padding: '4px',
+                borderRadius: '12px',
+                backgroundColor: 'var(--bg-hover)',
+                border: '1px solid var(--border-color)'
+              }}>
+                <button
+                  type="button"
+                  onClick={() => setUnifiedActiveTab('schedule')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '0.82rem',
+                    fontWeight: unifiedActiveTab === 'schedule' ? 800 : 600,
+                    cursor: 'pointer',
+                    backgroundColor: unifiedActiveTab === 'schedule' ? 'var(--primary-color)' : 'transparent',
+                    color: unifiedActiveTab === 'schedule' ? '#ffffff' : 'var(--text-muted)',
+                    boxShadow: unifiedActiveTab === 'schedule' ? '0 2px 6px rgba(0,0,0,0.15)' : 'none',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <Calendar size={15} />
+                  <span>A. วัน / เวลา / ห้อง</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUnifiedActiveTab('customer')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '0.82rem',
+                    fontWeight: unifiedActiveTab === 'customer' ? 800 : 600,
+                    cursor: 'pointer',
+                    backgroundColor: unifiedActiveTab === 'customer' ? 'var(--primary-color)' : 'transparent',
+                    color: unifiedActiveTab === 'customer' ? '#ffffff' : 'var(--text-muted)',
+                    boxShadow: unifiedActiveTab === 'customer' ? '0 2px 6px rgba(0,0,0,0.15)' : 'none',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <User size={15} />
+                  <span>B. ข้อมูลผู้จอง</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUnifiedActiveTab('details')}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '0.82rem',
+                    fontWeight: unifiedActiveTab === 'details' ? 800 : 600,
+                    cursor: 'pointer',
+                    backgroundColor: unifiedActiveTab === 'details' ? 'var(--primary-color)' : 'transparent',
+                    color: unifiedActiveTab === 'details' ? '#ffffff' : 'var(--text-muted)',
+                    boxShadow: unifiedActiveTab === 'details' ? '0 2px 6px rgba(0,0,0,0.15)' : 'none',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <FileText size={15} />
+                  <span>C. รายละเอียดเพิ่มเติม</span>
+                </button>
+              </div>
+
+              {/* SECTION B: ข้อมูลผู้จอง (Customer Information) */}
+              {unifiedActiveTab === 'customer' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)'
+                  }}>
+                    💡 แก้ไขข้อมูลติดต่อของผู้จอง การแก้ไขส่วนนี้บันทึกผ่าน API ข้อมูลลูกค้าโดยเฉพาะ และจะไม่เปลี่ยนแปลงวัน/เวลาหรือราคา
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                      ชื่อผู้จอง <span style={{ color: '#ef4444' }}>* (จำเป็น)</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="เช่น คุณสมชาย ใจดี"
+                      value={customerInfoName}
+                      maxLength={100}
+                      onChange={e => setCustomerInfoName(e.target.value)}
+                      style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                    />
+                  </div>
+
+                  {/* Contact Phone & Department Grid (Responsive auto-fit) */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                        เบอร์ติดต่อ
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="เช่น 081-234-5678"
+                        value={customerInfoContact}
+                        maxLength={50}
+                        onChange={e => setCustomerInfoContact(e.target.value)}
+                        style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                        แผนก / วัตถุประสงค์
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="เช่น การตลาด / ประชุมทีม"
+                        value={customerInfoDepartment}
+                        maxLength={100}
+                        onChange={e => setCustomerInfoDepartment(e.target.value)}
+                        style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Pre-save review showing no-LINE notification */}
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <ShieldCheck size={16} style={{ color: '#10b981', flexShrink: 0 }} />
+                    <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
+                  </div>
+
+                  {/* Footer Action Buttons for Tab A */}
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleCloseUnifiedEditModal}
+                      disabled={customerInfoLoading}
+                      style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={handleReviewCustomerInfo}
+                      disabled={customerInfoLoading || !customerInfoDiff.hasChanged || !customerInfoName.trim()}
+                      style={{
+                        padding: '8px 20px',
+                        borderRadius: '10px',
+                        fontSize: '0.85rem',
+                        fontWeight: 700,
+                        backgroundColor: (!customerInfoDiff.hasChanged || !customerInfoName.trim()) ? 'var(--bg-muted, #475569)' : '#10b981',
+                        borderColor: (!customerInfoDiff.hasChanged || !customerInfoName.trim()) ? 'var(--bg-muted, #475569)' : '#10b981',
+                        cursor: (!customerInfoDiff.hasChanged || !customerInfoName.trim()) ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      ตรวจสอบและบันทึกข้อมูลลูกค้า
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* SECTION A: วัน / เวลา / ห้อง (Schedule) */}
+              {unifiedActiveTab === 'schedule' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {isMultiItem ? (
+                    /* Multi-Item Safety Guard */
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{
+                        padding: '14px 16px',
+                        borderRadius: '12px',
+                        backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                        border: '1px solid rgba(245, 158, 11, 0.3)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px'
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#f59e0b', fontWeight: 800, fontSize: '0.88rem' }}>
+                          <AlertTriangle size={18} style={{ flexShrink: 0 }} />
+                          <span>การจองหลายห้อง / หลายวัน (Multi-item Booking — {unifiedEditTarget.items.length} รายการ)</span>
+                        </div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                          เพื่อความถูกต้องของระบบและความปลอดภัยของรหัส PIN ทุกห้อง การแก้ไขวัน/เวลาสำหรับการจองแบบหลายรายการจะรองรับใน Phase ถัดไป (Phase EDIT-4) ขณะนี้ท่านสามารถตรวจสอบข้อมูลกำหนดการด้านล่างได้แบบอ่านอย่างเดียว
+                        </div>
+                        <div style={{ alignSelf: 'flex-start', padding: '2px 8px', borderRadius: '6px', backgroundColor: 'rgba(245, 158, 11, 0.15)', color: '#d97706', fontSize: '0.72rem', fontWeight: 700 }}>
+                          🔒 กำหนดการถูกล็อกเพื่อความปลอดภัย
+                        </div>
+                      </div>
+
+                      {/* Read-Only Items List */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                          รายการห้องและช่วงเวลาที่จองไว้:
+                        </div>
+                        {unifiedEditTarget.items.map((item, idx) => (
+                          <div
+                            key={item.id || idx}
+                            style={{
+                              padding: '12px 14px',
+                              borderRadius: '10px',
+                              backgroundColor: 'var(--bg-hover)',
+                              border: '1px solid var(--border-color)',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              flexWrap: 'wrap',
+                              gap: '8px',
+                              fontSize: '0.82rem'
+                            }}
+                          >
+                            <div>
+                              <div style={{ fontWeight: 800, color: 'var(--text-main)' }}>
+                                {item.room_name || `ห้อง #${item.room_id}`}
+                              </div>
+                              <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                                {formatDate(item.start_time)} {formatUsageDate(item.start_time, item.end_time)}
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{ padding: '2px 8px', borderRadius: '6px', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-color)', fontSize: '0.75rem', fontWeight: 600 }}>
+                                {item.layout === 'classroom' ? 'Classroom' : 'Standard'}
+                              </span>
+                              {item.pin_code && (
+                                <span style={{ padding: '2px 8px', borderRadius: '6px', backgroundColor: 'rgba(99, 102, 241, 0.12)', color: '#6366f1', fontSize: '0.75rem', fontWeight: 700 }}>
+                                  PIN: {item.pin_code}
+                                </span>
+                              )}
+                              <span style={{ fontWeight: 800, color: 'var(--text-main)' }}>
+                                ฿{formatMoney(item.subtotal || item.price || 0)}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleCloseUnifiedEditModal}
+                          style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+                        >
+                          ปิดหน้าต่าง
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* Single-Item Reschedule Flow */
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      {/* Original Schedule Info */}
+                      <div style={{
+                        padding: '10px 14px',
+                        borderRadius: '10px',
+                        backgroundColor: 'var(--bg-hover)',
+                        border: '1px solid var(--border-color)',
+                        fontSize: '0.8rem',
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                        gap: '6px'
+                      }}>
+                        <div>
+                          <span style={{ color: 'var(--text-muted)' }}>ห้องเดิม:</span>{' '}
+                          <strong style={{ color: 'var(--text-main)' }}>{origRoomFullName}</strong>
+                        </div>
+                        <div>
+                          <span style={{ color: 'var(--text-muted)' }}>วัน/เวลาเดิม:</span>{' '}
+                          <strong style={{ color: 'var(--text-main)' }}>{origTimeFormatted}</strong>
+                        </div>
+                      </div>
+
+                      {/* Controls Row 1: Room & Date */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                        {/* Room Select Dropdown */}
+                        <div style={{ position: 'relative' }}>
+                          <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                            ห้องที่ต้องการเปลี่ยน
+                          </label>
+                          <div
+                            className="form-control"
+                            onClick={() => { setIsReschedRoomOpen(!isReschedRoomOpen); setIsReschedStartOpen(false); setIsReschedEndOpen(false); }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              height: '40px',
+                              borderRadius: '10px',
+                              cursor: 'pointer',
+                              backgroundColor: 'var(--bg-card)',
+                              border: '1px solid var(--border-color)',
+                              padding: '0 12px',
+                              fontWeight: 700,
+                              color: 'var(--text-main)'
+                            }}
+                          >
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {roomsList.find(r => String(r.id) === String(rescheduleRoomId))?.name || 'เลือกห้องประชุม'}
+                            </span>
+                            <ChevronDown size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                          </div>
+                          {isReschedRoomOpen && (
+                            <>
+                              <div onClick={() => setIsReschedRoomOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                              <div className="action-dropdown-menu" style={{
+                                position: 'absolute',
+                                top: 'calc(100% + 4px)',
+                                left: 0,
+                                right: 0,
+                                zIndex: 2000,
+                                maxHeight: '220px',
+                                overflowY: 'auto',
+                                borderRadius: '12px',
+                                padding: '4px'
+                              }}>
+                                {roomsList.map(r => {
+                                  const isSel = String(r.id) === String(rescheduleRoomId);
+                                  return (
+                                    <div
+                                      key={r.id}
+                                      onClick={() => {
+                                        setRescheduleRoomId(String(r.id));
+                                        setIsReschedRoomOpen(false);
+                                      }}
+                                      style={{
+                                        padding: '8px 12px',
+                                        borderRadius: '8px',
+                                        cursor: 'pointer',
+                                        fontSize: '0.85rem',
+                                        color: isSel ? 'var(--primary-color)' : 'var(--text-main)',
+                                        fontWeight: isSel ? 800 : 600,
+                                        backgroundColor: isSel ? 'var(--bg-hover)' : 'transparent',
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        gap: '8px'
+                                      }}
+                                    >
+                                      <span>{r.name}</span>
+                                      <span style={{ fontSize: '0.78rem', color: isSel ? 'var(--primary-color)' : 'var(--text-muted)', fontWeight: 700, flexShrink: 0 }}>
+                                        ฿{Number(r.hourly_rate || 0).toLocaleString()}/ชม.
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        {/* Date Picker */}
+                        <div>
+                          <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                            วันที่ต้องการเปลี่ยน
+                          </label>
+                          <CustomDatePicker
+                            value={rescheduleDate}
+                            onChange={setRescheduleDate}
+                            placeholder="เลือกวันที่"
+                            align="right"
+                            className="form-control"
+                            style={{
+                              height: '40px',
+                              borderRadius: '10px',
+                              fontSize: '0.85rem',
+                              fontWeight: 700,
+                              border: '1px solid var(--border-color)',
+                              background: 'var(--bg-card)',
+                              padding: '0 12px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              cursor: 'pointer',
+                              width: '100%'
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Booking Type Selector */}
+                      <div>
+                        <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                          รูปแบบการจอง
+                        </label>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                          {[
+                            { id: 'hourly', label: 'รายชั่วโมง' },
+                            { id: 'halfday', label: 'รายครึ่งวัน' },
+                            { id: 'daily', label: 'รายวัน' }
+                          ].map(type => {
+                            const isSel = rescheduleBookingType === type.id;
+                            return (
+                              <button
+                                key={type.id}
+                                type="button"
+                                onClick={() => {
+                                  setRescheduleBookingType(type.id);
+                                  if (type.id === 'halfday') setRescheduleDailySlot('08-12');
+                                  if (type.id === 'daily') setRescheduleDailySlot('08-17');
+                                }}
+                                style={{
+                                  padding: '9px 8px',
+                                  borderRadius: '10px',
+                                  fontSize: '0.82rem',
+                                  fontWeight: 800,
+                                  cursor: 'pointer',
+                                  border: isSel ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                  backgroundColor: isSel ? 'var(--primary-color)' : 'var(--bg-hover)',
+                                  color: isSel ? '#ffffff' : 'var(--text-muted)',
+                                  boxShadow: isSel ? '0 2px 8px rgba(37, 99, 235, 0.3)' : 'none',
+                                  transition: 'all 0.15s'
+                                }}
+                              >
+                                {type.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Time Slot Selector */}
+                      {rescheduleBookingType === 'hourly' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                          {/* Start Time */}
+                          <div style={{ position: 'relative' }}>
+                            <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                              เวลาเริ่มต้น
+                            </label>
+                            <div
+                              className="form-control"
+                              onClick={() => { setIsReschedStartOpen(!isReschedStartOpen); setIsReschedEndOpen(false); setIsReschedRoomOpen(false); }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                height: '40px',
+                                borderRadius: '10px',
+                                cursor: 'pointer',
+                                backgroundColor: 'var(--bg-card)',
+                                border: '1px solid var(--border-color)',
+                                padding: '0 12px',
+                                fontWeight: 700,
+                                color: 'var(--text-main)'
+                              }}
+                            >
+                              <span>{rescheduleStartHour}:{rescheduleStartMinute} น.</span>
+                              <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
+                            </div>
+                            {isReschedStartOpen && (
+                              <>
+                                <div onClick={() => setIsReschedStartOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                                <div className="action-dropdown-menu" style={{
+                                  position: 'absolute',
+                                  top: 'calc(100% + 4px)',
+                                  left: 0,
+                                  zIndex: 2000,
+                                  maxHeight: '180px',
+                                  overflowY: 'auto',
+                                  borderRadius: '12px',
+                                  padding: '4px',
+                                  width: '100%'
+                                }}>
+                                  {['08','09','10','11','12','13','14','15','16','17','18'].flatMap(h => ['00','30'].map(m => `${h}:${m}`)).filter(t => t <= '18:00').map(timeStr => {
+                                    const [h, m] = timeStr.split(':');
+                                    const isSel = rescheduleStartHour === h && rescheduleStartMinute === m;
+                                    return (
+                                      <div
+                                        key={timeStr}
+                                        onClick={() => {
+                                          setRescheduleStartHour(h);
+                                          setRescheduleStartMinute(m);
+                                          setIsReschedStartOpen(false);
+                                        }}
+                                        style={{
+                                          padding: '6px 12px',
+                                          borderRadius: '6px',
+                                          cursor: 'pointer',
+                                          fontSize: '0.82rem',
+                                          fontWeight: isSel ? 800 : 500,
+                                          color: isSel ? 'var(--primary-color)' : 'var(--text-main)',
+                                          backgroundColor: isSel ? 'var(--bg-hover)' : 'transparent'
+                                        }}
+                                      >
+                                        {timeStr} น.
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          {/* End Time */}
+                          <div style={{ position: 'relative' }}>
+                            <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                              เวลาสิ้นสุด
+                            </label>
+                            <div
+                              className="form-control"
+                              onClick={() => { setIsReschedEndOpen(!isReschedEndOpen); setIsReschedStartOpen(false); setIsReschedRoomOpen(false); }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                height: '40px',
+                                borderRadius: '10px',
+                                cursor: 'pointer',
+                                backgroundColor: 'var(--bg-card)',
+                                border: '1px solid var(--border-color)',
+                                padding: '0 12px',
+                                fontWeight: 700,
+                                color: 'var(--text-main)'
+                              }}
+                            >
+                              <span>{rescheduleEndHour}:{rescheduleEndMinute} น.</span>
+                              <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
+                            </div>
+                            {isReschedEndOpen && (
+                              <>
+                                <div onClick={() => setIsReschedEndOpen(false)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1999 }} />
+                                <div className="action-dropdown-menu" style={{
+                                  position: 'absolute',
+                                  top: 'calc(100% + 4px)',
+                                  left: 0,
+                                  zIndex: 2000,
+                                  maxHeight: '180px',
+                                  overflowY: 'auto',
+                                  borderRadius: '12px',
+                                  padding: '4px',
+                                  width: '100%'
+                                }}>
+                                  {['08','09','10','11','12','13','14','15','16','17','18'].flatMap(h => ['00','30'].map(m => `${h}:${m}`)).filter(t => t <= '18:00').map(timeStr => {
+                                    const [h, m] = timeStr.split(':');
+                                    const isSel = rescheduleEndHour === h && rescheduleEndMinute === m;
+                                    return (
+                                      <div
+                                        key={timeStr}
+                                        onClick={() => {
+                                          setRescheduleEndHour(h);
+                                          setRescheduleEndMinute(m);
+                                          setIsReschedEndOpen(false);
+                                        }}
+                                        style={{
+                                          padding: '6px 12px',
+                                          borderRadius: '6px',
+                                          cursor: 'pointer',
+                                          fontSize: '0.82rem',
+                                          fontWeight: isSel ? 800 : 500,
+                                          color: isSel ? 'var(--primary-color)' : 'var(--text-main)',
+                                          backgroundColor: isSel ? 'var(--bg-hover)' : 'transparent'
+                                        }}
+                                      >
+                                        {timeStr} น.
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {rescheduleBookingType === 'halfday' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          {[
+                            { id: '08-12', label: 'ช่วงเช้า (08:00 - 12:00)' },
+                            { id: '13-17', label: 'ช่วงบ่าย (13:00 - 17:00)' }
+                          ].map(slot => (
+                            <button
+                              key={slot.id}
+                              type="button"
+                              onClick={() => setRescheduleDailySlot(slot.id)}
+                              style={{
+                                padding: '10px 8px',
+                                borderRadius: '10px',
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                border: rescheduleDailySlot === slot.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                backgroundColor: rescheduleDailySlot === slot.id ? 'var(--primary-color)' : 'var(--bg-hover)',
+                                color: rescheduleDailySlot === slot.id ? '#ffffff' : 'var(--text-muted)'
+                              }}
+                            >
+                              {slot.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {rescheduleBookingType === 'daily' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          {[
+                            { id: '08-17', label: 'เต็มวัน (08:00 - 17:00)' },
+                            { id: '09-18', label: 'เต็มวัน (09:00 - 18:00)' }
+                          ].map(slot => (
+                            <button
+                              key={slot.id}
+                              type="button"
+                              onClick={() => setRescheduleDailySlot(slot.id)}
+                              style={{
+                                padding: '10px 8px',
+                                borderRadius: '10px',
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                border: rescheduleDailySlot === slot.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                backgroundColor: rescheduleDailySlot === slot.id ? 'var(--primary-color)' : 'var(--bg-hover)',
+                                color: rescheduleDailySlot === slot.id ? '#ffffff' : 'var(--text-muted)'
+                              }}
+                            >
+                              {slot.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Layout Switcher */}
+                      <div>
+                        <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                          รูปแบบการจัดห้อง
+                        </label>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                          {[
+                            { id: 'standard', label: 'Standard (ทั่วไป)' },
+                            { id: 'classroom', label: 'Classroom (โต๊ะสัมมนา)' }
+                          ].map(layout => (
+                            <button
+                              key={layout.id}
+                              type="button"
+                              onClick={() => setRescheduleLayout(layout.id)}
+                              style={{
+                                padding: '8px',
+                                borderRadius: '10px',
+                                fontSize: '0.82rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                border: rescheduleLayout === layout.id ? '1.5px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                backgroundColor: rescheduleLayout === layout.id ? 'var(--primary-color)' : 'var(--bg-hover)',
+                                color: rescheduleLayout === layout.id ? '#ffffff' : 'var(--text-muted)'
+                              }}
+                            >
+                              {layout.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Price Calculation Card */}
+                      <div style={{
+                        padding: '12px 14px',
+                        borderRadius: '12px',
+                        backgroundColor: 'var(--bg-hover)',
+                        border: '1px solid var(--border-color)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px',
+                        fontSize: '0.82rem'
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-muted)' }}>ยอดรวมเดิม:</span>
+                          <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>฿{formatMoney(reschedulePriceCalc.oldTotal)}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-muted)' }}>ยอดรวมใหม่:</span>
+                          <span style={{ fontWeight: 800, color: 'var(--primary-color)', fontSize: '0.95rem' }}>฿{formatMoney(reschedulePriceCalc.newTotal)}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-muted)' }}>ส่วนต่าง:</span>
+                          <span style={{ fontWeight: 800, color: reschedulePriceCalc.diff > 0 ? '#ef4444' : reschedulePriceCalc.diff < 0 ? '#10b981' : 'var(--text-main)' }}>
+                            {reschedulePriceCalc.diff > 0 ? `+฿${formatMoney(reschedulePriceCalc.diff)}` : `฿${formatMoney(reschedulePriceCalc.diff)}`}
+                          </span>
+                        </div>
+                        {reschedulePriceCalc.financialError && (
+                          <div style={{ color: '#ef4444', fontSize: '0.78rem', fontWeight: 600 }}>
+                            ⚠️ {reschedulePriceCalc.financialError}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Conflict / Overlap Alert */}
+                      {rescheduleOverlapInfo.isOverlap && (
+                        <div style={{
+                          padding: '10px 14px',
+                          borderRadius: '10px',
+                          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                          border: '1px solid rgba(239, 68, 68, 0.3)',
+                          color: '#ef4444',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}>
+                          <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                          <span>ห้องนี้มีผู้จองแล้วในช่วงเวลาดังกล่าว กรุณาเลือกช่วงเวลาหรือห้องอื่น</span>
+                        </div>
+                      )}
+
+                      {/* Reschedule Reason */}
+                      <div>
+                        <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                          หมายเหตุการเปลี่ยนวัน/เวลา (บันทึกลงระบบ)
+                        </label>
+                        <input
+                          type="text"
+                          className="form-control"
+                          value={rescheduleReason}
+                          onChange={e => setRescheduleReason(e.target.value)}
+                          placeholder="เช่น ลูกค้าขอเปลี่ยนเวลา / สลับห้อง"
+                          style={{ borderRadius: '10px', fontSize: '0.85rem', height: '38px' }}
+                        />
+                      </div>
+
+                      {/* Pre-save LINE OA notification review */}
+                      <div style={{
+                        padding: '10px 14px',
+                        borderRadius: '10px',
+                        backgroundColor: (isScheduleLogisticsChanged && hasLineRecipient) ? 'rgba(2, 132, 199, 0.08)' : 'var(--bg-hover)',
+                        border: '1px solid ' + ((isScheduleLogisticsChanged && hasLineRecipient) ? 'rgba(2, 132, 199, 0.25)' : 'var(--border-color)'),
+                        fontSize: '0.82rem',
+                        color: (isScheduleLogisticsChanged && hasLineRecipient) ? '#0284c7' : 'var(--text-muted)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                      }}>
+                        {(isScheduleLogisticsChanged && hasLineRecipient) ? (
+                          <>
+                            <Send size={15} style={{ flexShrink: 0 }} />
+                            <span>ส่งแจ้งเตือนเปลี่ยนวัน/เวลาหรือห้องผ่าน LINE OA</span>
+                          </>
+                        ) : (
+                          <>
+                            <ShieldCheck size={15} style={{ flexShrink: 0 }} />
+                            <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Action Bar for Tab B */}
+                      <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '6px' }}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleCloseUnifiedEditModal}
+                          disabled={rescheduleLoading}
+                          style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+                        >
+                          ยกเลิก
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={submitRescheduleBooking}
+                          disabled={rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading}
+                          style={{
+                            padding: '8px 20px',
+                            borderRadius: '10px',
+                            fontSize: '0.85rem',
+                            fontWeight: 700,
+                            opacity: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading) ? 0.5 : 1,
+                            cursor: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading) ? 'not-allowed' : 'pointer'
+                          }}
+                        >
+                          {rescheduleLoading ? 'กำลังบันทึก...' : 'บันทึกการเปลี่ยนวัน/เวลา'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB C: รายละเอียดเพิ่มเติม (Additional Details) */}
+              {unifiedActiveTab === 'details' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)'
+                  }}>
+                    📝 รายละเอียดเพิ่มเติมระบุความต้องการพิเศษของลูกค้า เช่น การจัดโต๊ะ อุปกรณ์ หรือหมายเหตุที่ต้องการให้แสดงบนเอกสารใบเสร็จ (ข้อมูลนี้ลูกค้าและพนักงานสามารถมองเห็นได้)
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
+                        รายละเอียดเพิ่มเติม / หมายเหตุการจอง
+                      </label>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 600, color: editDetailsText.length > 950 ? '#ef4444' : 'var(--text-muted)' }}>
+                        {editDetailsText.length}/1000
+                      </span>
+                    </div>
+                    <textarea
+                      rows={5}
+                      maxLength={1000}
+                      placeholder="เช่น ขอโปรเจกเตอร์, จัดโต๊ะรูปตัวยู, น้ำดื่ม..."
+                      value={editDetailsText}
+                      onChange={e => setEditDetailsText(e.target.value)}
+                      style={{
+                        width: '100%',
+                        borderRadius: '12px',
+                        border: '1px solid var(--border-color)',
+                        backgroundColor: 'var(--bg-main)',
+                        padding: '10px 14px',
+                        fontSize: '0.86rem',
+                        color: 'var(--text-main)',
+                        outline: 'none',
+                        resize: 'vertical',
+                        boxSizing: 'border-box',
+                        fontFamily: 'inherit',
+                        lineHeight: 1.5
+                      }}
+                    />
+                  {/* Pre-save review showing no-LINE notification */}
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <ShieldCheck size={16} style={{ color: 'var(--primary-color)', flexShrink: 0 }} />
+                    <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
+                  </div>
+                  </div>
+
+                  {/* Action Bar for Tab C */}
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleCloseUnifiedEditModal}
+                      disabled={editDetailsLoading}
+                      style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={handleSaveBookingDetails}
+                      disabled={editDetailsLoading || editDetailsText === (unifiedEditTarget?.booking_details || '')}
+                      style={{
+                        padding: '8px 20px',
+                        borderRadius: '10px',
+                        fontSize: '0.85rem',
+                        fontWeight: 700,
+                        backgroundColor: (editDetailsText === (unifiedEditTarget?.booking_details || '')) ? 'var(--bg-muted, #475569)' : 'var(--primary-color)',
+                        borderColor: (editDetailsText === (unifiedEditTarget?.booking_details || '')) ? 'var(--bg-muted, #475569)' : 'var(--primary-color)',
+                        cursor: (editDetailsText === (unifiedEditTarget?.booking_details || '')) ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      {editDetailsLoading ? 'กำลังบันทึก...' : 'บันทึกรายละเอียดเพิ่มเติม'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ========================================================= */}
       {/*  EDIT BOOKING DETAILS MODAL (แก้ไขรายละเอียดเพิ่มเติม)     */}
       {/* ========================================================= */}
       {showEditDetailsModal && editDetailsTarget && (
@@ -5718,27 +7939,339 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       )}
 
       {/* ========================================================= */}
+      {/*  CUSTOMER INFORMATION EDIT MODAL (แก้ไขข้อมูลผู้จอง)         */}
+      {/* ========================================================= */}
+      {showCustomerInfoModal && customerInfoTarget && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.85)',
+          backdropFilter: 'blur(10px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 14000,
+          padding: '20px'
+        }}>
+          <div className="card" style={{
+            width: '100%',
+            maxWidth: '560px',
+            padding: '24px',
+            borderRadius: '20px',
+            backgroundColor: 'var(--bg-card)',
+            border: '1px solid rgba(16, 185, 129, 0.3)',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.4)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px',
+            position: 'relative',
+            maxHeight: '90vh',
+            overflowY: 'auto'
+          }}>
+            <button
+              style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+              onClick={handleCloseCustomerInfoModal}
+              disabled={customerInfoLoading}
+              aria-label="ปิดหน้าต่าง"
+            >
+              <X size={20} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <User size={22} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                  แก้ไขข้อมูลผู้จอง
+                </h3>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  ใบจอง #{customerInfoTarget.id} · แหล่งที่มา: <strong style={{ color: 'var(--text-main)' }}>{customerInfoTarget.booking_source || 'walk-in'}</strong>
+                </span>
+              </div>
+            </div>
+
+            {/* Invariant Safety Notice */}
+            <div style={{
+              padding: '10px 14px',
+              borderRadius: '10px',
+              backgroundColor: 'rgba(59, 130, 246, 0.08)',
+              border: '1px solid rgba(59, 130, 246, 0.2)',
+              fontSize: '0.8rem',
+              color: 'var(--text-muted)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <ShieldCheck size={16} style={{ color: '#3b82f6', flexShrink: 0 }} />
+              <span>การแก้ไขข้อมูลลูกค้านี้จะไม่เปลี่ยนแปลงวันเวลา ห้องประชุม ยอดเงิน หรือรหัสผ่านประตู (PIN)</span>
+            </div>
+
+            {/* Form Fields */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Customer Name */}
+              <div>
+                <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                  ชื่อผู้จอง <span style={{ color: '#ef4444' }}>*</span>
+                </label>
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="ระบุชื่อผู้จอง..."
+                  value={customerInfoName}
+                  maxLength={100}
+                  onChange={e => setCustomerInfoName(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                />
+              </div>
+
+              {/* Contact Phone & Department Grid (Responsive 1-col on mobile <= 440px, 2-col on desktop) */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                    เบอร์ติดต่อ
+                  </label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="เช่น 081-234-5678"
+                    value={customerInfoContact}
+                    maxLength={50}
+                    onChange={e => setCustomerInfoContact(e.target.value)}
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--text-main)' }}>
+                    แผนก / วัตถุประสงค์
+                  </label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="เช่น การตลาด / ประชุมทีม"
+                    value={customerInfoDepartment}
+                    maxLength={100}
+                    onChange={e => setCustomerInfoDepartment(e.target.value)}
+                    style={{ width: '100%', padding: '10px 14px', borderRadius: '10px' }}
+                  />
+                </div>
+              </div>
+
+              {/* Booking Details / Notes */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                    รายละเอียดเพิ่มเติม / หมายเหตุลูกค้า
+                  </label>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 600, color: customerInfoDetails.length > 950 ? '#ef4444' : 'var(--text-muted)' }}>
+                    {customerInfoDetails.length}/1000
+                  </span>
+                </div>
+                <textarea
+                  className="form-control"
+                  rows={3}
+                  placeholder="เช่น ขอโปรเจกเตอร์, โต๊ะรูปตัวยู, น้ำดื่ม..."
+                  value={customerInfoDetails}
+                  maxLength={1000}
+                  onChange={e => setCustomerInfoDetails(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', resize: 'vertical' }}
+                />
+              </div>
+
+              {/* LINE OA Notification Policy Notice */}
+              <div style={{
+                padding: '12px 14px',
+                borderRadius: '12px',
+                backgroundColor: 'var(--bg-hover)',
+                border: '1px solid var(--border-color)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '0.82rem',
+                color: 'var(--text-muted)'
+              }}>
+                <ShieldCheck size={16} style={{ color: '#10b981', flexShrink: 0 }} />
+                <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={customerInfoLoading}
+                onClick={handleCloseCustomerInfoModal}
+                style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={customerInfoLoading || !customerInfoDiff.hasChanged || !customerInfoName.trim()}
+                onClick={handleReviewCustomerInfo}
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: '10px',
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  backgroundColor: !customerInfoDiff.hasChanged ? 'var(--bg-muted, #475569)' : '#10b981',
+                  borderColor: !customerInfoDiff.hasChanged ? 'var(--bg-muted, #475569)' : '#10b981',
+                  cursor: !customerInfoDiff.hasChanged ? 'not-allowed' : 'pointer'
+                }}
+              >
+                ตรวจสอบและบันทึก
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/*  PRE-SAVE CHANGE REVIEW MODAL (สรุปการเปลี่ยนแปลงข้อมูล)     */}
+      {/* ========================================================= */}
+      {showCustomerInfoDiffModal && customerInfoTarget && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.9)',
+          backdropFilter: 'blur(12px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 14100,
+          padding: '20px'
+        }}>
+          <div className="card" style={{
+            width: '100%',
+            maxWidth: '520px',
+            padding: '24px',
+            borderRadius: '20px',
+            backgroundColor: 'var(--bg-card)',
+            border: '1px solid rgba(16, 185, 129, 0.4)',
+            boxShadow: '0 25px 50px rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ width: '42px', height: '42px', borderRadius: '12px', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <CheckCircle2 size={22} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, color: 'var(--text-main)' }}>
+                  ยืนยันการแก้ไขข้อมูลผู้จอง
+                </h3>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  ใบจอง #{customerInfoTarget.id}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+              กรุณาตรวจสอบความถูกต้องของข้อมูลที่มีการเปลี่ยนแปลง:
+            </div>
+
+            {/* Changed Fields Diff List */}
+            <div style={{
+              borderRadius: '12px',
+              border: '1px solid var(--border-color, rgba(125, 125, 125, 0.2))',
+              overflow: 'hidden',
+              backgroundColor: 'var(--bg-muted, rgba(125, 125, 125, 0.08))'
+            }}>
+              {customerInfoDiff.changedFields.map((field, idx) => (
+                <div
+                  key={field.key}
+                  style={{
+                    padding: '10px 14px',
+                    borderBottom: idx < customerInfoDiff.changedFields.length - 1 ? '1px solid var(--border-color, rgba(255, 255, 255, 0.08))' : 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
+                  }}
+                >
+                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                    {field.label}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem' }}>
+                    <span style={{ color: '#ef4444', textDecoration: 'line-through' }}>
+                      {field.oldVal}
+                    </span>
+                    <span style={{ color: 'var(--text-muted)' }}>&rarr;</span>
+                    <span style={{ color: '#10b981', fontWeight: 700 }}>
+                      {field.newVal}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* LINE Notification Policy Summary */}
+            <div style={{
+              padding: '10px 14px',
+              borderRadius: '10px',
+              backgroundColor: 'var(--bg-muted, rgba(125, 125, 125, 0.08))',
+              fontSize: '0.8rem',
+              color: 'var(--text-main)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <ShieldCheck size={16} style={{ color: '#10b981', flexShrink: 0 }} />
+              <span>บันทึกข้อมูลโดยไม่ส่งแจ้งเตือน LINE OA</span>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '6px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={customerInfoLoading}
+                onClick={() => setShowCustomerInfoDiffModal(false)}
+                style={{ padding: '8px 16px', borderRadius: '10px', fontSize: '0.85rem' }}
+              >
+                กลับไปแก้ไข
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={customerInfoLoading}
+                onClick={handleSaveCustomerInfo}
+                style={{ padding: '8px 22px', borderRadius: '10px', fontSize: '0.85rem', fontWeight: 700, backgroundColor: '#10b981', borderColor: '#10b981' }}
+              >
+                {customerInfoLoading ? 'กำลังบันทึก...' : 'ยืนยันการบันทึก'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
       {/*  RESCHEDULE BOOKING MODAL (แก้ไขวัน/เวลาการจอง)             */}
       {/* ========================================================= */}
       {showRescheduleModal && rescheduleTarget && (() => {
-        const origRoomId = rescheduleTarget.items?.[0]?.room_id || rescheduleTarget.room_id;
+        const items = rescheduleTarget.items || [];
+        const isMulti = items.length > 1;
+        const isSelectingItem = isMulti && !selectedRescheduleItemId;
+        const targetItem = (selectedRescheduleItemId ? items.find(it => String(it.id) === String(selectedRescheduleItemId)) : null) || items[0] || rescheduleTarget;
+        const targetItemIdx = isMulti && selectedRescheduleItemId ? items.findIndex(it => String(it.id) === String(selectedRescheduleItemId)) : 0;
+        const origRoomId = targetItem?.room_id || rescheduleTarget.room_id;
         const origRoomObj = roomsList.find(r => String(r.id) === String(origRoomId));
-        const origRoomFullName = origRoomObj?.name || rescheduleTarget.items?.[0]?.room_name || rescheduleTarget.room_name || (origRoomId ? ('ห้อง ' + origRoomId) : '-');
-
-        const origItem = rescheduleTarget.items?.[0] || rescheduleTarget;
-        let origTimeFormatted = formatDate(origItem.start_time);
-        if (origItem.end_time) {
-          const eStr = String(origItem.end_time);
-          const endTimeOnly = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : eStr.includes(' ') ? eStr.split(' ')[1].substring(0, 5) : '';
-          if (endTimeOnly) {
-            origTimeFormatted += ' - ' + endTimeOnly + ' น.';
-          }
-        }
-
+        const origRoomFullName = origRoomObj?.name || targetItem?.room_name || rescheduleTarget.room_name || (origRoomId ? ('ห้อง ' + origRoomId) : '-');
+        const endTimeOnly = targetItem.end_time ? (String(targetItem.end_time).includes('T') ? String(targetItem.end_time).split('T')[1].substring(0, 5) : String(targetItem.end_time).split(' ')[1]?.substring(0, 5) || '') : '';
+        const origTimeFormatted = formatDate(targetItem.start_time) + (endTimeOnly ? (' - ' + endTimeOnly + ' น.') : '');
         const selectedRoomObj = roomsList.find(r => String(r.id) === String(rescheduleRoomId)) || roomsList[0];
 
         return (
           <div style={{
+            zIndex: 14000,
             position: 'fixed',
             top: 0,
             left: 0,
@@ -5749,12 +8282,11 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            zIndex: 14000,
             padding: '16px'
           }}>
             <div className="card" style={{
               width: '100%',
-              maxWidth: '580px',
+              maxWidth: isSelectingItem ? '660px' : '580px',
               padding: '24px',
               borderRadius: '20px',
               backgroundColor: 'var(--bg-card)',
@@ -5790,32 +8322,195 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 </div>
               </div>
 
-              {/* Current Booking Info Card */}
-              <div style={{
-                padding: '12px 16px',
-                borderRadius: '12px',
-                backgroundColor: 'var(--bg-hover)',
-                border: '1px solid var(--border-color)',
-                fontSize: '0.82rem',
-                display: 'grid',
-                gridTemplateColumns: '1.2fr 1fr',
-                gap: '8px'
-              }}>
-                <div>
-                  <span style={{ color: 'var(--text-muted)' }}>ห้องประชุมเดิม:</span>{' '}
-                  <strong style={{ color: 'var(--text-main)' }}>{origRoomFullName}</strong>
+              {isSelectingItem ? (
+                /* ---------------------------------------------------- */
+                /*  STAGE 1: ITEM SELECTOR (for Multi-Item Bookings)   */
+                /* ---------------------------------------------------- */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div style={{
+                    padding: '12px 16px',
+                    borderRadius: '12px',
+                    backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                    border: '1px solid rgba(37, 99, 235, 0.25)',
+                    fontSize: '0.85rem',
+                    color: 'var(--text-main)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px'
+                  }}>
+                    <strong style={{ color: 'var(--primary-color)' }}>
+                      การจองนี้มีหลายรายการ ({items.length} รายการ)
+                    </strong>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                      กรุณาเลือกรายการห้องที่ต้องการเปลี่ยนวัน/เวลา ระบบจะคำนวณยอดเงินและตรวจสอบความพร้อมของห้องทีละรายการเพื่อความถูกต้องและปลอดภัย
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {items.map((item, idx) => {
+                      const itemRoom = roomsList.find(r => String(r.id) === String(item.room_id));
+                      const itemRoomName = itemRoom?.name || item.room_name || `ห้อง #${item.room_id}`;
+                      let timeStr = formatDate(item.start_time);
+                      if (item.end_time) {
+                        const eStr = String(item.end_time);
+                        const et = eStr.includes('T') ? eStr.split('T')[1].substring(0, 5) : eStr.includes(' ') ? eStr.split(' ')[1].substring(0, 5) : '';
+                        if (et) timeStr += ` - ${et} น.`;
+                      }
+
+                      return (
+                        <div
+                          key={item.id || idx}
+                          className="pb-resched-item-card"
+                          style={{
+                            padding: '14px 16px',
+                            borderRadius: '12px',
+                            backgroundColor: 'var(--bg-hover)',
+                            border: '1px solid var(--border-color)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            flexWrap: 'wrap',
+                            gap: '12px',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '220px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{
+                                padding: '2px 8px',
+                                borderRadius: '6px',
+                                backgroundColor: 'rgba(37, 99, 235, 0.12)',
+                                color: 'var(--primary-color)',
+                                fontSize: '0.72rem',
+                                fontWeight: 800
+                              }}>
+                                รายการที่ {idx + 1}
+                              </span>
+                              <strong style={{ fontSize: '0.95rem', color: 'var(--text-main)' }}>
+                                {itemRoomName}
+                              </strong>
+                            </div>
+                            <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                              วัน/เวลา: <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>{timeStr}</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                              <span>{item.booking_type === 'daily' ? 'รายวัน' : item.booking_type === 'halfday' ? 'รายครึ่งวัน' : 'รายชั่วโมง'}</span>
+                              <span>·</span>
+                              <span>{item.layout === 'classroom' ? 'Classroom' : 'Standard'}</span>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>ยอดรายการนี้</div>
+                              <strong style={{ fontSize: '1rem', color: 'var(--text-main)' }}>
+                                ฿{formatMoney(item.subtotal || item.price || 0)}
+                              </strong>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              onClick={() => {
+                                setSelectedRescheduleItemId(item.id);
+                                initRescheduleFields(item, rescheduleTarget);
+                              }}
+                              style={{
+                                padding: '8px 16px',
+                                borderRadius: '10px',
+                                fontSize: '0.82rem',
+                                fontWeight: 800,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                cursor: 'pointer',
+                                whiteSpace: 'nowrap'
+                              }}
+                            >
+                              <Edit3 size={14} />
+                              <span>เลือกแก้ไข</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleCloseRescheduleModal}
+                      style={{ padding: '8px 18px', borderRadius: '10px', fontSize: '0.85rem' }}
+                    >
+                      ยกเลิก
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <span style={{ color: 'var(--text-muted)' }}>ยอดเดิม:</span>{' '}
-                  <strong style={{ color: '#10b981' }}>฿{Number(rescheduleTarget.total_amount || 0).toLocaleString()}</strong>
-                </div>
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>วัน/เวลาเดิม:</span>{' '}
-                  <span style={{ color: 'var(--text-main)', fontWeight: 700 }}>
-                    {origTimeFormatted}
-                  </span>
-                </div>
-              </div>
+              ) : (
+                /* ---------------------------------------------------- */
+                /*  STAGE 2: EDIT FORM (Single or Selected Item)        */
+                /* ---------------------------------------------------- */
+                <>
+                  {isMulti && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRescheduleItemId(null)}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'var(--primary-color)',
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          padding: '4px 0'
+                        }}
+                      >
+                        <ChevronLeft size={16} />
+                        <span>ย้อนกลับไปเลือกรายการอื่น</span>
+                      </button>
+                      <span style={{
+                        padding: '4px 10px',
+                        borderRadius: '6px',
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        color: 'var(--primary-color)',
+                        fontSize: '0.78rem',
+                        fontWeight: 800
+                      }}>
+                        กำลังแก้ไข: {origRoomFullName} (รายการที่ {targetItemIdx + 1})
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Current Booking Info Card */}
+                  <div style={{
+                    padding: '12px 16px',
+                    borderRadius: '12px',
+                    backgroundColor: 'var(--bg-hover)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.82rem',
+                    display: 'grid',
+                    gridTemplateColumns: '1.2fr 1fr',
+                    gap: '8px'
+                  }}>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>ห้องประชุมเดิม:</span>{' '}
+                      <strong style={{ color: 'var(--text-main)' }}>{origRoomFullName}</strong>
+                    </div>
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>{isMulti ? 'ยอดเดิมรายการนี้:' : 'ยอดเดิม:'}</span>{' '}
+                      <strong style={{ color: '#10b981' }}>฿{Number((isMulti ? (targetItem?.subtotal || targetItem?.price) : rescheduleTarget.total_amount) || 0).toLocaleString()}</strong>
+                    </div>
+                    <div style={{ gridColumn: '1 / -1' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>วัน/เวลาเดิม:</span>{' '}
+                      <span style={{ color: 'var(--text-main)', fontWeight: 700 }}>
+                        {origTimeFormatted}
+                      </span>
+                    </div>
+                  </div>
 
               {/* Selection Row 1: Room & Date (Side by Side) */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
@@ -6250,13 +8945,29 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                 flexDirection: 'column',
                 gap: '10px'
               }}>
+                {isMulti && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '6px', borderBottom: '1px dashed var(--border-color)' }}>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      ยอดรายการนี้:
+                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem' }}>
+                      <span style={{ color: 'var(--text-muted)', textDecoration: 'line-through' }}>
+                        ฿{formatMoney(reschedulePriceCalc.oldItemSubtotal)}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)' }}>&rarr;</span>
+                      <strong style={{ color: 'var(--text-main)', fontWeight: 800 }}>
+                        ฿{formatMoney(reschedulePriceCalc.newItemSubtotal)}
+                      </strong>
+                    </div>
+                  </div>
+                )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                   <div>
                     <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                      ยอดเงินเดิม: ฿{formatMoney(reschedulePriceCalc.oldTotal)}
+                      {isMulti ? 'ยอดสุทธิทั้งใบจองเดิม:' : 'ยอดเงินเดิม:'} ฿{formatMoney(reschedulePriceCalc.oldTotal)}
                     </div>
                     <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
-                      ยอดสุทธิใหม่: <strong style={{ color: 'var(--primary-color)' }}>฿{formatMoney(reschedulePriceCalc.newTotal)}</strong>
+                      {isMulti ? 'ยอดสุทธิทั้งใบจองใหม่: ' : 'ยอดสุทธิใหม่: '}<strong style={{ color: 'var(--primary-color)' }}>฿{formatMoney(reschedulePriceCalc.newTotal)}</strong>
                     </div>
                   </div>
                   <div>
@@ -6266,7 +8977,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       </span>
                     ) : reschedulePriceCalc.diff < 0 ? (
                       <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(14, 165, 233, 0.15)', color: '#0ea5e9', fontWeight: 800, fontSize: '0.82rem' }}>
-                        -฿{formatMoney(Math.abs(reschedulePriceCalc.diff))} (คืนเงินส่วนต่าง)
+                        -฿{formatMoney(Math.abs(reschedulePriceCalc.diff))} (ยอดลดลง)
                       </span>
                     ) : (
                       <span style={{ padding: '4px 10px', borderRadius: '8px', backgroundColor: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 800, fontSize: '0.82rem' }}>
@@ -6274,6 +8985,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       </span>
                     )}
                   </div>
+                </div>
+
+                {/* Additional amount due indicator if price increased */}
+                {reschedulePriceCalc.diff > 0 && (
+                  <div style={{ fontSize: '0.8rem', color: '#f59e0b', fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>ยอดที่ต้องชำระเพิ่ม:</span>
+                    <span>฿{formatMoney(reschedulePriceCalc.diff)}</span>
+                  </div>
+                )}
+
+                {/* Estimate disclaimer notice */}
+                <div style={{ fontSize: '0.73rem', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '2px' }}>
+                  * ยอดเงินที่แสดงเป็นการประมาณการเบื้องต้น — ยอดสุทธิยืนยันโดยระบบเมื่อบันทึก
                 </div>
 
                 {/* Detailed financial preview row */}
@@ -6322,6 +9046,25 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   </div>
                 </div>
 
+                {/* Blocking warning if new total is below paid amount */}
+                {Boolean(reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount) && (
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                    border: '1.5px solid #ef4444',
+                    color: '#ef4444',
+                    fontSize: '0.82rem',
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    <AlertTriangle size={18} style={{ flexShrink: 0 }} />
+                    <span>ไม่อนุญาตให้บันทึก: ยอดรวมใหม่ (฿{formatMoney(reschedulePriceCalc.newTotal)}) ต่ำกว่ายอดเงินที่ลูกค้าชำระแล้ว (฿{formatMoney(reschedulePriceCalc.paidAmount)})</span>
+                  </div>
+                )}
+
                 {reschedulePriceCalc.financialError && (
                   <div style={{
                     padding: '8px 10px',
@@ -6339,42 +9082,6 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     <span>{reschedulePriceCalc.financialError}</span>
                   </div>
                 )}
-              </div>
-
-              {/* รายละเอียดเพิ่มเติม (Booking Details) */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
-                    รายละเอียดเพิ่มเติม (ไม่บังคับ)
-                  </label>
-                  <span style={{ fontSize: '0.72rem', fontWeight: 600, color: rescheduleDetails.length > 950 ? '#ef4444' : 'var(--text-muted)' }}>
-                    {rescheduleDetails.length}/1000
-                  </span>
-                </div>
-                <textarea
-                  rows={3}
-                  maxLength={1000}
-                  placeholder="เช่น รายละเอียดบริการเพิ่มเติม, ความต้องการของลูกค้า, หมายเหตุการจอง"
-                  value={rescheduleDetails}
-                  onChange={(e) => setRescheduleDetails(e.target.value)}
-                  style={{
-                    width: '100%',
-                    borderRadius: '10px',
-                    border: '1px solid var(--border-color)',
-                    backgroundColor: 'var(--bg-main)',
-                    padding: '8px 12px',
-                    fontSize: '0.85rem',
-                    color: 'var(--text-main)',
-                    outline: 'none',
-                    resize: 'vertical',
-                    boxSizing: 'border-box',
-                    fontFamily: 'inherit',
-                    lineHeight: 1.5
-                  }}
-                />
-                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                  * ข้อมูลนี้จะปรากฏบนใบเสร็จและบันทึกลงระบบพร้อมวัน/เวลา (ลบข้อความออกทั้งหมดหากต้องการลบ)
-                </span>
               </div>
 
               {/* Reason */}
@@ -6420,10 +9127,10 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     border: '1px solid var(--border-color)',
                     color: 'var(--text-main)'
                   }}
-                  onClick={handleCloseRescheduleModal}
+                  onClick={isMulti ? () => setSelectedRescheduleItemId(null) : handleCloseRescheduleModal}
                   disabled={rescheduleLoading}
                 >
-                  ยกเลิก
+                  {isMulti ? 'ย้อนกลับ' : 'ยกเลิก'}
                 </button>
                 <button
                   type="button"
@@ -6438,213 +9145,1278 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     alignItems: 'center',
                     justifyContent: 'center',
                     gap: '6px',
-                    opacity: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading) ? 0.5 : 1,
-                    cursor: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading) ? 'not-allowed' : 'pointer'
+                    opacity: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || (reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount) || rescheduleLoading) ? 0.5 : 1,
+                    cursor: (rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || (reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount) || rescheduleLoading) ? 'not-allowed' : 'pointer'
                   }}
                   onClick={submitRescheduleBooking}
-                  disabled={rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || rescheduleLoading}
+                  disabled={rescheduleOverlapInfo.isOverlap || !reschedulePriceCalc.isValid || (reschedulePriceCalc.newTotal < reschedulePriceCalc.paidAmount) || rescheduleLoading}
                 >
                   <CheckCircle2 size={16} />
                   <span>{rescheduleLoading ? 'กำลังบันทึก...' : 'บันทึกการเปลี่ยนแปลง'}</span>
                 </button>
               </div>
-            </div>
-          </div>
-        );
-      })()}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  })()}
 
-      {/* TAX INVOICE DETAILS & PRINT MODAL */}
-      {selectedTaxBooking && (() => {
-        const total = Number(selectedTaxBooking.total_amount || 0);
-        const subtotalBeforeVat = (total / 1.07);
-        const vatAmount = total - subtotalBeforeVat;
-        const firstItem = selectedTaxBooking.items?.[0] || {};
-        const roomName = firstItem.room_name || selectedTaxBooking.room_name || 'ห้องประชุม';
+      {/* ATTACH SLIP MODAL (HISTORICAL / LEGACY SLIP ATTACHMENT) */}
+      {attachSlipModalData && (
+        <AttachSlipModal
+          isOpen={!!attachSlipModalData}
+          booking={attachSlipModalData.booking}
+          targetTransaction={attachSlipModalData.transaction}
+          onClose={() => setAttachSlipModalData(null)}
+          onSuccess={(resData) => {
+            const bId = attachSlipModalData.booking?.id;
+            if (bId) {
+              fetchPaymentTransactions(bId);
+              setSelectedBooking(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              fetchBookings(true, false, true);
+            }
+          }}
+          sysAlert={sysAlert}
+        />
+      )}
 
-        const handleCopyAllTaxFields = () => {
-          let lines = [];
-          if (selectedTaxBooking.tax_name) lines.push(`ชื่อผู้เสียภาษี: ${selectedTaxBooking.tax_name}`);
-          if (selectedTaxBooking.tax_id) lines.push(`เลขประจำตัวผู้เสียภาษี: ${selectedTaxBooking.tax_id}`);
-          if (selectedTaxBooking.tax_address) lines.push(`ที่อยู่: ${selectedTaxBooking.tax_address}`);
-          if (selectedTaxBooking.tax_phone || selectedTaxBooking.contact) lines.push(`เบอร์โทรศัพท์: ${selectedTaxBooking.tax_phone || selectedTaxBooking.contact}`);
+      {/* TAX INVOICE MANAGEMENT MODAL (PHASE 3 & 4) */}
+      {selectedTaxBooking && (
+        <TaxInvoiceManagementModal
+          booking={selectedTaxBooking}
+          onClose={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
+          onUpdated={() => fetchBookings(true, false, true)}
+          sysAlert={sysAlert}
+        />
+      )}
 
-          const deliveryText = selectedTaxBooking.tax_delivery_method === 'postal'
-            ? `จัดส่งทางไปรษณีย์ / จดหมาย (ที่อยู่จัดส่ง: ${selectedTaxBooking.tax_postal_address || selectedTaxBooking.tax_address || '-'})`
-            : (selectedTaxBooking.tax_delivery_method === 'pickup' ? 'รับด้วยตนเองที่หน้าร้าน' : 'จัดส่งทางอีเมล (e-Tax)');
-          lines.push(`ช่องทางการจัดส่ง: ${deliveryText}`);
-
-          const fullText = lines.join('\n');
-          navigator.clipboard.writeText(fullText);
-          setTaxCopied(true);
-          setTimeout(() => setTaxCopied(false), 2500);
-          if (sysAlert) {
-            sysAlert('คัดลอกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว');
+      {/* ========================================================= */}
+      {/*  MEETING ROOM BOOKING CONFIRMATION CARD MODAL             */}
+      {/* ========================================================= */}
+      {showWifiCardModal && (() => {
+        const sharedSsid = wifiCardData?.wifi?.ssid || settings?.wifi_ssid || '@BWORK';
+        const distinctRooms = Array.isArray(wifiCardData?.rooms) ? wifiCardData.rooms : [];
+        const scheduleItems = Array.isArray(wifiCardData?.items) && wifiCardData.items.length > 0
+          ? wifiCardData.items
+          : (Array.isArray(wifiCardData?.schedules) ? wifiCardData.schedules.map((s, idx) => {
+              const matchingRoom = distinctRooms.find(r => r.room_id === s.room_id || r.room_name === s.room_name) || distinctRooms[0] || {};
+              return {
+                ...s,
+                booking_item_id: s.booking_item_id || idx + 1,
+                room_id: s.room_id || matchingRoom.room_id,
+                room_image_url: s.room_image_url || matchingRoom.image_url || null,
+                image_position_x: s.image_position_x !== undefined ? s.image_position_x : (matchingRoom.image_position_x !== undefined ? matchingRoom.image_position_x : 50),
+                image_position_y: s.image_position_y !== undefined ? s.image_position_y : (matchingRoom.image_position_y !== undefined ? matchingRoom.image_position_y : 50),
+                uses_door_pin: s.uses_door_pin !== undefined ? s.uses_door_pin : (matchingRoom.uses_door_pin !== undefined ? matchingRoom.uses_door_pin : true),
+                door_pin: s.door_pin !== undefined ? s.door_pin : (matchingRoom.door_pin || null),
+                wifi_ssid: s.wifi_ssid || sharedSsid,
+                wifi_username: s.wifi_username !== undefined ? s.wifi_username : (matchingRoom.wifi_username || null),
+                wifi_password: s.wifi_password !== undefined ? s.wifi_password : (matchingRoom.wifi_password || null),
+                wifi_configured: s.wifi_configured !== undefined ? s.wifi_configured : Boolean(matchingRoom.is_configured)
+              };
+            }) : []);
+        const isMultiRoom = Boolean(wifiCardData?.is_multi_room || distinctRooms.length > 1);
+        const isMultiItem = scheduleItems.length > 1;
+        const singleRoomObj = distinctRooms[0] || scheduleItems[0] || {};
+        const singleRoomName = singleRoomObj.room_name || 'ห้องประชุม BWORK';
+        const rawSingleRoomImage = !isMultiRoom
+          ? (wifiCardData?.banner_image_url || singleRoomObj.image_url || singleRoomObj.room_image_url || null)
+          : null;
+        const hasValidSingleRoomImage = Boolean(rawSingleRoomImage && !failedCardImages[rawSingleRoomImage]);
+        const brandBannerUrl = '/Bworktower.jpg';
+        const hasValidBrandBanner = !failedCardImages[brandBannerUrl];
+        // Calculate room image focal position (normalized percentage 0-100, clamped safely, defaulting to 50% 50% Center)
+        const getRoomFocalPosition = (item) => {
+          const rawX = typeof item?.image_position_x === 'number' && !isNaN(item.image_position_x)
+            ? item.image_position_x
+            : (typeof wifiCardData?.single_room_focal_x === 'number' && !isNaN(wifiCardData.single_room_focal_x) ? wifiCardData.single_room_focal_x : 50);
+          const rawY = typeof item?.image_position_y === 'number' && !isNaN(item.image_position_y)
+            ? item.image_position_y
+            : (typeof wifiCardData?.single_room_focal_y === 'number' && !isNaN(wifiCardData.single_room_focal_y) ? wifiCardData.single_room_focal_y : 50);
+          const px = Math.max(0, Math.min(100, Math.round(rawX)));
+          const py = Math.max(0, Math.min(100, Math.round(rawY)));
+          return `${px}% ${py}%`;
+        };
+        const singleRoomFocal = getRoomFocalPosition(singleRoomObj);
+        const customerPhone = wifiCardData?.customer_phone && String(wifiCardData.customer_phone).trim() !== '' && String(wifiCardData.customer_phone).trim() !== '-'
+          ? String(wifiCardData.customer_phone).trim()
+          : null;
+        const formatConfirmationDateOnly = (dateStr) => {
+          if (!dateStr) return '-';
+          const clean = String(dateStr).trim().slice(0, 10);
+          const parts = clean.split('-').map(Number);
+          if (parts.length === 3 && !parts.some(isNaN)) {
+            const d = new Date(parts[0], parts[1] - 1, parts[2]);
+            return d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
           }
+          return clean;
         };
 
         return (
-          <div style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(15, 23, 42, 0.85)',
-            backdropFilter: 'blur(8px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-            padding: '16px'
-          }}>
-            <div className="card" style={{
-              width: '100%',
-              maxWidth: '560px',
-              padding: '24px',
-              borderRadius: '20px',
-              backgroundColor: 'var(--bg-card)',
-              border: '1px solid var(--border-color)',
-              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+          <div
+            id="booking-confirmation-card-overlay"
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(15, 23, 42, 0.85)',
+              backdropFilter: 'blur(10px)',
               display: 'flex',
-              flexDirection: 'column',
-              gap: '16px',
-              position: 'relative',
-              maxHeight: '92vh',
-              overflowY: 'auto'
-            }}>
-              <button
-                style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px' }}
-                onClick={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
-              >
-                <X size={20} />
-              </button>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ width: '46px', height: '46px', borderRadius: '14px', backgroundColor: 'rgba(37, 99, 235, 0.15)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <FileText size={24} />
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 14000,
+              padding: '16px'
+            }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) handleCloseWifiCardModal();
+            }}
+          >
+            <style>{`
+              @media print {
+                @page {
+                  size: A4 portrait;
+                  margin: 10mm;
+                }
+              }
+            `}</style>
+            <div
+              id="booking-confirmation-card-modal"
+              className="card"
+              style={{
+                width: '100%',
+                maxWidth: '640px',
+                maxHeight: '92vh',
+                overflowY: 'auto',
+                padding: '20px',
+                borderRadius: '24px',
+                backgroundColor: 'var(--bg-card)',
+                border: '1px solid var(--border-color)',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.55)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                position: 'relative'
+              }}
+            >
+              {/* Loading State */}
+              {wifiCardLoading && (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '44px 20px', gap: '12px' }}>
+                  <RefreshCw size={28} className="spin-animation" style={{ color: 'var(--primary-color)' }} />
+                  <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontWeight: 600 }}>กำลังจัดเตรียมใบยืนยันการจองห้องประชุม...</span>
                 </div>
-                <div>
-                  <h3 style={{ fontSize: '1.25rem', fontWeight: 850, margin: 0, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span>ข้อมูลใบกำกับภาษี</span>
-                    <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(37, 99, 235, 0.15)', color: '#2563eb', fontWeight: 800 }}>Tax Invoice</span>
-                  </h3>
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    ใบจอง <strong>{selectedTaxBooking.receipt_number || ('#' + selectedTaxBooking.id)}</strong> · ผู้จอง: <strong style={{ color: 'var(--text-main)' }}>{selectedTaxBooking.customer_name || '-'}</strong>
-                  </span>
-                </div>
-              </div>
+              )}
 
-              {/* Tax Payer Info Box */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.85rem' }}>
-                <div style={{ padding: '14px 16px', borderRadius: '14px', backgroundColor: 'var(--bg-hover)', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ชื่อบุคคล / นิติบุคคล (ตาม ภ.พ.20):</span>
-                    <div style={{ fontWeight: 850, color: 'var(--text-main)', fontSize: '1rem', marginTop: '2px' }}>
-                      {selectedTaxBooking.tax_name || '-'}
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '10px' }}>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>เลขประจำตัวผู้เสียภาษี (13 หลัก):</span>
-                      <div style={{ fontWeight: 900, color: 'var(--primary-color)', letterSpacing: '1.2px', marginTop: '2px', fontSize: '0.95rem' }}>
-                        {selectedTaxBooking.tax_id || '-'}
-                      </div>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>เบอร์โทรศัพท์:</span>
-                      <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
-                        {selectedTaxBooking.tax_phone || selectedTaxBooking.contact || '-'}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ที่อยู่สำหรับออกใบกำกับภาษี:</span>
-                    <div style={{ fontWeight: 600, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.45 }}>
-                      {selectedTaxBooking.tax_address || '-'}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Delivery details box */}
-                <div style={{ padding: '12px 16px', borderRadius: '14px', backgroundColor: 'rgba(59, 130, 246, 0.06)', border: '1px solid rgba(59, 130, 246, 0.25)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: '#2563eb', fontWeight: 800 }}>ช่องทางการจัดส่งเอกสาร:</span>
-                    <span style={{ fontWeight: 800, color: 'var(--text-main)', backgroundColor: 'rgba(255,255,255,0.8)', padding: '2px 8px', borderRadius: '6px', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
-                      {selectedTaxBooking.tax_delivery_method === 'postal' ? '📮 จัดส่งทางไปรษณีย์ / จดหมาย' : (selectedTaxBooking.tax_delivery_method === 'pickup' ? '🏢 รับด้วยตนเองที่หน้าร้าน' : '✉️ อีเมล / e-Tax')}
-                    </span>
-                  </div>
-
-                  {selectedTaxBooking.tax_delivery_method === 'postal' && (
-                    <div style={{ marginTop: '4px', paddingTop: '6px', borderTop: '1px dashed rgba(59, 130, 246, 0.25)' }}>
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontWeight: 700 }}>ที่อยู่จัดส่งเอกสารทางไปรษณีย์:</span>
-                      <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px', lineHeight: 1.4 }}>
-                        {selectedTaxBooking.tax_postal_address || selectedTaxBooking.tax_address || '-'}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-
-              </div>
-
-              {/* Action Buttons */}
-              <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-                <button
-                  type="button"
-                  className="btn"
+              {/* Printable / Viewable Confirmation Card Document */}
+              {!wifiCardLoading && wifiCardData && (
+                <div
+                  id="wifi-customer-card"
                   style={{
-                    flex: 1.1,
-                    height: '44px',
-                    borderRadius: '12px',
-                    fontWeight: 700,
-                    fontSize: '0.85rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '6px',
-                    backgroundColor: taxCopied ? '#10b981' : 'var(--bg-hover)',
-                    color: taxCopied ? '#ffffff' : 'var(--text-main)',
-                    border: taxCopied ? '1.5px solid #10b981' : '1px solid var(--border-color)',
-                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                    cursor: 'pointer'
-                  }}
-                  onClick={handleCopyAllTaxFields}
-                >
-                  {taxCopied ? (
-                    <>
-                      <CheckCircle2 size={16} />
-                      <span>คัดลอกเรียบร้อยแล้ว!</span>
-                    </>
-                  ) : (
-                    <>
-                      <FileText size={16} />
-                      <span>คัดลอกข้อมูลใบกำกับ</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  style={{ flex: 1.2, height: '44px', borderRadius: '12px', fontWeight: 800, fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-                  onClick={() => {
-                    handleOpenReceipt(selectedTaxBooking);
-                    setSelectedTaxBooking(null);
-                    setTaxCopied(false);
+                    backgroundColor: '#ffffff',
+                    color: '#0f172a',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '16px',
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    flexShrink: 0,
+                    boxShadow: '0 4px 20px -2px rgba(15, 23, 42, 0.06)'
                   }}
                 >
-                  <Printer size={16} />
-                  <span>ดูใบเสร็จ / พิมพ์</span>
-                </button>
+                  {/* SECTION A: BWORK Brand Header & Document Title (Two-Row Layout) */}
+                  <div
+                    id="booking-confirmation-header"
+                    className="bwork-conf-avoid-break"
+                    style={{
+                      padding: '16px 22px 10px 22px',
+                      backgroundColor: '#ffffff',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      flexShrink: 0
+                    }}
+                  >
+                    {/* ROW 1: BWORK logo (Left) | ใบยืนยันการจองห้องประชุม (Right) */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '12px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                        {!failedCardImages['/BWORK-LOGO.png'] ? (
+                          <img
+                            src="/BWORK-LOGO.png"
+                            alt="BWORK"
+                            onError={() => setFailedCardImages(prev => ({ ...prev, ['/BWORK-LOGO.png']: true }))}
+                            style={{ height: '32px', width: 'auto', objectFit: 'contain', display: 'block' }}
+                          />
+                        ) : (
+                          <div style={{ fontWeight: 900, fontSize: '1.25rem', letterSpacing: '1px', color: '#0f172a' }}>
+                            BWORK
+                          </div>
+                        )}
+                      </div>
+                      <div
+                        className="confirmation-doc-title"
+                        style={{
+                          fontSize: '1.05rem',
+                          fontWeight: 800,
+                          color: '#0f172a',
+                          lineHeight: 1.25,
+                          textAlign: 'right',
+                          letterSpacing: '-0.2px'
+                        }}
+                      >
+                        ใบยืนยันการจองห้องประชุม
+                      </div>
+                    </div>
+
+                    {/* ROW 2: เลขที่การจอง #[booking_number] (Left) | ยืนยันแล้ว (Right) */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '10px'
+                      }}
+                    >
+                      <span
+                        className="confirmation-booking-ref"
+                        style={{
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          color: '#64748b',
+                          fontFamily: 'monospace',
+                          letterSpacing: '0.2px'
+                        }}
+                      >
+                        เลขที่การจอง #{wifiCardData.booking_number}
+                      </span>
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          backgroundColor: '#ecfdf5',
+                          color: '#047857',
+                          border: '1px solid #a7f3d0',
+                          padding: '2px 8px',
+                          borderRadius: '999px',
+                          fontSize: '0.7rem',
+                          fontWeight: 700,
+                          whiteSpace: 'nowrap',
+                          flexShrink: 0
+                        }}
+                      >
+                        <CheckCircle2 size={11} />
+                        <span>ยืนยันแล้ว</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* SECTION B: Room / Brand Hero Banner */}
+                  <div
+                    id="booking-confirmation-banner"
+                    data-banner-mode={isMultiRoom ? 'multi-room-brand' : (hasValidSingleRoomImage ? 'single-room-image' : 'single-room-placeholder')}
+                    className="bwork-conf-avoid-break bwork-conf-hero-banner"
+                    style={{
+                      position: 'relative',
+                      width: '100%',
+                      minHeight: '142px',
+                      height: '142px',
+                      flexShrink: 0,
+                      backgroundColor: '#f8fafc',
+                      background: 'linear-gradient(135deg, #ffffff 0%, #f8fafc 40%, #f1f5f9 100%)',
+                      borderBottom: '1px solid #e2e8f0',
+                      overflow: 'hidden',
+                      display: 'flex',
+                      alignItems: 'stretch'
+                    }}
+                  >
+                    {isMultiRoom ? (
+                      /* Multi-room booking -> Neutral BWORK brand banner */
+                      <>
+                        <div
+                          className="bwork-conf-hero-image-wrap"
+                          style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: '54%',
+                            overflow: 'hidden'
+                          }}
+                        >
+                          {hasValidBrandBanner ? (
+                            <img
+                              src={brandBannerUrl}
+                              alt="BWORK Building Banner"
+                              onError={() => setFailedCardImages(prev => ({ ...prev, [brandBannerUrl]: true }))}
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                objectFit: 'cover',
+                                objectPosition: 'center',
+                                display: 'block'
+                              }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 60%, #047857 100%)'
+                              }}
+                            />
+                          )}
+                          <div
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              background: 'linear-gradient(to right, #ffffff 0%, rgba(255, 255, 255, 0.94) 14%, rgba(255, 255, 255, 0.45) 42%, rgba(255, 255, 255, 0) 100%)',
+                              pointerEvents: 'none'
+                            }}
+                          />
+                        </div>
+
+                        <div
+                          className="bwork-conf-hero-info"
+                          style={{
+                            position: 'relative',
+                            zIndex: 2,
+                            width: '56%',
+                            padding: '14px 22px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            gap: '5px'
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: '1.18rem',
+                              fontWeight: 800,
+                              color: '#0f172a',
+                              letterSpacing: '-0.2px',
+                              lineHeight: 1.3
+                            }}
+                          >
+                            BWORK MEETING & CO-WORKING SPACE
+                          </div>
+                          <div
+                            style={{
+                              fontSize: '0.8rem',
+                              color: '#475569',
+                              fontWeight: 600
+                            }}
+                          >
+                            {distinctRooms.map(r => r.room_name).join(' • ')} ({scheduleItems.length} รายการ)
+                          </div>
+                        </div>
+                      </>
+                    ) : hasValidSingleRoomImage ? (
+                      /* Single-room booking -> Actual room image from Room Management */
+                      <>
+                        <div
+                          className="bwork-conf-hero-image-wrap"
+                          style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: '54%',
+                            overflow: 'hidden'
+                          }}
+                        >
+                          <img
+                            src={rawSingleRoomImage}
+                            alt={singleRoomName}
+                            onError={() => setFailedCardImages(prev => ({ ...prev, [rawSingleRoomImage]: true }))}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'cover',
+                              objectPosition: singleRoomFocal,
+                              display: 'block'
+                            }}
+                          />
+                          <div
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              background: 'linear-gradient(to right, #ffffff 0%, rgba(255, 255, 255, 0.94) 14%, rgba(255, 255, 255, 0.45) 42%, rgba(255, 255, 255, 0) 100%)',
+                              pointerEvents: 'none'
+                            }}
+                          />
+                        </div>
+
+                        <div
+                          className="bwork-conf-hero-info"
+                          style={{
+                            position: 'relative',
+                            zIndex: 2,
+                            width: '56%',
+                            padding: '14px 22px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            gap: '5px'
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: '1.25rem',
+                              fontWeight: 800,
+                              color: '#0f172a',
+                              letterSpacing: '-0.2px',
+                              lineHeight: 1.3
+                            }}
+                          >
+                            {singleRoomName}
+                          </div>
+                          {scheduleItems.length === 1 && scheduleItems[0] && (
+                            <div
+                              style={{
+                                fontSize: '0.84rem',
+                                color: '#475569',
+                                fontWeight: 600,
+                                display: 'flex',
+                                alignItems: 'center',
+                                flexWrap: 'wrap',
+                                gap: '5px'
+                              }}
+                            >
+                              <span>{scheduleItems[0].booking_date ? formatConfirmationDateOnly(scheduleItems[0].booking_date) : ''}</span>
+                              {(scheduleItems[0].start_time && scheduleItems[0].end_time) || scheduleItems[0].time_slot ? (
+                                <>
+                                  <span style={{ color: '#94a3b8' }}>•</span>
+                                  <span>
+                                    {scheduleItems[0].start_time && scheduleItems[0].end_time
+                                      ? `เวลา ${scheduleItems[0].start_time} - ${scheduleItems[0].end_time} น.`
+                                      : `เวลา ${scheduleItems[0].time_slot}`}
+                                  </span>
+                                </>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      /* Single-room booking with missing room image -> Neutral BWORK branded placeholder */
+                      <>
+                        <div
+                          className="bwork-conf-hero-image-wrap"
+                          style={{
+                            position: 'absolute',
+                            right: 0,
+                            top: 0,
+                            bottom: 0,
+                            width: '54%',
+                            background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 60%, #047857 100%)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            padding: '12px'
+                          }}
+                        >
+                          <span
+                            data-no-room-image-label="true"
+                            style={{
+                              backgroundColor: 'rgba(15, 23, 42, 0.7)',
+                              border: '1px solid rgba(255, 255, 255, 0.25)',
+                              color: '#e2e8f0',
+                              fontSize: '0.68rem',
+                              fontWeight: 600,
+                              padding: '3px 10px',
+                              borderRadius: '999px',
+                              textAlign: 'center'
+                            }}
+                          >
+                            ไม่มีรูปภาพห้องประชุมที่ตั้งค่าไว้
+                          </span>
+                          <div
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              background: 'linear-gradient(to right, #ffffff 0%, rgba(255, 255, 255, 0.94) 14%, rgba(255, 255, 255, 0.35) 42%, rgba(255, 255, 255, 0) 100%)',
+                              pointerEvents: 'none'
+                            }}
+                          />
+                        </div>
+
+                        <div
+                          className="bwork-conf-hero-info"
+                          style={{
+                            position: 'relative',
+                            zIndex: 2,
+                            width: '56%',
+                            padding: '14px 22px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            gap: '5px'
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: '1.25rem',
+                              fontWeight: 800,
+                              color: '#0f172a',
+                              letterSpacing: '-0.2px',
+                              lineHeight: 1.3
+                            }}
+                          >
+                            {singleRoomName}
+                          </div>
+                          {scheduleItems.length === 1 && scheduleItems[0] && (
+                            <div
+                              style={{
+                                fontSize: '0.84rem',
+                                color: '#475569',
+                                fontWeight: 600,
+                                display: 'flex',
+                                alignItems: 'center',
+                                flexWrap: 'wrap',
+                                gap: '5px'
+                              }}
+                            >
+                              <span>{scheduleItems[0].booking_date ? formatConfirmationDateOnly(scheduleItems[0].booking_date) : ''}</span>
+                              {(scheduleItems[0].start_time && scheduleItems[0].end_time) || scheduleItems[0].time_slot ? (
+                                <>
+                                  <span style={{ color: '#94a3b8' }}>•</span>
+                                  <span>
+                                    {scheduleItems[0].start_time && scheduleItems[0].end_time
+                                      ? `เวลา ${scheduleItems[0].start_time} - ${scheduleItems[0].end_time} น.`
+                                      : `เวลา ${scheduleItems[0].time_slot}`}
+                                  </span>
+                                </>
+                              ) : null}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Card Body Container */}
+                  <div className="bwork-conf-card-body" style={{ padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {/* SECTION C: Customer Information */}
+                    <div
+                      className="bwork-conf-avoid-break"
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px',
+                        paddingBottom: '12px',
+                        borderBottom: '1px solid #e2e8f0'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.82rem', color: '#64748b', minWidth: '95px', flexShrink: 0 }}>
+                          ชื่อผู้จอง:
+                        </span>
+                        <span
+                          id="confirmation-customer-name"
+                          style={{ fontSize: '0.92rem', fontWeight: 700, color: '#0f172a', wordBreak: 'break-word' }}
+                        >
+                          {wifiCardData.customer_name}
+                        </span>
+                      </div>
+
+                      {customerPhone && (
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '0.82rem', color: '#64748b', minWidth: '95px', flexShrink: 0 }}>
+                            เบอร์โทรศัพท์:
+                          </span>
+                          <span
+                            id="confirmation-customer-phone"
+                            style={{ fontSize: '0.92rem', fontWeight: 700, color: '#0f172a', fontFamily: 'monospace' }}
+                          >
+                            {customerPhone}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* SECTIONS D, E, F: Room Details as Simple Aligned Rows */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      {scheduleItems.map((sch, sIdx) => {
+                        const itemRoomImg = sch.room_image_url && !failedCardImages[sch.room_image_url]
+                          ? sch.room_image_url
+                          : null;
+                        const itemTimeText = (sch.start_time && sch.end_time)
+                          ? `${sch.start_time} - ${sch.end_time} น.`
+                          : (sch.time_slot || '-');
+                        const itemKey = sch.booking_item_id || `${sch.room_id}_${sIdx}`;
+                        const itemSsid = (sch.wifi_ssid || sharedSsid || '').trim();
+
+                        return (
+                          <div
+                            key={itemKey}
+                            data-booking-item-card={sIdx}
+                            className="bwork-conf-avoid-break bwork-conf-room-item-card"
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              paddingBottom: sIdx === scheduleItems.length - 1 ? '0' : '14px',
+                              borderBottom: sIdx === scheduleItems.length - 1 ? 'none' : '1px solid #e2e8f0'
+                            }}
+                          >
+                            {/* Room Title Header */}
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: '12px',
+                                paddingBottom: '8px',
+                                borderBottom: '1px solid #f1f5f9'
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                {isMultiRoom && (
+                                  itemRoomImg ? (
+                                    <img
+                                      src={itemRoomImg}
+                                      alt={sch.room_name}
+                                      onError={() => setFailedCardImages(prev => ({ ...prev, [sch.room_image_url]: true }))}
+                                      style={{
+                                        width: '56px',
+                                        height: '40px',
+                                        borderRadius: '6px',
+                                        objectFit: 'cover',
+                                        border: '1px solid #cbd5e1',
+                                        flexShrink: 0
+                                      }}
+                                    />
+                                  ) : (
+                                    <div
+                                      data-room-placeholder={sch.room_id}
+                                      style={{
+                                        width: '56px',
+                                        height: '40px',
+                                        borderRadius: '6px',
+                                        background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+                                        color: '#e2e8f0',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        textAlign: 'center',
+                                        fontSize: '0.56rem',
+                                        fontWeight: 600,
+                                        padding: '2px',
+                                        flexShrink: 0
+                                      }}
+                                    >
+                                      ไม่มีรูปห้อง
+                                    </div>
+                                  )
+                                )}
+                                <div>
+                                  {isMultiItem && (
+                                    <div
+                                      style={{
+                                        fontSize: '0.66rem',
+                                        fontWeight: 700,
+                                        color: '#64748b',
+                                        marginBottom: '1px'
+                                      }}
+                                    >
+                                      รายการที่ {sIdx + 1}
+                                    </div>
+                                  )}
+                                  <div
+                                    className="confirmation-item-room-name"
+                                    style={{ fontSize: '1.02rem', fontWeight: 800, color: '#0f172a' }}
+                                  >
+                                    {sch.room_name}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Row: วันที่ใช้งาน */}
+                            <div
+                              className="confirmation-detail-row"
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: '110px 1fr',
+                                alignItems: 'center',
+                                padding: '8px 0',
+                                borderBottom: '1px solid #f1f5f9',
+                                gap: '12px'
+                              }}
+                            >
+                              <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                วันที่ใช้งาน
+                              </span>
+                              <span
+                                className="confirmation-item-date"
+                                style={{ fontSize: '0.86rem', fontWeight: 600, color: '#0f172a' }}
+                              >
+                                {sch.booking_date ? formatConfirmationDateOnly(sch.booking_date) : '-'}
+                              </span>
+                            </div>
+
+                            {/* Row: เวลาใช้งาน */}
+                            <div
+                              className="confirmation-detail-row"
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: '110px 1fr',
+                                alignItems: 'center',
+                                padding: '8px 0',
+                                borderBottom: '1px solid #f1f5f9',
+                                gap: '12px'
+                              }}
+                            >
+                              <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                เวลาใช้งาน
+                              </span>
+                              <span
+                                className="confirmation-item-time"
+                                style={{ fontSize: '0.86rem', fontWeight: 600, color: '#0f172a' }}
+                              >
+                                เวลา {itemTimeText}
+                              </span>
+                            </div>
+
+                            {/* Row: รหัสเข้าห้อง (Door PIN) */}
+                            <div
+                              className="confirmation-item-pin-box"
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: '110px 1fr',
+                                alignItems: 'center',
+                                padding: '8px 0',
+                                borderBottom: '1px solid #f1f5f9',
+                                gap: '12px'
+                              }}
+                            >
+                              <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                รหัสเข้าห้อง
+                              </span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                {sch.uses_door_pin === false ? (
+                                  <span
+                                    className="confirmation-item-pin"
+                                    style={{ fontSize: '0.84rem', fontWeight: 600, color: '#334155' }}
+                                  >
+                                    ไม่ต้องใช้รหัสผ่านประตู (เข้าใช้งานได้โดยตรง)
+                                  </span>
+                                ) : sch.door_pin ? (
+                                  <>
+                                    <span
+                                      className="confirmation-item-pin"
+                                      style={{
+                                        fontSize: '1.08rem',
+                                        fontWeight: 900,
+                                        color: '#0f172a',
+                                        fontFamily: 'monospace',
+                                        letterSpacing: '1px'
+                                      }}
+                                    >
+                                      {sch.door_pin}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="no-print"
+                                      onClick={() => handleCopyWifiText(sch.door_pin, `pin_${itemKey}`)}
+                                      style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        padding: '2px 4px',
+                                        cursor: 'pointer',
+                                        color: wifiCopiedKey === `pin_${itemKey}` ? '#047857' : '#94a3b8',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '3px'
+                                      }}
+                                      title="คัดลอกรหัสเข้าห้อง"
+                                    >
+                                      {wifiCopiedKey === `pin_${itemKey}` ? <Check size={13} style={{ color: '#047857' }} /> : <Copy size={13} />}
+                                      {wifiCopiedKey === `pin_${itemKey}` && <span style={{ fontSize: '0.68rem', color: '#047857', fontWeight: 600 }}>คัดลอกแล้ว</span>}
+                                    </button>
+                                  </>
+                                ) : (
+                                  <span
+                                    className="confirmation-item-pin"
+                                    style={{ fontSize: '0.8rem', color: '#64748b', fontStyle: 'italic' }}
+                                  >
+                                    ยังไม่ได้กำหนดรหัสผ่านประตู (กรุณาติดต่อเจ้าหน้าที่เคาน์เตอร์)
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Wi-Fi Credential Rows Group */}
+                            <div className="confirmation-item-wifi-box" style={{ display: 'flex', flexDirection: 'column' }}>
+                              {/* Row: Wi-Fi Name */}
+                              <div
+                                className="confirmation-detail-row"
+                                style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: '110px 1fr',
+                                  alignItems: 'center',
+                                  padding: '8px 0',
+                                  borderBottom: '1px solid #f1f5f9',
+                                  gap: '12px'
+                                }}
+                              >
+                                <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                  Wi-Fi Name
+                                </span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <span
+                                    id={sIdx === 0 ? 'confirmation-wifi-ssid' : undefined}
+                                    className="confirmation-item-wifi-ssid"
+                                    style={{
+                                      fontSize: '0.86rem',
+                                      fontWeight: 700,
+                                      color: '#047857',
+                                      fontFamily: 'monospace'
+                                    }}
+                                  >
+                                    {itemSsid || 'ไม่ได้ระบุ'}
+                                  </span>
+                                  {itemSsid && (
+                                    <button
+                                      type="button"
+                                      className="no-print"
+                                      onClick={() => handleCopyWifiText(itemSsid, `ssid_${itemKey}`)}
+                                      style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        padding: '2px 4px',
+                                        cursor: 'pointer',
+                                        color: wifiCopiedKey === `ssid_${itemKey}` ? '#047857' : '#94a3b8',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '3px'
+                                      }}
+                                      title="คัดลอกชื่อ Wi-Fi"
+                                    >
+                                      {wifiCopiedKey === `ssid_${itemKey}` ? <Check size={13} style={{ color: '#047857' }} /> : <Copy size={13} />}
+                                      {wifiCopiedKey === `ssid_${itemKey}` && <span style={{ fontSize: '0.68rem', color: '#047857', fontWeight: 600 }}>คัดลอกแล้ว</span>}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {sch.wifi_configured && sch.wifi_username && sch.wifi_password ? (
+                                <>
+                                  {/* Row: Username */}
+                                  <div
+                                    className="confirmation-detail-row"
+                                    style={{
+                                      display: 'grid',
+                                      gridTemplateColumns: '110px 1fr',
+                                      alignItems: 'center',
+                                      padding: '8px 0',
+                                      borderBottom: '1px solid #f1f5f9',
+                                      gap: '12px'
+                                    }}
+                                  >
+                                    <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                      Username
+                                    </span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                      <span
+                                        className="confirmation-item-wifi-user"
+                                        style={{
+                                          fontSize: '0.86rem',
+                                          fontWeight: 700,
+                                          color: '#0f172a',
+                                          fontFamily: 'monospace'
+                                        }}
+                                      >
+                                        {sch.wifi_username}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="no-print"
+                                        onClick={() => handleCopyWifiText(sch.wifi_username, `user_${itemKey}`)}
+                                        style={{
+                                          background: 'none',
+                                          border: 'none',
+                                          padding: '2px 4px',
+                                          cursor: 'pointer',
+                                          color: wifiCopiedKey === `user_${itemKey}` ? '#047857' : '#94a3b8',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px'
+                                        }}
+                                        title="คัดลอก Username"
+                                      >
+                                        {wifiCopiedKey === `user_${itemKey}` ? <Check size={13} style={{ color: '#047857' }} /> : <Copy size={13} />}
+                                        {wifiCopiedKey === `user_${itemKey}` && <span style={{ fontSize: '0.68rem', color: '#047857', fontWeight: 600 }}>คัดลอกแล้ว</span>}
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Row: Password */}
+                                  <div
+                                    className="confirmation-detail-row"
+                                    style={{
+                                      display: 'grid',
+                                      gridTemplateColumns: '110px 1fr',
+                                      alignItems: 'center',
+                                      padding: '8px 0',
+                                      borderBottom: '1px solid #f1f5f9',
+                                      gap: '12px'
+                                    }}
+                                  >
+                                    <span style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                                      Password
+                                    </span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                      <span
+                                        className="confirmation-item-wifi-pass"
+                                        style={{
+                                          fontSize: '0.86rem',
+                                          fontWeight: 700,
+                                          color: '#047857',
+                                          fontFamily: 'monospace'
+                                        }}
+                                      >
+                                        {sch.wifi_password}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="no-print"
+                                        onClick={() => handleCopyWifiText(sch.wifi_password, `pass_${itemKey}`)}
+                                        style={{
+                                          background: 'none',
+                                          border: 'none',
+                                          padding: '2px 4px',
+                                          cursor: 'pointer',
+                                          color: wifiCopiedKey === `pass_${itemKey}` ? '#047857' : '#94a3b8',
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '3px'
+                                        }}
+                                        title="คัดลอก Password"
+                                      >
+                                        {wifiCopiedKey === `pass_${itemKey}` ? <Check size={13} style={{ color: '#047857' }} /> : <Copy size={13} />}
+                                        {wifiCopiedKey === `pass_${itemKey}` && <span style={{ fontSize: '0.68rem', color: '#047857', fontWeight: 600 }}>คัดลอกแล้ว</span>}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </>
+                              ) : (
+                                /* Unconfigured Wi-Fi notice */
+                                <div
+                                  style={{
+                                    padding: '8px 0',
+                                    borderBottom: '1px solid #f1f5f9'
+                                  }}
+                                >
+                                  <span
+                                    className="confirmation-item-wifi-unconfigured"
+                                    style={{
+                                      fontSize: '0.8rem',
+                                      color: '#64748b',
+                                      fontStyle: 'italic'
+                                    }}
+                                  >
+                                    ยังไม่ได้ตั้งค่าบัญชี Wi-Fi สำหรับห้องนี้ (กรุณาติดต่อเจ้าหน้าที่เคาน์เตอร์)
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* SECTION G: Benefits Box (Clean, Modern & Elegant) */}
+                    {(() => {
+                      const benefitsHeading = wifiCardData.benefits?.heading || wifiCardData.beverage_perk?.heading || 'สิทธิประโยชน์สำหรับผู้ใช้บริการห้องประชุม';
+                      const rawItems = (wifiCardData.benefits?.items && wifiCardData.benefits.items.length > 0)
+                        ? wifiCardData.benefits.items
+                        : ((wifiCardData.beverage_perk?.items && wifiCardData.beverage_perk.items.length > 0)
+                          ? wifiCardData.beverage_perk.items
+                          : [
+                              'Free WiFi',
+                              'Free Co-working Space',
+                              'ได้รับส่วนลด 20% จากร้าน koo.koo เฉพาะเมนูเครื่องดื่มเท่านั้น',
+                              'ได้สิทธิจอดรถฟรี ตามการใช้งานห้องประชุม'
+                            ]);
+
+                      const renderBenefitText = (text) => {
+                        if (text.includes('20%') && (text.includes('koo.koo') || text.includes('kookoocafe') || text.includes('koo'))) {
+                          const parts = [];
+                          let remainder = text;
+
+                          const p20Idx = remainder.indexOf('20%');
+                          if (p20Idx !== -1) {
+                            if (p20Idx > 0) parts.push({ type: 'text', content: remainder.slice(0, p20Idx) });
+                            parts.push({ type: 'highlight', content: '20%' });
+                            remainder = remainder.slice(p20Idx + 3);
+                          }
+
+                          const kooMatch = remainder.match(/koo\.koo|kookoocafe/i);
+                          if (kooMatch) {
+                            const kooIdx = remainder.indexOf(kooMatch[0]);
+                            if (kooIdx > 0) parts.push({ type: 'text', content: remainder.slice(0, kooIdx) });
+                            parts.push({ type: 'kookoo', content: 'koo.koo' });
+                            remainder = remainder.slice(kooIdx + kooMatch[0].length);
+                          }
+
+                          if (remainder) {
+                            parts.push({ type: 'text', content: remainder });
+                          }
+
+                          return (
+                            <span>
+                              {parts.map((p, pIdx) => {
+                                if (p.type === 'highlight') {
+                                  return (
+                                    <span
+                                      key={pIdx}
+                                      className="bwork-conf-perk-highlight"
+                                      style={{
+                                        display: 'inline-block',
+                                        backgroundColor: '#ecfdf5',
+                                        color: '#047857',
+                                        border: '1px solid #a7f3d0',
+                                        borderRadius: '4px',
+                                        padding: '0 4px',
+                                        fontWeight: 700,
+                                        fontSize: '0.74rem',
+                                        margin: '0 2px'
+                                      }}
+                                    >
+                                      20%
+                                    </span>
+                                  );
+                                }
+                                if (p.type === 'kookoo') {
+                                  return (
+                                    <span
+                                      key={pIdx}
+                                      className="bwork-conf-kookoo-tag"
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        backgroundColor: '#ffffff',
+                                        color: '#0f172a',
+                                        border: '1px solid #cbd5e1',
+                                        boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                                        borderRadius: '4px',
+                                        padding: '0 5px',
+                                        fontWeight: 700,
+                                        fontSize: '0.74rem',
+                                        fontFamily: "'Inter', sans-serif",
+                                        letterSpacing: '-0.01em',
+                                        margin: '0 2px'
+                                      }}
+                                    >
+                                      koo.koo
+                                    </span>
+                                  );
+                                }
+                                return <React.Fragment key={pIdx}>{p.content}</React.Fragment>;
+                              })}
+                            </span>
+                          );
+                        }
+                        return <span>{text}</span>;
+                      };
+
+                      const getBenefitIcon = (text) => {
+                        const lower = text.toLowerCase();
+                        if (lower.includes('wifi') || lower.includes('wi-fi')) {
+                          return <Wifi size={13} style={{ color: '#047857' }} />;
+                        }
+                        if (lower.includes('co-working') || lower.includes('coworking')) {
+                          return <Users size={13} style={{ color: '#047857' }} />;
+                        }
+                        if (lower.includes('koo') || text.includes('เครื่องดื่ม') || text.includes('ส่วนลด')) {
+                          return <Coffee size={13} style={{ color: '#047857' }} />;
+                        }
+                        if (text.includes('จอดรถ')) {
+                          return <Car size={13} style={{ color: '#047857' }} />;
+                        }
+                        return <Check size={13} style={{ color: '#047857' }} />;
+                      };
+
+                      return (
+                        <div
+                          id="booking-confirmation-benefits"
+                          className="bwork-conf-avoid-break bwork-conf-perk-banner bwork-conf-benefits-card"
+                          style={{
+                            backgroundColor: '#f8fafc',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: '10px',
+                            padding: '10px 14px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '8px'
+                          }}
+                        >
+                          <div
+                            id="confirmation-beverage-perk-heading"
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              fontSize: '0.76rem',
+                              fontWeight: 700,
+                              color: '#0f172a',
+                              letterSpacing: '-0.01em',
+                              paddingBottom: '6px',
+                              borderBottom: '1px solid #f1f5f9'
+                            }}
+                          >
+                            <Sparkles size={13} style={{ color: '#047857' }} />
+                            <span>{benefitsHeading}</span>
+                          </div>
+
+                          <div
+                            id="confirmation-benefits-list"
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '6px'
+                            }}
+                          >
+                            {rawItems.map((itemText, idx) => {
+                              const isPerkMessage = idx === 2 || itemText.includes('20%');
+                              return (
+                                <div
+                                  key={idx}
+                                  data-benefit-item="true"
+                                  id={isPerkMessage ? 'confirmation-beverage-perk-message' : undefined}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    fontSize: '0.76rem',
+                                    fontWeight: 500,
+                                    color: '#334155',
+                                    lineHeight: 1.45
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      width: '20px',
+                                      height: '20px',
+                                      borderRadius: '6px',
+                                      backgroundColor: '#ecfdf5',
+                                      border: '1px solid #d1fae5',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      flexShrink: 0
+                                    }}
+                                  >
+                                    {getBenefitIcon(itemText)}
+                                  </span>
+                                  <div style={{ flex: 1 }}>
+                                    {renderBenefitText(itemText)}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Footer Note */}
+                    <div className="bwork-conf-footer-note" style={{ textAlign: 'center', fontSize: '0.70rem', color: '#64748b', borderTop: '1px solid #e2e8f0', paddingTop: '8px', marginTop: '2px' }}>
+                      สามารถแสดงเอกสารนี้บนหน้าจอโทรศัพท์ หรือพิมพ์เป็นเอกสารเพื่อยืนยันการเข้าใช้ห้องประชุมและรับสิทธิประโยชน์
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Modal Bottom Action Buttons (Hidden in Print) */}
+              <div
+                className="no-print bwork-conf-bottom-actions"
+                style={{
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  alignItems: 'center',
+                  gap: '10px',
+                  marginTop: '4px',
+                  flexWrap: 'wrap'
+                }}
+              >
+                {!wifiCardLoading && wifiCardData && (
+                  <>
+                    <button
+                      id="btn-export-jpg-confirmation-card"
+                      type="button"
+                      disabled={wifiCardExportingJpg}
+                      onClick={handleExportConfirmationCardJpg}
+                      style={{
+                        height: '40px',
+                        padding: '0 16px',
+                        borderRadius: '12px',
+                        backgroundColor: '#047857',
+                        color: '#ffffff',
+                        border: 'none',
+                        fontWeight: 700,
+                        fontSize: '0.84rem',
+                        cursor: wifiCardExportingJpg ? 'wait' : 'pointer',
+                        opacity: wifiCardExportingJpg ? 0.75 : 1,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        boxShadow: '0 2px 8px rgba(4, 120, 87, 0.25)'
+                      }}
+                    >
+                      <Download size={16} />
+                      <span>{wifiCardExportingJpg ? 'กำลังบันทึก JPG...' : 'บันทึกเป็น JPG'}</span>
+                    </button>
+                    <button
+                      id="btn-print-confirmation-card"
+                      type="button"
+                      className="btn btn-primary"
+                      style={{
+                        height: '40px',
+                        padding: '0 18px',
+                        borderRadius: '12px',
+                        backgroundColor: '#0f172a',
+                        color: '#ffffff',
+                        border: 'none',
+                        fontWeight: 700,
+                        fontSize: '0.84rem',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        boxShadow: '0 2px 8px rgba(15, 23, 42, 0.22)'
+                      }}
+                      onClick={handlePrintConfirmationCard}
+                    >
+                      <Printer size={16} />
+                      <span>พิมพ์ / บันทึก PDF</span>
+                    </button>
+                  </>
+                )}
                 <button
+                  id="btn-close-confirmation-card"
                   type="button"
                   className="btn btn-secondary"
-                  style={{ width: '44px', height: '44px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}
-                  onClick={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
-                  title="ปิดหน้าต่าง"
+                  style={{
+                    height: '40px',
+                    padding: '0 20px',
+                    borderRadius: '12px',
+                    fontWeight: 700,
+                    fontSize: '0.84rem',
+                    cursor: 'pointer'
+                  }}
+                  onClick={handleCloseWifiCardModal}
                 >
-                  <X size={18} />
+                  ปิดหน้าต่าง
                 </button>
               </div>
             </div>
