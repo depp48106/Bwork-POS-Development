@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Save, CloudLightning, CheckCircle2, AlertTriangle, Cloud, Users, UserPlus, KeyRound, Trash2, Plus, Sliders, X, Edit2, Settings, Printer, ChevronDown, Database, Smartphone, CreditCard, Building2, Download, RefreshCw, ExternalLink, ShieldCheck, Clock, FileText, UploadCloud, RotateCcw, Upload } from 'lucide-react';
 import DoorAccessSettings from './DoorAccessSettings';
 import PromotionSettings from './PromotionSettings';
+import { PERMISSION_GROUPS } from '../config/menuConfig';
 
 function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, sysAlert, sysConfirm, sysPrompt, onClearHistory }) {
   // Config Settings
@@ -2451,40 +2452,36 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
 
                         <div>
                           <label style={{ fontSize: '0.775rem', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '6px', display: 'block' }}>สิทธิ์เข้าใช้งานเริ่มต้น (Default Permissions)</label>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', maxHeight: '220px', overflowY: 'auto', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '12px', backgroundColor: 'rgba(0,0,0,0.1)' }}>
-                            {[
-                              { key: 'pos', label: 'จุดขาย POS' },
-                              { key: 'dashboard', label: 'Dashboard' },
-                              { key: 'pending', label: 'รายการจองห้อง' },
-                              { key: 'layout', label: 'แผนผังห้อง' },
-                              { key: 'history', label: 'ประวัติย้อนหลัง' },
-                              { key: 'quotations', label: 'ใบเสนอราคา' },
-                              { key: 'manage', label: 'จัดการคลังสินค้า' },
-                              { key: 'admin-users', label: 'จัดการผู้ใช้ & บทบาท' },
-                              { key: 'admin-system', label: 'ตั้งค่าระบบ & ใบเสร็จ' },
-                              { key: 'admin-promotion', label: 'ตั้งค่าโปรโมชั่น' },
-                              { key: 'admin-quotation', label: 'ตั้งค่าใบเสนอราคา' },
-                              { key: 'admin-backup', label: 'สำรองข้อมูล (Backup)' }
-                            ].map(menu => {
-                              const checked = Array.isArray(roleForm.permissions) && roleForm.permissions.includes(menu.key);
-                              return (
-                                <label key={menu.key} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.775rem', cursor: 'pointer', color: checked ? 'var(--text-main)' : 'var(--text-muted)' }}>
-                                  <input 
-                                    type="checkbox" 
-                                    checked={checked}
-                                    onChange={() => {
-                                      const currentPerms = Array.isArray(roleForm.permissions) ? roleForm.permissions : [];
-                                      if (checked) {
-                                        setRoleForm({ ...roleForm, permissions: currentPerms.filter(k => k !== menu.key) });
-                                      } else {
-                                        setRoleForm({ ...roleForm, permissions: [...currentPerms, menu.key] });
-                                      }
-                                    }}
-                                  />
-                                  <span>{menu.label}</span>
-                                </label>
-                              );
-                            })}
+                          <div style={{ maxHeight: '240px', overflowY: 'auto', border: '1px solid var(--border-color)', padding: '12px', borderRadius: '12px', backgroundColor: 'rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                            {PERMISSION_GROUPS.map(group => (
+                              <div key={group.groupId}>
+                                <div style={{ fontSize: '0.7rem', fontWeight: '800', letterSpacing: '0.04em', color: 'var(--primary-color)', marginBottom: '8px', borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: '4px' }}>
+                                  {group.groupName}
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                  {group.menus.map(menu => {
+                                    const checked = Array.isArray(roleForm.permissions) && roleForm.permissions.includes(menu.key);
+                                    return (
+                                      <label key={menu.key} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.775rem', cursor: 'pointer', color: checked ? 'var(--text-main)' : 'var(--text-muted)' }}>
+                                        <input 
+                                          type="checkbox" 
+                                          checked={checked}
+                                          onChange={() => {
+                                            const currentPerms = Array.isArray(roleForm.permissions) ? roleForm.permissions : [];
+                                            if (checked) {
+                                              setRoleForm({ ...roleForm, permissions: currentPerms.filter(k => k !== menu.key) });
+                                            } else {
+                                              setRoleForm({ ...roleForm, permissions: [...currentPerms, menu.key] });
+                                            }
+                                          }}
+                                        />
+                                        <span style={{ fontWeight: checked ? 600 : 400 }}>{menu.label}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
 
