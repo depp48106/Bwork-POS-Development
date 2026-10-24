@@ -54,3 +54,7 @@ scratch/
 backend/tessdata/
 backend/test_tessdata/
 backend/evaluation/
+
+# D1 Backups & Bookmarks
+backend/backup_*.sql
+backend/d1_recovery_bookmark.txt

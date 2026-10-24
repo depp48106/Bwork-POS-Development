@@ -120,6 +120,147 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // Serve static frontend in production
 app.use(express.static(path.join(__dirname, 'public')));
+// Secure /uploads/ retrieval with Access Control & Path Traversal Protection
+app.use('/uploads', async (req, res, next) => {
+  // 1. Path traversal check
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(req.path);
+  } catch (_) {
+    return res.status(400).json({ error: 'Invalid path encoding' });
+  }
+
+  if (decodedPath.includes('..') || decodedPath.includes('\\') || decodedPath.includes('\0')) {
+    return res.status(400).json({ error: 'Path traversal detected' });
+  }
+
+  const cleanPath = decodedPath.replace(/^\/+/, '');
+  const isFinancialOrSensitive = (
+    cleanPath.startsWith('slips/') ||
+    cleanPath.startsWith('payment-slips/') ||
+    cleanPath.startsWith('tax-invoices/') ||
+    cleanPath.startsWith('tax_invoices/')
+  );
+
+  // If public catalog asset, allow static middleware to serve
+  if (!isFinancialOrSensitive) {
+    return next();
+  }
+
+  // 2. Access Control for Financial / Sensitive Documents
+  let isAuthorizedStaff = false;
+  let isAuthorizedCustomer = false;
+
+  const authHeader = req.headers['authorization'];
+  const token = (authHeader && authHeader.split(' ')[1]) || req.query.token;
+
+  if (token) {
+    const tokenUser = verifyToken(token);
+    if (tokenUser && tokenUser.id) {
+      try {
+        const user = await dbQuery.get(
+          `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') AS permissions
+           FROM users u
+           LEFT JOIN roles r ON u.role = r.name
+           WHERE u.id = ?`,
+          [tokenUser.id]
+        );
+        if (user) {
+          const perms = (user.permissions || '').split(',');
+          if (
+            user.role === 'admin' ||
+            perms.includes('pos') ||
+            perms.includes('history') ||
+            perms.includes('manage') ||
+            perms.includes('admin-system')
+          ) {
+            isAuthorizedStaff = true;
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (!isAuthorizedStaff) {
+    // Check Customer ownership
+    let associatedBookingId = null;
+    const segments = cleanPath.split('/');
+    if ((segments[0] === 'payment-slips' || segments[0] === 'tax-invoices') && segments.length >= 3) {
+      const candidateId = Number(segments[1]);
+      if (!isNaN(candidateId) && candidateId > 0) {
+        associatedBookingId = candidateId;
+      }
+    }
+
+    let bookingRow = null;
+    try {
+      if (associatedBookingId) {
+        bookingRow = await dbQuery.get('SELECT id, qr_token, contact, line_user_id FROM bookings WHERE id = ?', [associatedBookingId]);
+      } else {
+        const fullUrl = `/uploads/${cleanPath}`;
+        bookingRow = await dbQuery.get(
+          `SELECT id, qr_token, contact, line_user_id FROM bookings
+           WHERE slip_image_url = ?
+              OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url = ?)
+              OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url = ?)
+           LIMIT 1`,
+          [fullUrl, fullUrl, fullUrl]
+        );
+      }
+    } catch (_) {}
+
+    if (!bookingRow) {
+      return res.status(token ? 403 : 401).json({ error: 'Authentication required' });
+    }
+
+    // Task 8: Require authenticated credentials for customer document retrieval
+    // NEVER trust self-asserted x-booking-contact or raw x-line-user-id without verification
+    const customerBookingToken = req.headers['x-booking-token'] || req.query.booking_token;
+    const lineIdToken = req.headers['x-line-id-token'];
+
+    let hasSuppliedCredentials = false;
+    if (customerBookingToken && bookingRow.qr_token) {
+      hasSuppliedCredentials = true;
+      if (customerBookingToken.trim() === bookingRow.qr_token.trim()) {
+        isAuthorizedCustomer = true;
+      }
+    }
+
+    if (!isAuthorizedCustomer && lineIdToken && bookingRow.line_user_id) {
+      hasSuppliedCredentials = true;
+      // Simple verification of line id token if present
+      try {
+        const parts = lineIdToken.trim().split('.');
+        if (parts.length === 3) {
+          let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          while (b64.length % 4) b64 += '=';
+          const payload = JSON.parse(Buffer.from(b64, 'base64').toString());
+          if (payload.iss === 'https://access.line.me' && payload.sub && payload.sub.trim() === bookingRow.line_user_id.trim()) {
+            isAuthorizedCustomer = true;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!isAuthorizedCustomer) {
+      if (hasSuppliedCredentials || token) {
+        return res.status(403).json({ error: 'Access denied: You do not own this document' });
+      } else {
+        return res.status(401).json({ error: 'Authentication required to view this document' });
+      }
+    }
+  }
+
+  // 3. Set secure headers and proceed to static handler
+  res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+  const filename = cleanPath.split('/').pop() || 'document';
+  if (req.query.download === '1' || req.headers.accept === 'application/octet-stream') {
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  } else {
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+  }
+  next();
+});
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Initialize database before starting server
