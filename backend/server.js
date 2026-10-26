@@ -3265,6 +3265,8 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
       const fileName = `walkin_BK${String(booking.id).padStart(6, '0')}_${Date.now()}.${ext}`;
       fs.writeFileSync(path.join(slipDir, fileName), imageBuffer);
       slipUrl = `/uploads/slips/${fileName}`;
+    } else if (req.body.slip_url) {
+      slipUrl = String(req.body.slip_url).trim();
     }
 
     await dbQuery.transaction(async () => {

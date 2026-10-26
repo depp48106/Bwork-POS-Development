@@ -6343,6 +6343,8 @@ export default {
             console.error('[Pay-Balance] R2 upload error in worker:', r2Err);
             return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
           }
+        } else if (body.slip_url) {
+          slipUrl = String(body.slip_url).trim();
         }
 
         // Concurrency-safe atomic update guard
