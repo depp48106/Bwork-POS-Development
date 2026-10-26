@@ -6360,6 +6360,8 @@ export default {
           return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
         }
 
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+
         let slipUrl = null;
         try {
           slipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId, paymentId: transaction ? transaction.id : 'attach', uploadedBy: staffName });
@@ -6376,7 +6378,6 @@ export default {
         const action = isReplacement ? 'replace_slip' : 'attach_slip';
         const replacementReason = (body.replacement_reason || body.reason || (isReplacement ? 'เปลี่ยนสลิปหลักฐาน' : 'แนบสลิปหลักฐาน')).trim();
 
-        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
         const nowIso = new Date().toISOString();
 
         const auditPayload = {

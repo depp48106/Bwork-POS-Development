@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import {
   X,
   Upload,
@@ -180,6 +181,7 @@ export default function AttachSlipModal({
   };
 
   const handleSubmit = async () => {
+    if (isUploading) return;
     if (!previewUrl) {
       setUploadError('กรุณาเลือกไฟล์รูปภาพสลิปก่อนบันทึก');
       return;
@@ -202,6 +204,9 @@ export default function AttachSlipModal({
       finalReason = 'แนบหลักฐานสลิปการชำระเงิน';
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
     try {
       setIsUploading(true);
       setUploadError(null);
@@ -213,6 +218,7 @@ export default function AttachSlipModal({
 
       const res = await fetch(endpoint, {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -225,22 +231,28 @@ export default function AttachSlipModal({
         })
       });
 
+      clearTimeout(timeoutId);
+
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'เกิดข้อผิดพลาดในการบันทึกสลิป');
       }
 
-      if (sysAlert) {
-        await sysAlert(isReplacement ? 'เปลี่ยนสลิปหลักฐานการชำระเงินและบันทึกประวัติเรียบร้อยแล้ว' : 'แนบหลักฐานสลิปการชำระเงินเรียบร้อยแล้ว');
-      }
-
+      onClose();
       if (onSuccess) {
         onSuccess(data);
       }
-      onClose();
+      if (sysAlert) {
+        sysAlert(isReplacement ? 'เปลี่ยนสลิปหลักฐานการชำระเงินและบันทึกประวัติเรียบร้อยแล้ว' : 'แนบหลักฐานสลิปการชำระเงินเรียบร้อยแล้ว');
+      }
     } catch (err) {
+      clearTimeout(timeoutId);
       console.error('[AttachSlipModal] submit error:', err);
-      setUploadError(err.message || 'ไม่สามารถบันทึกสลิปได้');
+      if (err.name === 'AbortError') {
+        setUploadError('การเชื่อมต่อเซิร์ฟเวอร์ใช้เวลานานเกินไป (หมดเวลา 30 วินาที) กรุณาลองใหม่อีกครั้ง');
+      } else {
+        setUploadError(err.message || 'ไม่สามารถบันทึกสลิปได้');
+      }
     } finally {
       setIsUploading(false);
     }
@@ -436,23 +448,27 @@ export default function AttachSlipModal({
                       : 'แนบหลักฐานการชำระเงินเพื่อยืนยันรายการ')}
               </span>
               {isReplacement && existingSlipUrl && (
-                <a
-                  href={existingSlipUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={() => openAuthenticatedImageInNewTab(existingSlipUrl, 'สลิปเดิม')}
                   style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
                     color: '#2563eb',
                     fontWeight: 700,
-                    textDecoration: 'none',
+                    cursor: 'pointer',
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '3px',
-                    flexShrink: 0
+                    flexShrink: 0,
+                    fontSize: '0.7rem'
                   }}
+                  title="คลิกเพื่อดูสลิปเดิมในแท็บใหม่"
                 >
                   <span>ดูสลิปเดิม</span>
                   <ExternalLink size={10} />
-                </a>
+                </button>
               )}
             </div>
           </div>

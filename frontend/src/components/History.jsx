@@ -1,5 +1,7 @@
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
+import AuthenticatedSlipImage from './AuthenticatedSlipImage';
+import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import {
   Search,
@@ -2718,13 +2720,17 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
 
                       {selectedBooking.slip_image_url && selectedBooking.slip_image_url !== 'uploaded' && (
                         <div style={{ marginTop: '8px', textAlign: 'center', paddingTop: '8px', borderTop: '1px dashed var(--border-color)' }}>
-                          <a href={selectedBooking.slip_image_url} target="_blank" rel="noreferrer" title="คลิกเพื่อดูรูปสลิปขนาดเต็ม">
-                            <img
+                          <div
+                            onClick={() => openAuthenticatedImageInNewTab(selectedBooking.slip_image_url, `สลิปการจอง ${selectedBooking.booking_code || selectedBooking.id}`)}
+                            style={{ cursor: 'zoom-in', display: 'inline-block' }}
+                            title="คลิกเพื่อดูรูปสลิปขนาดเต็ม"
+                          >
+                            <AuthenticatedSlipImage
                               src={selectedBooking.slip_image_url}
                               alt="สลิปการชำระเงิน"
                               style={{ maxHeight: '120px', maxWidth: '100%', borderRadius: '6px', border: '1px solid var(--border-color)', objectFit: 'contain' }}
                             />
-                          </a>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -3057,8 +3063,12 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
             }}>
               {viewingSlipBooking.slip_image_url && viewingSlipBooking.slip_image_url !== 'uploaded' ? (
                 <>
-                  <a href={viewingSlipBooking.slip_image_url} target="_blank" rel="noreferrer" title="คลิกเพื่อเปิดดูรูปสลิปขนาดเต็มในแท็บใหม่">
-                    <img
+                  <div
+                    onClick={() => openAuthenticatedImageInNewTab(viewingSlipBooking.slip_image_url, `สลิปการจอง ${viewingSlipBooking.booking_code || viewingSlipBooking.id}`)}
+                    style={{ cursor: 'zoom-in', display: 'inline-block' }}
+                    title="คลิกเพื่อเปิดดูรูปสลิปขนาดเต็มในแท็บใหม่"
+                  >
+                    <AuthenticatedSlipImage
                       src={viewingSlipBooking.slip_image_url}
                       alt="สลิปการชำระเงิน"
                       style={{
@@ -3067,16 +3077,14 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         borderRadius: '10px',
                         border: '1px solid var(--border-color)',
                         objectFit: 'contain',
-                        cursor: 'zoom-in',
                         boxShadow: '0 8px 24px rgba(0,0,0,0.25)'
                       }}
                     />
-                  </a>
+                  </div>
                   <div style={{ marginTop: '10px' }}>
-                    <a
-                      href={viewingSlipBooking.slip_image_url}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      onClick={() => openAuthenticatedImageInNewTab(viewingSlipBooking.slip_image_url, `สลิปการจอง ${viewingSlipBooking.booking_code || viewingSlipBooking.id}`)}
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
@@ -3084,7 +3092,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         fontSize: '0.8rem',
                         fontWeight: 700,
                         color: 'var(--primary-color)',
-                        textDecoration: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
                         padding: '4px 12px',
                         borderRadius: '8px',
                         backgroundColor: 'rgba(14, 165, 233, 0.1)'
@@ -3092,7 +3101,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     >
                       <ExternalLink size={14} />
                       <span>เปิดดูรูปภาพสลิปขนาดเต็ม (Full Resolution)</span>
-                    </a>
+                    </button>
                   </div>
                 </>
               ) : (

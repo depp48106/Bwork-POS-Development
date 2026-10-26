@@ -1,5 +1,7 @@
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
+import AuthenticatedSlipImage from './AuthenticatedSlipImage';
+import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useCallback } from 'react';
 import {
   RefreshCw,
@@ -3920,13 +3922,25 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             {selectedBooking?.slip_image_url && selectedBooking?.slip_image_url !== 'uploaded' && (
               <div style={{ textAlign: 'center', padding: '12px', background: 'rgba(255,255,255,0.03)', borderRadius: '14px', border: '1px solid var(--border-color)' }}>
                 <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#0ea5e9', display: 'block', marginBottom: '8px' }}>รูปภาพสลิปโอนเงินจากลูกค้า:</span>
-                <a href={selectedBooking.slip_image_url} target="_blank" rel="noreferrer" title="คลิกเพื่อดูรูปสลิปขนาดเต็ม">
-                  <img src={selectedBooking.slip_image_url} alt="สลิปการชำระเงิน" style={{ maxHeight: '200px', maxWidth: '100%', borderRadius: '10px', border: '1px solid var(--border-color)', objectFit: 'contain', cursor: 'zoom-in' }} />
-                </a>
+                <div
+                  onClick={() => openAuthenticatedImageInNewTab(selectedBooking.slip_image_url, `สลิปการจอง ${selectedBooking.booking_code || selectedBooking.id}`)}
+                  style={{ cursor: 'zoom-in', display: 'inline-block' }}
+                  title="คลิกเพื่อดูรูปสลิปขนาดเต็ม"
+                >
+                  <AuthenticatedSlipImage
+                    src={selectedBooking.slip_image_url}
+                    alt="สลิปการชำระเงิน"
+                    style={{ maxHeight: '200px', maxWidth: '100%', borderRadius: '10px', border: '1px solid var(--border-color)', objectFit: 'contain' }}
+                  />
+                </div>
                 <div style={{ marginTop: '6px' }}>
-                  <a href={selectedBooking.slip_image_url} target="_blank" rel="noreferrer" style={{ fontSize: '0.78rem', color: 'var(--primary-color)', textDecoration: 'underline' }}>
+                  <button
+                    type="button"
+                    onClick={() => openAuthenticatedImageInNewTab(selectedBooking.slip_image_url, `สลิปการจอง ${selectedBooking.booking_code || selectedBooking.id}`)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--primary-color)', textDecoration: 'underline' }}
+                  >
                     คลิกดูสลิปขนาดเต็ม (Full Size)
-                  </a>
+                  </button>
                 </div>
               </div>
             )}
@@ -5891,17 +5905,17 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           >
                             <ZoomIn size={13} />
                           </button>
-                          <a
-                            href={viewingSlipBooking.slip_image_url}
-                            target="_blank"
-                            rel="noreferrer"
+                          <button
+                            type="button"
+                            onClick={() => openAuthenticatedImageInNewTab(viewingSlipBooking.slip_image_url, `สลิปการจอง ${viewingSlipBooking.booking_code || viewingSlipBooking.id}`)}
                             className="pb-slip-fullres-link"
                             aria-label="เปิดภาพขนาดเต็มในแท็บใหม่"
                             title="เปิดภาพขนาดเต็มในแท็บใหม่"
+                            style={{ background: 'none', border: 'none', cursor: 'pointer' }}
                           >
                             <ExternalLink size={12} />
                             <span>Full Res</span>
-                          </a>
+                          </button>
                         </div>
                       )}
                     </div>
@@ -5917,7 +5931,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       {hasSlipImg ? (
                         <div className="pb-slip-img-container">
                           <div className="pb-slip-img-frame">
-                            <img
+                            <AuthenticatedSlipImage
                               src={viewingSlipBooking.slip_image_url}
                               alt="สลิปการชำระเงิน"
                               className="pb-slip-img"
