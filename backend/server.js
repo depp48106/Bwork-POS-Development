@@ -1702,6 +1702,28 @@ app.post('/api/bookings', async (req, res) => {
             getBangkokLocalISO(new Date())
           ]
         );
+
+        const orderStaff = req.user?.username || req.user?.fullname || 'staff';
+        const isDep = fin.transaction_type === 'deposit';
+        const orderAudit = {
+          action: isDep ? 'create_deposit' : 'create_booking',
+          booking_id: bookingId,
+          amount: fin.transaction_amount,
+          payment_method: customer_type === 'builtland' ? '' : (payment_method || 'cash'),
+          slip_url: slipUrl,
+          performed_by: orderStaff,
+          timestamp: getBangkokLocalISO(new Date()),
+          description: isDep
+            ? `บันทึกการจองและรับเงินมัดจำ ฿${Number(fin.transaction_amount || 0).toLocaleString()} (${payment_method || 'cash'}) โดย ${orderStaff}`
+            : `บันทึกการจองและรับชำระ ฿${Number(fin.transaction_amount || 0).toLocaleString()} โดย ${orderStaff}`
+        };
+        try {
+          await dbQuery.run(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            [bookingId, orderAudit.action, JSON.stringify(orderAudit), orderStaff, orderAudit.timestamp]
+          );
+        } catch (_) {}
       }
 
       // Insert booking items with normalized timestamps & guest_count
@@ -3124,10 +3146,49 @@ app.get('/api/bookings/:id/payments', authenticateToken, async (req, res) => {
       `SELECT * FROM payment_transactions WHERE booking_id = ? ORDER BY created_at ASC, id ASC`,
       [bookingId]
     );
+
+    // Enrich payments with staff_name from booking_history audit logs
+    let historyRows = [];
+    try {
+      historyRows = await dbQuery.all(
+        `SELECT action, details, performed_by, created_at FROM booking_history WHERE booking_id = ? ORDER BY id ASC`,
+        [bookingId]
+      );
+    } catch (_) {}
+
+    const enrichedPayments = (payments || []).map((tx) => {
+      let matchedStaff = null;
+      for (const h of historyRows) {
+        let detailsObj = null;
+        try { detailsObj = JSON.parse(h.details); } catch (_) {}
+
+        // Match by explicit transaction ID
+        if (detailsObj && detailsObj.payment_transaction_id && Number(detailsObj.payment_transaction_id) === Number(tx.id)) {
+          matchedStaff = detailsObj.uploaded_by || detailsObj.performed_by || h.performed_by;
+          break;
+        }
+
+        // Match balance transaction to pay_balance audit
+        if (tx.transaction_type === 'balance' && (h.action === 'pay_balance' || detailsObj?.action === 'pay_balance')) {
+          matchedStaff = detailsObj?.performed_by || h.performed_by;
+        }
+
+        // Match deposit transaction to create_deposit audit
+        if (tx.transaction_type === 'deposit' && (h.action === 'create_deposit' || detailsObj?.action === 'create_deposit')) {
+          matchedStaff = detailsObj?.performed_by || h.performed_by;
+        }
+      }
+
+      return {
+        ...tx,
+        staff_name: matchedStaff || null
+      };
+    });
+
     res.json({
       success: true,
       booking_id: Number(bookingId),
-      payments: payments || []
+      payments: enrichedPayments
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3224,11 +3285,28 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
         throw raceErr;
       }
 
+      const staffName = req.user?.username || req.user?.fullname || req.user?.name || req.user?.role || 'staff';
       await dbQuery.run(
         `INSERT INTO payment_transactions
          (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
          VALUES (?, ?, ?, ?, 'balance', 'completed', ?)`,
         [booking.id, payAmount, method, slipUrl, nowIso]
+      );
+
+      const historyPayload = {
+        action: 'pay_balance',
+        booking_id: booking.id,
+        amount: payAmount,
+        payment_method: method,
+        slip_url: slipUrl,
+        performed_by: staffName,
+        timestamp: nowIso,
+        description: `รับชำระส่วนที่เหลือ ฿${Number(payAmount).toLocaleString()} (${method})${slipUrl ? ' พร้อมแนบสลิป' : ''}`
+      };
+      await dbQuery.run(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, 'pay_balance', ?, ?, ?)`,
+        [booking.id, JSON.stringify(historyPayload), staffName, nowIso]
       );
     });
 
@@ -3335,7 +3413,9 @@ app.post(['/api/bookings/:id/payments/:paymentId/slip', '/api/bookings/:id/attac
       await dbQuery.transaction(async () => {
         if (transaction) {
           await dbQuery.run('UPDATE payment_transactions SET slip_url = ? WHERE id = ? AND booking_id = ?', [slipUrl, transaction.id, bookingId]);
-          await dbQuery.run('UPDATE bookings SET slip_image_url = ? WHERE id = ?', [slipUrl, bookingId]);
+          if (!booking.slip_image_url || booking.slip_image_url === 'uploaded' || transaction.transaction_type === 'deposit') {
+            await dbQuery.run('UPDATE bookings SET slip_image_url = ? WHERE id = ?', [slipUrl, bookingId]);
+          }
         } else {
           // Legacy booking without transaction: only update bookings.slip_image_url
           await dbQuery.run('UPDATE bookings SET slip_image_url = ? WHERE id = ?', [slipUrl, bookingId]);
