@@ -3,7 +3,8 @@
  * Secure fetching of private uploads (payment slips, tax invoices) with JWT Authorization headers.
  * Resolves relative and Pages URLs with API_BASE, preventing HTML SPA fallback and 401 Unauthorized errors.
  * Converts server responses into revocable Object URLs (Blob URLs) without exposing tokens in query strings.
- * Enforces strict Origin Allowlist to prevent JWT Token Leakage and Open Redirect vulnerabilities.
+ * Enforces strict Origin & Protocol Allowlist to prevent JWT Token Leakage, Protocol-Relative URL bypasses,
+ * Insecure HTTP Token transmission, and Open Redirect vulnerabilities.
  */
 
 import { API_BASE } from '../apiConfig';
@@ -17,51 +18,84 @@ export function getAuthToken() {
 }
 
 /**
+ * Strict exact list of trusted hostnames for Authorization header transmission.
+ * Explicitly avoids wildcard (*.) and broad suffix matching (.workers.dev) to prevent cross-tenant token leakage.
+ */
+export const TRUSTED_AUTH_HOSTS = new Set([
+  'bwork-pos-api.ohnatza74185-ky.workers.dev',
+  'bwork-pos-api-staging.ohnatza74185-ky.workers.dev',
+  'bwork-pos.pages.dev',
+  'bwork-booking.pages.dev',
+  'localhost',
+  '127.0.0.1'
+]);
+
+/**
  * Checks if a target URL belongs to a trusted BWORK-POS origin.
- * Prevents Bearer JWT token leakage to arbitrary external domains.
+ * Prevents Bearer JWT token leakage to arbitrary external domains,
+ * protocol-relative URLs (//attacker.com), insecure HTTP schemes, and untrusted hosts.
  *
  * @param {string} url - Target URL
- * @returns {boolean} - True if origin is trusted for Authorization headers
+ * @returns {boolean} - True only if origin and protocol are strictly trusted for Authorization headers
  */
 export function isTrustedAuthOrigin(url) {
   if (!url || typeof url !== 'string') return false;
-  if (url.startsWith('data:') || url.startsWith('blob:')) return false;
 
-  // Relative URLs (starts with / or has no protocol) are same-origin
-  if (url.startsWith('/') || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+  const trimmed = url.trim();
+
+  // Reject data: and blob: URLs (they do not use HTTP Authorization headers)
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return false;
+
+  // Strict defense against protocol-relative URLs and malformed paths
+  if (trimmed.startsWith('//') || trimmed.startsWith('/\\') || trimmed.startsWith('\\')) {
+    return false;
+  }
+
+  // Pure relative paths (starting with / followed by valid path character) are same-origin
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
     return true;
   }
 
+  // Reject pseudo-protocols and dangerous schemes
+  if (trimmed.toLowerCase().startsWith('javascript:')) {
+    return false;
+  }
+
   try {
-    const parsed = new URL(url);
+    const parsed = new URL(trimmed);
     const host = parsed.hostname.toLowerCase();
+    const protocol = parsed.protocol.toLowerCase();
 
-    // 1. Same-origin as current window
-    if (typeof window !== 'undefined' && window.location.hostname.toLowerCase() === host) {
-      return true;
+    // Protocol check: Only https: allowed for remote; http: ONLY allowed for localhost/127.0.0.1
+    const isLocal = host === 'localhost' || host === '127.0.0.1';
+    if (isLocal) {
+      return protocol === 'http:' || protocol === 'https:';
     }
 
-    // 2. Localhost development environments
-    if (host === 'localhost' || host === '127.0.0.1') {
-      return true;
+    // Remote hosts MUST strictly use https: (prevents plaintext JWT leakage over HTTP)
+    if (protocol !== 'https:') {
+      return false;
     }
 
-    // 3. API_BASE origin
+    // 1. Same-origin as current window (if running in browser)
+    if (typeof window !== 'undefined' && window.location && window.location.hostname) {
+      if (window.location.hostname.toLowerCase() === host) {
+        return window.location.protocol === 'https:' || window.location.hostname === 'localhost';
+      }
+    }
+
+    // 2. API_BASE host check (if configured)
     if (API_BASE) {
       try {
-        const apiBaseHost = new URL(API_BASE).hostname.toLowerCase();
-        if (host === apiBaseHost) return true;
+        const apiParsed = new URL(API_BASE);
+        if (apiParsed.hostname.toLowerCase() === host && apiParsed.protocol.toLowerCase() === 'https:') {
+          return true;
+        }
       } catch (_) {}
     }
 
-    // 4. Official Cloudflare Worker & Pages hosts
-    if (
-      host === 'bwork-pos-api.ohnatza74185-ky.workers.dev' ||
-      host === 'bwork-pos-api-staging.ohnatza74185-ky.workers.dev' ||
-      host === 'bwork-pos.pages.dev' ||
-      host === 'bwork-booking.pages.dev' ||
-      host.endsWith('.ohnatza74185-ky.workers.dev')
-    ) {
+    // 3. Exact allowlist match (NO wildcards, NO suffix matching)
+    if (TRUSTED_AUTH_HOSTS.has(host)) {
       return true;
     }
   } catch (_) {
@@ -74,6 +108,7 @@ export function isTrustedAuthOrigin(url) {
 /**
  * Resolves relative and environment-specific file URLs against API_BASE.
  * Handles data: and blob: URLs, relative paths (/uploads/...), and Cloudflare Pages origins.
+ * Upgrades insecure HTTP to HTTPS for trusted remote hosts to prevent plaintext leakage.
  *
  * @param {string} url - Target file path or URL
  * @returns {string} - Fully qualified or correctly formatted URL for fetching
@@ -90,16 +125,37 @@ export function resolveFileUrl(url) {
 
   let targetPath = url.trim();
 
-  // Guard against javascript: and dangerous schemes
-  if (targetPath.toLowerCase().startsWith('javascript:')) {
+  // Guard against dangerous schemes, protocol-relative URLs, and path trickery
+  if (
+    targetPath.toLowerCase().startsWith('javascript:') ||
+    targetPath.startsWith('//') ||
+    targetPath.startsWith('/\\') ||
+    targetPath.startsWith('\\')
+  ) {
     return '';
   }
 
-  // If already an absolute HTTP(S) URL, check if pointing to Pages domain
+  // If already an absolute HTTP(S) URL, check if pointing to Pages domain or unencrypted HTTP
   if (targetPath.startsWith('http://') || targetPath.startsWith('https://')) {
     try {
       const parsed = new URL(targetPath);
-      if (parsed.hostname.includes('pages.dev')) {
+      const host = parsed.hostname.toLowerCase();
+
+      // Upgrade insecure HTTP to HTTPS for trusted remote hosts to prevent plaintext token transmission
+      if (parsed.protocol === 'http:' && host !== 'localhost' && host !== '127.0.0.1') {
+        let isConfiguredApiBase = false;
+        if (API_BASE) {
+          try {
+            isConfiguredApiBase = new URL(API_BASE).hostname.toLowerCase() === host;
+          } catch (_) {}
+        }
+        if (TRUSTED_AUTH_HOSTS.has(host) || isConfiguredApiBase) {
+          parsed.protocol = 'https:';
+          targetPath = parsed.toString();
+        }
+      }
+
+      if (host.includes('pages.dev')) {
         // Strip Pages origin so it routes to Worker API via API_BASE
         targetPath = parsed.pathname + parsed.search;
       } else {
@@ -137,7 +193,8 @@ export function resolveFileUrl(url) {
 /**
  * Fetches an authenticated file and creates an Object URL.
  * Automatically handles data: and blob: URLs without extra network requests.
- * Only sends Bearer JWT token to verified trusted origins.
+ * Only sends Bearer JWT token to verified trusted origins and protocols.
+ * Detects and blocks HTTP redirects to untrusted external domains.
  *
  * @param {string} url - Target URL or data/blob URL
  * @param {AbortSignal} [signal] - Optional AbortSignal
@@ -164,7 +221,7 @@ export async function fetchAuthenticatedBlob(url, signal) {
   }
 
   const headers = {};
-  // Security Gate: Only attach Bearer JWT if target is an allowed trusted origin
+  // Security Gate: Only attach Bearer JWT if target is an allowed trusted origin and protocol
   if (isTrustedAuthOrigin(resolvedUrl)) {
     const token = getAuthToken();
     if (token) {
@@ -182,6 +239,15 @@ export async function fetchAuthenticatedBlob(url, signal) {
     const err = new Error(errMsg);
     err.status = response.status;
     throw err;
+  }
+
+  // HTTP Redirect Protection: If redirected, verify destination origin is strictly trusted
+  if (response.redirected && response.url) {
+    if (!isTrustedAuthOrigin(response.url)) {
+      const err = new Error('การส่งต่อ (HTTP Redirect) ไปยังโดเมนภายนอกที่ไม่ได้รับอนุญาตถูกบล็อกเพื่อความปลอดภัย');
+      err.status = 403;
+      throw err;
+    }
   }
 
   // Sanity check Content-Type: Reject HTML responses (SPA fallback / routing error)
