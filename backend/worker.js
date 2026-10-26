@@ -2815,13 +2815,20 @@ export default {
               ).bind(associatedBookingId).first();
             } else {
               const fullUrl = `/uploads/${filePath}`;
+              const cleanP = filePath.replace(/^uploads\//, '');
+              const exactCandidates = [fullUrl, filePath, cleanP, `/uploads/${cleanP}`];
+              // Exact matching only - NO wildcard LIKE % search to strictly prevent cross-booking IDOR
               bookingRow = await env.DB.prepare(
                 `SELECT id, qr_token, contact, line_user_id FROM bookings
-                 WHERE slip_image_url = ?
-                    OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url = ?)
-                    OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url = ?)
+                 WHERE slip_image_url IN (?, ?, ?, ?)
+                    OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url IN (?, ?, ?, ?))
+                    OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url IN (?, ?, ?, ?))
                  LIMIT 1`
-              ).bind(fullUrl, fullUrl, fullUrl).first();
+              ).bind(
+                exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
+                exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
+                exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3]
+              ).first();
             }
 
             if (!bookingRow) {
@@ -2867,7 +2874,12 @@ export default {
           return new Response(JSON.stringify({ error: 'Storage service unavailable' }), { status: 503, headers: corsHeaders });
         }
 
-        const object = await env.BUCKET.get(filePath);
+        let object = await env.BUCKET.get(filePath);
+        if (!object && !filePath.startsWith('uploads/')) {
+          object = await env.BUCKET.get(`uploads/${filePath}`);
+        } else if (!object && filePath.startsWith('uploads/')) {
+          object = await env.BUCKET.get(filePath.replace(/^uploads\//, ''));
+        }
         if (!object) {
           return new Response(JSON.stringify({ error: 'File Not Found' }), { status: 404, headers: corsHeaders });
         }

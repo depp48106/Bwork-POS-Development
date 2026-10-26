@@ -198,13 +198,20 @@ app.use('/uploads', async (req, res, next) => {
         bookingRow = await dbQuery.get('SELECT id, qr_token, contact, line_user_id FROM bookings WHERE id = ?', [associatedBookingId]);
       } else {
         const fullUrl = `/uploads/${cleanPath}`;
+        const cleanP = cleanPath.replace(/^uploads\//, '');
+        const exactCandidates = [fullUrl, cleanPath, cleanP, `/uploads/${cleanP}`];
+        // Exact matching only - NO wildcard LIKE % search to strictly prevent cross-booking IDOR
         bookingRow = await dbQuery.get(
           `SELECT id, qr_token, contact, line_user_id FROM bookings
-           WHERE slip_image_url = ?
-              OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url = ?)
-              OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url = ?)
+           WHERE slip_image_url IN (?, ?, ?, ?)
+              OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url IN (?, ?, ?, ?))
+              OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url IN (?, ?, ?, ?))
            LIMIT 1`,
-          [fullUrl, fullUrl, fullUrl]
+          [
+            exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
+            exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
+            exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3]
+          ]
         );
       }
     } catch (_) {}
