@@ -5395,6 +5395,25 @@ export default {
               fin.transaction_type,
               nowIso
             ).run();
+
+            const orderStaff = auth?.user?.username || auth?.user?.name || auth?.user?.role || 'staff';
+            const isDep = fin.transaction_type === 'deposit';
+            const orderAudit = {
+              action: isDep ? 'create_deposit' : 'create_booking',
+              booking_id: bookingId,
+              amount: fin.transaction_amount,
+              payment_method: customer_type === 'builtland' ? '' : (payment_method || 'cash'),
+              slip_url: slipUrl,
+              performed_by: orderStaff,
+              timestamp: nowIso,
+              description: isDep
+                ? `บันทึกการจองและรับเงินมัดจำ ฿${Number(fin.transaction_amount || 0).toLocaleString()} (${payment_method || 'cash'}) โดย ${orderStaff}`
+                : `บันทึกการจองและรับชำระ ฿${Number(fin.transaction_amount || 0).toLocaleString()} โดย ${orderStaff}`
+            };
+            await env.DB.prepare(
+              `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+               VALUES (?, ?, ?, ?, ?)`
+            ).bind(bookingId, orderAudit.action, JSON.stringify(orderAudit), orderStaff, nowIso).run();
           } catch (txErr) {
             console.error('Error inserting initial payment transaction in worker:', txErr);
           }
@@ -6128,10 +6147,45 @@ export default {
           'SELECT * FROM payment_transactions WHERE booking_id = ? ORDER BY created_at ASC, id ASC'
         ).bind(bookingId).all();
 
+        // Enrich payments with staff_name from booking_history audit logs
+        let historyRows = [];
+        try {
+          const { results: hRows } = await env.DB.prepare(
+            'SELECT action, details, performed_by, created_at FROM booking_history WHERE booking_id = ? ORDER BY id ASC'
+          ).bind(bookingId).all();
+          historyRows = hRows || [];
+        } catch (_) {}
+
+        const enrichedPayments = (payments || []).map((tx) => {
+          let matchedStaff = null;
+          for (const h of historyRows) {
+            let detailsObj = null;
+            try { detailsObj = JSON.parse(h.details); } catch (_) {}
+
+            if (detailsObj && detailsObj.payment_transaction_id && Number(detailsObj.payment_transaction_id) === Number(tx.id)) {
+              matchedStaff = detailsObj.uploaded_by || detailsObj.performed_by || h.performed_by;
+              break;
+            }
+
+            if (tx.transaction_type === 'balance' && (h.action === 'pay_balance' || detailsObj?.action === 'pay_balance')) {
+              matchedStaff = detailsObj?.performed_by || h.performed_by;
+            }
+
+            if (tx.transaction_type === 'deposit' && (h.action === 'create_deposit' || detailsObj?.action === 'create_deposit')) {
+              matchedStaff = detailsObj?.performed_by || h.performed_by;
+            }
+          }
+
+          return {
+            ...tx,
+            staff_name: matchedStaff || null
+          };
+        });
+
         return new Response(JSON.stringify({
           success: true,
           booking_id: Number(bookingId),
-          payments: payments || []
+          payments: enrichedPayments
         }), { headers: corsHeaders });
       }
 
@@ -6192,6 +6246,8 @@ export default {
           receiptNumber = await generateReceiptNumber(env);
         }
 
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+
         let slipUrl = null;
         if (slip_image) {
           if (typeof slip_image !== 'string' || !slip_image.startsWith('data:image/')) {
@@ -6204,7 +6260,6 @@ export default {
             return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
           }
           try {
-            const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
             slipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId, paymentId: 'balance', uploadedBy: staffName });
             if (!slipUrl || slipUrl.startsWith('data:')) {
               return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้ การชำระเงินไม่ถูกบันทึก' }), { status: 500, headers: corsHeaders });
@@ -6213,6 +6268,8 @@ export default {
             console.error('[Pay-Balance] R2 upload error in worker:', r2Err);
             return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
           }
+        } else if (body.slip_url) {
+          slipUrl = String(body.slip_url).trim();
         }
 
         // Concurrency-safe atomic update guard
@@ -6237,6 +6294,25 @@ export default {
            (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
            VALUES (?, ?, ?, ?, 'balance', 'completed', ?)`
         ).bind(booking.id, payAmount, method, slipUrl, nowIso).run();
+
+        try {
+          const historyPayload = {
+            action: 'pay_balance',
+            booking_id: booking.id,
+            amount: payAmount,
+            payment_method: method,
+            slip_url: slipUrl,
+            performed_by: staffName,
+            timestamp: nowIso,
+            description: `รับชำระส่วนที่เหลือ ฿${Number(payAmount).toLocaleString()} (${method})${slipUrl ? ' พร้อมแนบสลิป' : ''}`
+          };
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'pay_balance', ?, ?, ?)`
+          ).bind(booking.id, JSON.stringify(historyPayload), staffName, nowIso).run();
+        } catch (hErr) {
+          console.warn('[Pay-Balance] Error logging booking_history in worker:', hErr);
+        }
 
         const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         return new Response(JSON.stringify({
@@ -6338,7 +6414,9 @@ export default {
           const statements = [];
           if (transaction) {
             statements.push(env.DB.prepare('UPDATE payment_transactions SET slip_url = ? WHERE id = ? AND booking_id = ?').bind(slipUrl, transaction.id, bookingId));
-            statements.push(env.DB.prepare('UPDATE bookings SET slip_image_url = ? WHERE id = ?').bind(slipUrl, bookingId));
+            if (!booking.slip_image_url || booking.slip_image_url === 'uploaded' || transaction.transaction_type === 'deposit') {
+              statements.push(env.DB.prepare('UPDATE bookings SET slip_image_url = ? WHERE id = ?').bind(slipUrl, bookingId));
+            }
           } else {
             // Legacy booking without transaction: only update bookings.slip_image_url
             statements.push(env.DB.prepare('UPDATE bookings SET slip_image_url = ? WHERE id = ?').bind(slipUrl, bookingId));

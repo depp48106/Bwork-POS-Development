@@ -2451,6 +2451,66 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   );
                 })()}
 
+                {/* Handover & Status Summary Banner */}
+                {(() => {
+                  const fin = normalizeBookingFinancials(selectedBooking);
+                  if (!fin || fin.is_internal_free) return null;
+                  const depTx = paymentTransactions?.find(t => t.transaction_type === 'deposit');
+                  const balTx = paymentTransactions?.find(t => t.transaction_type === 'balance');
+                  const isDepositRemaining = fin.is_deposit && fin.balance_amount > 0;
+                  const isFullyPaidMulti = fin.is_paid && paymentTransactions && paymentTransactions.length > 1;
+
+                  if (isDepositRemaining) {
+                    return (
+                      <div
+                        id="history-handover-banner-deposit"
+                        style={{
+                          marginTop: '8px',
+                          padding: '10px 12px',
+                          borderRadius: '10px',
+                          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                          border: '1px solid rgba(245, 158, 11, 0.3)',
+                          fontSize: '0.78rem',
+                          color: '#b45309',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}
+                      >
+                        <AlertCircle size={15} style={{ flexShrink: 0, color: '#f59e0b' }} />
+                        <div>
+                          <strong>สถานะส่งต่องาน:</strong> รับมัดจำแล้ว ฿{formatMoney(fin.paid_amount)} {depTx?.staff_name ? `โดย ${depTx.staff_name}` : ''} — <strong>รอชำระส่วนที่เหลือ ฿{formatMoney(fin.balance_amount)}</strong>
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (isFullyPaidMulti) {
+                    return (
+                      <div
+                        id="history-handover-banner-completed"
+                        style={{
+                          marginTop: '8px',
+                          padding: '10px 12px',
+                          borderRadius: '10px',
+                          backgroundColor: 'rgba(22, 163, 74, 0.08)',
+                          border: '1px solid rgba(22, 163, 74, 0.3)',
+                          fontSize: '0.78rem',
+                          color: '#15803d',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}
+                      >
+                        <ShieldCheck size={15} style={{ flexShrink: 0, color: '#16a34a' }} />
+                        <div>
+                          <strong>สถานะการชำระ:</strong> ชำระครบถ้วนแล้ว ฿{formatMoney(fin.total_amount)} (มีหลักฐาน {paymentTransactions.length} รายการ) {balTx?.staff_name ? `โดย ${balTx.staff_name}` : ''}
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+
                 {/* Payment Transactions & Historical Evidence (P3) */}
                 <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2485,8 +2545,14 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                                 {getPaymentMethodLabel ? getPaymentMethodLabel(tx.payment_method) : tx.payment_method}
                               </span>
                             </div>
-                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                              {formatTransactionDateTime(tx.payment_time || tx.created_at)}
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                              <span>{formatTransactionDateTime(tx.payment_time || tx.created_at)}</span>
+                              {tx.staff_name && (
+                                <>
+                                  <span>•</span>
+                                  <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>ผู้บันทึก: {tx.staff_name}</span>
+                                </>
+                              )}
                             </div>
                           </div>
                           <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '3px' }}>
@@ -2937,7 +3003,13 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
             const bId = attachSlipModalData.booking?.id;
             if (bId) {
               fetchPaymentTransactions(bId);
-              setSelectedBooking(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              setSelectedBooking(prev => {
+                if (!prev) return prev;
+                if (!prev.slip_image_url || !attachSlipModalData.transaction || attachSlipModalData.transaction.transaction_type === 'deposit') {
+                  return { ...prev, slip_image_url: resData.slip_url };
+                }
+                return prev;
+              });
               fetchHistoryBookings(true);
             }
           }}

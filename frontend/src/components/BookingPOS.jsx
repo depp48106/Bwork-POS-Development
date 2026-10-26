@@ -10,7 +10,7 @@ import {
   User, Users, Building, Building2, Phone, FileText, Check, ChevronLeft, ChevronRight,
   Clock, Search, ChevronUp, ChevronDown, Image, CheckCircle2, Key, Send,
   AlertTriangle, LayoutGrid, Columns, Sparkles, Layers, Presentation, Laptop, Coffee, Car, BookmarkPlus, Zap,
-  Banknote, Smartphone, ExternalLink, Eye, EyeOff, Copy, RefreshCw
+  Banknote, Smartphone, ExternalLink, Eye, EyeOff, Copy, RefreshCw, AlertCircle, DollarSign, ShieldCheck
 } from 'lucide-react';
 import ReceiptPrint from './ReceiptPrint';
 import { printReceipt } from '../utils/printReceiptHelper';
@@ -18,7 +18,7 @@ import CustomDatePicker from './CustomDatePicker';
 import CustomSelect from './CustomSelect';
 import { roomUsesDoorPin } from '../utils/doorPinHelper';
 import { resolveRoomPin, resolveRoomPinInfo, isInternalBooking, getRoomPinLabel, NO_PIN_ROOM_IDS } from '../utils/doorPinHelper';
-import { calculatePaymentPreview, formatMoney, roundMoney } from '../utils/financialUtils';
+import { calculatePaymentPreview, formatMoney, roundMoney, normalizeBookingFinancials } from '../utils/financialUtils';
 
 const TIMELINE_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 const TIMELINE_START = 8;
@@ -280,6 +280,123 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       setPosPaymentTransactions([]);
     } finally {
       setPosLoadingPayments(false);
+    }
+  };
+
+  // Simplified Balance Payment Modal state for POS (Phase 4)
+  const [showBalancePayModal, setShowBalancePayModal] = useState(false);
+  const [balancePayBooking, setBalancePayBooking] = useState(null);
+  const [balancePayAmount, setBalancePayAmount] = useState('');
+  const [balancePayMethod, setBalancePayMethod] = useState('transfer');
+  const [balancePaySlipBase64, setBalancePaySlipBase64] = useState(null);
+  const [balancePaySlipName, setBalancePaySlipName] = useState('');
+  const [balancePayError, setBalancePayError] = useState(null);
+  const [isSubmittingBalancePay, setIsSubmittingBalancePay] = useState(false);
+
+  const handleOpenBalancePayModal = (booking) => {
+    if (!booking) return;
+    const fin = normalizeBookingFinancials(booking);
+    setBalancePayBooking(booking);
+    setBalancePayAmount(String(fin?.balance_amount || 0));
+    setBalancePayMethod('transfer');
+    setBalancePaySlipBase64(null);
+    setBalancePaySlipName('');
+    setBalancePayError(null);
+    setShowBalancePayModal(true);
+  };
+
+  const handleSubmitBalancePay = async () => {
+    if (!balancePayBooking || isSubmittingBalancePay) return;
+    const bId = balancePayBooking.booking_id || balancePayBooking.id;
+    const fin = normalizeBookingFinancials(balancePayBooking);
+    const amountNum = roundMoney(Number(balancePayAmount));
+
+    if (isNaN(amountNum) || amountNum <= 0) {
+      setBalancePayError('กรุณาระบุจำนวนเงินที่ต้องการชำระ (ต้องมากกว่า 0 บาท)');
+      return;
+    }
+    if (fin && amountNum > fin.balance_amount) {
+      setBalancePayError(`ยอดเงินที่ระบุ (฿${formatMoney(amountNum)}) เกินกว่ายอดคงเหลือ (฿${formatMoney(fin.balance_amount)})`);
+      return;
+    }
+    if (!balancePayMethod) {
+      setBalancePayError('กรุณาเลือกช่องทางการชำระเงิน');
+      return;
+    }
+
+    setIsSubmittingBalancePay(true);
+    setBalancePayError(null);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const payload = {
+        amount: amountNum,
+        payment_method: balancePayMethod
+      };
+      if (balancePaySlipBase64 && (balancePayMethod === 'transfer' || balancePayMethod === 'promptpay')) {
+        payload.slip_image = balancePaySlipBase64;
+      }
+
+      const res = await fetch(`/api/bookings/${bId}/pay-balance`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+      const data = await res.json();
+
+      if (res.status === 409) {
+        setBalancePayError(data.error || 'ยอดคงเหลือถูกเปลี่ยนแปลงไปแล้ว กรุณาตรวจสอบข้อมูลล่าสุด');
+        fetchPosPaymentTransactions(bId);
+        fetchCalendarEvents();
+        return;
+      }
+
+      if (res.ok && data.success) {
+        setShowBalancePayModal(false);
+        setBalancePayBooking(null);
+        setBalancePaySlipBase64(null);
+        setBalancePaySlipName('');
+
+        // Refresh transactions and viewed booking in drawer
+        fetchPosPaymentTransactions(bId);
+        setViewedEvent(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            paid_amount: data.paid_amount,
+            balance_amount: data.balance_amount,
+            payment_status: data.payment_status,
+            payment_method: data.payment_method,
+            receipt_number: data.booking?.receipt_number || data.receipt_number || prev.receipt_number
+          };
+        });
+        fetchCalendarEvents();
+
+        if (typeof sysAlert === 'function') {
+          await sysAlert(data.message || 'บันทึกการรับชำระส่วนที่เหลือสำเร็จแล้ว');
+        }
+      } else {
+        setBalancePayError(data.error || 'เกิดข้อผิดพลาดในการบันทึกการชำระเงิน');
+      }
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        setBalancePayError('การเชื่อมต่อใช้เวลานานเกินไป กรุณาตรวจสอบประวัติธุรกรรมก่อนลองใหม่อีกครั้ง');
+      } else {
+        console.error('Balance payment error in POS:', err);
+        setBalancePayError('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์ กรุณาลองใหม่อีกครั้ง');
+      }
+    } finally {
+      setIsSubmittingBalancePay(false);
     }
   };
 
@@ -5268,23 +5385,143 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   {viewedEvent.guest_count || viewedEvent.item_guest_count ? `${viewedEvent.guest_count || viewedEvent.item_guest_count} ท่าน` : 'ไม่ระบุ'}
                 </span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>ยอดเงิน:</span>
-                <span style={{ fontWeight: 800, color: 'var(--text-main)', fontSize: '0.95rem' }}>
-                  ฿{Number(viewedEvent.subtotal || viewedEvent.price || viewedEvent.total_price || 0).toLocaleString()}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>สถานะชำระ:</span>
-                {(() => {
-                  const sInfo = getUnifiedPaymentStatus(viewedEvent);
-                  return (
-                    <span style={{ color: sInfo.color, fontWeight: 700, backgroundColor: sInfo.bgLight, padding: '2px 8px', borderRadius: '6px', border: `1px solid ${sInfo.border}`, fontSize: '0.76rem' }}>
-                      {sInfo.label}
-                    </span>
-                  );
-                })()}
-              </div>
+              {/* Financial Summary, Handover & One-Click Pay Balance (Phase 3 & 4 & 6) */}
+              {(() => {
+                const fin = normalizeBookingFinancials(viewedEvent);
+                const isInternal = isInternalBooking(viewedEvent);
+                const sInfo = getUnifiedPaymentStatus(viewedEvent);
+                const depTx = posPaymentTransactions?.find(t => (t.transaction_type || t.payment_type) === 'deposit');
+                const balTx = posPaymentTransactions?.find(t => (t.transaction_type || t.payment_type) === 'balance');
+                const isDepositRemaining = fin && fin.is_deposit && fin.balance_amount > 0;
+                const isFullyPaidMulti = fin && fin.is_paid && posPaymentTransactions && posPaymentTransactions.length > 1;
+
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {/* Handover & Status Summary Banner */}
+                    {isDepositRemaining && (
+                      <div
+                        id="pos-handover-banner-deposit"
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: '10px',
+                          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                          border: '1px solid rgba(245, 158, 11, 0.3)',
+                          fontSize: '0.76rem',
+                          color: '#b45309',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}
+                      >
+                        <AlertCircle size={16} style={{ flexShrink: 0, color: '#f59e0b' }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <strong>สถานะส่งต่องาน:</strong> รับมัดจำแล้ว ฿{formatMoney(fin.paid_amount)} {depTx?.staff_name ? `โดย ${depTx.staff_name}` : ''} — <strong style={{ color: '#ea580c' }}>รอชำระส่วนที่เหลือ ฿{formatMoney(fin.balance_amount)}</strong>
+                        </div>
+                      </div>
+                    )}
+
+                    {isFullyPaidMulti && (
+                      <div
+                        id="pos-handover-banner-completed"
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: '10px',
+                          backgroundColor: 'rgba(22, 163, 74, 0.08)',
+                          border: '1px solid rgba(22, 163, 74, 0.3)',
+                          fontSize: '0.76rem',
+                          color: '#15803d',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}
+                      >
+                        <ShieldCheck size={16} style={{ flexShrink: 0, color: '#16a34a' }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <strong>สถานะการชำระ:</strong> ชำระครบถ้วนแล้ว ฿{formatMoney(fin.total_amount)} (มีหลักฐาน {posPaymentTransactions.length} รายการ) {balTx?.staff_name ? `โดย ${balTx.staff_name}` : ''}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 3-Column Financial Grid */}
+                    {!isInternal && fin ? (
+                      <div
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: '10px',
+                          backgroundColor: 'var(--bg-card, #ffffff)',
+                          border: '1px solid var(--border-color, #e2e8f0)',
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(3, 1fr)',
+                          gap: '8px',
+                          textAlign: 'center'
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดจองทั้งหมด</div>
+                          <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
+                            ฿{formatMoney(fin.total_amount)}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600 }}>{fin.is_deposit ? 'รับมัดจำแล้ว' : 'ชำระแล้ว'}</div>
+                          <div style={{ fontSize: '0.9rem', fontWeight: 800, color: '#16a34a', marginTop: '2px' }}>
+                            ฿{formatMoney(fin.paid_amount)}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดคงเหลือ</div>
+                          <div style={{ fontSize: '0.9rem', fontWeight: 800, color: fin.balance_amount > 0 ? '#ea580c' : 'var(--text-muted)', marginTop: '2px' }}>
+                            ฿{formatMoney(fin.balance_amount)}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>ยอดเงิน:</span>
+                        <span style={{ fontWeight: 800, color: 'var(--text-main)', fontSize: '0.95rem' }}>
+                          ฿{Number(viewedEvent.subtotal || viewedEvent.price || viewedEvent.total_price || 0).toLocaleString()}
+                        </span>
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>สถานะชำระ:</span>
+                      <span style={{ color: sInfo.color, fontWeight: 700, backgroundColor: sInfo.bgLight, padding: '2px 8px', borderRadius: '6px', border: `1px solid ${sInfo.border}`, fontSize: '0.76rem' }}>
+                        {sInfo.label}
+                      </span>
+                    </div>
+
+                    {/* One-Click Action: Collect Balance Button */}
+                    {fin && fin.balance_amount > 0 && !isInternal && (
+                      <button
+                        type="button"
+                        id="btn-pos-pay-balance"
+                        onClick={() => handleOpenBalancePayModal(viewedEvent)}
+                        style={{
+                          width: '100%',
+                          height: '40px',
+                          borderRadius: '10px',
+                          backgroundColor: '#16a34a',
+                          border: 'none',
+                          color: '#ffffff',
+                          fontSize: '0.84rem',
+                          fontWeight: 800,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                          cursor: 'pointer',
+                          boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <DollarSign size={16} />
+                        <span>รับชำระส่วนที่เหลือ ฿{formatMoney(fin.balance_amount)}</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
                 {(() => {
                   const vRoom = rooms.find(r => r.id === viewedEvent.room_id);
@@ -5377,7 +5614,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                         <Image size={14} style={{ color: 'var(--primary-color, #2563eb)' }} />
                         <span style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                          หลักฐานการชำระเงิน
+                          ประวัติการชำระเงินและหลักฐานสลิป
                         </span>
                       </div>
                       {posLoadingPayments ? (
@@ -5392,14 +5629,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     {/* Case 1: Booking with Multi-Transactions */}
                     {hasTransactions ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {posPaymentTransactions.map((tx) => {
-                          const txTypeLabel = tx.payment_type === 'deposit'
-                            ? 'เงินมัดจำ'
-                            : tx.payment_type === 'balance'
-                              ? 'ยอดคงเหลือ'
-                              : tx.payment_type === 'full'
+                        {posPaymentTransactions.map((tx, idx) => {
+                          const rawType = tx.transaction_type || tx.payment_type;
+                          const txTypeLabel = rawType === 'deposit'
+                            ? `ครั้งที่ ${idx + 1} — เงินมัดจำ`
+                            : rawType === 'balance'
+                              ? `ครั้งที่ ${idx + 1} — ส่วนที่เหลือ`
+                              : rawType === 'full'
                                 ? 'ชำระเต็มจำนวน'
-                                : (tx.payment_type || 'ชำระเงิน');
+                                : (rawType || 'ชำระเงิน');
                           const txSlip = tx.slip_url || tx.slip_image_url;
                           const hasTxSlip = Boolean(txSlip && txSlip !== 'uploaded');
 
@@ -5458,10 +5696,22 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                       ฿{Number(tx.amount || 0).toLocaleString()}
                                     </span>
                                   </div>
-                                  <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
                                     <span>#{tx.id}</span>
                                     <span>•</span>
                                     <span>{tx.payment_method || '-'}</span>
+                                    {tx.staff_name && (
+                                      <>
+                                        <span>•</span>
+                                        <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>โดย {tx.staff_name}</span>
+                                      </>
+                                    )}
+                                    {tx.created_at && (
+                                      <>
+                                        <span>•</span>
+                                        <span>{new Date(tx.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</span>
+                                      </>
+                                    )}
                                     {hasTxSlip && (
                                       <>
                                         <span>•</span>
@@ -5478,7 +5728,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                     <button
                                       type="button"
                                       id={`btn-view-slip-tx-${tx.id}`}
-                                      onClick={() => openAuthenticatedImageInNewTab(tx.slip_image_url, `สลิปธุรกรรม #${tx.id}`)}
+                                      onClick={() => openAuthenticatedImageInNewTab(txSlip, `สลิปธุรกรรม #${tx.id}`)}
                                       style={{
                                         height: '28px',
                                         padding: '0 8px',
@@ -5554,6 +5804,30 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                             </div>
                           );
                         })}
+
+                        {/* Transaction Timeline Footer Summary */}
+                        {(() => {
+                          const fin = normalizeBookingFinancials(viewedEvent);
+                          if (!fin) return null;
+                          return (
+                            <div
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '6px 10px',
+                                borderRadius: '6px',
+                                backgroundColor: 'rgba(37, 99, 235, 0.04)',
+                                border: '1px dashed var(--border-color)',
+                                fontSize: '0.72rem',
+                                color: 'var(--text-muted)'
+                              }}
+                            >
+                              <span>รวมชำระสะสม: <strong style={{ color: '#16a34a' }}>฿{formatMoney(fin.paid_amount)}</strong></span>
+                              <span>ยอดคงเหลือ: <strong style={{ color: fin.balance_amount > 0 ? '#ea580c' : 'var(--text-main)' }}>฿{formatMoney(fin.balance_amount)}</strong></span>
+                            </div>
+                          );
+                        })()}
                       </div>
                     ) : (
                       /* Case 2: Legacy Booking (No payment transactions) */
@@ -5755,6 +6029,39 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               >
                 ปิดหน้าต่าง
               </button>
+
+              {(() => {
+                const fin = normalizeBookingFinancials(viewedEvent);
+                if (fin && fin.balance_amount > 0 && !isInternalBooking(viewedEvent)) {
+                  return (
+                    <button
+                      type="button"
+                      id="btn-drawer-pay-balance"
+                      style={{
+                        flex: 1.5,
+                        height: '42px',
+                        borderRadius: '12px',
+                        fontWeight: 800,
+                        fontSize: '0.84rem',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        backgroundColor: '#16a34a',
+                        color: '#ffffff',
+                        border: 'none',
+                        cursor: 'pointer',
+                        boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)'
+                      }}
+                      onClick={() => handleOpenBalancePayModal(viewedEvent)}
+                    >
+                      <DollarSign size={16} />
+                      <span>รับชำระส่วนที่เหลือ</span>
+                    </button>
+                  );
+                }
+                return null;
+              })()}
 
               {onNavigate && (
                 <button
@@ -5984,6 +6291,381 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           sysAlert={sysAlert}
         />
       )}
+      {/* Simplified Balance Payment Modal for POS (Phase 4) */}
+      {showBalancePayModal && balancePayBooking && (() => {
+        const b = balancePayBooking;
+        const bId = b.booking_id || b.id;
+        const fin = normalizeBookingFinancials(b);
+        const amountNum = roundMoney(Number(balancePayAmount) || 0);
+        const total = fin ? fin.total_amount : Number(b.total_amount || 0);
+        const paid = fin ? fin.paid_amount : Number(b.paid_amount || 0);
+        const balance = fin ? fin.balance_amount : Math.max(0, total - paid);
+        const remainingAfter = roundMoney(Math.max(0, balance - amountNum));
+        const isOverpaying = amountNum > balance;
+        const isZeroOrNegative = isNaN(amountNum) || amountNum <= 0;
+        const isFormValid = !isZeroOrNegative && !isOverpaying && Boolean(balancePayMethod);
+        const displayCode = b.receipt_number || b.booking_code || `BK-${String(bId).padStart(6, '0')}`;
+
+        return (
+          <div
+            id="modal-pos-pay-balance"
+            className="pb-modal-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pos-collect-balance-title"
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(15, 23, 42, 0.75)',
+              backdropFilter: 'blur(8px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 9999,
+              padding: '20px'
+            }}
+          >
+            <div
+              className="card"
+              style={{
+                width: '100%',
+                maxWidth: '480px',
+                padding: '24px',
+                borderRadius: '20px',
+                backgroundColor: 'var(--bg-card, #ffffff)',
+                border: '1px solid var(--border-color, #e2e8f0)',
+                boxShadow: 'var(--glass-shadow, 0 20px 25px -5px rgba(0, 0, 0, 0.1))',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px',
+                position: 'relative',
+                maxHeight: '90vh',
+                overflowY: 'auto'
+              }}
+            >
+              <button
+                type="button"
+                id="btn-close-balance-pay-modal"
+                style={{
+                  position: 'absolute',
+                  right: '16px',
+                  top: '16px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted, #94a3b8)',
+                  cursor: 'pointer'
+                }}
+                onClick={() => {
+                  if (!isSubmittingBalancePay) {
+                    setShowBalancePayModal(false);
+                    setBalancePayBooking(null);
+                    setBalancePayError(null);
+                  }
+                }}
+                aria-label="ปิดหน้าต่าง"
+              >
+                <X size={20} />
+              </button>
+
+              {/* Title & Reference */}
+              <div>
+                <h3
+                  id="pos-collect-balance-title"
+                  style={{
+                    fontSize: '1.2rem',
+                    fontWeight: 800,
+                    margin: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    color: 'var(--text-main)'
+                  }}
+                >
+                  <DollarSign size={22} style={{ color: '#16a34a' }} />
+                  <span>รับชำระส่วนที่เหลือ</span>
+                </h3>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  ใบจอง: <strong style={{ color: 'var(--text-main)' }}>{displayCode}</strong> | ลูกค้า: <strong>{b.customer_name || '-'}</strong>
+                </div>
+              </div>
+
+              {/* Financial Snapshot Card */}
+              <div
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: '12px',
+                  backgroundColor: 'var(--bg-hover, #f8fafc)',
+                  border: '1px solid var(--border-color, #e2e8f0)',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(3, 1fr)',
+                  gap: '8px',
+                  textAlign: 'center'
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดจองทั้งหมด</div>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
+                    ฿{formatMoney(total)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>รับมัดจำแล้ว</div>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#16a34a', marginTop: '2px' }}>
+                    ฿{formatMoney(paid)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดคงเหลือ</div>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#ea580c', marginTop: '2px' }}>
+                    ฿{formatMoney(balance)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Amount Input */}
+              <div className="form-group" style={{ margin: 0 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
+                    จำนวนเงินที่รับชำระครั้งนี้ (บาท)
+                  </label>
+                  <button
+                    type="button"
+                    id="btn-fill-full-balance"
+                    onClick={() => {
+                      setBalancePayAmount(String(balance));
+                      if (balancePayError) setBalancePayError(null);
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--primary-color, #2563eb)',
+                      fontSize: '0.75rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      padding: 0,
+                      textDecoration: 'underline'
+                    }}
+                  >
+                    ชำระเต็มยอด (฿{formatMoney(balance)})
+                  </button>
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontWeight: 700, color: 'var(--text-muted)', fontSize: '0.95rem' }}>
+                    ฿
+                  </span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max={balance}
+                    id="input-pos-balance-amount"
+                    value={balancePayAmount}
+                    onChange={(e) => {
+                      setBalancePayAmount(e.target.value);
+                      if (balancePayError) setBalancePayError(null);
+                    }}
+                    disabled={isSubmittingBalancePay}
+                    className="form-control"
+                    placeholder="0.00"
+                    style={{
+                      paddingLeft: '30px',
+                      fontSize: '1.05rem',
+                      fontWeight: 800,
+                      height: '44px',
+                      borderRadius: '12px',
+                      border: isOverpaying ? '1.5px solid #ef4444' : '1px solid var(--border-color)'
+                    }}
+                    autoFocus
+                  />
+                </div>
+                <div style={{ marginTop: '6px', fontSize: '0.75rem', color: isOverpaying ? '#ef4444' : 'var(--text-muted)' }}>
+                  {isOverpaying ? (
+                    `ยอดเงินที่ระบุเกินกว่ายอดคงเหลือ (฿${formatMoney(balance)})`
+                  ) : remainingAfter === 0 && amountNum > 0 ? (
+                    'การชำระนี้จะปิดยอดคงเหลือทั้งหมด (สถานะ: ชำระครบถ้วน)'
+                  ) : amountNum > 0 ? (
+                    `หลังการชำระ จะมียอดคงเหลือค้างอีก ฿${formatMoney(remainingAfter)}`
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Payment Method Selector */}
+              <div>
+                <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  ช่องทางการรับชำระเงิน
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                  {[
+                    { id: 'transfer', label: 'โอนเงิน (Transfer)' },
+                    { id: 'cash', label: 'เงินสด (Cash)' },
+                    { id: 'card', label: 'บัตร (Card)' }
+                  ].map(m => {
+                    const isSel = balancePayMethod === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        id={`btn-method-${m.id}`}
+                        onClick={() => setBalancePayMethod(m.id)}
+                        disabled={isSubmittingBalancePay}
+                        style={{
+                          padding: '10px 8px',
+                          borderRadius: '10px',
+                          fontSize: '0.82rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          border: isSel ? '1.5px solid var(--primary-color, #2563eb)' : '1px solid var(--border-color)',
+                          backgroundColor: isSel ? 'rgba(37, 99, 235, 0.1)' : 'var(--bg-subtle, #f8fafc)',
+                          color: isSel ? 'var(--primary-color, #2563eb)' : 'var(--text-main)',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        {m.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Inline Slip Attachment for Balance Payment */}
+              <div>
+                <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                  แนบสลิปหลักฐานการชำระยอดคงเหลือ {balancePayMethod === 'transfer' ? '(แนะนำสำหรับโอนเงิน)' : '(ตัวเลือกเพิ่มเติม)'}
+                </label>
+                <input
+                  type="file"
+                  id="file-pos-balance-slip"
+                  accept="image/png,image/jpeg,image/jpg,image/webp"
+                  disabled={isSubmittingBalancePay}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    if (file.size > 10 * 1024 * 1024) {
+                      setBalancePayError('ไฟล์รูปภาพมีขนาดเกิน 10MB กรุณาเลือกไฟล์ใหม่');
+                      e.target.value = '';
+                      return;
+                    }
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                      setBalancePaySlipBase64(ev.target.result);
+                      setBalancePaySlipName(file.name);
+                    };
+                    reader.readAsDataURL(file);
+                  }}
+                  style={{ fontSize: '0.8rem', width: '100%' }}
+                />
+                {balancePaySlipName && (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '6px', padding: '6px 10px', borderRadius: '8px', backgroundColor: 'rgba(22, 163, 74, 0.08)', border: '1px solid rgba(22, 163, 74, 0.25)' }}>
+                    <div style={{ fontSize: '0.74rem', color: '#16a34a', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <Check size={14} />
+                      <span>{balancePaySlipName}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBalancePaySlipBase64(null);
+                        setBalancePaySlipName('');
+                        const el = document.getElementById('file-pos-balance-slip');
+                        if (el) el.value = '';
+                      }}
+                      style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: '0.72rem', cursor: 'pointer', padding: 0, fontWeight: 700 }}
+                    >
+                      ลบสลิป
+                    </button>
+                  </div>
+                )}
+                {balancePaySlipBase64 && (
+                  <div style={{ marginTop: '8px', textAlign: 'center' }}>
+                    <img
+                      src={balancePaySlipBase64}
+                      alt="พรีวิวสลิป"
+                      style={{ maxHeight: '120px', borderRadius: '8px', border: '1px solid var(--border-color)', objectFit: 'contain' }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Error Banner */}
+              {balancePayError && (
+                <div
+                  id="banner-pos-balance-error"
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: '10px',
+                    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    color: '#ef4444',
+                    fontSize: '0.82rem',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                  <span>{balancePayError}</span>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={isSubmittingBalancePay}
+                  onClick={() => {
+                    setShowBalancePayModal(false);
+                    setBalancePayBooking(null);
+                    setBalancePayError(null);
+                  }}
+                  style={{ flex: 1, height: '44px', borderRadius: '12px', fontWeight: 700, fontSize: '0.86rem' }}
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  id="btn-confirm-pos-pay-balance"
+                  className="btn btn-primary"
+                  disabled={!isFormValid || isSubmittingBalancePay}
+                  onClick={handleSubmitBalancePay}
+                  style={{
+                    flex: 1.5,
+                    height: '44px',
+                    borderRadius: '12px',
+                    fontWeight: 800,
+                    fontSize: '0.86rem',
+                    backgroundColor: '#16a34a',
+                    border: 'none',
+                    color: '#ffffff',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    opacity: (!isFormValid || isSubmittingBalancePay) ? 0.6 : 1,
+                    cursor: (!isFormValid || isSubmittingBalancePay) ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  {isSubmittingBalancePay ? (
+                    <>
+                      <RefreshCw size={15} className="spinner" style={{ animation: 'spin 1s linear infinite' }} />
+                      <span>กำลังบันทึก...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check size={16} />
+                      <span>ยืนยันรับชำระ ฿{amountNum > 0 ? formatMoney(amountNum) : '0.00'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Attach Slip Modal (Historical / POS Slip Attachment) */}
       {attachSlipModalData && (
         <AttachSlipModal
@@ -5995,7 +6677,13 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
             const bId = attachSlipModalData.booking?.id || attachSlipModalData.booking?.booking_id;
             if (bId) {
               fetchPosPaymentTransactions(bId);
-              setViewedEvent(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              setViewedEvent(prev => {
+                if (!prev) return prev;
+                if (!prev.slip_image_url || !attachSlipModalData.transaction || attachSlipModalData.transaction.transaction_type === 'deposit') {
+                  return { ...prev, slip_image_url: resData.slip_url };
+                }
+                return prev;
+              });
               fetchCalendarEvents();
             }
             setAttachSlipModalData(null);
