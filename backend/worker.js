@@ -2896,13 +2896,14 @@ export default {
               ).bind(associatedBookingId).first();
             } else {
               const fullUrl = `/uploads/${filePath}`;
+              const likePattern = `%${filePath}`;
               bookingRow = await env.DB.prepare(
                 `SELECT id, qr_token, contact, line_user_id FROM bookings
-                 WHERE slip_image_url = ?
-                    OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url = ?)
-                    OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url = ?)
+                 WHERE slip_image_url = ? OR slip_image_url = ? OR slip_image_url LIKE ?
+                    OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url = ? OR slip_url = ? OR slip_url LIKE ?)
+                    OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url = ? OR file_url = ? OR file_url LIKE ?)
                  LIMIT 1`
-              ).bind(fullUrl, fullUrl, fullUrl).first();
+              ).bind(fullUrl, filePath, likePattern, fullUrl, filePath, likePattern, fullUrl, filePath, likePattern).first();
             }
 
             if (!bookingRow) {
@@ -2945,7 +2946,12 @@ export default {
         if (!env.BUCKET) {
           return new Response(JSON.stringify({ error: 'Storage service unavailable' }), { status: 503, headers: corsHeaders });
         }
-          const object = await env.BUCKET.get(filePath);
+          let object = await env.BUCKET.get(filePath);
+          if (!object && !filePath.startsWith('uploads/')) {
+            object = await env.BUCKET.get(`uploads/${filePath}`);
+          } else if (!object && filePath.startsWith('uploads/')) {
+            object = await env.BUCKET.get(filePath.replace(/^uploads\//, ''));
+          }
           if (!object) {
             return new Response('File Not Found', { status: 404 });
           }

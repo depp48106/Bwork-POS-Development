@@ -5400,7 +5400,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               : tx.payment_type === 'full'
                                 ? 'ชำระเต็มจำนวน'
                                 : (tx.payment_type || 'ชำระเงิน');
-                          const hasTxSlip = Boolean(tx.slip_image_url && tx.slip_image_url !== 'uploaded');
+                          const txSlip = tx.slip_url || tx.slip_image_url;
+                          const hasTxSlip = Boolean(txSlip && txSlip !== 'uploaded');
 
                           return (
                             <div
@@ -5419,7 +5420,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
                                 {hasTxSlip ? (
                                   <AuthenticatedSlipImage
-                                    src={tx.slip_image_url}
+                                    src={txSlip}
                                     alt="สลิป"
                                     style={{
                                       width: '32px',

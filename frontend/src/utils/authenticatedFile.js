@@ -1,8 +1,11 @@
 /**
  * BWORK-POS Authenticated File Utility
  * Secure fetching of private uploads (payment slips, tax invoices) with JWT Authorization headers.
+ * Resolves relative and Pages URLs with API_BASE, preventing HTML SPA fallback and 401 Unauthorized errors.
  * Converts server responses into revocable Object URLs (Blob URLs) without exposing tokens in query strings.
  */
+
+import { API_BASE } from '../apiConfig';
 
 export function getAuthToken() {
   try {
@@ -10,6 +13,64 @@ export function getAuthToken() {
   } catch (_) {
     return '';
   }
+}
+
+/**
+ * Resolves relative and environment-specific file URLs against API_BASE.
+ * Handles data: and blob: URLs, relative paths (/uploads/...), and Cloudflare Pages origins.
+ *
+ * @param {string} url - Target file path or URL
+ * @returns {string} - Fully qualified or correctly formatted URL for fetching
+ */
+export function resolveFileUrl(url) {
+  if (!url || typeof url !== 'string' || url === 'uploaded') {
+    return '';
+  }
+
+  // Pass-through data URLs and blob URLs
+  if (url.startsWith('data:') || url.startsWith('blob:')) {
+    return url;
+  }
+
+  let targetPath = url.trim();
+
+  // If already an absolute HTTP(S) URL, check if pointing to Pages domain
+  if (targetPath.startsWith('http://') || targetPath.startsWith('https://')) {
+    try {
+      const parsed = new URL(targetPath);
+      if (parsed.hostname.includes('pages.dev')) {
+        // Strip Pages origin so it routes to Worker API via API_BASE
+        targetPath = parsed.pathname + parsed.search;
+      } else {
+        return targetPath;
+      }
+    } catch (_) {
+      return targetPath;
+    }
+  }
+
+  // Ensure standard leading slash
+  if (!targetPath.startsWith('/')) {
+    targetPath = '/' + targetPath;
+  }
+
+  // Ensure /uploads prefix for known protected categories if missing
+  if (
+    targetPath.startsWith('/slips/') ||
+    targetPath.startsWith('/payment-slips/') ||
+    targetPath.startsWith('/tax-invoices/') ||
+    targetPath.startsWith('/tax_invoices/')
+  ) {
+    targetPath = '/uploads' + targetPath;
+  }
+
+  // Prepend API_BASE if defined and targetPath is relative
+  if (API_BASE) {
+    const base = API_BASE.replace(/\/+$/, '');
+    return `${base}${targetPath}`;
+  }
+
+  return targetPath;
 }
 
 /**
@@ -35,13 +96,14 @@ export async function fetchAuthenticatedBlob(url, signal) {
     };
   }
 
+  const resolvedUrl = resolveFileUrl(url);
   const token = getAuthToken();
   const headers = {};
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const response = await fetch(url, { headers, signal });
+  const response = await fetch(resolvedUrl, { headers, signal });
   if (!response.ok) {
     let errMsg = `โหลดไฟล์ล้มเหลว (HTTP ${response.status})`;
     try {
@@ -53,13 +115,21 @@ export async function fetchAuthenticatedBlob(url, signal) {
     throw err;
   }
 
+  // Sanity check Content-Type: Reject HTML responses (SPA fallback / routing error)
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.toLowerCase().includes('text/html')) {
+    const err = new Error('เซิร์ฟเวอร์ส่งคืนหน้าเว็บ HTML แทนรูปภาพ (อาจเกิดจากเซสชันหมดอายุหรือปัญหาการเชื่อมต่อ API)');
+    err.status = 502;
+    throw err;
+  }
+
   const blob = await response.blob();
   const blobUrl = URL.createObjectURL(blob);
 
   return {
     blobUrl,
     blob,
-    contentType: blob.type || response.headers.get('content-type') || '',
+    contentType: blob.type || contentType,
     revoke: () => {
       try {
         URL.revokeObjectURL(blobUrl);
@@ -137,7 +207,15 @@ export async function openAuthenticatedImageInNewTab(url, title = 'หลัก�
   try {
     const result = await fetchAuthenticatedBlob(url);
     if (newTab && !newTab.closed) {
-      newTab.location.href = result.blobUrl;
+      try {
+        newTab.location.href = result.blobUrl;
+      } catch (_) {
+        newTab.document.body.innerHTML = `
+          <div style="margin: 0; background: #0b0f17; display: flex; align-items: center; justify-content: center; min-height: 100vh;">
+            <img src="${result.blobUrl}" alt="${title}" style="max-width: 100%; max-height: 100vh; object-fit: contain;" />
+          </div>
+        `;
+      }
     } else {
       window.open(result.blobUrl, '_blank');
     }

@@ -198,13 +198,14 @@ app.use('/uploads', async (req, res, next) => {
         bookingRow = await dbQuery.get('SELECT id, qr_token, contact, line_user_id FROM bookings WHERE id = ?', [associatedBookingId]);
       } else {
         const fullUrl = `/uploads/${cleanPath}`;
+        const likePattern = `%${cleanPath}`;
         bookingRow = await dbQuery.get(
           `SELECT id, qr_token, contact, line_user_id FROM bookings
-           WHERE slip_image_url = ?
-              OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url = ?)
-              OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url = ?)
+           WHERE slip_image_url = ? OR slip_image_url = ? OR slip_image_url LIKE ?
+              OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url = ? OR slip_url = ? OR slip_url LIKE ?)
+              OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url = ? OR file_url = ? OR file_url LIKE ?)
            LIMIT 1`,
-          [fullUrl, fullUrl, fullUrl]
+          [fullUrl, cleanPath, likePattern, fullUrl, cleanPath, likePattern, fullUrl, cleanPath, likePattern]
         );
       }
     } catch (_) {}
