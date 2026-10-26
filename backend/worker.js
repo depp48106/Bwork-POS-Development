@@ -681,6 +681,16 @@ async function verifyToken(token) {
   }
 }
 
+function safeEqualString(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
 async function authenticateUser(request, env, requiredRole = null) {
   const authHeader = request.headers.get('authorization');
   const token = authHeader && authHeader.split(' ')[1];
@@ -1278,14 +1288,38 @@ function checkAdminPromotionAuth(auth) {
 // ==========================================
 // 4. FILE UPLOAD & R2 HELPERS
 // ==========================================
-async function saveUploadedFile(env, fileData, folder = 'uploads') {
+function validateFileMagicBytes(bytes, contentType) {
+  if (!bytes || bytes.length < 4) return false;
+  // JPEG: FF D8 FF
+  if (contentType.includes('jpeg') || contentType.includes('jpg')) {
+    return bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF;
+  }
+  // PNG: 89 50 4E 47
+  if (contentType.includes('png')) {
+    return bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
+  }
+  // WEBP: RIFF (bytes 0-3) and WEBP (bytes 8-11)
+  if (contentType.includes('webp')) {
+    if (bytes.length < 12) return false;
+    const isRiff = bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
+    const isWebp = bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+    return isRiff && isWebp;
+  }
+  // PDF: %PDF (25 50 44 46)
+  if (contentType.includes('pdf')) {
+    return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
+  }
+  return true;
+}
+
+async function saveUploadedFile(env, fileData, folder = 'uploads', metadata = {}) {
   if (!fileData) return null;
   if (typeof fileData === 'string' && fileData.startsWith('data:')) {
-    const matches = fileData.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    const matches = fileData.match(/^data:([A-Za-z0-9\-\+\/\.]+);base64,(.+)$/);
     if (!matches || matches.length !== 3) {
-      return fileData;
+      throw new Error('Invalid base64 data URL format');
     }
-    const contentType = matches[1];
+    const contentType = matches[1].toLowerCase();
     const base64Data = matches[2];
     const binaryStr = atob(base64Data);
     const len = binaryStr.length;
@@ -1293,16 +1327,61 @@ async function saveUploadedFile(env, fileData, folder = 'uploads') {
     for (let i = 0; i < len; i++) {
       bytes[i] = binaryStr.charCodeAt(i);
     }
+    // Magic Bytes Validation
+    if (!validateFileMagicBytes(bytes, contentType)) {
+      throw new Error('File content corrupted or does not match declared MIME type (' + contentType + ')');
+    }
+
     const ext = contentType.includes('pdf') ? 'pdf' : (contentType.includes('webp') ? 'webp' : (contentType.includes('png') ? 'png' : ((contentType.includes('jpeg') || contentType.includes('jpg')) ? 'jpeg' : 'bin')));
-    const filename = `${folder}/${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${ext}`;
+    const uniqueId = String(Date.now()) + '_' + Math.random().toString(36).substring(2, 8);
+
+    // Structured Object Key Design
+    let filename;
+    if (folder === 'slips' || folder === 'payment-slips') {
+      const bId = metadata.bookingId || metadata.booking_id;
+      const pId = metadata.paymentId || metadata.payment_id || 'initial';
+      if (bId) {
+        filename = 'payment-slips/' + bId + '/' + pId + '/' + uniqueId + '.' + ext;
+      } else {
+        filename = 'payment-slips/' + uniqueId + '.' + ext;
+      }
+    } else if (folder === 'tax-invoices' || folder === 'tax_invoices') {
+      const bId = metadata.bookingId || metadata.booking_id;
+      if (bId) {
+        filename = 'tax-invoices/' + bId + '/' + uniqueId + '.' + ext;
+      } else {
+        filename = 'tax-invoices/' + uniqueId + '.' + ext;
+      }
+    } else {
+      const sanitizedFolder = String(folder).replace(/[^a-zA-Z0-9_\-]/g, '');
+      filename = (sanitizedFolder || 'uploads') + '/' + uniqueId + '.' + ext;
+    }
 
     const r2Bucket = env.BUCKET || env.SLIP_BUCKET;
     if (r2Bucket) {
+      const customMetadata = {
+        uploaded_at: new Date().toISOString(),
+        file_size: String(bytes.byteLength),
+        content_type: contentType
+      };
+      if (metadata.bookingId || metadata.booking_id) customMetadata.booking_id = String(metadata.bookingId || metadata.booking_id);
+      if (metadata.paymentId || metadata.payment_id) customMetadata.payment_id = String(metadata.paymentId || metadata.payment_id);
+      if (metadata.uploadedBy || metadata.uploaded_by) customMetadata.uploaded_by = String(metadata.uploadedBy || metadata.uploaded_by);
+      if (metadata.invoiceNumber || metadata.invoice_number) customMetadata.invoice_number = String(metadata.invoiceNumber || metadata.invoice_number);
+
       await r2Bucket.put(filename, bytes.buffer, {
-        httpMetadata: { contentType }
+        httpMetadata: {
+          contentType,
+          contentDisposition: metadata.download ? 'attachment' : 'inline'
+        },
+        customMetadata
       });
-      return `/uploads/${filename}`;
+      return '/uploads/' + filename;
     } else {
+      const isFinancial = folder.includes('slip') || folder.includes('tax');
+      if (isFinancial) {
+        throw new Error('R2 storage bucket is not configured. Financial documents cannot be stored as raw base64.');
+      }
       return fileData; // Store Data URL directly in DB if R2 not bound
     }
   }
@@ -2741,11 +2820,131 @@ export default {
       }
 
       // ----------------------------------------------------
-      // SERVE R2 UPLOADS / STATIC IMAGES (/uploads/*)
+      // SERVE R2 UPLOADS / STATIC IMAGES (/uploads/*) WITH ACCESS CONTROL
       // ----------------------------------------------------
       if (pathname.startsWith('/uploads/') && method === 'GET') {
-        const filePath = pathname.replace('/uploads/', '');
-        if (env.BUCKET) {
+        // 1. Path Traversal & Sanity Check
+        const rawFilePath = pathname.slice('/uploads/'.length);
+        let decodedFilePath;
+        try {
+          decodedFilePath = decodeURIComponent(rawFilePath);
+        } catch (_) {
+          return new Response(JSON.stringify({ error: 'Invalid path encoding' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Strict rejection of path traversal, backslashes, null bytes, and root paths
+        if (decodedFilePath.includes('..') || decodedFilePath.includes('\\') || decodedFilePath.includes('\0') || decodedFilePath.startsWith('/')) {
+          return new Response(JSON.stringify({ error: 'Path traversal detected' }), { status: 400, headers: corsHeaders });
+        }
+
+        const filePath = decodedFilePath;
+        const isFinancialOrSensitive = (
+          filePath.startsWith('slips/') ||
+          filePath.startsWith('payment-slips/') ||
+          filePath.startsWith('tax-invoices/') ||
+          filePath.startsWith('tax_invoices/')
+        );
+
+        // 2. Access Control for Financial / Sensitive Documents
+        if (isFinancialOrSensitive) {
+          let isAuthorizedStaff = false;
+          let isAuthorizedCustomer = false;
+
+          // Check Staff / Admin Authorization via Bearer token or ?token= param
+          const authHeader = request.headers.get('authorization');
+          const token = (authHeader && authHeader.split(' ')[1]) || url.searchParams.get('token');
+          if (token) {
+            const payload = await verifyToken(token);
+            if (payload && payload.id) {
+              const user = await env.DB.prepare("SELECT id, username, role, permissions FROM users WHERE id = ?").bind(payload.id).first();
+              if (user) {
+                if (user.role) {
+                  const roleRecord = await env.DB.prepare("SELECT permissions FROM roles WHERE name = ?").bind(user.role).first();
+                  if (roleRecord && typeof roleRecord.permissions === 'string') {
+                    user.permissions = roleRecord.permissions;
+                  }
+                }
+                const perms = (user.permissions || '').split(',');
+                if (
+                  user.role === 'admin' ||
+                  perms.includes('pos') ||
+                  perms.includes('history') ||
+                  perms.includes('manage') ||
+                  perms.includes('admin-system')
+                ) {
+                  isAuthorizedStaff = true;
+                }
+              }
+            }
+          }
+
+          // If not staff, check customer ownership
+          if (!isAuthorizedStaff) {
+            let associatedBookingId = null;
+            const segments = filePath.split('/');
+            if ((segments[0] === 'payment-slips' || segments[0] === 'tax-invoices') && segments.length >= 3) {
+              const candidateId = Number(segments[1]);
+              if (!isNaN(candidateId) && candidateId > 0) {
+                associatedBookingId = candidateId;
+              }
+            }
+
+            let bookingRow = null;
+            if (associatedBookingId) {
+              bookingRow = await env.DB.prepare(
+                "SELECT id, qr_token, contact, line_user_id FROM bookings WHERE id = ?"
+              ).bind(associatedBookingId).first();
+            } else {
+              const fullUrl = `/uploads/${filePath}`;
+              bookingRow = await env.DB.prepare(
+                `SELECT id, qr_token, contact, line_user_id FROM bookings
+                 WHERE slip_image_url = ?
+                    OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url = ?)
+                    OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url = ?)
+                 LIMIT 1`
+              ).bind(fullUrl, fullUrl, fullUrl).first();
+            }
+
+            if (!bookingRow) {
+              return new Response(JSON.stringify({ error: 'Authentication required' }), {
+                status: token ? 403 : 401,
+                headers: corsHeaders
+              });
+            }
+
+            // Task 8: Require authenticated credentials for customer document retrieval
+            // NEVER trust self-asserted x-booking-contact or raw x-line-user-id without verification
+            const customerBookingToken = request.headers.get('x-booking-token') || url.searchParams.get('booking_token');
+            const lineIdToken = request.headers.get('x-line-id-token');
+
+            let hasSuppliedCredentials = false;
+            if (customerBookingToken && bookingRow.qr_token) {
+              hasSuppliedCredentials = true;
+              if (safeEqualString(customerBookingToken.trim(), bookingRow.qr_token.trim())) {
+                isAuthorizedCustomer = true;
+              }
+            }
+
+            if (!isAuthorizedCustomer && lineIdToken && bookingRow.line_user_id) {
+              hasSuppliedCredentials = true;
+              const verifiedLine = verifyWorkerLineIdToken(lineIdToken);
+              if (verifiedLine && verifiedLine.userId && safeEqualString(verifiedLine.userId, bookingRow.line_user_id.trim())) {
+                isAuthorizedCustomer = true;
+              }
+            }
+
+            if (!isAuthorizedCustomer) {
+              if (hasSuppliedCredentials || token) {
+                return new Response(JSON.stringify({ error: 'Access denied: You do not own this document' }), { status: 403, headers: corsHeaders });
+              } else {
+                return new Response(JSON.stringify({ error: 'Authentication required to view this document' }), { status: 401, headers: corsHeaders });
+              }
+            }
+          }
+        }
+        if (!env.BUCKET) {
+          return new Response(JSON.stringify({ error: 'Storage service unavailable' }), { status: 503, headers: corsHeaders });
+        }
           const object = await env.BUCKET.get(filePath);
           if (!object) {
             return new Response('File Not Found', { status: 404 });
@@ -2753,9 +2952,19 @@ export default {
           const headers = new Headers();
           object.writeHttpMetadata(headers);
           headers.set('Access-Control-Allow-Origin', '*');
-          headers.set('Cache-Control', 'public, max-age=31536000');
-          return new Response(object.body, { headers });
+        if (isFinancialOrSensitive) {
+          headers.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+          const isDownload = url.searchParams.get('download') === '1' || request.headers.get('accept') === 'application/octet-stream';
+          const filename = filePath.split('/').pop() || 'document';
+          if (isDownload) {
+            headers.set('Content-Disposition', `attachment; filename="${filename}"`);
+          } else {
+            headers.set('Content-Disposition', `inline; filename="${filename}"`);
+          }
+        } else {
+          headers.set('Cache-Control', 'public, max-age=31536000, immutable');
         }
+        return new Response(object.body, { headers });
       }
 
       // ----------------------------------------------------
@@ -5139,7 +5348,7 @@ export default {
         if (slip_image && typeof slip_image === 'string' && slip_image.startsWith('data:image/')) {
           if (slip_image.length <= 10 * 1024 * 1024 * 1.37) {
             try {
-              slipUrl = await saveUploadedFile(env, slip_image, 'slips');
+              slipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId: booking.id, paymentId: 'balance', uploadedBy: auth.user?.username || 'staff' });
             } catch (sErr) {
               console.error('[Worker Checkout] Error saving slip to R2:', sErr);
             }
@@ -6058,7 +6267,7 @@ export default {
             return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
           }
           try {
-            slipUrl = await saveUploadedFile(env, slip_image, 'slips');
+            slipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId, paymentId: transaction ? transaction.id : 'attach', uploadedBy: staffName });
             if (!slipUrl || slipUrl.startsWith('data:')) {
               return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้ การชำระเงินไม่ถูกบันทึก' }), { status: 500, headers: corsHeaders });
             }
@@ -6153,7 +6362,7 @@ export default {
 
         let slipUrl = null;
         try {
-          slipUrl = await saveUploadedFile(env, slip_image, 'slips');
+          slipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId, paymentId: transaction ? transaction.id : 'attach', uploadedBy: staffName });
           if (!slipUrl || slipUrl.startsWith('data:')) {
             return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้' }), { status: 500, headers: corsHeaders });
           }
@@ -6439,7 +6648,8 @@ export default {
 
         let fileUrl = null;
         try {
-          fileUrl = await saveUploadedFile(env, file_data, 'tax_invoices');
+          const staffNameForUpload = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+          fileUrl = await saveUploadedFile(env, file_data, 'tax-invoices', { bookingId, uploadedBy: staffNameForUpload, invoiceNumber: invoice_number });
           if (!fileUrl || fileUrl.startsWith('data:')) {
             return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกเอกสารลง R2 ได้' }), { status: 500, headers: corsHeaders });
           }
@@ -7812,7 +8022,10 @@ export default {
         }
 
         // 3. ENTER MANUAL REVIEW (NEVER auto-approve as paid on Worker without OCR/amount verification)
-        let savedSlipUrl = await saveUploadedFile(env, slip_image, 'slips');
+        if (!env.BUCKET) {
+          return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
+        }
+        let savedSlipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId: booking.id, uploadedBy: 'customer' });
         // Guard against Cloudflare D1 SQLITE_TOOBIG (1MB limit)
         if (savedSlipUrl && typeof savedSlipUrl === 'string' && savedSlipUrl.length > 700000) {
           savedSlipUrl = savedSlipUrl.substring(0, 650000);

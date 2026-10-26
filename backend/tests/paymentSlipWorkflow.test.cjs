@@ -600,7 +600,7 @@ test('TC25: ONLINE_5_PERCENT discount unaffected by slip rejection and walk-in p
 test('TC26: Large slip (>700 KB) uses R2 reference, not Base64 SQL in worker walk-in slip routes', async () => {
   // 1. Verify worker.js source routes call saveUploadedFile and never store raw slip_image
   const workerCode = fs.readFileSync(path.join(__dirname, '../worker.js'), 'utf8');
-  assert.ok(workerCode.includes("slipUrl = await saveUploadedFile(env, slip_image, 'slips')"), 'worker.js pay-balance must call saveUploadedFile');
+  assert.ok(workerCode.includes("saveUploadedFile(env, slip_image"), 'worker.js pay-balance must call saveUploadedFile');
   assert.ok(workerCode.includes("const slipUrl = slip_image") === false, 'worker.js must not assign raw slip_image directly to slipUrl');
 
   // 2. Simulate R2 saveUploadedFile execution with large payload (>700 KB)
@@ -614,22 +614,24 @@ test('TC26: Large slip (>700 KB) uses R2 reference, not Base64 SQL in worker wal
     }
   };
 
-  const largeBase64 = 'data:image/jpeg;base64,' + 'A'.repeat(800 * 1024); // ~800 KB payload
+  const validJpegBuffer = Buffer.concat([Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]), Buffer.alloc(800 * 1024)]);
+  const largeBase64 = 'data:image/jpeg;base64,' + validJpegBuffer.toString('base64');
   const env = { BUCKET: mockBucket };
 
   // Extract saveUploadedFile from worker.js
-  const sufStart = workerCode.indexOf("async function saveUploadedFile(env, fileData, folder = 'uploads') {");
+  const vmbStart = workerCode.indexOf('function validateFileMagicBytes');
+  const sufStart = workerCode.indexOf('async function saveUploadedFile');
   const nextSection = workerCode.indexOf('// THAI BANK SLIP MINI QR VERIFIER & PARSER', sufStart);
   const sufEnd = workerCode.lastIndexOf('}', nextSection) + 1;
   assert.ok(sufStart > 0 && sufEnd > sufStart, 'saveUploadedFile found in worker.js');
   const saveUploadedFile = vm.runInNewContext(
-    `(${workerCode.slice(sufStart, sufEnd).trim()})`,
-    { console, atob: (str) => Buffer.from(str, 'base64').toString('binary'), Uint8Array, Math, Date }
+    '(() => {\n' + (vmbStart > 0 ? workerCode.slice(vmbStart, sufStart) : '') + '\nreturn ' + workerCode.slice(sufStart, sufEnd).trim() + '; })()',
+    { console, atob: (str) => Buffer.from(str, 'base64').toString('binary'), Uint8Array, Math, Date, String, Error }
   );
 
   const savedUrl = await saveUploadedFile(env, largeBase64, 'slips');
   assert.ok(bucketPutCalled, 'Mock R2 bucket.put must be called');
-  assert.ok(savedUrl.startsWith('/uploads/slips/'), 'Stored URL must be an R2 reference path, not data URI');
+  assert.ok(savedUrl.startsWith('/uploads/slips/') || savedUrl.startsWith('/uploads/payment-slips/'), 'Stored URL must be an R2 reference path, not data URI');
   assert.ok(!savedUrl.startsWith('data:'), 'Stored URL must NEVER be a data URI');
   assert.ok(savedUrl.length < 200, 'R2 reference URL must be small and safe for D1 column storage');
 });
