@@ -25,6 +25,7 @@ describe('BWORK-POS | SECURITY HARDENING HOTFIX AUDIT', () => {
 
     // 3. Strict protocol enforcement (HTTPS only for remote)
     assert.ok(content.includes("protocol !== 'https:'"), 'Must require https for remote hosts');
+    assert.ok(content.includes("redirect: 'error'"), 'Must set redirect: error to reject redirects before following');
     assert.ok(content.includes('response.redirected'), 'Must verify redirected destination origin');
 
     // 4. HTML SPA fallback defense
@@ -94,6 +95,62 @@ describe('BWORK-POS | SECURITY HARDENING HOTFIX AUDIT', () => {
     assert.strictEqual(isTrustedAuthOrigin('javascript:alert(1)'), false);
     assert.strictEqual(isTrustedAuthOrigin('data:image/png;base64,123'), false);
     assert.strictEqual(isTrustedAuthOrigin('blob:http://localhost/uuid'), false);
+  });
+
+  test('SEC-01c: HTTP Redirect Rejection & Zero Bearer Leakage to Untrusted Origin', async () => {
+    const http = require('http');
+
+    let attackerReceivedToken = false;
+    let attackerHitCount = 0;
+
+    // Attacker server
+    const attackerServer = http.createServer((req, res) => {
+      attackerHitCount++;
+      if (req.headers['authorization']) {
+        attackerReceivedToken = true;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('attacker got request');
+    });
+
+    await new Promise(r => attackerServer.listen(0, '127.0.0.1', r));
+    const attackerPort = attackerServer.address().port;
+
+    // Redirecting origin server
+    const redirectServer = http.createServer((req, res) => {
+      // Malicious or misconfigured redirect to external untrusted destination
+      res.writeHead(302, {
+        'Location': `http://127.0.0.1:${attackerPort}/steal-token`
+      });
+      res.end();
+    });
+
+    await new Promise(r => redirectServer.listen(0, '127.0.0.1', r));
+    const redirectPort = redirectServer.address().port;
+
+    try {
+      const sourceUrl = `http://127.0.0.1:${redirectPort}/uploads/payment-slips/test.jpg`;
+      const secretToken = 'super-secret-pos-jwt-token-12345';
+
+      let redirectBlocked = false;
+      try {
+        await fetch(sourceUrl, {
+          headers: { 'Authorization': `Bearer ${secretToken}` },
+          redirect: 'error' // Explicitly reject redirects BEFORE following
+        });
+      } catch (err) {
+        redirectBlocked = true;
+        // In Node and browsers, redirect: 'error' causes a TypeError/network error
+        assert.ok(err, 'Fetch must throw when encountering a redirect in error mode');
+      }
+
+      assert.strictEqual(redirectBlocked, true, 'Fetch must have been aborted on HTTP redirect');
+      assert.strictEqual(attackerHitCount, 0, 'Attacker server must receive ZERO requests (redirect not followed)');
+      assert.strictEqual(attackerReceivedToken, false, 'Bearer token must NEVER leak to redirect target');
+    } finally {
+      attackerServer.close();
+      redirectServer.close();
+    }
   });
 
   test('SEC-02: server.js uses exact matching only and strictly forbids LIKE % queries in /uploads', () => {
