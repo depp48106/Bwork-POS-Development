@@ -229,7 +229,25 @@ export async function fetchAuthenticatedBlob(url, signal) {
     }
   }
 
-  const response = await fetch(resolvedUrl, { headers, signal });
+  let response;
+  try {
+    response = await fetch(resolvedUrl, {
+      headers,
+      signal,
+      redirect: 'error' // Strictly reject HTTP redirects BEFORE following to prevent JWT token leakage
+    });
+  } catch (fetchErr) {
+    if (fetchErr && fetchErr.name === 'AbortError') {
+      throw fetchErr;
+    }
+    const errStr = String(fetchErr).toLowerCase();
+    if (errStr.includes('redirect')) {
+      const err = new Error('การส่งต่อ (HTTP Redirect) ถูกปฏิเสธเพื่อป้องกัน Token รั่วไหล');
+      err.status = 403;
+      throw err;
+    }
+    throw fetchErr;
+  }
   if (!response.ok) {
     let errMsg = `โหลดไฟล์ล้มเหลว (HTTP ${response.status})`;
     try {
