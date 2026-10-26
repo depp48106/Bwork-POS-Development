@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import {
   X, FileText, CheckCircle2, AlertCircle, Building, User, Mail, Phone,
   MapPin, Copy, Edit2, Save, Trash2, ExternalLink, Download, Upload,
@@ -1180,10 +1181,9 @@ export default function TaxInvoiceManagementModal({
                           </div>
 
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                            <a
-                              href={inv.file_url}
-                              target="_blank"
-                              rel="noreferrer"
+                            <button
+                              type="button"
+                              onClick={() => openAuthenticatedImageInNewTab(inv.file_url, `ใบกำกับภาษี ${inv.invoice_number || ''}`)}
                               style={{
                                 height: '28px',
                                 padding: '0 10px',
@@ -1193,15 +1193,16 @@ export default function TaxInvoiceManagementModal({
                                 color: '#2563eb',
                                 fontSize: '0.72rem',
                                 fontWeight: 700,
-                                textDecoration: 'none',
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: '4px'
+                                gap: '4px',
+                                cursor: 'pointer'
                               }}
+                              title="เปิดดูเอกสารใบกำกับภาษีในแท็บใหม่"
                             >
                               <ExternalLink size={12} />
                               <span>ดูเอกสาร</span>
-                            </a>
+                            </button>
 
                             <button
                               type="button"

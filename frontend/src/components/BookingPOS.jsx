@@ -1,6 +1,8 @@
 import POSTaxAndSlipSection from './POSTaxAndSlipSection';
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
+import AuthenticatedSlipImage from './AuthenticatedSlipImage';
+import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import BasecampQuotaModal from './BasecampQuotaModal';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
@@ -5416,7 +5418,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                             >
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
                                 {hasTxSlip ? (
-                                  <img
+                                  <AuthenticatedSlipImage
                                     src={tx.slip_image_url}
                                     alt="สลิป"
                                     style={{
@@ -5472,11 +5474,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
                                 {hasTxSlip ? (
                                   <>
-                                    <a
-                                      href={tx.slip_image_url}
-                                      target="_blank"
-                                      rel="noreferrer"
+                                    <button
+                                      type="button"
                                       id={`btn-view-slip-tx-${tx.id}`}
+                                      onClick={() => openAuthenticatedImageInNewTab(tx.slip_image_url, `สลิปธุรกรรม #${tx.id}`)}
                                       style={{
                                         height: '28px',
                                         padding: '0 8px',
@@ -5486,15 +5487,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                         color: '#2563eb',
                                         fontSize: '0.7rem',
                                         fontWeight: 700,
-                                        textDecoration: 'none',
                                         display: 'inline-flex',
                                         alignItems: 'center',
-                                        gap: '4px'
+                                        gap: '4px',
+                                        cursor: 'pointer'
                                       }}
                                     >
                                       <Eye size={11} />
                                       <span>ดูสลิป</span>
-                                    </a>
+                                    </button>
                                     <button
                                       type="button"
                                       id={`btn-reupload-slip-tx-${tx.id}`}
@@ -5570,7 +5571,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                             }}
                           >
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
-                              <img
+                              <AuthenticatedSlipImage
                                 src={viewedEvent.slip_image_url}
                                 alt="สลิป"
                                 style={{
@@ -5613,11 +5614,10 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                             </div>
 
                             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
-                              <a
-                                href={viewedEvent.slip_image_url}
-                                target="_blank"
-                                rel="noreferrer"
+                              <button
+                                type="button"
                                 id="btn-view-legacy-slip"
+                                onClick={() => openAuthenticatedImageInNewTab(viewedEvent.slip_image_url, `สลิปการจอง ${viewedEvent.booking_code || viewedEvent.id}`)}
                                 style={{
                                   height: '28px',
                                   padding: '0 8px',
@@ -5627,15 +5627,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                                   color: '#2563eb',
                                   fontSize: '0.7rem',
                                   fontWeight: 700,
-                                  textDecoration: 'none',
                                   display: 'inline-flex',
                                   alignItems: 'center',
-                                  gap: '4px'
+                                  gap: '4px',
+                                  cursor: 'pointer'
                                 }}
                               >
                                 <Eye size={11} />
                                 <span>ดูสลิป</span>
-                              </a>
+                              </button>
                               <button
                                 type="button"
                                 id="btn-reupload-legacy-slip"

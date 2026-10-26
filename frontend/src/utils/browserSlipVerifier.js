@@ -7,6 +7,7 @@
 
 import { createWorker } from 'tesseract.js';
 import jsQR from 'jsqr';
+import { fetchAuthenticatedBlob } from './authenticatedFile';
 import {
   BANK_CODES,
   toSatang,
@@ -40,13 +41,36 @@ export async function getTesseractWorker(onProgress = null) {
 /**
  * Loads an image from URL into an HTMLImageElement with CORS enabled.
  */
-export function loadImageElement(url) {
+export async function loadImageElement(url) {
+  if (!url || typeof url !== 'string') {
+    throw new Error('ไม่พบ URL รูปภาพสลิป');
+  }
+
+  // If already data URL or blob URL, load directly
+  if (url.startsWith('data:') || url.startsWith('blob:')) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('ไม่สามารถโหลดรูปภาพสลิปได้ (ข้อมูลรูปภาพไม่ถูกต้อง)'));
+      img.src = url;
+    });
+  }
+
+  // Remote URL: Fetch with Bearer token authentication to avoid 401
+  const authBlob = await fetchAuthenticatedBlob(url);
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = (e) => reject(new Error('ไม่สามารถโหลดรูปภาพสลิปได้ (CORS หรือ URL ไม่ถูกต้อง)'));
-    img.src = url;
+    img.onload = () => {
+      setTimeout(() => authBlob.revoke(), 10000);
+      resolve(img);
+    };
+    img.onerror = () => {
+      authBlob.revoke();
+      reject(new Error('ไม่สามารถโหลดรูปภาพสลิปได้ (เกิดข้อผิดพลาดในการประมวลผลไฟล์ภาพ)'));
+    };
+    img.src = authBlob.blobUrl;
   });
 }
 
