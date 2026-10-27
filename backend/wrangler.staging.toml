@@ -1,0 +1,46 @@
+# ==============================================================================
+# BWORK-POS — CLOUDFLARE WORKER STAGING CONFIGURATION
+# Phase: RELEASE-2A (Preparation & Local Validation)
+# Worker Target: bwork-pos-api-staging
+# D1 Database Target: bworkpos_staging_db
+#
+# CRITICAL SAFETY POLICIES:
+# 1. NEVER target the Production D1 database.
+# 2. DO NOT deploy until staging D1 database is created in RELEASE-2B.
+# 3. Scheduled triggers are commented out to prevent auto-cancellations or cloud backups.
+# 4. Live LINE Messaging API is disabled; all notifications must be mocked.
+# ==============================================================================
+
+name = "bwork-pos-api-staging"
+main = "worker.js"
+compatibility_date = "2026-08-08"
+compatibility_flags = ["nodejs_compat"]
+
+# ------------------------------------------------------------------------------
+# Staging Cloudflare D1 Database Binding
+# ------------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "bworkpos_staging_db"
+# SAFETY GUARD: Explicit placeholder prevents accidental deployment to Production.
+# During RELEASE-2B, create staging database:
+#   npx wrangler d1 create bworkpos_staging_db
+# and replace the placeholder below with the newly generated staging UUID.
+# STRICT PROHIBITION: NEVER use the Production database UUID.
+database_id = "8511096e-3c57-428f-8b2c-98fdb297f705"
+
+# ------------------------------------------------------------------------------
+# Scheduled Triggers (Disabled for Staging Safety)
+# ------------------------------------------------------------------------------
+# Auto-Cancel (* * * * *) and Midnight Backup (0 17 * * *) are omitted in staging
+# to prevent unintended background mutations and third-party storage side effects.
+# [triggers]
+# crons = []
+
+# ------------------------------------------------------------------------------
+# Staging Environment Variables
+# ------------------------------------------------------------------------------
+[vars]
+ENVIRONMENT = "staging"
+DISABLE_LIVE_LINE = "true"
+STAGING_ISOLATION_VERIFIED = "true"

@@ -5472,10 +5472,11 @@ export default {
             nowIso
           ).run();
         } catch (dbErr) {
+          console.warn('[Create-Booking] Falling back to simplified insert:', dbErr?.message);
           insBooking = await env.DB.prepare(
-            `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, checkin_status, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
-          ).bind(customer_name, department || '', contact || '', fin.total_amount, fin.payment_status, payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
+            `INSERT INTO bookings (customer_name, department, contact, subtotal_amount, total_amount, paid_amount, balance_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, checkin_status, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+          ).bind(customer_name, department || '', contact || '', fin.subtotal_amount, fin.total_amount, fin.paid_amount, fin.balance_amount, fin.payment_status, payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
         }
 
         const bookingId = insBooking.meta.last_row_id;
