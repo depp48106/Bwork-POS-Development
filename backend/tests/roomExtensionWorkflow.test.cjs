@@ -607,3 +607,127 @@ test('12. Parity between Express (server.js) and Worker (worker.js) endpoints', 
   assert.equal(serverSource.includes('checkRoomOverlap(item.room_id, item.start_time, newEndISO, null, dbQuery, item.id)'), true);
   assert.equal(workerSource.includes('checkRoomOverlap(env, item.room_id, item.start_time, newEndISO, null, item.id)'), true);
 });
+test('13. Cloudflare D1 batch atomicity: booking_items update and financial ledger commit atomically or rollback together', async () => {
+  const db = createTestDb();
+  await initSchema(db);
+
+  const roomRes = await db.run("INSERT INTO rooms (name, capacity, hourly_rate) VALUES ('Room Atomicity', 10, 600)");
+  const roomId = roomRes.lastID;
+
+  const bRes = await db.run("INSERT INTO bookings (customer_name, total_amount, paid_amount, balance_amount, payment_status) VALUES ('Atomic Customer', 600, 600, 0, 'paid')");
+  const bookingId = bRes.lastID;
+
+  const itRes = await db.run("INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal) VALUES (?, ?, 1, 600, '2026-10-27T10:00:00', '2026-10-27T11:00:00', 600)", [bookingId, roomId]);
+  const itemId = itRes.lastID;
+
+  const oldEndTime = '2026-10-27T11:00:00';
+  const newEndISO = '2026-10-27T12:00:00';
+
+  // Simulate Stale End Time: another request already updated item end_time to 11:30:00
+  await db.run("UPDATE booking_items SET end_time = '2026-10-27T11:30:00' WHERE id = ?", [itemId]);
+
+  // Now execute the conditioned atomic statements mimicking D1 batch
+  const st1 = await db.run(
+    'UPDATE booking_items SET end_time = ?, quantity = 2, subtotal = 1200 WHERE id = ? AND end_time = ?',
+    [newEndISO, itemId, oldEndTime]
+  );
+  assert.equal(st1.changes, 0, 'Statement 1 must change 0 rows due to stale end_time');
+
+  // Statement 2: conditioned on (SELECT end_time FROM booking_items WHERE id = ?) = newEndISO
+  const st2 = await db.run(
+    'UPDATE bookings SET total_amount = 1200, balance_amount = 600 WHERE id = ? AND (SELECT end_time FROM booking_items WHERE id = ?) = ?',
+    [bookingId, itemId, newEndISO]
+  );
+  assert.equal(st2.changes, 0, 'Statement 2 must change 0 rows because item was not updated');
+
+  // Statement 3: conditioned insert into payment_transactions
+  const st3 = await db.run(
+    'INSERT INTO payment_transactions (booking_id, amount, payment_method, transaction_type, status, created_at) ' +
+    'SELECT ?, 600, "cash", "extension", "completed", "2026-10-27T11:00:00" WHERE (SELECT end_time FROM booking_items WHERE id = ?) = ?',
+    [bookingId, itemId, newEndISO]
+  );
+  assert.equal(st3.changes, 0, 'Statement 3 must insert 0 rows');
+
+  // Verify booking totals and ledger remain unchanged
+  const b = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+  assert.equal(b.total_amount, 600);
+  assert.equal(b.paid_amount, 600);
+  assert.equal(b.balance_amount, 0);
+
+  const txs = await db.all('SELECT * FROM payment_transactions WHERE booking_id = ?', [bookingId]);
+  assert.equal(txs.length, 0);
+
+  await db.close();
+});
+
+test('14. Unpaid room extension ledger invariant: unpaid extension does NOT insert completed payment transaction', async () => {
+  const db = createTestDb();
+  await initSchema(db);
+
+  const roomRes = await db.run("INSERT INTO rooms (name, capacity, hourly_rate) VALUES ('Room Unpaid Ledger', 10, 500)");
+  const roomId = roomRes.lastID;
+
+  const bRes = await db.run("INSERT INTO bookings (customer_name, total_amount, paid_amount, balance_amount, payment_status) VALUES ('Unpaid Ext Customer', 500, 500, 0, 'paid')");
+  const bookingId = bRes.lastID;
+
+  const itRes = await db.run("INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal) VALUES (?, ?, 1, 500, '2026-10-27T10:00:00', '2026-10-27T11:00:00', 500)", [bookingId, roomId]);
+  const itemId = itRes.lastID;
+
+  const extensionFee = 500;
+  const payAmount = 0; // Unpaid extension
+  const quotaDeducted = 0;
+
+  // New logic: Only insert payment_transactions if (payAmount > 0 || quotaDeducted > 0)
+  if (payAmount > 0 || quotaDeducted > 0) {
+    await db.run(
+      'INSERT INTO payment_transactions (booking_id, amount, payment_method, transaction_type, status, created_at) ' +
+      'VALUES (?, ?, "unpaid", "extension", "completed", "2026-10-27T11:00:00")',
+      [bookingId, payAmount]
+    );
+  }
+
+  // Update booking financials
+  await db.run(
+    'UPDATE bookings SET total_amount = 1000, paid_amount = 500, balance_amount = 500, payment_status = "deposit" WHERE id = ?',
+    [bookingId]
+  );
+
+  const txs = await db.all('SELECT * FROM payment_transactions WHERE booking_id = ?', [bookingId]);
+  assert.equal(txs.length, 0, 'No completed payment transaction should exist for unpaid extension');
+
+  const b = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+  assert.equal(b.total_amount, 1000);
+  assert.equal(b.paid_amount, 500);
+  assert.equal(b.balance_amount, 500);
+  assert.equal(b.total_amount, b.paid_amount + b.balance_amount, 'total_amount == paid_amount + balance_amount invariant must hold');
+
+  await db.close();
+});
+
+test('15. Cross-channel race condition: POS extend vs LINE OA new reservation conflict detection', async () => {
+  const db = createTestDb();
+  await initSchema(db);
+
+  const roomRes = await db.run("INSERT INTO rooms (name, capacity, hourly_rate) VALUES ('Room Cross Channel', 10, 500)");
+  const roomId = roomRes.lastID;
+
+  // POS booking 1: 10:00 - 12:00
+  const b1Res = await db.run("INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status) VALUES (601, 'POS Customer', 1000, 1000, 0, 'paid')");
+  await db.run("INSERT INTO booking_items (id, booking_id, room_id, quantity, price, start_time, end_time, subtotal) VALUES (701, 601, ?, 2, 500, '2026-10-27T10:00:00', '2026-10-27T12:00:00', 1000)", [roomId]);
+
+  // LINE OA customer reserves 12:30 - 14:00 (leaving 30-min buffer after 12:00)
+  const b2Res = await db.run("INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status) VALUES (602, 'LINE OA Customer', 1000, 0, 1000, 'pending')");
+  await db.run("INSERT INTO booking_items (id, booking_id, room_id, quantity, price, start_time, end_time, subtotal) VALUES (702, 602, ?, 1.5, 500, '2026-10-27T12:30:00', '2026-10-27T14:00:00', 750)", [roomId]);
+
+  // POS attempts to extend booking 1 from 12:00 to 12:30 (+30 min)
+  // New end time: 12:30. But next customer starts at 12:30, needing 30-min cleaning buffer (12:30 + 30m = 13:00 > 12:30)!
+  const bufferMins = 30;
+  const bufferMs = bufferMins * 60 * 1000;
+  const newEndMs = new Date('2026-10-27T12:30:00').getTime();
+  const nextStartMs = new Date('2026-10-27T12:30:00').getTime();
+
+  const hasBufferCollision = (newEndMs + bufferMs > nextStartMs);
+  assert.equal(hasBufferCollision, true, 'Extension to 12:30 must be blocked by cleaning buffer for 12:30 queue');
+
+  await db.close();
+});

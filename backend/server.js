@@ -2048,7 +2048,7 @@ app.get('/api/bookings', async (req, res) => {
 
       // Fetch latest slip verification details if available
       const slipRows = await dbQuery.all(
-        `SELECT booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, rejection_reason, created_at as slip_verified_at, created_at as rejection_time
+        `SELECT id, booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, rejection_reason, created_at as slip_verified_at, created_at as rejection_time
          FROM slip_verifications
          WHERE booking_id IN (${placeholders})
          ORDER BY id DESC`,
@@ -2062,6 +2062,7 @@ app.get('/api/bookings', async (req, res) => {
       bookings.forEach(b => {
         const s = slipByBookingId[b.id];
         if (s) {
+          b.slip_verification_id = s.id;
           if (!b.slip_image_url) b.slip_image_url = s.slip_image_url;
           if (!b.slip_trans_ref) b.slip_trans_ref = s.trans_ref;
           if (!b.slip_verify_status) b.slip_verify_status = s.verification_status;
@@ -2250,6 +2251,7 @@ app.get('/api/bookings/:id', async (req, res) => {
       [booking.id]
     );
     if (slipVerification) {
+      booking.slip_verification_id = slipVerification.id;
       if (!booking.slip_image_url) booking.slip_image_url = slipVerification.slip_image_url;
       if (!booking.slip_trans_ref) booking.slip_trans_ref = slipVerification.trans_ref;
       if (!booking.slip_verify_status) booking.slip_verify_status = slipVerification.verification_status;
@@ -2671,7 +2673,7 @@ const REJECT_REASON_MAP = {
 // Dedicated Reject Slip endpoint (Staff rejects slip, preserves booking & room block)
 app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) => {
   const { id } = req.params;
-  const { reason_code, custom_note } = req.body || {};
+  const { reason_code, custom_note, expected_slip_url, evidence_id } = req.body || {};
 
   // Reason code validation
   if (!reason_code || !REJECT_REASON_MAP[reason_code]) {
@@ -2713,6 +2715,24 @@ app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) =>
     if (!isPendingReview || booking.payment_status === 'paid' || booking.payment_status === 'cancelled') {
       return res.status(409).json({
         error: `ไม่สามารถปฏิเสธสลิปได้เนื่องจากรายการจองอยู่ในสถานะ '${booking.payment_status}' (อนุญาตเฉพาะสถานะรอตรวจสอบ 'reviewing' เท่านั้น)`
+      });
+    }
+
+    // Concurrency CAS guard: Staff reviewing older slip while customer submitted newer slip
+    const latestSv = await dbQuery.get(
+      'SELECT id, slip_image_url FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1',
+      [id]
+    );
+    if (evidence_id && latestSv && String(latestSv.id) !== String(evidence_id)) {
+      return res.status(409).json({
+        error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+        code: 'SLIP_VERSION_CONFLICT'
+      });
+    }
+    if (expected_slip_url && booking.slip_image_url && booking.slip_image_url !== expected_slip_url) {
+      return res.status(409).json({
+        error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+        code: 'SLIP_VERSION_CONFLICT'
       });
     }
 
@@ -3225,7 +3245,7 @@ app.get('/api/bookings/:id/payments', authenticateToken, async (req, res) => {
 app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) => {
   try {
     const bookingId = req.params.id;
-    const { amount, payment_method, slip_image } = req.body;
+    const { amount, payment_method, slip_image, expected_slip_url, evidence_id } = req.body;
 
     const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
     if (!booking) {
@@ -3261,6 +3281,26 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
       return res.status(400).json({
         error: `ยอดเงินที่ชำระ (฿${payAmount}) เกินกว่ายอดคงเหลือที่ต้องชำระ (฿${currentBalance})`
       });
+    }
+
+    // Concurrency CAS guard: Staff reviewing older slip while customer submitted newer slip
+    if (booking.slip_verify_status === 'pending_manual' || booking.payment_status === 'reviewing') {
+      const latestSv = await dbQuery.get(
+        'SELECT id, slip_image_url FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1',
+        [bookingId]
+      );
+      if (evidence_id && latestSv && String(latestSv.id) !== String(evidence_id)) {
+        return res.status(409).json({
+          error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+          code: 'SLIP_VERSION_CONFLICT'
+        });
+      }
+      if (expected_slip_url && booking.slip_image_url && booking.slip_image_url !== expected_slip_url) {
+        return res.status(409).json({
+          error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+          code: 'SLIP_VERSION_CONFLICT'
+        });
+      }
     }
 
     const newPaid = roundMoney(currentPaid + payAmount);
@@ -3859,9 +3899,9 @@ app.post('/api/bookings/:id/extend', authenticateToken, async (req, res) => {
         [newTotal, newPaid, newBalance, newStatus, newQuotaHours, (additionalHours * hourlyRate), booking.id]
       );
 
-      // 8. Insert into payment_transactions (distinct extension ledger record)
+      // 8. Insert into payment_transactions (distinct extension ledger record - only if paid or quota)
       let transactionId = null;
-      if (extensionFee > 0 || quotaDeducted > 0 || payAmount > 0) {
+      if (payAmount > 0 || quotaDeducted > 0) {
         const effectiveMethod = (extensionFee === 0 && quotaDeducted > 0) ? 'quota' : method;
         const txRes = await dbQuery.run(
           `INSERT INTO payment_transactions

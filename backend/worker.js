@@ -5060,7 +5060,7 @@ export default {
 
           try {
             const { results: slipRows } = await env.DB.prepare(
-              `SELECT booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, rejection_reason, created_at as rejection_time
+              `SELECT id, booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, rejection_reason, created_at as rejection_time
                FROM slip_verifications
                WHERE booking_id IN (${placeholders})
                ORDER BY id DESC`
@@ -5074,6 +5074,7 @@ export default {
             bookings.forEach(b => {
               const s = slipByBookingId[b.id];
               if (s) {
+                b.slip_verification_id = s.id;
                 if (!b.slip_image_url) b.slip_image_url = s.slip_image_url;
                 if (!b.slip_trans_ref) b.slip_trans_ref = s.trans_ref;
                 if (!b.slip_verify_status) b.slip_verify_status = s.verification_status;
@@ -5657,7 +5658,7 @@ export default {
         const parts = pathname.split('/');
         const bookingId = parts[3];
         const body = await request.json().catch(() => ({}));
-        const { reason_code, custom_note } = body;
+        const { reason_code, custom_note, expected_slip_url, evidence_id } = body;
 
         // Reason code validation
         if (!reason_code || !REJECT_REASON_MAP[reason_code]) {
@@ -5689,6 +5690,23 @@ export default {
         if (!isPendingReview || booking.payment_status === 'paid' || booking.payment_status === 'cancelled') {
           return new Response(JSON.stringify({
             error: `ไม่สามารถปฏิเสธสลิปได้เนื่องจากรายการจองอยู่ในสถานะ '${booking.payment_status}' (อนุญาตเฉพาะสถานะรอตรวจสอบ 'reviewing' เท่านั้น)`
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        // Concurrency CAS guard: Staff reviewing older slip while customer submitted newer slip
+        const latestSv = await env.DB.prepare(
+          'SELECT id, slip_image_url FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1'
+        ).bind(bookingId).first();
+        if (evidence_id && latestSv && String(latestSv.id) !== String(evidence_id)) {
+          return new Response(JSON.stringify({
+            error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+            code: 'SLIP_VERSION_CONFLICT'
+          }), { status: 409, headers: corsHeaders });
+        }
+        if (expected_slip_url && booking.slip_image_url && booking.slip_image_url !== expected_slip_url) {
+          return new Response(JSON.stringify({
+            error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+            code: 'SLIP_VERSION_CONFLICT'
           }), { status: 409, headers: corsHeaders });
         }
 
@@ -6296,7 +6314,7 @@ export default {
         const parts = pathname.split('/');
         const bookingId = parts[3];
         const body = await request.json().catch(() => ({}));
-        const { amount, payment_method, slip_image } = body;
+        const { amount, payment_method, slip_image, expected_slip_url, evidence_id } = body;
 
         const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         if (!booking) {
@@ -6332,6 +6350,25 @@ export default {
           return new Response(JSON.stringify({
             error: `ยอดเงินที่ชำระ (฿${payAmount}) เกินกว่ายอดคงเหลือที่ต้องชำระ (฿${currentBalance})`
           }), { status: 400, headers: corsHeaders });
+        }
+
+        // Concurrency CAS guard: Staff reviewing older slip while customer submitted newer slip
+        if (booking.slip_verify_status === 'pending_manual' || booking.payment_status === 'reviewing') {
+          const latestSv = await env.DB.prepare(
+            'SELECT id, slip_image_url FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1'
+          ).bind(bookingId).first();
+          if (evidence_id && latestSv && String(latestSv.id) !== String(evidence_id)) {
+            return new Response(JSON.stringify({
+              error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+              code: 'SLIP_VERSION_CONFLICT'
+            }), { status: 409, headers: corsHeaders });
+          }
+          if (expected_slip_url && booking.slip_image_url && booking.slip_image_url !== expected_slip_url) {
+            return new Response(JSON.stringify({
+              error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+              code: 'SLIP_VERSION_CONFLICT'
+            }), { status: 409, headers: corsHeaders });
+          }
         }
 
         const newPaid = roundMoney(currentPaid + payAmount);
@@ -6824,6 +6861,8 @@ export default {
         }
 
         let slipUrl = null;
+        let uploadedR2Key = null;
+        const r2Bucket = env.BUCKET || env.SLIP_BUCKET;
         if (slip_image) {
           if (typeof slip_image !== 'string' || !slip_image.startsWith('data:image/')) {
             return new Response(JSON.stringify({ error: 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ PNG, JPG หรือ WEBP' }), { status: 400, headers: corsHeaders });
@@ -6831,7 +6870,7 @@ export default {
           if (slip_image.length > 10 * 1024 * 1024 * 1.37) {
             return new Response(JSON.stringify({ error: 'ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)' }), { status: 400, headers: corsHeaders });
           }
-          if (!env.BUCKET) {
+          if (!r2Bucket) {
             return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
           }
           try {
@@ -6839,6 +6878,7 @@ export default {
             if (!slipUrl || slipUrl.startsWith('data:')) {
               return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้' }), { status: 500, headers: corsHeaders });
             }
+            uploadedR2Key = slipUrl.replace('/uploads/', '');
           } catch (r2Err) {
             console.error('[Room Extension] R2 upload error in worker:', r2Err);
             return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
@@ -6849,19 +6889,6 @@ export default {
 
         const newQuantity = roundMoney((Number(item.quantity) || 0) + additionalHours);
         const newItemSubtotal = roundMoney((Number(item.subtotal) || 0) + (additionalHours * hourlyRate));
-
-        // Optimistic concurrency item update
-        const itemUpdateRes = await env.DB.prepare(
-          `UPDATE booking_items
-           SET end_time = ?, quantity = ?, subtotal = ?
-           WHERE id = ? AND end_time = ?`
-        ).bind(newEndISO, newQuantity, newItemSubtotal, item.id, item.end_time).run();
-
-        if (itemUpdateRes.meta?.changes !== 1) {
-          return new Response(JSON.stringify({
-            error: 'ข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง'
-          }), { status: 409, headers: corsHeaders });
-        }
 
         const oldTotal = roundMoney(Math.max(0, Number(booking.total_amount) || 0));
         const oldPaid = roundMoney(Math.max(0, Number(booking.paid_amount) || 0));
@@ -6881,28 +6908,6 @@ export default {
           newStatus = 'deposit';
         } else {
           newStatus = booking.payment_status === 'deposit' ? 'deposit' : 'pending';
-        }
-
-        const statements = [];
-        statements.push(
-          env.DB.prepare(
-            `UPDATE bookings
-             SET total_amount = ?, paid_amount = ?, balance_amount = ?,
-                 payment_status = ?, quota_hours_used = ?,
-                 subtotal_amount = COALESCE(subtotal_amount, total_amount) + ?
-             WHERE id = ?`
-          ).bind(newTotal, newPaid, newBalance, newStatus, newQuotaHours, (additionalHours * hourlyRate), booking.id)
-        );
-
-        const effectiveMethod = (extensionFee === 0 && quotaDeducted > 0) ? 'quota' : method;
-        if (extensionFee > 0 || quotaDeducted > 0 || payAmount > 0) {
-          statements.push(
-            env.DB.prepare(
-              `INSERT INTO payment_transactions
-               (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
-               VALUES (?, ?, ?, ?, 'extension', 'completed', ?)`
-            ).bind(booking.id, payAmount, effectiveMethod, slipUrl, nowIso)
-          );
         }
 
         const oldTimeFormatted = item.end_time.includes('T') ? item.end_time.split('T')[1].substring(0, 5) : item.end_time;
@@ -6943,14 +6948,71 @@ export default {
           description: auditDesc
         };
 
+        // All-or-nothing D1 Batch: All 4 statements executed atomically in single transaction
+        const statements = [];
+
+        // 1. Atomically update booking_items (Statement #0)
         statements.push(
           env.DB.prepare(
-            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
-             VALUES (?, 'extend_room', ?, ?, ?)`
-          ).bind(booking.id, JSON.stringify(historyPayload), staffName, nowIso)
+            `UPDATE booking_items
+             SET end_time = ?, quantity = ?, subtotal = ?
+             WHERE id = ? AND end_time = ?`
+          ).bind(newEndISO, newQuantity, newItemSubtotal, item.id, item.end_time)
         );
 
-        await env.DB.batch(statements);
+        // 2. Atomically update bookings financials & quota (conditioned on item end_time)
+        statements.push(
+          env.DB.prepare(
+            `UPDATE bookings
+             SET total_amount = ?, paid_amount = ?, balance_amount = ?,
+                 payment_status = ?, quota_hours_used = ?,
+                 subtotal_amount = COALESCE(subtotal_amount, total_amount) + ?
+             WHERE id = ? AND (SELECT end_time FROM booking_items WHERE id = ?) = ?`
+          ).bind(newTotal, newPaid, newBalance, newStatus, newQuotaHours, (additionalHours * hourlyRate), booking.id, item.id, newEndISO)
+        );
+
+        // 3. Payment transaction: ONLY inserted if actually paid or quota (NEVER for unpaid extension)
+        const effectiveMethod = (extensionFee === 0 && quotaDeducted > 0) ? 'quota' : method;
+        if (payAmount > 0 || quotaDeducted > 0) {
+          statements.push(
+            env.DB.prepare(
+              `INSERT INTO payment_transactions
+               (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
+               SELECT ?, ?, ?, ?, 'extension', 'completed', ?
+               WHERE (SELECT end_time FROM booking_items WHERE id = ?) = ?`
+            ).bind(booking.id, payAmount, effectiveMethod, slipUrl, nowIso, item.id, newEndISO)
+          );
+        }
+
+        // 4. Booking history audit log
+        statements.push(
+          env.DB.prepare(
+            `INSERT INTO booking_history
+             (booking_id, action, details, performed_by, created_at)
+             SELECT ?, 'extend_room', ?, ?, ?
+             WHERE (SELECT end_time FROM booking_items WHERE id = ?) = ?`
+          ).bind(booking.id, JSON.stringify(historyPayload), staffName, nowIso, item.id, newEndISO)
+        );
+
+        try {
+          const batchResults = await env.DB.batch(statements);
+          if (batchResults[0]?.meta?.changes !== 1) {
+            if (uploadedR2Key && r2Bucket) {
+              await r2Bucket.delete(uploadedR2Key).catch(() => {});
+            }
+            return new Response(JSON.stringify({
+              error: 'ข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง'
+            }), { status: 409, headers: corsHeaders });
+          }
+        } catch (batchErr) {
+          if (uploadedR2Key && r2Bucket) {
+            await r2Bucket.delete(uploadedR2Key).catch(() => {});
+          }
+          console.error('[Room Extension] Atomic batch execution failed:', batchErr);
+          return new Response(JSON.stringify({
+            error: 'เกิดข้อผิดพลาดในการบันทึกข้อมูลต่อเวลาห้อง กรุณาลองใหม่อีกครั้ง'
+          }), { status: 500, headers: corsHeaders });
+        }
 
         const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(booking.id).first();
         const { results: updatedItems } = await env.DB.prepare(
@@ -7969,6 +8031,7 @@ export default {
               'SELECT * FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1'
             ).bind(bookingId).first();
             if (slipVerification) {
+              booking.slip_verification_id = slipVerification.id;
               if (!booking.slip_image_url) booking.slip_image_url = slipVerification.slip_image_url;
               if (!booking.slip_trans_ref) booking.slip_trans_ref = slipVerification.trans_ref;
               if (!booking.slip_verify_status) booking.slip_verify_status = slipVerification.verification_status;

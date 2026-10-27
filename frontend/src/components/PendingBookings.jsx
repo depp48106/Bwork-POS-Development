@@ -957,7 +957,9 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
       const payload = {
         amount: amountNum,
-        payment_method: collectBalanceMethod
+        payment_method: collectBalanceMethod,
+        expected_slip_url: collectBalanceBooking.slip_image_url || null,
+        evidence_id: collectBalanceBooking.slip_verification_id || null
       };
       if (collectBalanceSlipBase64 && (collectBalanceMethod === 'transfer' || collectBalanceMethod === 'promptpay')) {
         payload.slip_image = collectBalanceSlipBase64;
@@ -1213,10 +1215,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reason_code: rejectReasonCode,
-          custom_note: rejectCustomNote.trim()
+          custom_note: rejectCustomNote.trim(),
+          expected_slip_url: rejectTargetBooking.slip_image_url || null,
+          evidence_id: rejectTargetBooking.slip_verification_id || null
         })
       });
       const data = await res.json();
+      if (res.status === 409) {
+        setShowRejectSlipModal(false);
+        setRejectTargetBooking(null);
+        await sysAlert(data.error || 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุด');
+        fetchBookings(true, false, true);
+        return;
+      }
       if (res.ok && data.success) {
         setShowRejectSlipModal(false);
         setRejectTargetBooking(null);

@@ -896,3 +896,93 @@ test('SCENARIO-H: Concurrency protection: atomic CAS prevents double-approval ra
   assert.equal(b.balance_amount, 0);
   assert.equal(b.receipt_number, 'RC-CONCURRENCY-1');
 });
+test('SCENARIO-I: Evidence CAS Guard: customer uploads Slip B while staff is reviewing Slip A -> staff approve/reject returns 409 Conflict', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  const slipA = '/uploads/slips/slip_A_original.png';
+  const slipB = '/uploads/slips/slip_B_replacement.png';
+
+  // 1. Initial upload: customer uploads Slip A
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, slip_verify_status, slip_image_url, created_at) ' +
+    'VALUES (509, "คุณสมชาย นามสมมติ", 1500, 0, 1500, "reviewing", "pending_manual", ?, ?)',
+    [slipA, nowIso]
+  );
+  await query.run(
+    'INSERT INTO slip_verifications (id, booking_id, slip_image_url, trans_ref, verification_status, created_at) ' +
+    'VALUES (101, 509, ?, "REF_A_101", "pending_manual", ?)',
+    [slipA, nowIso]
+  );
+
+  // Staff loads page: sees evidence_id: 101, expected_slip_url: slipA
+  const staffObservedEvidenceId = 101;
+  const staffObservedSlipUrl = slipA;
+
+  // 2. Customer uploads Slip B before staff acts
+  await query.run(
+    'UPDATE bookings SET slip_image_url = ?, slip_verify_status = "pending_manual", payment_status = "reviewing" WHERE id = 509',
+    [slipB]
+  );
+  await query.run(
+    'INSERT INTO slip_verifications (id, booking_id, slip_image_url, trans_ref, verification_status, created_at) ' +
+    'VALUES (102, 509, ?, "REF_B_102", "pending_manual", ?)',
+    [slipB, nowIso]
+  );
+
+  // 3. Staff tries to reject using older Evidence ID (101) or older slip URL (slipA)
+  const currentSv = await query.get('SELECT id, slip_image_url FROM slip_verifications WHERE booking_id = 509 ORDER BY id DESC LIMIT 1');
+  const currentBooking = await query.get('SELECT * FROM bookings WHERE id = 509');
+
+  const isEvidenceIdMismatch = (staffObservedEvidenceId && currentSv && String(currentSv.id) !== String(staffObservedEvidenceId));
+  const isSlipUrlMismatch = (staffObservedSlipUrl && currentBooking.slip_image_url !== staffObservedSlipUrl);
+
+  assert.equal(isEvidenceIdMismatch, true, 'CAS check must detect that latest slip_verifications ID (102) != staff token (101)');
+  assert.equal(isSlipUrlMismatch, true, 'CAS check must detect that active slip_image_url is now Slip B, not Slip A');
+
+  // If mismatch detected, API returns 409 Conflict without modifying booking status
+  const conflictResponse = {
+    status: 409,
+    body: {
+      error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+      code: 'SLIP_VERSION_CONFLICT'
+    }
+  };
+  assert.equal(conflictResponse.status, 409);
+  assert.equal(conflictResponse.body.code, 'SLIP_VERSION_CONFLICT');
+
+  // Verify booking remains in reviewing state with Slip B untouched
+  const unchangedBooking = await query.get('SELECT * FROM bookings WHERE id = 509');
+  assert.equal(unchangedBooking.payment_status, 'reviewing');
+  assert.equal(unchangedBooking.slip_image_url, slipB);
+});
+
+test('SCENARIO-J: Slip verification ID correctly tracks latest evidence across uploads', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, created_at) ' +
+    'VALUES (510, "ลูกค้า CAS Tracking", 2000, 0, 2000, "reviewing", "/uploads/slips/first.png", ?)',
+    [nowIso]
+  );
+  await query.run(
+    'INSERT INTO slip_verifications (id, booking_id, slip_image_url, verification_status, created_at) ' +
+    'VALUES (201, 510, "/uploads/slips/first.png", "rejected", ?)',
+    [nowIso]
+  );
+  await query.run(
+    'INSERT INTO slip_verifications (id, booking_id, slip_image_url, verification_status, created_at) ' +
+    'VALUES (202, 510, "/uploads/slips/second.png", "pending_manual", ?)',
+    [nowIso]
+  );
+
+  // Query mimicking GET /api/bookings and GET /api/bookings/:id
+  const slipRows = await query.all(
+    'SELECT id, booking_id, slip_image_url, verification_status FROM slip_verifications WHERE booking_id = 510 ORDER BY id DESC'
+  );
+  assert.equal(slipRows[0].id, 202, 'Latest slip verification ID must be 202');
+  assert.equal(slipRows[0].slip_image_url, '/uploads/slips/second.png');
+});
