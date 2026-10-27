@@ -250,6 +250,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   // Room scheduling Slide-over Drawer / Modal
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [viewedEvent, setViewedEvent] = useState(null);
+  const [extensionReturnEvent, setExtensionReturnEvent] = useState(null);
 
   // Payment slip attachment modal & transactions for viewed booking
   const [attachSlipModalData, setAttachSlipModalData] = useState(null);
@@ -702,7 +703,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         if (showReceiptModal) {
           setShowReceiptModal(false);
           setPrintBooking(null);
-        } else if (viewedEvent && !attachSlipModalData && !selectedTaxBooking) {
+        } else if (viewedEvent && !attachSlipModalData && !selectedTaxBooking && !extensionModalData) {
           setViewedEvent(null);
         } else if (showServicePicker) {
           setShowServicePicker(false);
@@ -6069,6 +6070,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                         layout: viewedEvent.layout || 'standard'
                       }]
                     };
+                    // Single Active Modal: Save current viewedEvent for return, then close drawer before opening extension modal
+                    setExtensionReturnEvent(viewedEvent);
+                    setViewedEvent(null);
                     setExtensionModalData({
                       booking: bookingObj,
                       item: bookingObj.items[0]
@@ -6722,10 +6726,49 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           isOpen={!!extensionModalData}
           booking={extensionModalData.booking}
           initialItem={extensionModalData.item}
-          onClose={() => setExtensionModalData(null)}
-          onSuccess={() => {
+          onClose={() => {
+            setExtensionModalData(null);
+            if (extensionReturnEvent) {
+              setViewedEvent(extensionReturnEvent);
+              setExtensionReturnEvent(null);
+            }
+          }}
+          onSuccess={async () => {
+            const bId = extensionReturnEvent?.booking_id || extensionReturnEvent?.id || extensionModalData?.booking?.id;
+            setExtensionModalData(null);
             fetchCalendarEvents();
-            setViewedEvent(null);
+            if (bId) {
+              try {
+                const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+                const res = await fetch(`/api/bookings/${bId}`, {
+                  headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                  }
+                });
+                if (res.ok) {
+                  const freshBooking = await res.json();
+                  const firstRoom = (freshBooking.items || []).find(it => it.room_id) || {};
+                  setViewedEvent({
+                    ...freshBooking,
+                    ...firstRoom,
+                    booking_id: freshBooking.id,
+                    id: freshBooking.id,
+                    start_time: firstRoom.start_time || freshBooking.start_time,
+                    end_time: firstRoom.end_time || freshBooking.end_time,
+                    items: freshBooking.items
+                  });
+                  fetchPosPaymentTransactions(bId);
+                } else {
+                  setViewedEvent(null);
+                }
+              } catch {
+                setViewedEvent(null);
+              }
+            } else {
+              setViewedEvent(null);
+            }
+            setExtensionReturnEvent(null);
           }}
           sysAlert={sysAlert}
         />
