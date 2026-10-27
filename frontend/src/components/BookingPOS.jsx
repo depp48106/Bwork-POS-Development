@@ -5,6 +5,7 @@ import RoomExtensionModal from './RoomExtensionModal';
 import AuthenticatedSlipImage from './AuthenticatedSlipImage';
 import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import BasecampQuotaModal from './BasecampQuotaModal';
+import './BookingDetailsModal.css';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Plus, Minus, Trash2, Calendar, ShoppingCart, Printer, X, CreditCard,
@@ -5292,257 +5293,229 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
       )}
 
       {/* ========================================================= */}
-      {/* 7. VIEWED EVENT DETAILS MODAL                             */}
+      {/* 7. VIEWED EVENT DETAILS MODAL (WIDE LANDSCAPE REDESIGN)   */}
       {/* ========================================================= */}
-      {viewedEvent && (
-        <div
-          onClick={() => setViewedEvent(null)}
-          style={{
-            position: 'fixed',
-            top: 0, left: 0, right: 0, bottom: 0,
-            backgroundColor: 'rgba(15, 23, 42, 0.45)',
-            backdropFilter: 'blur(16px)',
-            zIndex: 2000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '20px'
-          }}
-        >
+      {viewedEvent && (() => {
+        const rawBookingId = viewedEvent.booking_id || viewedEvent.id;
+        const fin = normalizeBookingFinancials(viewedEvent);
+        const isInternal = isInternalBooking(viewedEvent);
+        const sInfo = getUnifiedPaymentStatus(viewedEvent);
+        const depTx = posPaymentTransactions?.find(t => (t.transaction_type || t.payment_type) === 'deposit');
+        const balTx = posPaymentTransactions?.find(t => (t.transaction_type || t.payment_type) === 'balance');
+        const isDepositRemaining = fin && fin.is_deposit && fin.balance_amount > 0;
+        const isFullyPaidMulti = fin && fin.is_paid && posPaymentTransactions && posPaymentTransactions.length > 1;
+        const hasTransactions = posPaymentTransactions && posPaymentTransactions.length > 0;
+        const hasLegacySlip = Boolean(viewedEvent.slip_image_url && viewedEvent.slip_image_url !== 'uploaded');
+        const isUnpaid = (viewedEvent.payment_status || '').toLowerCase() === 'unpaid';
+
+        // Door PIN resolution
+        const vRoom = rooms.find(r => r.id === viewedEvent.room_id);
+        const usesPin = roomUsesDoorPin(vRoom || viewedEvent.room_id);
+        const pinInfo = usesPin ? resolveRoomPinInfo({ ...viewedEvent, items: [viewedEvent] }, viewedEvent.room_id, vRoom) : { pin: '', pinType: 'none' };
+        const pin = pinInfo.pin;
+        const pinIsInternal = pinInfo.pinType === 'internal' || isInternal;
+        const pinDetailLabel = pinIsInternal ? 'รหัสผ่านห้อง (ภายใน)' : 'รหัสผ่านห้อง (ลูกค้าทั่วไป)';
+        const vKey = `viewed-${rawBookingId}-${viewedEvent.room_id}`;
+        const isRevealed = !!revealedAgendaPins[vKey];
+
+        // Usage Status
+        const currentNowTime = new Date();
+        const startTimeObj = new Date(viewedEvent.start_time);
+        const endTimeObj = new Date(viewedEvent.end_time);
+        let usageStatusLabel = 'รอเริ่มการใช้งาน';
+        let usageStatusColor = 'var(--primary-color, #2563eb)';
+        let usageStatusBg = 'rgba(37, 99, 235, 0.08)';
+        let isCurrentlyActive = false;
+
+        if (currentNowTime > endTimeObj) {
+          usageStatusLabel = 'ใช้งานเสร็จสิ้นแล้ว';
+          usageStatusColor = 'var(--text-muted, #64748b)';
+          usageStatusBg = 'var(--bg-subtle, #f1f5f9)';
+        } else if (currentNowTime >= startTimeObj && currentNowTime <= endTimeObj) {
+          usageStatusLabel = 'กำลังใช้งานขณะนี้';
+          usageStatusColor = '#ea580c';
+          usageStatusBg = 'rgba(234, 88, 12, 0.08)';
+          isCurrentlyActive = true;
+        }
+
+        // Duration calculation
+        const durationHours = Math.max(0.5, Math.round(((endTimeObj - startTimeObj) / 3600000) * 10) / 10);
+
+        return (
           <div
-            onClick={e => e.stopPropagation()}
-            style={{ width: '95%', maxWidth: '460px', maxHeight: '90vh', overflowY: 'auto', padding: '24px', borderRadius: '20px', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-color)', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', display: 'flex', flexDirection: 'column', gap: '16px', position: 'relative' }}
+            className="bwork-details-overlay"
+            onClick={() => setViewedEvent(null)}
           >
-            <button
-              type="button"
-              style={{ position: 'absolute', right: '16px', top: '16px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              onClick={() => setViewedEvent(null)}
+            <div
+              className="bwork-details-modal"
+              onClick={e => e.stopPropagation()}
             >
-              <X size={18} />
-            </button>
-
-            {/* Header */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                <span style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--primary-color)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  รายละเอียดการจอง
-                </span>
-                <span style={{
-                  fontSize: '0.7rem',
-                  fontWeight: 700,
-                  padding: '2px 8px',
-                  borderRadius: '6px',
-                  backgroundColor: 'rgba(37,99,235,0.08)',
-                  color: 'var(--primary-color)',
-                  border: '1px solid rgba(37,99,235,0.2)'
-                }}>
-                  Ref: {viewedEvent.booking_ref || viewedEvent.booking_id || (viewedEvent.id ? `#${viewedEvent.id}` : '-')}
-                </span>
-              </div>
-              <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
-                {viewedEvent.room_name}
-              </h3>
-            </div>
-
-            {/* Operational Metadata Rows */}
-            <div style={{ backgroundColor: 'var(--bg-color)', border: '1px solid var(--border-color)', borderRadius: '14px', padding: '16px', fontSize: '0.82rem', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>ผู้จอง:</span>
-                <span style={{ fontWeight: 800, color: 'var(--text-main)' }}>{viewedEvent.customer_name || '-'}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>เบอร์ติดต่อ:</span>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{viewedEvent.contact || viewedEvent.phone || viewedEvent.customer_phone || '-'}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>ประเภทลูกค้า:</span>
-                <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>
-                  {viewedEvent.customer_type === 'basecamp'
-                    ? `Basecamp (${viewedEvent.basecamp_sub_type === 'office' ? 'Office' : 'Hotdesk'} ${viewedEvent.basecamp_unit || ''})`
-                    : viewedEvent.customer_type === 'builtland'
-                    ? 'Builtland Staff'
-                    : 'ลูกค้าทั่วไป (Walk-in)'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>วันที่:</span>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
-                  {new Date(viewedEvent.start_time).toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric', weekday: 'short' })}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>ช่วงเวลา:</span>
-                <span style={{ fontWeight: 700, color: 'var(--text-main)' }}>
-                  {new Date(viewedEvent.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(viewedEvent.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>รูปแบบ / ผังห้อง:</span>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
-                  {viewedEvent.booking_type === 'daily' ? 'รายวัน (ทั้งวัน)' : viewedEvent.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง'} · {viewedEvent.layout === 'classroom' ? 'Classroom' : 'Standard'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>จำนวนผู้เข้าใช้:</span>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
-                  {viewedEvent.guest_count || viewedEvent.item_guest_count ? `${viewedEvent.guest_count || viewedEvent.item_guest_count} ท่าน` : 'ไม่ระบุ'}
-                </span>
-              </div>
-              {/* Financial Summary, Handover & One-Click Pay Balance (Phase 3 & 4 & 6) */}
-              {(() => {
-                const fin = normalizeBookingFinancials(viewedEvent);
-                const isInternal = isInternalBooking(viewedEvent);
-                const sInfo = getUnifiedPaymentStatus(viewedEvent);
-                const depTx = posPaymentTransactions?.find(t => (t.transaction_type || t.payment_type) === 'deposit');
-                const balTx = posPaymentTransactions?.find(t => (t.transaction_type || t.payment_type) === 'balance');
-                const isDepositRemaining = fin && fin.is_deposit && fin.balance_amount > 0;
-                const isFullyPaidMulti = fin && fin.is_paid && posPaymentTransactions && posPaymentTransactions.length > 1;
-
-                return (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {/* Handover & Status Summary Banner */}
-                    {isDepositRemaining && (
-                      <div
-                        id="pos-handover-banner-deposit"
-                        style={{
-                          padding: '10px 12px',
-                          borderRadius: '10px',
-                          backgroundColor: 'rgba(245, 158, 11, 0.08)',
-                          border: '1px solid rgba(245, 158, 11, 0.3)',
-                          fontSize: '0.76rem',
-                          color: '#b45309',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px'
-                        }}
-                      >
-                        <AlertCircle size={16} style={{ flexShrink: 0, color: '#f59e0b' }} />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <strong>สถานะส่งต่องาน:</strong> รับมัดจำแล้ว ฿{formatMoney(fin.paid_amount)} {depTx?.staff_name ? `โดย ${depTx.staff_name}` : ''} — <strong style={{ color: '#ea580c' }}>รอชำระส่วนที่เหลือ ฿{formatMoney(fin.balance_amount)}</strong>
-                        </div>
-                      </div>
+              {/* HEADER */}
+              <div className="bwork-details-header">
+                <div className="bwork-details-header-left">
+                  <div className="bwork-details-badge-row">
+                    <span className="bwork-details-category-pill">
+                      <LayoutGrid size={13} /> รายละเอียดการจอง
+                    </span>
+                    <span className="bwork-details-ref-pill">
+                      Ref: {viewedEvent.booking_ref || (rawBookingId ? `#${rawBookingId}` : '-')}
+                    </span>
+                    {viewedEvent.booking_source && (
+                      <span style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 700,
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                        backgroundColor: viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.1)' : 'rgba(16, 185, 129, 0.1)',
+                        color: viewedEvent.booking_source === 'online' ? '#0ea5e9' : '#10b981',
+                        border: `1px solid ${viewedEvent.booking_source === 'online' ? 'rgba(14, 165, 233, 0.25)' : 'rgba(16, 185, 129, 0.25)'}`
+                      }}>
+                        {viewedEvent.booking_source === 'online' ? '🌐 จองออนไลน์' : '🏬 Walk-in'}
+                      </span>
                     )}
+                    <span style={{
+                      fontSize: '0.72rem',
+                      fontWeight: 750,
+                      padding: '2px 10px',
+                      borderRadius: '6px',
+                      backgroundColor: sInfo.bgLight,
+                      color: sInfo.color,
+                      border: `1px solid ${sInfo.border}`
+                    }}>
+                      {sInfo.label}
+                    </span>
+                    <span style={{
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      padding: '2px 8px',
+                      borderRadius: '6px',
+                      backgroundColor: usageStatusBg,
+                      color: usageStatusColor,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px'
+                    }}>
+                      {isCurrentlyActive && (
+                        <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#ea580c', display: 'inline-block' }} />
+                      )}
+                      {usageStatusLabel}
+                    </span>
+                  </div>
+                  <h2 className="bwork-details-title">
+                    {viewedEvent.room_name}
+                  </h2>
+                  <div className="bwork-details-subtitle">
+                    <span>
+                      {startTimeObj.toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric', weekday: 'short' })}
+                    </span>
+                    <span>•</span>
+                    <span>
+                      {startTimeObj.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {endTimeObj.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น. ({durationHours} ชม.)
+                    </span>
+                  </div>
+                </div>
 
-                    {isFullyPaidMulti && (
-                      <div
-                        id="pos-handover-banner-completed"
-                        style={{
-                          padding: '10px 12px',
-                          borderRadius: '10px',
-                          backgroundColor: 'rgba(22, 163, 74, 0.08)',
-                          border: '1px solid rgba(22, 163, 74, 0.3)',
-                          fontSize: '0.76rem',
-                          color: '#15803d',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '8px'
-                        }}
-                      >
-                        <ShieldCheck size={16} style={{ flexShrink: 0, color: '#16a34a' }} />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <strong>สถานะการชำระ:</strong> ชำระครบถ้วนแล้ว ฿{formatMoney(fin.total_amount)} (มีหลักฐาน {posPaymentTransactions.length} รายการ) {balTx?.staff_name ? `โดย ${balTx.staff_name}` : ''}
-                        </div>
-                      </div>
-                    )}
+                <button
+                  type="button"
+                  className="bwork-details-close-btn"
+                  onClick={() => setViewedEvent(null)}
+                  aria-label="ปิดหน้าต่าง"
+                  title="ปิดหน้าต่าง"
+                >
+                  <X size={20} />
+                </button>
+              </div>
 
-                    {/* 3-Column Financial Grid */}
-                    {!isInternal && fin ? (
-                      <div
-                        style={{
-                          padding: '10px 12px',
-                          borderRadius: '10px',
-                          backgroundColor: 'var(--bg-card, #ffffff)',
-                          border: '1px solid var(--border-color, #e2e8f0)',
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(3, 1fr)',
-                          gap: '8px',
-                          textAlign: 'center'
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดจองทั้งหมด</div>
-                          <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
-                            ฿{formatMoney(fin.total_amount)}
-                          </div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600 }}>{fin.is_deposit ? 'รับมัดจำแล้ว' : 'ชำระแล้ว'}</div>
-                          <div style={{ fontSize: '0.9rem', fontWeight: 800, color: '#16a34a', marginTop: '2px' }}>
-                            ฿{formatMoney(fin.paid_amount)}
-                          </div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600 }}>ยอดคงเหลือ</div>
-                          <div style={{ fontSize: '0.9rem', fontWeight: 800, color: fin.balance_amount > 0 ? '#ea580c' : 'var(--text-muted)', marginTop: '2px' }}>
-                            ฿{formatMoney(fin.balance_amount)}
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>ยอดเงิน:</span>
-                        <span style={{ fontWeight: 800, color: 'var(--text-main)', fontSize: '0.95rem' }}>
-                          ฿{Number(viewedEvent.subtotal || viewedEvent.price || viewedEvent.total_price || 0).toLocaleString()}
+              {/* BODY: 2-COLUMN GRID */}
+              <div className="bwork-details-body">
+                <div className="bwork-details-grid">
+                  {/* LEFT COLUMN: Customer & Venue Info & Access PIN */}
+                  <div className="bwork-details-col">
+                    {/* Customer Card */}
+                    <div className="bwork-section-card">
+                      <div className="bwork-section-card-header">
+                        <span className="bwork-section-card-title">
+                          <User size={15} /> ข้อมูลผู้จองและผู้ติดต่อ
+                        </span>
+                        <span style={{
+                          fontSize: '0.68rem',
+                          fontWeight: 700,
+                          padding: '2px 8px',
+                          borderRadius: '6px',
+                          backgroundColor: viewedEvent.customer_type === 'basecamp' ? 'rgba(37,99,235,0.08)' : viewedEvent.customer_type === 'builtland' ? 'rgba(168,85,247,0.08)' : 'rgba(100,116,139,0.08)',
+                          color: viewedEvent.customer_type === 'basecamp' ? '#2563eb' : viewedEvent.customer_type === 'builtland' ? '#9333ea' : 'var(--text-muted)',
+                          border: `1px solid ${viewedEvent.customer_type === 'basecamp' ? 'rgba(37,99,235,0.2)' : viewedEvent.customer_type === 'builtland' ? 'rgba(168,85,247,0.2)' : 'var(--border-color)'}`
+                        }}>
+                          {viewedEvent.customer_type === 'basecamp'
+                            ? `Basecamp (${viewedEvent.basecamp_sub_type === 'office' ? 'Office' : 'Hotdesk'} ${viewedEvent.basecamp_unit || ''})`
+                            : viewedEvent.customer_type === 'builtland'
+                            ? 'Builtland Staff'
+                            : 'ลูกค้าทั่วไป (Walk-in)'}
                         </span>
                       </div>
-                    )}
-
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                      <span style={{ color: 'var(--text-muted)' }}>สถานะชำระ:</span>
-                      <span style={{ color: sInfo.color, fontWeight: 700, backgroundColor: sInfo.bgLight, padding: '2px 8px', borderRadius: '6px', border: `1px solid ${sInfo.border}`, fontSize: '0.76rem' }}>
-                        {sInfo.label}
-                      </span>
+                      <div className="bwork-kv-list">
+                        <div className="bwork-kv-row">
+                          <span className="bwork-kv-label"><User size={13} /> ผู้จอง:</span>
+                          <span className="bwork-kv-value" style={{ fontSize: '0.92rem', fontWeight: 800 }}>{viewedEvent.customer_name || '-'}</span>
+                        </div>
+                        <div className="bwork-kv-row">
+                          <span className="bwork-kv-label"><Phone size={13} /> เบอร์ติดต่อ:</span>
+                          <span className="bwork-kv-value">{viewedEvent.contact || viewedEvent.phone || viewedEvent.customer_phone || '-'}</span>
+                        </div>
+                        {viewedEvent.customer_email && (
+                          <div className="bwork-kv-row">
+                            <span className="bwork-kv-label">อีเมล:</span>
+                            <span className="bwork-kv-value" style={{ fontWeight: 500 }}>{viewedEvent.customer_email}</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
-                    {/* One-Click Action: Collect Balance Button */}
-                    {fin && fin.balance_amount > 0 && !isInternal && (
-                      <button
-                        type="button"
-                        id="btn-pos-pay-balance"
-                        onClick={() => handleOpenBalancePayModal(viewedEvent)}
-                        style={{
-                          width: '100%',
-                          height: '40px',
-                          borderRadius: '10px',
-                          backgroundColor: '#16a34a',
-                          border: 'none',
-                          color: '#ffffff',
-                          fontSize: '0.84rem',
-                          fontWeight: 800,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: '6px',
-                          cursor: 'pointer',
-                          boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)',
-                          transition: 'all 0.15s ease'
-                        }}
-                      >
-                        <DollarSign size={16} />
-                        <span>รับชำระส่วนที่เหลือ ฿{formatMoney(fin.balance_amount)}</span>
-                      </button>
-                    )}
-                  </div>
-                );
-              })()}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                {(() => {
-                  const vRoom = rooms.find(r => r.id === viewedEvent.room_id);
-                  const usesPin = roomUsesDoorPin(vRoom || viewedEvent.room_id);
-                  const pinInfo = usesPin ? resolveRoomPinInfo({ ...viewedEvent, items: [viewedEvent] }, viewedEvent.room_id, vRoom) : { pin: '', pinType: 'none' };
-                  const pin = pinInfo.pin;
-                  const isInternal = pinInfo.pinType === 'internal' || isInternalBooking(viewedEvent);
-                  const pinDetailLabel = isInternal ? 'รหัสผ่านห้อง (ภายใน):' : 'รหัสผ่านห้อง (ลูกค้าทั่วไป):';
-                  const vKey = `viewed-${viewedEvent.booking_id || viewedEvent.id}-${viewedEvent.room_id}`;
-                  const isRevealed = !!revealedAgendaPins[vKey];
+                    {/* Schedule & Room Setup Card */}
+                    <div className="bwork-section-card">
+                      <div className="bwork-section-card-header">
+                        <span className="bwork-section-card-title">
+                          <Calendar size={15} /> กำหนดการและรูปแบบห้อง
+                        </span>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                          {viewedEvent.booking_type === 'daily' ? 'รายวัน (ทั้งวัน)' : viewedEvent.booking_type === 'halfday' ? 'ครึ่งวัน' : 'รายชั่วโมง'}
+                        </span>
+                      </div>
+                      <div className="bwork-kv-list">
+                        <div className="bwork-kv-row">
+                          <span className="bwork-kv-label"><Calendar size={13} /> วันที่:</span>
+                          <span className="bwork-kv-value">
+                            {startTimeObj.toLocaleDateString('th-TH', { year: 'numeric', month: 'short', day: 'numeric', weekday: 'short' })}
+                          </span>
+                        </div>
+                        <div className="bwork-kv-row">
+                          <span className="bwork-kv-label"><Clock size={13} /> ช่วงเวลา:</span>
+                          <span className="bwork-kv-value" style={{ fontWeight: 750, color: 'var(--primary-color)' }}>
+                            {startTimeObj.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {endTimeObj.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+                          </span>
+                        </div>
+                        <div className="bwork-kv-row">
+                          <span className="bwork-kv-label"><Presentation size={13} /> รูปแบบ / ผังห้อง:</span>
+                          <span className="bwork-kv-value">
+                            {viewedEvent.layout === 'classroom' ? 'Classroom (CR)' : 'Standard (Std)'}
+                          </span>
+                        </div>
+                        <div className="bwork-kv-row">
+                          <span className="bwork-kv-label"><Users size={13} /> จำนวนผู้เข้าใช้:</span>
+                          <span className="bwork-kv-value">
+                            {viewedEvent.guest_count || viewedEvent.item_guest_count ? `${viewedEvent.guest_count || viewedEvent.item_guest_count} ท่าน` : 'ไม่ระบุ'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
 
-                  return (
-                    <>
-                      <span style={{ color: 'var(--text-muted)' }}>{pinDetailLabel}</span>
-                      {!usesPin ? (
-                        <span style={{ fontWeight: 600, color: 'var(--text-muted)' }}>ไม่มีรหัสเข้าห้อง</span>
-                      ) : (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {/* Door PIN Card */}
+                    <div className="bwork-section-card">
+                      <div className="bwork-section-card-header">
+                        <span className="bwork-section-card-title">
+                          <Key size={15} /> {pinDetailLabel}
+                        </span>
+                        {usesPin && (
                           <button
                             type="button"
                             onClick={() => toggleAgendaPinReveal(vKey)}
@@ -5553,589 +5526,627 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                             {isRevealed ? <EyeOff size={13} /> : <Eye size={13} />}
                             <span>{isRevealed ? 'ซ่อนรหัสผ่านห้อง' : 'ดูรหัสผ่านห้อง'}</span>
                           </button>
-                          {isRevealed && (
-                            pin ? (
-                              <>
-                                <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '0.88rem', color: 'var(--primary-color)' }}>
-                                  {pin}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyPin(pin, vKey)}
-                                  aria-label="คัดลอก"
-                                  title="คัดลอก"
-                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.68rem', fontWeight: 700, padding: '2px 6px', borderRadius: '4px', border: '1px solid rgba(37, 99, 235, 0.3)', backgroundColor: 'rgba(37, 99, 235, 0.08)', color: 'var(--primary-color)', cursor: 'pointer' }}
-                                >
-                                  {copiedPinKey === vKey ? <Check size={11} /> : <Copy size={11} />}
-                                  <span>{copiedPinKey === vKey ? 'คัดลอกแล้ว' : 'คัดลอก'}</span>
-                                </button>
-                              </>
-                            ) : (
-                              <span style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                                ไม่มีรหัสเข้าห้อง
-                              </span>
-                            )
-                          )}
-                        </div>
-                      )}
-                    </>
-                  );
-                })()}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ color: 'var(--text-muted)' }}>สถานะการใช้งาน:</span>
-                {(() => {
-                  const currentNowTime = new Date();
-                  const s = new Date(viewedEvent.start_time);
-                  const e = new Date(viewedEvent.end_time);
-                  if (currentNowTime > e) return <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>ใช้งานเสร็จสิ้นแล้ว</span>;
-                  if (currentNowTime >= s && currentNowTime <= e) return <span style={{ color: '#ea580c', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '4px' }}><span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#ea580c' }} />กำลังใช้งานขณะนี้</span>;
-                  return <span style={{ color: 'var(--primary-color)', fontWeight: 600 }}>รอเริ่มการใช้งาน</span>;
-                })()}
-              </div>
-              {/* Payment Slip Evidence Section (Multi-Tx & Legacy Support) */}
-              {(() => {
-                const bId = viewedEvent.booking_id || viewedEvent.id;
-                const hasTransactions = posPaymentTransactions && posPaymentTransactions.length > 0;
-                const hasLegacySlip = Boolean(viewedEvent.slip_image_url && viewedEvent.slip_image_url !== 'uploaded');
-                const isUnpaid = (viewedEvent.payment_status || '').toLowerCase() === 'unpaid';
+                        )}
+                      </div>
+                      <div className="bwork-pin-card-content">
+                        {!usesPin ? (
+                          <span style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.84rem' }}>ไม่มีรหัสเข้าห้อง</span>
+                        ) : (
+                          <>
+                            <div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '2px' }}>
+                                รหัสเปิดประตูดิจิทัล
+                              </div>
+                              {isRevealed ? (
+                                pin ? (
+                                  <span className="bwork-pin-code-text">{pin}</span>
+                                ) : (
+                                  <span style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.82rem' }}>ไม่มีรหัสเข้าห้อง</span>
+                                )
+                              ) : (
+                                <span style={{ fontFamily: 'monospace', fontSize: '1.1rem', letterSpacing: '3px', color: 'var(--text-muted)' }}>••••••</span>
+                              )}
+                            </div>
+                            {isRevealed && pin && (
+                              <button
+                                type="button"
+                                onClick={() => handleCopyPin(pin, vKey)}
+                                aria-label="คัดลอก"
+                                title="คัดลอก"
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '5px',
+                                  fontSize: '0.74rem',
+                                  fontWeight: 700,
+                                  padding: '5px 10px',
+                                  borderRadius: '6px',
+                                  border: '1px solid rgba(37, 99, 235, 0.3)',
+                                  backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                                  color: 'var(--primary-color)',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                {copiedPinKey === vKey ? <Check size={12} /> : <Copy size={12} />}
+                                <span>{copiedPinKey === vKey ? 'คัดลอกแล้ว' : 'คัดลอก'}</span>
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
 
-                return (
-                  <div
-                    style={{
-                      padding: '12px',
-                      borderRadius: '12px',
-                      backgroundColor: 'var(--bg-subtle, #f8fafc)',
-                      border: '1px solid var(--border-color, #e2e8f0)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '10px'
-                    }}
-                  >
-                    {/* Header */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <Image size={14} style={{ color: 'var(--primary-color, #2563eb)' }} />
-                        <span style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                          ประวัติการชำระเงินและหลักฐานสลิป
+                  {/* RIGHT COLUMN: Financial Overview & Multi-Slip Timeline */}
+                  <div className="bwork-details-col">
+                    {/* Financial Summary Card */}
+                    <div className="bwork-section-card">
+                      <div className="bwork-section-card-header">
+                        <span className="bwork-section-card-title">
+                          <DollarSign size={15} /> สรุปยอดเงินและการชำระ
+                        </span>
+                        <span style={{
+                          color: sInfo.color,
+                          fontWeight: 700,
+                          backgroundColor: sInfo.bgLight,
+                          padding: '2px 8px',
+                          borderRadius: '6px',
+                          border: `1px solid ${sInfo.border}`,
+                          fontSize: '0.74rem'
+                        }}>
+                          {sInfo.label}
                         </span>
                       </div>
-                      {posLoadingPayments ? (
-                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>กำลังโหลด...</span>
+
+                      {/* Handover & Status Alert Banners */}
+                      {isDepositRemaining && (
+                        <div
+                          id="pos-handover-banner-deposit"
+                          style={{
+                            padding: '10px 12px',
+                            borderRadius: '10px',
+                            backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                            border: '1px solid rgba(245, 158, 11, 0.3)',
+                            fontSize: '0.78rem',
+                            color: '#b45309',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px'
+                          }}
+                        >
+                          <AlertCircle size={16} style={{ flexShrink: 0, color: '#f59e0b' }} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <strong>สถานะส่งต่องาน:</strong> รับมัดจำแล้ว ฿{formatMoney(fin.paid_amount)} {depTx?.staff_name ? `โดย ${depTx.staff_name}` : ''} — <strong style={{ color: '#ea580c' }}>รอชำระส่วนที่เหลือ ฿{formatMoney(fin.balance_amount)}</strong>
+                          </div>
+                        </div>
+                      )}
+
+                      {isFullyPaidMulti && (
+                        <div
+                          id="pos-handover-banner-completed"
+                          style={{
+                            padding: '10px 12px',
+                            borderRadius: '10px',
+                            backgroundColor: 'rgba(22, 163, 74, 0.08)',
+                            border: '1px solid rgba(22, 163, 74, 0.3)',
+                            fontSize: '0.78rem',
+                            color: '#15803d',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px'
+                          }}
+                        >
+                          <ShieldCheck size={16} style={{ flexShrink: 0, color: '#16a34a' }} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <strong>สถานะการชำระ:</strong> ชำระครบถ้วนแล้ว ฿{formatMoney(fin.total_amount)} (มีหลักฐาน {posPaymentTransactions.length} รายการ) {balTx?.staff_name ? `โดย ${balTx.staff_name}` : ''}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 3-Column Financial Stat Grid */}
+                      {!isInternal && fin ? (
+                        <div className="bwork-fin-stat-grid">
+                          <div className="bwork-fin-stat-box">
+                            <span className="bwork-fin-stat-label">ยอดจองทั้งหมด</span>
+                            <span className="bwork-fin-stat-value">฿{formatMoney(fin.total_amount)}</span>
+                          </div>
+                          <div className="bwork-fin-stat-box">
+                            <span className="bwork-fin-stat-label">{fin.is_deposit ? 'รับมัดจำแล้ว' : 'ชำระแล้ว'}</span>
+                            <span className="bwork-fin-stat-value highlight-paid">฿{formatMoney(fin.paid_amount)}</span>
+                          </div>
+                          <div className="bwork-fin-stat-box">
+                            <span className="bwork-fin-stat-label">ยอดคงเหลือ</span>
+                            <span className={`bwork-fin-stat-value ${fin.balance_amount > 0 ? 'highlight-balance' : ''}`}>
+                              ฿{formatMoney(fin.balance_amount)}
+                            </span>
+                          </div>
+                        </div>
                       ) : (
-                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                          {hasTransactions ? `${posPaymentTransactions.length} รายการธุรกรรม` : 'ระดับการจอง'}
-                        </span>
+                        <div className="bwork-kv-list">
+                          <div className="bwork-kv-row">
+                            <span className="bwork-kv-label">ยอดเงิน:</span>
+                            <span className="bwork-kv-value" style={{ fontSize: '1.05rem', fontWeight: 800 }}>
+                              ฿{Number(viewedEvent.subtotal || viewedEvent.price || viewedEvent.total_price || 0).toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* In-Card Balance Payment Shortcut Button (Preserves ID btn-pos-pay-balance) */}
+                      {fin && fin.balance_amount > 0 && !isInternal && (
+                        <button
+                          type="button"
+                          id="btn-pos-pay-balance"
+                          onClick={() => handleOpenBalancePayModal(viewedEvent)}
+                          style={{
+                            width: '100%',
+                            height: '38px',
+                            borderRadius: '10px',
+                            backgroundColor: '#16a34a',
+                            border: 'none',
+                            color: '#ffffff',
+                            fontSize: '0.82rem',
+                            fontWeight: 800,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px',
+                            cursor: 'pointer',
+                            boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <DollarSign size={15} />
+                          <span>รับชำระส่วนที่เหลือ ฿{formatMoney(fin.balance_amount)}</span>
+                        </button>
                       )}
                     </div>
 
-                    {/* Case 1: Booking with Multi-Transactions */}
-                    {hasTransactions ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {posPaymentTransactions.map((tx, idx) => {
-                          const rawType = tx.transaction_type || tx.payment_type;
-                          const txTypeLabel = rawType === 'deposit'
-                            ? `ครั้งที่ ${idx + 1} — เงินมัดจำ`
-                            : rawType === 'balance'
-                              ? `ครั้งที่ ${idx + 1} — ส่วนที่เหลือ`
-                              : rawType === 'full'
-                                ? 'ชำระเต็มจำนวน'
-                                : (rawType || 'ชำระเงิน');
-                          const txSlip = tx.slip_url || tx.slip_image_url;
-                          const hasTxSlip = Boolean(txSlip && txSlip !== 'uploaded');
+                    {/* Payment Slip Evidence Section (Multi-Tx & Legacy Support) */}
+                    <div className="bwork-section-card">
+                      <div className="bwork-section-card-header">
+                        <span className="bwork-section-card-title">
+                          <Image size={15} /> ประวัติธุรกรรมและหลักฐานสลิป
+                        </span>
+                        {posLoadingPayments ? (
+                          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>กำลังโหลด...</span>
+                        ) : (
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                            {hasTransactions ? `${posPaymentTransactions.length} รายการธุรกรรม` : 'ระดับการจอง'}
+                          </span>
+                        )}
+                      </div>
 
-                          return (
-                            <div
-                              key={tx.id}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                padding: '8px 10px',
-                                borderRadius: '8px',
-                                backgroundColor: 'var(--bg-card, #ffffff)',
-                                border: '1px solid var(--border-color, #e2e8f0)',
-                                gap: '8px'
-                              }}
-                            >
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
-                                {hasTxSlip ? (
-                                  <AuthenticatedSlipImage
-                                    src={txSlip}
-                                    alt="สลิป"
-                                    style={{
-                                      width: '32px',
-                                      height: '32px',
-                                      borderRadius: '6px',
-                                      objectFit: 'cover',
-                                      border: '1px solid var(--border-color, #cbd5e1)',
-                                      flexShrink: 0
-                                    }}
-                                  />
-                                ) : (
-                                  <div
-                                    style={{
-                                      width: '32px',
-                                      height: '32px',
-                                      borderRadius: '6px',
-                                      backgroundColor: 'var(--bg-subtle, #f1f5f9)',
-                                      border: '1px dashed var(--border-color, #cbd5e1)',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      color: 'var(--text-muted, #94a3b8)',
-                                      flexShrink: 0
-                                    }}
-                                  >
-                                    <Image size={14} />
-                                  </div>
-                                )}
-                                <div style={{ minWidth: 0, flex: 1 }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                                    <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                                      {txTypeLabel}
-                                    </span>
-                                    <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--primary-color)' }}>
-                                      ฿{Number(tx.amount || 0).toLocaleString()}
-                                    </span>
-                                  </div>
-                                  <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
-                                    <span>#{tx.id}</span>
-                                    <span>•</span>
-                                    <span>{tx.payment_method || '-'}</span>
-                                    {tx.staff_name && (
-                                      <>
-                                        <span>•</span>
-                                        <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>โดย {tx.staff_name}</span>
-                                      </>
-                                    )}
-                                    {tx.created_at && (
-                                      <>
-                                        <span>•</span>
-                                        <span>{new Date(tx.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</span>
-                                      </>
-                                    )}
-                                    {hasTxSlip && (
-                                      <>
-                                        <span>•</span>
-                                        <span style={{ color: '#16a34a', fontWeight: 700 }}>มีสลิป</span>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
+                      {/* Multi-Transactions List */}
+                      {hasTransactions ? (
+                        <div className="bwork-tx-timeline-list">
+                          {posPaymentTransactions.map((tx, idx) => {
+                            const rawType = tx.transaction_type || tx.payment_type;
+                            const txTypeLabel = rawType === 'deposit'
+                              ? `ครั้งที่ ${idx + 1} — เงินมัดจำ`
+                              : rawType === 'balance'
+                                ? `ครั้งที่ ${idx + 1} — ส่วนที่เหลือ`
+                                : rawType === 'full'
+                                  ? 'ชำระเต็มจำนวน'
+                                  : (rawType || 'ชำระเงิน');
+                            const txSlip = tx.slip_url || tx.slip_image_url;
+                            const hasTxSlip = Boolean(txSlip && txSlip !== 'uploaded');
 
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
-                                {hasTxSlip ? (
-                                  <>
-                                    <button
-                                      type="button"
-                                      id={`btn-view-slip-tx-${tx.id}`}
-                                      onClick={() => openAuthenticatedImageInNewTab(txSlip, `สลิปธุรกรรม #${tx.id}`)}
+                            return (
+                              <div key={tx.id} className="bwork-tx-item">
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1 }}>
+                                  {hasTxSlip ? (
+                                    <AuthenticatedSlipImage
+                                      src={txSlip}
+                                      alt="สลิป"
                                       style={{
-                                        height: '28px',
-                                        padding: '0 8px',
-                                        borderRadius: '6px',
-                                        backgroundColor: 'var(--bg-subtle, #f8fafc)',
+                                        width: '36px',
+                                        height: '36px',
+                                        borderRadius: '8px',
+                                        objectFit: 'cover',
                                         border: '1px solid var(--border-color, #cbd5e1)',
-                                        color: '#2563eb',
-                                        fontSize: '0.7rem',
-                                        fontWeight: 700,
-                                        display: 'inline-flex',
+                                        flexShrink: 0
+                                      }}
+                                    />
+                                  ) : (
+                                    <div
+                                      style={{
+                                        width: '36px',
+                                        height: '36px',
+                                        borderRadius: '8px',
+                                        backgroundColor: 'var(--bg-card, #f1f5f9)',
+                                        border: '1px dashed var(--border-color, #cbd5e1)',
+                                        display: 'flex',
                                         alignItems: 'center',
-                                        gap: '4px',
-                                        cursor: 'pointer'
+                                        justifyContent: 'center',
+                                        color: 'var(--text-muted, #94a3b8)',
+                                        flexShrink: 0
                                       }}
                                     >
-                                      <Eye size={11} />
-                                      <span>ดูสลิป</span>
-                                    </button>
+                                      <Image size={15} />
+                                    </div>
+                                  )}
+                                  <div style={{ minWidth: 0, flex: 1 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                      <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                                        {txTypeLabel}
+                                      </span>
+                                      <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--primary-color)' }}>
+                                        ฿{Number(tx.amount || 0).toLocaleString()}
+                                      </span>
+                                    </div>
+                                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap', marginTop: '2px' }}>
+                                      <span>#{tx.id}</span>
+                                      <span>•</span>
+                                      <span>{tx.payment_method || '-'}</span>
+                                      {tx.staff_name && (
+                                        <>
+                                          <span>•</span>
+                                          <span style={{ color: 'var(--text-main)', fontWeight: 600 }}>โดย {tx.staff_name}</span>
+                                        </>
+                                      )}
+                                      {tx.created_at && (
+                                        <>
+                                          <span>•</span>
+                                          <span>{new Date(tx.created_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</span>
+                                        </>
+                                      )}
+                                      {hasTxSlip && (
+                                        <>
+                                          <span>•</span>
+                                          <span style={{ color: '#16a34a', fontWeight: 700 }}>มีสลิป</span>
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                                  {hasTxSlip ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        id={`btn-view-slip-tx-${tx.id}`}
+                                        onClick={() => openAuthenticatedImageInNewTab(txSlip, `สลิปธุรกรรม #${tx.id}`)}
+                                        style={{
+                                          height: '30px',
+                                          padding: '0 8px',
+                                          borderRadius: '6px',
+                                          backgroundColor: 'var(--bg-card, #ffffff)',
+                                          border: '1px solid var(--border-color, #cbd5e1)',
+                                          color: '#2563eb',
+                                          fontSize: '0.72rem',
+                                          fontWeight: 700,
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '4px',
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        <Eye size={12} />
+                                        <span>ดูสลิป</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        id={`btn-reupload-slip-tx-${tx.id}`}
+                                        onClick={() => setAttachSlipModalData({
+                                          booking: { ...viewedEvent, id: rawBookingId },
+                                          transaction: tx
+                                        })}
+                                        style={{
+                                          height: '30px',
+                                          padding: '0 8px',
+                                          borderRadius: '6px',
+                                          backgroundColor: 'var(--bg-card, #ffffff)',
+                                          border: '1px solid var(--border-color, #cbd5e1)',
+                                          color: 'var(--text-main, #334155)',
+                                          fontSize: '0.72rem',
+                                          fontWeight: 700,
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: '4px',
+                                          cursor: 'pointer'
+                                        }}
+                                      >
+                                        <RefreshCw size={11} />
+                                        <span>เปลี่ยน</span>
+                                      </button>
+                                    </>
+                                  ) : (
                                     <button
                                       type="button"
-                                      id={`btn-reupload-slip-tx-${tx.id}`}
+                                      id={`btn-attach-slip-tx-${tx.id}`}
                                       onClick={() => setAttachSlipModalData({
-                                        booking: { ...viewedEvent, id: bId },
+                                        booking: { ...viewedEvent, id: rawBookingId },
                                         transaction: tx
                                       })}
                                       style={{
-                                        height: '28px',
-                                        padding: '0 8px',
+                                        height: '30px',
+                                        padding: '0 10px',
                                         borderRadius: '6px',
-                                        backgroundColor: 'var(--bg-card, #ffffff)',
-                                        border: '1px solid var(--border-color, #cbd5e1)',
-                                        color: 'var(--text-main, #334155)',
-                                        fontSize: '0.7rem',
-                                        fontWeight: 700,
+                                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                        border: '1px solid rgba(37, 99, 235, 0.3)',
+                                        color: '#2563eb',
+                                        fontSize: '0.72rem',
+                                        fontWeight: 750,
                                         display: 'inline-flex',
                                         alignItems: 'center',
                                         gap: '4px',
                                         cursor: 'pointer'
                                       }}
                                     >
-                                      <RefreshCw size={10} />
-                                      <span>เปลี่ยน</span>
+                                      <Plus size={12} />
+                                      <span>แนบสลิป</span>
                                     </button>
-                                  </>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    id={`btn-attach-slip-tx-${tx.id}`}
-                                    onClick={() => setAttachSlipModalData({
-                                      booking: { ...viewedEvent, id: bId },
-                                      transaction: tx
-                                    })}
-                                    style={{
-                                      height: '28px',
-                                      padding: '0 10px',
-                                      borderRadius: '6px',
-                                      backgroundColor: 'rgba(37, 99, 235, 0.1)',
-                                      border: '1px solid rgba(37, 99, 235, 0.3)',
-                                      color: '#2563eb',
-                                      fontSize: '0.72rem',
-                                      fontWeight: 750,
-                                      display: 'inline-flex',
-                                      alignItems: 'center',
-                                      gap: '4px',
-                                      cursor: 'pointer'
-                                    }}
-                                  >
-                                    <Plus size={11} />
-                                    <span>แนบสลิป</span>
-                                  </button>
-                                )}
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          );
-                        })}
+                            );
+                          })}
 
-                        {/* Transaction Timeline Footer Summary */}
-                        {(() => {
-                          const fin = normalizeBookingFinancials(viewedEvent);
-                          if (!fin) return null;
-                          return (
+                          {fin && (
                             <div
                               style={{
                                 display: 'flex',
                                 justifyContent: 'space-between',
                                 alignItems: 'center',
-                                padding: '6px 10px',
-                                borderRadius: '6px',
+                                padding: '8px 12px',
+                                borderRadius: '8px',
                                 backgroundColor: 'rgba(37, 99, 235, 0.04)',
                                 border: '1px dashed var(--border-color)',
-                                fontSize: '0.72rem',
+                                fontSize: '0.74rem',
                                 color: 'var(--text-muted)'
                               }}
                             >
                               <span>รวมชำระสะสม: <strong style={{ color: '#16a34a' }}>฿{formatMoney(fin.paid_amount)}</strong></span>
                               <span>ยอดคงเหลือ: <strong style={{ color: fin.balance_amount > 0 ? '#ea580c' : 'var(--text-main)' }}>฿{formatMoney(fin.balance_amount)}</strong></span>
                             </div>
-                          );
-                        })()}
-                      </div>
-                    ) : (
-                      /* Case 2: Legacy Booking (No payment transactions) */
-                      <div>
-                        {hasLegacySlip ? (
-                          <div
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              padding: '8px 10px',
-                              borderRadius: '8px',
-                              backgroundColor: 'var(--bg-card, #ffffff)',
-                              border: '1px solid var(--border-color, #e2e8f0)',
-                              gap: '8px'
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flex: 1 }}>
-                              <AuthenticatedSlipImage
-                                src={viewedEvent.slip_image_url}
-                                alt="สลิป"
-                                style={{
-                                  width: '32px',
-                                  height: '32px',
-                                  borderRadius: '6px',
-                                  objectFit: 'cover',
-                                  border: '1px solid var(--border-color, #cbd5e1)',
-                                  flexShrink: 0
-                                }}
-                              />
-                              <div style={{ minWidth: 0, flex: 1 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                                  <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                                    สลิปการจอง
-                                  </span>
-                                  {isUnpaid ? (
-                                    <span
-                                      style={{
-                                        padding: '1px 6px',
-                                        borderRadius: '4px',
-                                        backgroundColor: '#fef3c7',
-                                        color: '#92400e',
-                                        fontSize: '0.62rem',
-                                        fontWeight: 700
-                                      }}
-                                    >
-                                      หลักฐานรอตรวจสอบ
+                          )}
+                        </div>
+                      ) : (
+                        /* Case 2: Legacy Booking (No payment transactions) */
+                        <div>
+                          {hasLegacySlip ? (
+                            <div className="bwork-tx-item">
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1 }}>
+                                <AuthenticatedSlipImage
+                                  src={viewedEvent.slip_image_url}
+                                  alt="สลิป"
+                                  style={{
+                                    width: '36px',
+                                    height: '36px',
+                                    borderRadius: '8px',
+                                    objectFit: 'cover',
+                                    border: '1px solid var(--border-color, #cbd5e1)',
+                                    flexShrink: 0
+                                  }}
+                                />
+                                <div style={{ minWidth: 0, flex: 1 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                    <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                                      สลิปการจอง
                                     </span>
-                                  ) : (
-                                    <span style={{ fontSize: '0.66rem', color: '#16a34a', fontWeight: 700 }}>
-                                      มีหลักฐาน
-                                    </span>
-                                  )}
-                                </div>
-                                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>
-                                  หลักฐานแนบระดับการจอง
+                                    {isUnpaid ? (
+                                      <span
+                                        style={{
+                                          padding: '1px 6px',
+                                          borderRadius: '4px',
+                                          backgroundColor: '#fef3c7',
+                                          color: '#92400e',
+                                          fontSize: '0.64rem',
+                                          fontWeight: 700
+                                        }}
+                                      >
+                                        หลักฐานรอตรวจสอบ
+                                      </span>
+                                    ) : (
+                                      <span style={{ fontSize: '0.68rem', color: '#16a34a', fontWeight: 700 }}>
+                                        มีหลักฐาน
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                    หลักฐานแนบระดับการจอง
+                                  </div>
                                 </div>
                               </div>
-                            </div>
 
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                                <button
+                                  type="button"
+                                  id="btn-view-legacy-slip"
+                                  onClick={() => openAuthenticatedImageInNewTab(viewedEvent.slip_image_url, `สลิปการจอง ${viewedEvent.booking_code || rawBookingId}`)}
+                                  style={{
+                                    height: '30px',
+                                    padding: '0 8px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'var(--bg-card, #ffffff)',
+                                    border: '1px solid var(--border-color, #cbd5e1)',
+                                    color: '#2563eb',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  <Eye size={12} />
+                                  <span>ดูสลิป</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  id="btn-reupload-legacy-slip"
+                                  onClick={() => setAttachSlipModalData({
+                                    booking: { ...viewedEvent, id: rawBookingId },
+                                    transaction: null
+                                  })}
+                                  style={{
+                                    height: '30px',
+                                    padding: '0 8px',
+                                    borderRadius: '6px',
+                                    backgroundColor: 'var(--bg-card, #ffffff)',
+                                    border: '1px solid var(--border-color, #cbd5e1)',
+                                    color: 'var(--text-main, #334155)',
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  <RefreshCw size={11} />
+                                  <span>เปลี่ยนสลิป</span>
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '10px 14px',
+                                borderRadius: '10px',
+                                backgroundColor: 'var(--bg-subtle, #f8fafc)',
+                                border: '1px dashed var(--border-color, #cbd5e1)'
+                              }}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                                  ยังไม่มีหลักฐานการชำระเงิน
+                                </span>
+                              </div>
                               <button
                                 type="button"
-                                id="btn-view-legacy-slip"
-                                onClick={() => openAuthenticatedImageInNewTab(viewedEvent.slip_image_url, `สลิปการจอง ${viewedEvent.booking_code || viewedEvent.id}`)}
-                                style={{
-                                  height: '28px',
-                                  padding: '0 8px',
-                                  borderRadius: '6px',
-                                  backgroundColor: 'var(--bg-subtle, #f8fafc)',
-                                  border: '1px solid var(--border-color, #cbd5e1)',
-                                  color: '#2563eb',
-                                  fontSize: '0.7rem',
-                                  fontWeight: 700,
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px',
-                                  cursor: 'pointer'
-                                }}
-                              >
-                                <Eye size={11} />
-                                <span>ดูสลิป</span>
-                              </button>
-                              <button
-                                type="button"
-                                id="btn-reupload-legacy-slip"
+                                id="btn-attach-legacy-slip"
                                 onClick={() => setAttachSlipModalData({
-                                  booking: { ...viewedEvent, id: bId },
+                                  booking: { ...viewedEvent, id: rawBookingId },
                                   transaction: null
                                 })}
                                 style={{
-                                  height: '28px',
-                                  padding: '0 8px',
+                                  height: '30px',
+                                  padding: '0 12px',
                                   borderRadius: '6px',
-                                  backgroundColor: 'var(--bg-card, #ffffff)',
-                                  border: '1px solid var(--border-color, #cbd5e1)',
-                                  color: 'var(--text-main, #334155)',
-                                  fontSize: '0.7rem',
-                                  fontWeight: 700,
+                                  backgroundColor: '#2563eb',
+                                  border: 'none',
+                                  color: '#ffffff',
+                                  fontSize: '0.74rem',
+                                  fontWeight: 750,
                                   display: 'inline-flex',
                                   alignItems: 'center',
                                   gap: '4px',
                                   cursor: 'pointer'
                                 }}
                               >
-                                <RefreshCw size={10} />
-                                <span>เปลี่ยนสลิป</span>
+                                <Plus size={12} />
+                                <span>แนบสลิป</span>
                               </button>
                             </div>
-                          </div>
-                        ) : (
-                          <div
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              padding: '8px 10px',
-                              borderRadius: '8px',
-                              backgroundColor: 'var(--bg-card, #ffffff)',
-                              border: '1px dashed var(--border-color, #cbd5e1)'
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                                ยังไม่มีหลักฐานการชำระเงิน
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              id="btn-attach-legacy-slip"
-                              onClick={() => setAttachSlipModalData({
-                                booking: { ...viewedEvent, id: bId },
-                                transaction: null
-                              })}
-                              style={{
-                                height: '28px',
-                                padding: '0 12px',
-                                borderRadius: '6px',
-                                backgroundColor: '#2563eb',
-                                border: 'none',
-                                color: '#ffffff',
-                                fontSize: '0.72rem',
-                                fontWeight: 750,
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '4px',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              <Plus size={11} />
-                              <span>แนบสลิป</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                );
-              })()}
-            </div>
+                </div>
+              </div>
 
-            {/* Quick Tax Invoice Button */}
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button
-                type="button"
-                id="btn-viewed-tax-manage"
-                onClick={() => {
-                  const bId = viewedEvent.booking_id || viewedEvent.id;
-                  setSelectedTaxBooking({ ...viewedEvent, id: bId });
-                }}
-                style={{
-                  width: '100%',
-                  height: '36px',
-                  borderRadius: '10px',
-                  border: '1px solid rgba(37, 99, 235, 0.35)',
-                  backgroundColor: 'rgba(37, 99, 235, 0.08)',
-                  color: '#2563eb',
-                  fontSize: '0.78rem',
-                  fontWeight: 750,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '6px',
-                  cursor: 'pointer'
-                }}
-              >
-                <FileText size={14} />
-                <span>จัดการใบกำกับภาษี {viewedEvent.tax_invoice_required ? '(ขอแล้ว)' : ''}</span>
-              </button>
-            </div>
+              {/* FOOTER ACTION BAR */}
+              <div className="bwork-details-footer">
+                {/* Left: Utility & Secondary Actions */}
+                <div className="bwork-footer-left">
+                  <button
+                    type="button"
+                    className="bwork-btn-footer bwork-btn-footer-close"
+                    onClick={() => setViewedEvent(null)}
+                  >
+                    ปิดหน้าต่าง
+                  </button>
 
-            {/* Actions */}
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ flex: 1, height: '42px', borderRadius: '12px', fontWeight: 700, fontSize: '0.84rem' }}
-                onClick={() => setViewedEvent(null)}
-              >
-                ปิดหน้าต่าง
-              </button>
+                  <button
+                    type="button"
+                    id="btn-viewed-tax-manage"
+                    className="bwork-btn-footer bwork-btn-footer-tax"
+                    onClick={() => {
+                      setSelectedTaxBooking({ ...viewedEvent, id: rawBookingId });
+                    }}
+                  >
+                    <FileText size={15} />
+                    <span>จัดการใบกำกับภาษี {viewedEvent.tax_invoice_required ? '(ขอแล้ว)' : ''}</span>
+                  </button>
 
-              {/* Room Extension (ต่อเวลาห้อง) */}
-              {viewedEvent && (viewedEvent.room_id || (viewedEvent.items && viewedEvent.items.some(i => i.room_id))) && !['cancelled', 'failed', 'rejected'].includes(viewedEvent.payment_status) && (
-                <button
-                  type="button"
-                  id="btn-drawer-extend-room"
-                  style={{
-                    flex: 1.2,
-                    height: '42px',
-                    borderRadius: '12px',
-                    fontWeight: 800,
-                    fontSize: '0.84rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '6px',
-                    backgroundColor: 'rgba(37, 99, 235, 0.08)',
-                    color: '#2563eb',
-                    border: '1.5px solid #2563eb',
-                    cursor: 'pointer'
-                  }}
-                  onClick={() => {
-                    const bId = viewedEvent.booking_id || viewedEvent.id;
-                    const bookingObj = {
-                      ...viewedEvent,
-                      id: bId,
-                      booking_id: bId,
-                      items: viewedEvent.items && viewedEvent.items.length > 0 ? viewedEvent.items : [{
-                        ...viewedEvent,
-                        id: viewedEvent.booking_item_id || viewedEvent.id || 1,
-                        booking_id: bId,
-                        room_id: viewedEvent.room_id,
-                        room_name: viewedEvent.room_name,
-                        start_time: viewedEvent.start_time,
-                        end_time: viewedEvent.end_time,
-                        layout: viewedEvent.layout || 'standard'
-                      }]
-                    };
-                    // Single Active Modal: Save current viewedEvent for return, then close drawer before opening extension modal
-                    setExtensionReturnEvent(viewedEvent);
-                    setViewedEvent(null);
-                    setExtensionModalData({
-                      booking: bookingObj,
-                      item: bookingObj.items[0]
-                    });
-                  }}
-                >
-                  <Clock size={16} />
-                  <span>ต่อเวลาห้อง</span>
-                </button>
-              )}
+                  {onNavigate && (
+                    <button
+                      type="button"
+                      className="bwork-btn-footer bwork-btn-footer-nav"
+                      onClick={() => {
+                        setViewedEvent(null);
+                        onNavigate('pending', { bookingId: rawBookingId, action: 'view' });
+                      }}
+                    >
+                      <ExternalLink size={15} />
+                      <span>เปิดในจัดการการจอง</span>
+                    </button>
+                  )}
+                </div>
 
-              {(() => {
-                const fin = normalizeBookingFinancials(viewedEvent);
-                if (fin && fin.balance_amount > 0 && !isInternalBooking(viewedEvent)) {
-                  return (
+                {/* Right: Primary Operational Actions */}
+                <div className="bwork-footer-right">
+                  {/* Room Extension (ต่อเวลาห้อง) */}
+                  {viewedEvent && (viewedEvent.room_id || (viewedEvent.items && viewedEvent.items.some(i => i.room_id))) && !['cancelled', 'failed', 'rejected'].includes(viewedEvent.payment_status) && (
+                    <button
+                      type="button"
+                      id="btn-drawer-extend-room"
+                      className="bwork-btn-footer bwork-btn-footer-extend"
+                      onClick={() => {
+                        const bookingObj = {
+                          ...viewedEvent,
+                          id: rawBookingId,
+                          booking_id: rawBookingId,
+                          items: viewedEvent.items && viewedEvent.items.length > 0 ? viewedEvent.items : [{
+                            ...viewedEvent,
+                            id: viewedEvent.booking_item_id || rawBookingId || 1,
+                            booking_id: rawBookingId,
+                            room_id: viewedEvent.room_id,
+                            room_name: viewedEvent.room_name,
+                            start_time: viewedEvent.start_time,
+                            end_time: viewedEvent.end_time,
+                            layout: viewedEvent.layout || 'standard'
+                          }]
+                        };
+                        // Single Active Modal: Save current viewedEvent for return, then close drawer before opening extension modal
+                        setExtensionReturnEvent(viewedEvent);
+                        setViewedEvent(null);
+                        setExtensionModalData({
+                          booking: bookingObj,
+                          item: bookingObj.items[0]
+                        });
+                      }}
+                    >
+                      <Clock size={16} />
+                      <span>ต่อเวลาห้อง</span>
+                    </button>
+                  )}
+
+                  {/* Pay Balance Button (รับชำระส่วนที่เหลือ) */}
+                  {fin && fin.balance_amount > 0 && !isInternal && (
                     <button
                       type="button"
                       id="btn-drawer-pay-balance"
-                      style={{
-                        flex: 1.5,
-                        height: '42px',
-                        borderRadius: '12px',
-                        fontWeight: 800,
-                        fontSize: '0.84rem',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px',
-                        backgroundColor: '#16a34a',
-                        color: '#ffffff',
-                        border: 'none',
-                        cursor: 'pointer',
-                        boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)'
-                      }}
+                      className="bwork-btn-footer bwork-btn-footer-pay"
                       onClick={() => handleOpenBalancePayModal(viewedEvent)}
                     >
                       <DollarSign size={16} />
-                      <span>รับชำระส่วนที่เหลือ</span>
+                      <span>รับชำระส่วนที่เหลือ ฿{formatMoney(fin.balance_amount)}</span>
                     </button>
-                  );
-                }
-                return null;
-              })()}
-
-              {onNavigate && (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  style={{ flex: 1.5, height: '42px', borderRadius: '12px', fontWeight: 800, fontSize: '0.84rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-                  onClick={() => {
-                    const bId = viewedEvent.booking_id || viewedEvent.id;
-                    setViewedEvent(null);
-                    onNavigate('pending', { bookingId: bId, action: 'view' });
-                  }}
-                >
-                  <ExternalLink size={15} />
-                  <span>เปิดในจัดการการจอง</span>
-                </button>
-              )}
+                  )}
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Floating Hover Tooltip / Popover for Matrix Timeline Booking Blocks */}
       {hoveredBooking && (
