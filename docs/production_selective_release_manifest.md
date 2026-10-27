@@ -12,11 +12,12 @@
 | Component | Remote Repository | Branch | Commit SHA | Verified Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Production Baseline** | `https://github.com/depp48106/Bwork-POS.git` | `main` | `377c526fa7da4785d172212adb68d73c974eee02` | Audited Clean Baseline |
-| **Development Source** | `https://github.com/depp48106/Bwork-POS-Development.git` | `integration/home-office-20261021` | `c88284ae866aa4ac512e0cdc496f7919b5d281fd` | Verified Remote HEAD on GitHub |
+| **Development Source** | `https://github.com/depp48106/Bwork-POS-Development.git` | `integration/home-office-20261021` | `98166f6dd792947f43847a6f9a363d69b7629326` | Verified Remote HEAD on GitHub |
 
 > [!NOTE]
 > **Commit History Lineage on GitHub Remote:**
-> - `c88284ae`: Staging credential security sanitization and Real Cloudflare Worker HTTP E2E validation suite (Remote HEAD).
+> - `98166f6d`: Manifest update with Real Worker HTTP E2E results and total tests 120/120 pass.
+> - `c88284ae`: Staging credential security sanitization and Real Cloudflare Worker HTTP E2E validation suite.
 > - `5da41cc8`: Manifest correction with verified file paths, real Cloudflare project names, and production audit data.
 > - `7a2a384a`: Support Tickets 404 route hard-gate and auto-migration guard.
 > - `773d22a7`: Real D1 APAC Singapore direct concurrency test suite.
