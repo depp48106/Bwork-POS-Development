@@ -2595,6 +2595,7 @@ async function ensureD1Schema(env) {
     )`).run();
   } catch (e) {}
 
+  if (env.ENABLE_SUPPORT_TICKETS === "true") {
   const supportTables = [
     `CREATE TABLE IF NOT EXISTS support_tickets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2674,6 +2675,7 @@ async function ensureD1Schema(env) {
   try {
     await env.DB.prepare("ALTER TABLE support_tickets ADD COLUMN access_token TEXT").run();
   } catch (e) {}
+  }
 
   schemaInitialized = true;
 }
@@ -2829,6 +2831,13 @@ export default {
 
     if (method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
+    }
+
+    // Support Tickets Feature Gate (Hard blocked by default in production)
+    if (pathname.startsWith('/api/public/support') || pathname.startsWith('/api/pos/support')) {
+      if (env.ENABLE_SUPPORT_TICKETS !== 'true') {
+        return new Response(JSON.stringify({ error: 'Support tickets feature is disabled' }), { status: 404, headers: corsHeaders });
+      }
     }
 
     try {
