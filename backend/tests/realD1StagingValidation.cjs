@@ -29,17 +29,30 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 
-// 1. Read OAuth token from Wrangler config
-const wranglerConfigPath = 'C:/Users/Runrasa.P/.wrangler/config/default.toml';
-const tomlContent = fs.readFileSync(wranglerConfigPath, 'utf8');
-const match = tomlContent.match(/oauth_token\s*=\s*"([^"]+)"/);
-if (!match || !match[1]) {
-  throw new Error('Cloudflare OAuth token not found in Wrangler config');
+// Resolve Cloudflare credentials securely without hardcoded machine paths
+function resolveCloudflareToken() {
+  if (process.env.CLOUDFLARE_API_TOKEN) {
+    return process.env.CLOUDFLARE_API_TOKEN.trim();
+  }
+  if (process.env.CF_TOKEN) {
+    return process.env.CF_TOKEN.trim();
+  }
+  const defaultWranglerConfig = path.join(os.homedir(), '.wrangler', 'config', 'default.toml');
+  if (fs.existsSync(defaultWranglerConfig)) {
+    const tomlContent = fs.readFileSync(defaultWranglerConfig, 'utf8');
+    const match = tomlContent.match(/oauth_token\s*=\s*"([^"]+)"/);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+  }
+  throw new Error('Cloudflare API Token not found. Set CLOUDFLARE_API_TOKEN or CF_TOKEN env var, or login via wrangler.');
 }
-const CF_TOKEN = match[1];
-const ACCOUNT_ID = '8cfd6bbc5cd3025b0139f49d05ae2ad4';
-const DB_ID = '8511096e-3c57-428f-8b2c-98fdb297f705'; // bworkpos_staging_db
+
+const CF_TOKEN = resolveCloudflareToken();
+const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '8cfd6bbc5cd3025b0139f49d05ae2ad4';
+const DB_ID = process.env.CLOUDFLARE_D1_STAGING_DB_ID || '8511096e-3c57-428f-8b2c-98fdb297f705'; // bworkpos_staging_db
 
 console.log('[Real D1 Staging] Initializing Real Cloudflare D1 client for bworkpos_staging_db...');
 
