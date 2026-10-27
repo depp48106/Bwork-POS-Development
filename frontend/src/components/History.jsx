@@ -1,5 +1,6 @@
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
+import RoomExtensionModal from './RoomExtensionModal';
 import AuthenticatedSlipImage from './AuthenticatedSlipImage';
 import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
@@ -151,6 +152,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
   const [basecampQuotaError, setBasecampQuotaError] = useState(null);
   const [paymentTransactions, setPaymentTransactions] = useState([]);
   const [attachSlipModalData, setAttachSlipModalData] = useState(null);
+  const [extensionModalData, setExtensionModalData] = useState(null);
   const [isLoadingPayments, setIsLoadingPayments] = useState(false);
   const activePaymentFetchIdRef = useRef(null);
 
@@ -2908,6 +2910,35 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                   </div>
                 ) : (
                   <>
+                    {/* Room Extension (ต่อเวลาห้อง) */}
+                    {(selectedBooking.items || []).some(it => it.room_id) && (
+                      <button
+                        type="button"
+                        id="history-btn-extend-room"
+                        className="btn btn-secondary"
+                        style={{
+                          width: '100%',
+                          padding: '12px',
+                          gap: '8px',
+                          borderRadius: '14px',
+                          backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                          color: '#2563eb',
+                          border: '1.5px solid #2563eb',
+                          fontWeight: 800,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer'
+                        }}
+                        onClick={() => {
+                          const roomItem = (selectedBooking.items || []).find(it => it.room_id);
+                          setExtensionModalData({ booking: selectedBooking, item: roomItem });
+                        }}
+                      >
+                        <Clock size={18} /> ต่อเวลาการใช้งานห้อง
+                      </button>
+                    )}
+
                     <button
                       className="btn btn-secondary"
                       style={{ width: '100%', padding: '12px', gap: '8px', borderRadius: '14px', backgroundColor: '#e2e8f0', color: '#1e293b', fontWeight: 'bold' }}
@@ -2990,6 +3021,27 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ROOM EXTENSION MODAL */}
+      {extensionModalData && (
+        <RoomExtensionModal
+          isOpen={!!extensionModalData}
+          booking={extensionModalData.booking}
+          initialItem={extensionModalData.item}
+          onClose={() => setExtensionModalData(null)}
+          onSuccess={(updatedBooking) => {
+            const bId = extensionModalData.booking?.id;
+            if (bId) {
+              fetchPaymentTransactions(bId);
+              if (selectedBooking && selectedBooking.id === bId) {
+                setSelectedBooking(updatedBooking);
+              }
+              fetchHistoryBookings(true);
+            }
+          }}
+          sysAlert={sysAlert}
+        />
       )}
 
       {/* ATTACH SLIP MODAL (HISTORICAL / LEGACY SLIP ATTACHMENT) */}

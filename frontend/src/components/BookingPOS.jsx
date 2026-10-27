@@ -1,6 +1,7 @@
 import POSTaxAndSlipSection from './POSTaxAndSlipSection';
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
+import RoomExtensionModal from './RoomExtensionModal';
 import AuthenticatedSlipImage from './AuthenticatedSlipImage';
 import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import BasecampQuotaModal from './BasecampQuotaModal';
@@ -252,6 +253,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
   // Payment slip attachment modal & transactions for viewed booking
   const [attachSlipModalData, setAttachSlipModalData] = useState(null);
+  const [extensionModalData, setExtensionModalData] = useState(null);
   const [posPaymentTransactions, setPosPaymentTransactions] = useState([]);
   const [posLoadingPayments, setPosLoadingPayments] = useState(false);
 
@@ -5254,7 +5256,42 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 <Check size={13} /> ชำระเงินสำเร็จ
               </span>
               <div style={{ display: 'flex', gap: '8px' }}>
-                {onNavigate && (
+                {/* Room Extension (ต่อเวลาห้อง) */}
+              {viewedEvent && viewedEvent.room_id && (
+                <button
+                  type="button"
+                  id="btn-drawer-extend-room"
+                  style={{
+                    flex: 1.2,
+                    height: '42px',
+                    borderRadius: '12px',
+                    fontWeight: 800,
+                    fontSize: '0.84rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                    color: '#2563eb',
+                    border: '1.5px solid #2563eb',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => {
+                    const bId = viewedEvent.booking_id || viewedEvent.id;
+                    const bookingObj = {
+                      ...viewedEvent,
+                      id: bId,
+                      items: [viewedEvent]
+                    };
+                    setExtensionModalData({ booking: bookingObj, item: viewedEvent });
+                  }}
+                >
+                  <Clock size={16} />
+                  <span>ต่อเวลาห้อง</span>
+                </button>
+              )}
+
+              {onNavigate && (
                   <button
                     type="button"
                     onClick={() => {
@@ -6665,6 +6702,21 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           </div>
         );
       })()}
+
+      {/* Room Extension Modal */}
+      {extensionModalData && (
+        <RoomExtensionModal
+          isOpen={!!extensionModalData}
+          booking={extensionModalData.booking}
+          initialItem={extensionModalData.item}
+          onClose={() => setExtensionModalData(null)}
+          onSuccess={() => {
+            fetchCalendarEvents();
+            setViewedEvent(null);
+          }}
+          sysAlert={sysAlert}
+        />
+      )}
 
       {/* Attach Slip Modal (Historical / POS Slip Attachment) */}
       {attachSlipModalData && (

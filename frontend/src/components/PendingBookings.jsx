@@ -1,5 +1,6 @@
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
+import RoomExtensionModal from './RoomExtensionModal';
 import AuthenticatedSlipImage from './AuthenticatedSlipImage';
 import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useCallback } from 'react';
@@ -164,6 +165,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   // Payment Transactions History for Detail Modal (Phase 4)
   const [paymentTransactions, setPaymentTransactions] = useState([]);
   const [attachSlipModalData, setAttachSlipModalData] = useState(null);
+  const [extensionModalData, setExtensionModalData] = useState(null);
   const [isLoadingPayments, setIsLoadingPayments] = useState(false);
   const activePaymentFetchBookingIdRef = useRef(null);
 
@@ -3716,6 +3718,24 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               <span>ดูรายละเอียดการจอง</span>
             </div>
 
+            {/* Room Extension (ต่อเวลาห้อง) */}
+            {activeActionMenuBooking.payment_status !== 'cancelled' && (activeActionMenuBooking.items || []).some(it => it.room_id) && (
+              <div
+                id="pb-menu-item-extend-room"
+                onClick={() => {
+                  const b = activeActionMenuBooking;
+                  setActiveActionMenuBooking(null);
+                  setActionMenuPos(null);
+                  const roomItem = (b.items || []).find(it => it.room_id);
+                  setExtensionModalData({ booking: b, item: roomItem });
+                }}
+                className="action-menu-item"
+              >
+                <Clock size={14} style={{ color: '#2563eb' }} />
+                <span>ต่อเวลาห้อง</span>
+              </div>
+            )}
+
             {/* 2. Edit Schedule (แก้ไขวัน/เวลา) */}
             {activeActionMenuBooking.payment_status !== 'cancelled' && (
               <div
@@ -5308,6 +5328,29 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   >
                     ปิดหน้าต่าง
                   </button>
+
+                  {/* Room Extension (ต่อเวลาห้อง) */}
+                  {!isCancelled && (b.items || []).some(it => it.room_id) && (
+                    <button
+                      type="button"
+                      id="pb-detail-btn-extend-room"
+                      className="pb-detail-btn-secondary"
+                      onClick={() => {
+                        const roomItem = (b.items || []).find(it => it.room_id);
+                        setExtensionModalData({ booking: b, item: roomItem });
+                      }}
+                      style={{
+                        borderColor: '#2563eb',
+                        color: '#2563eb',
+                        backgroundColor: 'rgba(37, 99, 235, 0.06)',
+                        fontWeight: 750
+                      }}
+                      aria-label="ต่อเวลาการใช้งานห้องประชุม"
+                    >
+                      <Clock size={14} style={{ color: '#2563eb' }} />
+                      <span>ต่อเวลาห้อง</span>
+                    </button>
+                  )}
 
                   {/* Separate Edit: แก้ไขวัน/เวลา */}
                   {!isCancelled && (
@@ -9188,6 +9231,27 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             if (bId) {
               fetchPaymentTransactions(bId);
               setSelectedBooking(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              fetchBookings(true, false, true);
+            }
+          }}
+          sysAlert={sysAlert}
+        />
+      )}
+
+      {/* ROOM EXTENSION MODAL */}
+      {extensionModalData && (
+        <RoomExtensionModal
+          isOpen={!!extensionModalData}
+          booking={extensionModalData.booking}
+          initialItem={extensionModalData.item}
+          onClose={() => setExtensionModalData(null)}
+          onSuccess={(updatedBooking) => {
+            const bId = extensionModalData.booking?.id;
+            if (bId) {
+              fetchPaymentTransactions(bId);
+              if (selectedBooking && selectedBooking.id === bId) {
+                setSelectedBooking(updatedBooking);
+              }
               fetchBookings(true, false, true);
             }
           }}

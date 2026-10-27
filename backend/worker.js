@@ -6523,6 +6523,425 @@ export default {
         }), { headers: corsHeaders });
       }
 
+            // ----------------------------------------------------
+      // ROOM EXTENSION WORKFLOW ENDPOINTS (PARITY)
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/extension-preview') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        const urlObj = new URL(request.url);
+        const bookingItemId = urlObj.searchParams.get('booking_item_id') ? Number(urlObj.searchParams.get('booking_item_id')) : null;
+        const durationMinutes = Math.max(15, Math.min(480, Number(urlObj.searchParams.get('duration_minutes')) || 60));
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+        if (['cancelled', 'failed', 'rejected'].includes(booking.payment_status)) {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถต่อเวลาสำหรับการจองที่ถูกยกเลิกแล้ว' }), { status: 400, headers: corsHeaders });
+        }
+
+        let item = null;
+        if (bookingItemId) {
+          item = await env.DB.prepare('SELECT * FROM booking_items WHERE id = ? AND booking_id = ?').bind(bookingItemId, bookingId).first();
+        } else {
+          item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1').bind(bookingId).first();
+        }
+
+        if (!item || !item.room_id) {
+          return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องที่สามารถต่อเวลาได้ในการจองนี้' }), { status: 404, headers: corsHeaders });
+        }
+        if (item.checkin_status === 'cancelled') {
+          return new Response(JSON.stringify({ error: 'รายการห้องนี้ถูกยกเลิกไปแล้ว' }), { status: 400, headers: corsHeaders });
+        }
+
+        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first();
+        if (!room) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลห้องประชุม' }), { status: 404, headers: corsHeaders });
+        }
+
+        function addMinutesToLocalISO(isoString, minutes) {
+          const norm = normalizeToLocalISO(isoString);
+          const [datePart, timePart] = norm.split('T');
+          const [h, m, s] = (timePart || '00:00:00').split(':').map(Number);
+          const totalM = h * 60 + m + Number(minutes);
+          const newDate = new Date(datePart + 'T00:00:00');
+          const dayOffset = Math.floor(totalM / (24 * 60));
+          if (dayOffset > 0) {
+            newDate.setDate(newDate.getDate() + dayOffset);
+          }
+          const remM = ((totalM % (24 * 60)) + (24 * 60)) % (24 * 60);
+          const newH = String(Math.floor(remM / 60)).padStart(2, '0');
+          const newM = String(remM % 60).padStart(2, '0');
+          const newS = String(s || 0).padStart(2, '0');
+          const y = newDate.getFullYear();
+          const mo = String(newDate.getMonth() + 1).padStart(2, '0');
+          const d = String(newDate.getDate()).padStart(2, '0');
+          return `${y}-${mo}-${d}T${newH}:${newM}:${newS}`;
+        }
+
+        const newEndISO = addMinutesToLocalISO(item.end_time, durationMinutes);
+
+        // Check room overlap in worker
+        const overlapResult = await checkRoomOverlap(env, item.room_id, item.start_time, newEndISO, null, item.id);
+
+        const additionalHours = durationMinutes / 60;
+        const hourlyRate = item.layout === 'classroom'
+          ? (room.classroom_hourly_rate || room.hourly_rate)
+          : room.hourly_rate;
+
+        const grossExtensionFee = roundMoney(additionalHours * hourlyRate);
+
+        let remainingQuota = 0;
+        let contractEligible = false;
+        let contractDetails = null;
+
+        if (booking.customer_id || booking.customer_type === 'shop' || booking.customer_type === 'basecamp') {
+          try {
+            const quotaCalc = await calculateWorkerCustomerQuota(env, {
+              customerId: booking.customer_id,
+              customerType: booking.customer_type,
+              basecampSubType: booking.basecamp_sub_type,
+              basecampUnit: booking.basecamp_unit,
+              serviceDate: item.start_time
+            });
+            remainingQuota = quotaCalc.remaining_quota || 0;
+            contractEligible = quotaCalc.contract_eligible || false;
+            contractDetails = quotaCalc.contract || null;
+          } catch (qErr) {
+            console.error('Error evaluating quota in worker extension preview:', qErr);
+          }
+        }
+
+        const isInternalFree = booking.customer_type === 'builtland' || booking.payment_status === 'internal_free' || booking.billing_option === 'internal_free';
+        const maxQuotaDeductible = contractEligible ? Math.min(additionalHours, remainingQuota) : 0;
+        const estimatedFeeWithQuota = isInternalFree ? 0 : roundMoney(Math.max(0, additionalHours - maxQuotaDeductible) * hourlyRate);
+
+        return new Response(JSON.stringify({
+          success: true,
+          booking_id: booking.id,
+          booking_code: booking.booking_code || `#${booking.id}`,
+          customer_name: booking.customer_name,
+          customer_type: booking.customer_type,
+          booking_item_id: item.id,
+          room_id: item.room_id,
+          room_name: room.name,
+          layout: item.layout || 'standard',
+          start_time: item.start_time,
+          current_end_time: item.end_time,
+          new_end_time: newEndISO,
+          duration_minutes: durationMinutes,
+          additional_hours: additionalHours,
+          hourly_rate: hourlyRate,
+          gross_extension_fee: grossExtensionFee,
+          is_internal_free: isInternalFree,
+          available: !overlapResult.hasOverlap,
+          conflict: overlapResult.hasOverlap ? {
+            is_cleaning_buffer: overlapResult.isCleaningBuffer,
+            buffer_minutes: overlapResult.bufferMinutes,
+            booking: overlapResult.booking,
+            message: formatOverlapErrorMessage(room.name, overlapResult)
+          } : null,
+          cleaning_buffer_minutes: overlapResult.bufferMinutes,
+          quota: {
+            contract_eligible: contractEligible,
+            remaining_quota: remainingQuota,
+            max_quota_deductible: maxQuotaDeductible,
+            estimated_fee_with_quota: estimatedFeeWithQuota,
+            contract: contractDetails
+          },
+          current_financials: {
+            total_amount: roundMoney(Number(booking.total_amount) || 0),
+            paid_amount: roundMoney(Number(booking.paid_amount) || 0),
+            balance_amount: roundMoney(Number(booking.balance_amount) || 0),
+            payment_status: booking.payment_status
+          }
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/extend') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        const body = await request.json().catch(() => ({}));
+        const {
+          booking_item_id,
+          duration_minutes,
+          payment_method,
+          use_quota,
+          amount_paid,
+          slip_image,
+          notes
+        } = body;
+
+        const durationMinutes = Math.max(15, Math.min(480, Number(duration_minutes) || 60));
+        const method = payment_method || 'cash';
+        const staffName = auth.user?.username || auth.user?.fullname || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+        if (['cancelled', 'failed', 'rejected'].includes(booking.payment_status)) {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถต่อเวลาสำหรับรายการจองที่ถูกยกเลิกแล้ว' }), { status: 400, headers: corsHeaders });
+        }
+
+        let item = null;
+        if (booking_item_id) {
+          item = await env.DB.prepare('SELECT * FROM booking_items WHERE id = ? AND booking_id = ?').bind(Number(booking_item_id), bookingId).first();
+        } else {
+          item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1').bind(bookingId).first();
+        }
+
+        if (!item || !item.room_id) {
+          return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องที่สามารถต่อเวลาได้ในการจองนี้' }), { status: 404, headers: corsHeaders });
+        }
+        if (item.checkin_status === 'cancelled') {
+          return new Response(JSON.stringify({ error: 'รายการห้องนี้ถูกยกเลิกไปแล้ว' }), { status: 400, headers: corsHeaders });
+        }
+
+        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first();
+        if (!room) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลห้องประชุม' }), { status: 404, headers: corsHeaders });
+        }
+
+        function addMinutesToLocalISO(isoString, minutes) {
+          const norm = normalizeToLocalISO(isoString);
+          const [datePart, timePart] = norm.split('T');
+          const [h, m, s] = (timePart || '00:00:00').split(':').map(Number);
+          const totalM = h * 60 + m + Number(minutes);
+          const newDate = new Date(datePart + 'T00:00:00');
+          const dayOffset = Math.floor(totalM / (24 * 60));
+          if (dayOffset > 0) {
+            newDate.setDate(newDate.getDate() + dayOffset);
+          }
+          const remM = ((totalM % (24 * 60)) + (24 * 60)) % (24 * 60);
+          const newH = String(Math.floor(remM / 60)).padStart(2, '0');
+          const newM = String(remM % 60).padStart(2, '0');
+          const newS = String(s || 0).padStart(2, '0');
+          const y = newDate.getFullYear();
+          const mo = String(newDate.getMonth() + 1).padStart(2, '0');
+          const d = String(newDate.getDate()).padStart(2, '0');
+          return `${y}-${mo}-${d}T${newH}:${newM}:${newS}`;
+        }
+
+        const newEndISO = addMinutesToLocalISO(item.end_time, durationMinutes);
+
+        // Check overlap guard inside worker
+        const overlapResult = await checkRoomOverlap(env, item.room_id, item.start_time, newEndISO, null, item.id);
+        if (overlapResult.hasOverlap) {
+          return new Response(JSON.stringify({
+            error: formatOverlapErrorMessage(room.name, overlapResult),
+            conflict: overlapResult
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        const additionalHours = durationMinutes / 60;
+        const hourlyRate = item.layout === 'classroom'
+          ? (room.classroom_hourly_rate || room.hourly_rate)
+          : room.hourly_rate;
+
+        const isInternalFree = booking.customer_type === 'builtland' || booking.payment_status === 'internal_free' || booking.billing_option === 'internal_free';
+
+        let quotaDeducted = 0;
+        let extensionFee = 0;
+
+        if (isInternalFree) {
+          extensionFee = 0;
+        } else if (use_quota && (booking.customer_id || booking.customer_type === 'shop' || booking.customer_type === 'basecamp')) {
+          const quotaCalc = await calculateWorkerCustomerQuota(env, {
+            customerId: booking.customer_id,
+            customerType: booking.customer_type,
+            basecampSubType: booking.basecamp_sub_type,
+            basecampUnit: booking.basecamp_unit,
+            serviceDate: item.start_time
+          });
+          if (quotaCalc.contract_eligible && quotaCalc.remaining_quota > 0) {
+            quotaDeducted = Math.min(additionalHours, quotaCalc.remaining_quota);
+          }
+          const chargeableHours = Math.max(0, additionalHours - quotaDeducted);
+          extensionFee = roundMoney(chargeableHours * hourlyRate);
+        } else {
+          extensionFee = roundMoney(additionalHours * hourlyRate);
+        }
+
+        let payAmount = 0;
+        if (extensionFee > 0) {
+          if (method === 'unpaid') {
+            payAmount = 0;
+          } else if (amount_paid !== undefined) {
+            payAmount = roundMoney(Math.max(0, Math.min(Number(amount_paid), extensionFee)));
+          } else {
+            payAmount = extensionFee;
+          }
+        }
+
+        let slipUrl = null;
+        if (slip_image) {
+          if (typeof slip_image !== 'string' || !slip_image.startsWith('data:image/')) {
+            return new Response(JSON.stringify({ error: 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ PNG, JPG หรือ WEBP' }), { status: 400, headers: corsHeaders });
+          }
+          if (slip_image.length > 10 * 1024 * 1024 * 1.37) {
+            return new Response(JSON.stringify({ error: 'ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)' }), { status: 400, headers: corsHeaders });
+          }
+          if (!env.BUCKET) {
+            return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
+          }
+          try {
+            slipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId, paymentId: 'extension', uploadedBy: staffName });
+            if (!slipUrl || slipUrl.startsWith('data:')) {
+              return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้' }), { status: 500, headers: corsHeaders });
+            }
+          } catch (r2Err) {
+            console.error('[Room Extension] R2 upload error in worker:', r2Err);
+            return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
+          }
+        } else if (body.slip_url) {
+          slipUrl = String(body.slip_url).trim();
+        }
+
+        const newQuantity = roundMoney((Number(item.quantity) || 0) + additionalHours);
+        const newItemSubtotal = roundMoney((Number(item.subtotal) || 0) + (additionalHours * hourlyRate));
+
+        // Optimistic concurrency item update
+        const itemUpdateRes = await env.DB.prepare(
+          `UPDATE booking_items
+           SET end_time = ?, quantity = ?, subtotal = ?
+           WHERE id = ? AND end_time = ?`
+        ).bind(newEndISO, newQuantity, newItemSubtotal, item.id, item.end_time).run();
+
+        if (itemUpdateRes.meta?.changes !== 1) {
+          return new Response(JSON.stringify({
+            error: 'ข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง'
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        const oldTotal = roundMoney(Math.max(0, Number(booking.total_amount) || 0));
+        const oldPaid = roundMoney(Math.max(0, Number(booking.paid_amount) || 0));
+        const newTotal = roundMoney(oldTotal + extensionFee);
+        const newPaid = roundMoney(oldPaid + payAmount);
+        const newBalance = roundMoney(Math.max(0, newTotal - newPaid));
+        const newQuotaHours = roundMoney((Number(booking.quota_hours_used) || 0) + quotaDeducted);
+
+        let newStatus = booking.payment_status;
+        if (booking.payment_status === 'internal_free' || isInternalFree) {
+          newStatus = 'internal_free';
+        } else if (newTotal === 0 && newQuotaHours > 0) {
+          newStatus = 'paid';
+        } else if (newBalance <= 0) {
+          newStatus = 'paid';
+        } else if (newPaid > 0) {
+          newStatus = 'deposit';
+        } else {
+          newStatus = booking.payment_status === 'deposit' ? 'deposit' : 'pending';
+        }
+
+        const statements = [];
+        statements.push(
+          env.DB.prepare(
+            `UPDATE bookings
+             SET total_amount = ?, paid_amount = ?, balance_amount = ?,
+                 payment_status = ?, quota_hours_used = ?,
+                 subtotal_amount = COALESCE(subtotal_amount, total_amount) + ?
+             WHERE id = ?`
+          ).bind(newTotal, newPaid, newBalance, newStatus, newQuotaHours, (additionalHours * hourlyRate), booking.id)
+        );
+
+        const effectiveMethod = (extensionFee === 0 && quotaDeducted > 0) ? 'quota' : method;
+        if (extensionFee > 0 || quotaDeducted > 0 || payAmount > 0) {
+          statements.push(
+            env.DB.prepare(
+              `INSERT INTO payment_transactions
+               (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
+               VALUES (?, ?, ?, ?, 'extension', 'completed', ?)`
+            ).bind(booking.id, payAmount, effectiveMethod, slipUrl, nowIso)
+          );
+        }
+
+        const oldTimeFormatted = item.end_time.includes('T') ? item.end_time.split('T')[1].substring(0, 5) : item.end_time;
+        const newTimeFormatted = newEndISO.includes('T') ? newEndISO.split('T')[1].substring(0, 5) : newEndISO;
+        const durationLabel = durationMinutes >= 60 ? `${durationMinutes / 60} ชม.` : `${durationMinutes} นาที`;
+
+        let auditDesc = `ต่อเวลาห้อง ${room.name} จาก ${oldTimeFormatted} เป็น ${newTimeFormatted} (+${durationLabel})`;
+        if (quotaDeducted > 0) {
+          auditDesc += ` (ใช้โควตา ${quotaDeducted} ชม.)`;
+        }
+        if (extensionFee > 0) {
+          auditDesc += ` ค่าบริการ ฿${extensionFee.toLocaleString()}`;
+          if (payAmount > 0) {
+            auditDesc += ` ชำระแล้ว ฿${payAmount.toLocaleString()} (${method})${slipUrl ? ' พร้อมแนบสลิป' : ''}`;
+          } else {
+            auditDesc += ' (ค้างชำระ)';
+          }
+        }
+
+        const historyPayload = {
+          action: 'extend_room',
+          booking_id: booking.id,
+          booking_item_id: item.id,
+          room_id: item.room_id,
+          room_name: room.name,
+          previous_end_time: item.end_time,
+          new_end_time: newEndISO,
+          duration_minutes: durationMinutes,
+          hourly_rate: hourlyRate,
+          extension_fee: extensionFee,
+          quota_deducted: quotaDeducted,
+          amount_paid: payAmount,
+          payment_method: method,
+          slip_url: slipUrl,
+          notes: notes || null,
+          performed_by: staffName,
+          timestamp: nowIso,
+          description: auditDesc
+        };
+
+        statements.push(
+          env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'extend_room', ?, ?, ?)`
+          ).bind(booking.id, JSON.stringify(historyPayload), staffName, nowIso)
+        );
+
+        await env.DB.batch(statements);
+
+        const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(booking.id).first();
+        const { results: updatedItems } = await env.DB.prepare(
+          `SELECT bi.*, r.name as room_name, r.capacity as room_capacity,
+                  s.name as service_name, s.category as service_category
+           FROM booking_items bi
+           LEFT JOIN rooms r ON bi.room_id = r.id
+           LEFT JOIN services s ON bi.service_id = s.id
+           WHERE bi.booking_id = ?`
+        ).bind(booking.id).all();
+        if (updatedBooking) {
+          updatedBooking.items = updatedItems || [];
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: `ต่อเวลาห้อง ${room.name} เป็นเวลา ${newEndISO.split('T')[1].substring(0, 5)} น. เรียบร้อยแล้ว`,
+          booking: updatedBooking,
+          booking_id: booking.id,
+          booking_item_id: item.id,
+          room_name: room.name,
+          previous_end_time: item.end_time,
+          new_end_time: newEndISO,
+          duration_minutes: durationMinutes,
+          extension_fee: extensionFee,
+          amount_paid: payAmount,
+          quota_deducted: quotaDeducted,
+          slip_url: slipUrl
+        }), { headers: corsHeaders });
+      }
+
+
       // Cancel booking endpoint (Soft cancel + LINE Notification)
       
       // ----------------------------------------------------
