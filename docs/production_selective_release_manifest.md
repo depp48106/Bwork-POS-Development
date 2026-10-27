@@ -1,142 +1,216 @@
-# BWORK-POS | SELECTIVE PRODUCTION RELEASE CANDIDATE MANIFEST
+# BWORK-POS | CORRECTED RELEASE MANIFEST & PRODUCTION DRY-RUN PLAN
 
-**Document Version:** 1.0.0-RC  
+**Document Version:** 2.0.0-PROD-RC  
 **Date:** 2026-10-27  
-**Target Environment:** Cloudflare Workers + Cloudflare D1 + Cloudflare R2  
-**Safety Status:** PRE-RELEASE AUDIT COMPLETE (ZERO PRODUCTION WRITES EXECUTED)
+**Status:** AUDITED & VERIFIED (ZERO PRODUCTION WRITES EXECUTED)  
+**Safety Gate:** STOP & REPORT COMPLETED
 
 ---
 
-## 1. BASELINE & SOURCE REVISION TRACKING
+## 1. REVISION TRACKING & BASELINE VERIFICATION
 
-| Repository | Path / Remote | Branch | Verified SHA | Notes |
+| Component | Remote Repository | Branch | Commit SHA | Verified Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Production Repo** | `https://github.com/depp48106/Bwork-POS.git` | `main` | `377c526fa7da4785d172212adb68d73c974eee02` | Last Verified Production Baseline |
-| **Development Repo** | `https://github.com/depp48106/Bwork-POS-Development.git` | `integration/home-office-20261021` | `8e55b447d323760c53080182de4a47a9d3d223b7` | Concurrency & Real D1 Staging Gate |
+| **Production Baseline** | `https://github.com/depp48106/Bwork-POS.git` | `main` | `377c526fa7da4785d172212adb68d73c974eee02` | Audited Clean Baseline |
+| **Development Source** | `https://github.com/depp48106/Bwork-POS-Development.git` | `integration/home-office-20261021` | `7a2a384a326ff13aa0b25e1014e7a8360d5bfa7a` | Tested & Pushed (Non-force) |
 
 ---
 
-## 2. INCLUDED FILES & CHERRY-PICK SCOPE
+## 2. SOURCE INVENTORY & CORRECTED FILE PATHS
 
-The following files contain the validated features ready for selective production integration:
+The initial manifest referenced generic component names. The audit verified the **actual file paths, imports, and dependencies**:
 
-### A. Backend Core & Cloudflare Worker Runtime
-- `backend/worker.js`:
-  - **D1 Atomic Conditional SQL Concurrency Guard:** `checkRoomOverlap`, `POST /api/public/bookings`, and `POST /api/bookings` with conditional `INSERT ... WHERE NOT EXISTS (...)` preventing cross-channel race conditions.
-  - **Atomic Cleanup on Collision:** Immediate removal of dangling booking shells (`DELETE FROM bookings WHERE id = ?`) when room item insertion is rejected, guaranteeing zero orphan rows.
-  - **Room Extension Engine:** `POST /api/bookings/:id/extend` supporting same-room constraint, cleaning buffer bypass between consecutive slots, and 30-min buffer enforcement for subsequent bookings.
-  - **Deposit & Balance Workflow:** `POST /api/bookings/:id/pay-balance` with optimistic CAS concurrency guard, financial invariant maintenance (`total_amount = paid_amount + balance_amount`), and multi-transaction history.
-  - **Payment Slip Timeline:** Dedicated slip preservation for deposit vs balance vs extension.
-- `backend/server.js`: Express parity endpoints matching Worker logic for local development.
-- `backend/database.js`: Query helpers, transaction boundaries, and SQLite fallback logic.
-- `backend/schema.sql`: Authoritative schema reference.
+### A. Corrected File Paths (Resolving Manifest Discrepancies)
 
-### B. Frontend POS & Booking App UI
-- `frontend/src/components/BookingDetailsModal.jsx`: Responsive wide landscape modal for desktop and tablet POS.
-- `frontend/src/components/ExtendRoomModal.jsx`: Modal for extending active bookings with real-time pricing and slip attachment.
-- `frontend/src/components/Dashboard.jsx`: Staff handover banner, financial summary card, and balance payment shortcuts.
-- `frontend/src/components/PendingBookings.jsx`: Staff manual payment review, replacing client-side auto verification.
-- `booking-app/src/components/BookingSummary.jsx`: Online booking payment window (15-min countdown) and slip upload to staff review queue.
-
----
-
-## 3. EXCLUDED FILES & FEATURES (STRICT PROHIBITION)
-
-The following components **MUST NOT** be included in the production release:
-
-| Component / Path | Reason for Exclusion |
-| :--- | :--- |
-| `/api/public/support/*` & `/api/pos/support/*` | Support Tickets feature remains in development; disabled on production. |
-| `frontend/src/components/SupportTickets.jsx` | Unreleased feature; must remain unrouted. |
-| `backend/migrations/012_add_support_tickets.sql` | Unreleased schema table; do not execute on production D1. |
-| `backend/tests/realD1StagingValidation.cjs` | Staging validation test suite; contains staging OAuth/D1 IDs. |
-| `backend/tests/stagingLineHardBlock.test.cjs` | Staging LINE OA simulation test suite. |
-| `backend/wrangler.staging.toml` | Staging worker configuration. |
-| `backend/staging_fixtures.sql` | Staging mock seed data. |
-| `booking-app/.env.staging` & `frontend/.env.staging` | Staging environment files. |
-
----
-
-## 4. DATABASE SCHEMA DIFF & REQUIRED MIGRATIONS
-
-### Applied Schema Validations
-1. **Migration 008 (`008_add_discount_and_deposit.sql`):**
-   - Adds `subtotal_amount`, `discount_type`, `discount_value`, `discount_amount`, `paid_amount`, `balance_amount` to `bookings`.
-   - Creates `payment_transactions` table for multi-slip tracking.
-2. **Migration 011 (`011_add_customers_and_contracts.sql`):**
-   - Adds `customer_id INTEGER` and `contract_id INTEGER` to `bookings` table.
-   - Creates `customers`, `customer_contracts`, and `customer_audit_logs`.
-
-### Safety Verification
-- All new columns are `NULL` or provide safe `DEFAULT` values.
-- Existing production rows remain completely unaffected.
-- No `DROP TABLE`, `DROP COLUMN`, or table rewriting required.
-
----
-
-## 5. ENVIRONMENT ISOLATION & SECRETS MANAGEMENT
-
-| Setting | Production (`wrangler.toml`) | Staging (`wrangler.staging.toml`) |
+| Referenced Name in Old Manifest | Actual Verified Path | Container / Usage |
 | :--- | :--- | :--- |
-| **Worker Name** | `bworkpos-worker` | `bworkpos-worker-staging` |
-| **D1 Database Name** | `bworkpos_db` | `bworkpos_staging_db` |
-| **D1 Database UUID** | `0f171606-080b-4380-bf91-167dc678e2e4` | `8511096e-3c57-428f-8b2c-98fdb297f705` |
-| **R2 Bucket Name** | `bwork-uploads` | None (Isolated) |
-| **LINE Dispatch** | Active Live Push | Hard-Blocked (`DISABLE_LIVE_LINE=true`) |
-| **Compatibility Date**| `2024-04-05` | `2024-04-05` |
+| `frontend/src/components/BookingDetailsModal.jsx` | [`frontend/src/components/BookingPOS.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/BookingPOS.jsx) | Implemented directly inside `BookingPOS.jsx` (Lines 6600–7200); styled by [`BookingDetailsModal.css`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/BookingDetailsModal.css). |
+| `frontend/src/components/ExtendRoomModal.jsx` | [`frontend/src/components/RoomExtensionModal.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/RoomExtensionModal.jsx) | Standalone modal component; styled by [`RoomExtensionModal.css`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/RoomExtensionModal.css). |
+| `booking-app/src/components/BookingSummary.jsx` | [`booking-app/src/pages/ConfirmPage.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/booking-app/src/pages/ConfirmPage.jsx) & [`BookingFormPage.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/booking-app/src/pages/BookingFormPage.jsx) | Pages handling booking submission, payment countdown ([`paymentCountdown.js`](file:///D:/Project%20BL/Bwork-POS-Development-Home/booking-app/src/utils/paymentCountdown.js)), and slip upload. |
+
+### B. Feature-to-File Matrix & Dependency Trace
+
+1. **CRM Customer Management & Contract Console:**
+   - **Frontend:** [`CustomerManagement.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/CustomerManagement.jsx), [`CustomerManagement.css`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/CustomerManagement.css), [`BasecampQuotaModal.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/BasecampQuotaModal.jsx), [`CustomSelect.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/CustomSelect.jsx).
+   - **Backend Routes:** `GET/POST /api/customers`, `PUT /api/customers/:id`, `GET/POST /api/customers/:id/contracts`, `PUT /api/contracts/:id`.
+   - **D1 Schema Tables:** `customers`, `customer_contracts`, `customer_audit_logs`.
+2. **POS Wide Landscape Booking Details:**
+   - **Frontend:** [`BookingPOS.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/BookingPOS.jsx), [`BookingDetailsModal.css`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/BookingDetailsModal.css), [`AuthenticatedSlipImage.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/AuthenticatedSlipImage.jsx).
+   - **Backend Routes:** `GET /api/bookings/:id` (enriched items, door PIN, multi-transaction timeline).
+3. **Room Extension Workflow:**
+   - **Frontend:** [`RoomExtensionModal.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/RoomExtensionModal.jsx), [`RoomExtensionModal.css`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/RoomExtensionModal.css).
+   - **Backend Routes:** `POST /api/bookings/:id/extend` (same-room constraint, cleaning buffer bypass for extension, 30m buffer enforcement for subsequent queue).
+4. **Payment Slip Review & Manual Staff Verification:**
+   - **Frontend:** [`PendingBookings.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/PendingBookings.jsx), [`AuthenticatedSlipImage.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/AuthenticatedSlipImage.jsx), [`AttachSlipModal.jsx`](file:///D:/Project%20BL/Bwork-POS-Development-Home/frontend/src/components/AttachSlipModal.jsx).
+   - **Backend Routes:** `GET /api/slips/secure/:path+`, `POST /api/bookings/:id/payments/:paymentId/slip`.
+5. **Evidence ID / CAS Concurrency Guard:**
+   - **Backend:** `POST /api/bookings/:id/pay-balance` (verifies `evidence_id` against latest `slip_verifications.id` to prevent reviewing stale slips).
+6. **Cross-Channel Concurrency Guard (POS vs Online):**
+   - **Backend:** `checkRoomOverlap()` and D1 Conditional SQL (`INSERT ... WHERE NOT EXISTS (...)`) in `POST /api/public/bookings` and `POST /api/bookings`.
 
 ---
 
-## 6. ROLLBACK PROCEDURE
+## 3. PRODUCTION BASELINE AUDIT (ACTUAL CLOUDFLARE CONFIGURATION)
 
-### A. Worker API Rollback
-1. Execute Wrangler instant deployment rollback:
-   ```bash
-   wrangler rollback --name bworkpos-worker
-   ```
-2. Or redeploy from the last verified production SHA (`377c526fa7da4785d172212adb68d73c974eee02`):
-   ```bash
-   git checkout 377c526fa7da4785d172212adb68d73c974eee02
-   npm --prefix backend run deploy
-   ```
+Audited via read-only Cloudflare REST API queries:
 
-### B. Frontend UI Rollback
-1. Checkout production commit `377c526fa7da4785d172212adb68d73c974eee02` in `D:\Project BL\Bwork-POS`.
-2. Rebuild and deploy:
-   ```bash
-   npm --prefix frontend run build
-   # Deploy via Cloudflare Pages or backend/public deployment
-   ```
+| Asset | Actual Name / UUID / ID | Status |
+| :--- | :--- | :--- |
+| **Worker API Name** | `bwork-pos-api` *(not bworkpos-worker)* | Active (v8b866f3a, 100% traffic) |
+| **Worker Host** | `bwork-pos-api.ohnatza74185-ky.workers.dev` | Healthy |
+| **Production D1 Database** | `bworkpos_db` (`0f171606-080b-4380-bf91-167dc678e2e4`) | APAC Singapore Master |
+| **Production R2 Bucket** | `bwork-uploads` (Binding: `BUCKET`) | Attached to `bwork-pos-api` |
+| **POS Pages Project** | `bwork-pos` (`bwork-pos.pages.dev`) | Active (Deployment: `98527622`) |
+| **Booking App Pages Project** | `bwork-booking` (`bwork-booking.pages.dev`) | Active (Deployment: `8b913792`) |
 
-### C. Database Rollback
-- The added columns (`customer_id`, `contract_id`) are additive and backward-compatible.
-- Previous Worker version completely ignores these columns; no database rollback required.
+### Production D1 Schema Audit
+Direct schema inspection (`SELECT name FROM sqlite_master` & `PRAGMA table_info(bookings)`) confirmed:
+- Tables `customers`, `customer_contracts`, `customer_audit_logs`, and `payment_transactions` **ALREADY EXIST** in Production D1.
+- Columns `customer_id` and `contract_id` **ALREADY EXIST** in Production `bookings` table.
+- Applied Migrations: `009`, `010`, `011_crm_customer_contracts.sql`, `013`, `014` were applied on 2026-10-24.
+- Table `support_tickets` **DOES NOT EXIST** in Production D1.
+- **Migration Decision:** **ZERO MIGRATIONS REQUIRED (0 SQL files to run)**. Rerunning Migration 011 would cause an error.
 
 ---
 
-## 7. POST-DEPLOYMENT SMOKE TEST PLAN (LIVE PRODUCTION)
+## 4. CONCURRENCY SAFETY & REAL CLOUDFLARE D1 STAGING PROOF
 
-1. **POS Health & Authentication:**
-   - Log into POS console with admin credentials.
-   - Confirm Dashboard displays the active shift and room status grid.
-2. **Walk-In Deposit Booking:**
-   - Create a 2-hour walk-in booking with 50% deposit (e.g., ฿700 total, ฿350 deposit).
-   - Verify financial summary displays: Total ฿700, Paid ฿350, Balance ฿350.
-   - Confirm receipt generation and door PIN assignment.
-3. **One-Click Balance Payment:**
-   - Select the deposit booking from the POS list.
-   - Click "รับชำระส่วนที่เหลือ" (Pay Balance) for ฿350.
-   - Attach payment slip and submit.
-   - Confirm status transitions to `paid` with ฿0 balance.
-   - Confirm timeline displays 2 distinct payment transactions (Deposit + Balance).
-4. **Room Extension:**
-   - On an active booking, click "ขยายเวลาห้อง" (Extend Room) for +1 hour.
-   - Confirm same room is locked and cleaning buffer is waived between the consecutive slots.
-   - Verify payment ledger records the extension transaction.
-5. **Cross-Channel Availability & Buffer Sync:**
-   - Open Booking App on mobile/browser.
-   - Verify extended room displays as occupied for the extended window + 30-min cleaning buffer.
-   - Attempt to book an overlapping time slot from Booking App; verify clean HTTP 409 conflict message.
-6. **Support Ticket Route Verification:**
-   - Query `GET /api/public/support/tickets` and `GET /api/pos/support/tickets`.
-   - Confirm both return HTTP 404 (Route not found / Feature disabled).
+The D1 Concurrency Suite is **VERIFIED ON REAL CLOUDFLARE D1 STAGING** (Not a mock):
+- **Staging Database:** `bworkpos_staging_db` (`8511096e-3c57-428f-8b2c-98fdb297f705`) in Singapore (`SIN`).
+- **Execution Mechanism:** Parameterized multi-statement REST queries directly against Cloudflare's production D1 engine.
+
+### Verification of 10 Parallel Scenarios:
+1. **Online vs Online:** 2 simultaneous requests -> Exactly 1 won (201), 1 rejected (409), 1 row in D1.
+2. **POS vs Online:** Cross-channel race -> Exactly 1 won, 1 rejected with 409 conflict.
+3. **POS Extend vs Online:** Room extension slot race -> Resolved safely, active items preserved.
+4. **POS vs POS:** Two staff booking same room -> Exactly 1 won, 1 rejected with 409 conflict.
+5. **Extension vs Reschedule:** Concurrency race -> Handled cleanly without collision.
+6. **Cleaning Buffer (30m):** Boundary collision -> Rejected with 409 and buffer notice.
+7. **Multi-Room Booking:** Partial failure atomic rollback -> Left 0 orphan rows in D1.
+8. **5 Concurrent Requests Stress:** 5 simultaneous threads -> Exactly 1 won (201), 4 rejected (409).
+9. **Stale Availability (TOCTOU):** Stale commit attempt -> Safely trapped with 409 conflict.
+10. **Timeout / Retry Idempotency:** Balance replay -> Accepted first time (200), retry rejected (400), financial invariant `total = paid + balance` maintained, 0 duplicate transactions.
+
+---
+
+## 5. SUPPORT TICKETS EXCLUSION & HARD-BLOCK GATE
+
+The unapproved Support Tickets feature is **strictly isolated**:
+1. **Route Level Gate (`backend/worker.js` Line 2835):**
+   ```javascript
+   if (pathname.startsWith('/api/public/support') || pathname.startsWith('/api/pos/support')) {
+     if (env.ENABLE_SUPPORT_TICKETS !== 'true') {
+       return new Response(JSON.stringify({ error: 'Support tickets feature is disabled' }), { status: 404, headers: corsHeaders });
+     }
+   }
+   ```
+   All `/api/public/support/*` and `/api/pos/support/*` endpoints return **HTTP 404** by default.
+2. **Schema Level Gate (`backend/worker.js` Line 2598):**
+   `ensureD1Schema()` wraps all `CREATE TABLE IF NOT EXISTS support_tickets` in `if (env.ENABLE_SUPPORT_TICKETS === 'true')`, preventing table creation on Production D1.
+3. **Automated Verification:** Verified via [`scratch/test_support_404.js`](file:///C:/Users/Runrasa.P/.gemini/antigravity/brain/03721993-8ed4-4f8b-a41b-db0f7e984101/scratch/test_support_404.js) that all support routes return 404.
+
+---
+
+## 6. BUILD & AUTOMATED TEST RESULTS
+
+- **Automated Regression Suites:** **109 / 109 tests passed (100%)**
+  - `realD1StagingValidation.cjs`: 11 / 11 PASS (Real Cloudflare APAC D1)
+  - `stagingLineHardBlock.test.cjs`: 10 / 10 PASS
+  - `crossChannelConcurrency.test.cjs`: 6 / 6 PASS
+  - `depositBalanceWorkflow.test.cjs`: 20 / 20 PASS
+  - `roomExtensionWorkflow.test.cjs`: 16 / 16 PASS
+  - `workerBookingAuth.test.js`: 16 / 16 PASS
+  - `workerHourCredits.test.js`: 26 / 26 PASS
+  - `test_support_404.js`: 4 / 4 PASS
+- **Frontend POS Build:** `npm --prefix frontend run build` -> Built in 3.69s (0 errors).
+- **Booking App Build:** `npm --prefix booking-app run build` -> Built in 246ms (0 errors).
+
+---
+
+## 7. 10-STEP PRODUCTION DEPLOYMENT DRY-RUN SEQUENCE
+
+> [!CAUTION]
+> This is a planned dry-run procedure. **DO NOT EXECUTE UNTIL EXPLICITLY AUTHORIZED.**
+
+### Step 1: Pre-Deployment Backup
+- Export snapshot of Production D1:
+  ```bash
+  npx wrangler d1 export bworkpos_db --remote --output backup_pre_release_$(date +%Y%m%d%H%M%S).sql
+  ```
+- Record active Worker deployment ID: `5732a59c-ce6e-4aa0-885b-6d09d4a012f7` (Version `8b866f3a`).
+- Record active Pages deployment IDs: `bwork-pos` (`98527622`), `bwork-booking` (`8b913792`).
+
+### Step 2: D1 Schema Compatibility Check
+- Confirm zero schema migrations are needed (verified already applied).
+- Do not run any SQL migration script against Production D1.
+
+### Step 3: Cloudflare Worker Deployment
+- From `backend/` directory in Production workspace:
+  ```bash
+  npx wrangler deploy --config wrangler.toml
+  ```
+- Target: Worker `bwork-pos-api` (Binding `DB` -> `0f171606`, Binding `BUCKET` -> `bwork-uploads`).
+
+### Step 4: POS Frontend Pages Deployment
+- Build and deploy POS Frontend:
+  ```bash
+  npm --prefix frontend run build
+  npx wrangler pages deploy frontend/dist --project-name bwork-pos
+  ```
+
+### Step 5: Booking App Pages Deployment
+- Build and deploy Booking App:
+  ```bash
+  npm --prefix booking-app run build
+  npx wrangler pages deploy booking-app/dist --project-name bwork-booking
+  ```
+
+### Step 6: Authentication & Financial Smoke Tests
+- Run [`scripts/production_post_deploy_smoke.cjs`](file:///D:/Project%20BL/Bwork-POS-Development-Home/scripts/production_post_deploy_smoke.cjs) against production URLs:
+  - Confirm `https://bwork-pos-api.ohnatza74185-ky.workers.dev/api/rooms` returns 200 with no exposed passwords.
+  - Confirm `https://bwork-pos.pages.dev` loads root element.
+  - Confirm `https://bwork-booking.pages.dev` loads root element.
+
+### Step 7: Concurrent Booking Verification
+- Perform a live walk-in booking test: 50% deposit, verify receipt and door PIN.
+- Perform balance payment with slip attachment: verify status changes to `paid` with ฿0 balance.
+
+### Step 8: Support Tickets 404 Check
+- Query `https://bwork-pos-api.ohnatza74185-ky.workers.dev/api/public/support/tickets` -> Must return **404**.
+- Query `https://bwork-pos-api.ohnatza74185-ky.workers.dev/api/pos/support/tickets` -> Must return **404**.
+
+### Step 9: Rollback Procedure (Real Project Identifiers)
+- **Worker Rollback:**
+  ```bash
+  npx wrangler rollback --name bwork-pos-api 5732a59c-ce6e-4aa0-885b-6d09d4a012f7
+  ```
+- **POS Pages Rollback:**
+  ```bash
+  npx wrangler pages deployment rollback 98527622-4d12-4ba1-9ab1-08540c66985f --project-name bwork-pos
+  ```
+- **Booking App Pages Rollback:**
+  ```bash
+  npx wrangler pages deployment rollback 8b913792-57d7-4b95-8c0f-ab068ae18d58 --project-name bwork-booking
+  ```
+> [!WARNING]
+> **Data Consistency Notice:** Rolling back Worker/Pages code **DOES NOT** revert or erase records written to D1 database during production execution. Any financial ledger entries created during a faulty release must be reconciled manually via compensating transactions.
+
+### Step 10: Monitoring & Stop Conditions
+- Monitor Cloudflare Worker Analytics for error spikes (`5xx` > 0.5%).
+- If any uncaught 500 or double-booking occurs, immediately trigger Step 9 rollback and stop.
+
+---
+
+## 8. PRODUCTION GO / NO-GO EVALUATION
+
+| Criterion | Evaluation Standard | Audit Result | Verdict |
+| :--- | :--- | :--- | :---: |
+| **Source Integrity** | All file paths and imports verified in repository | Verified (BookingPOS, RoomExtensionModal, ConfirmPage) | **PASS** |
+| **Production Parity** | Real Cloudflare names verified via API | `bwork-pos-api`, `bwork-pos`, `bwork-booking` verified | **PASS** |
+| **D1 Schema Parity** | Production D1 tables and columns inspected | Migration 011 already applied; 0 migrations needed | **PASS** |
+| **Concurrency Gate** | Real Cloudflare D1 Staging 10 scenarios passed | 100% pass on APAC Singapore D1 | **PASS** |
+| **Financial Integrity** | `total = paid + balance` and zero duplicate payments | Verified with idempotent balance payment retry | **PASS** |
+| **Feature Isolation** | Support Tickets routes hard-blocked | Verified all support routes return 404 | **PASS** |
+| **Production Safety** | Zero writes to Production D1/R2 during testing | Zero writes executed | **PASS** |
+
+**FINAL RECOMMENDATION:** **GO FOR SELECTIVE PRODUCTION DEPLOYMENT** (Awaiting user authorization to proceed).
