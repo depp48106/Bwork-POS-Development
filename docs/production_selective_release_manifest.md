@@ -12,7 +12,15 @@
 | Component | Remote Repository | Branch | Commit SHA | Verified Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Production Baseline** | `https://github.com/depp48106/Bwork-POS.git` | `main` | `377c526fa7da4785d172212adb68d73c974eee02` | Audited Clean Baseline |
-| **Development Source** | `https://github.com/depp48106/Bwork-POS-Development.git` | `integration/home-office-20261021` | `7a2a384a326ff13aa0b25e1014e7a8360d5bfa7a` | Tested & Pushed (Non-force) |
+| **Development Source** | `https://github.com/depp48106/Bwork-POS-Development.git` | `integration/home-office-20261021` | `c88284ae866aa4ac512e0cdc496f7919b5d281fd` | Verified Remote HEAD on GitHub |
+
+> [!NOTE]
+> **Commit History Lineage on GitHub Remote:**
+> - `c88284ae`: Staging credential security sanitization and Real Cloudflare Worker HTTP E2E validation suite (Remote HEAD).
+> - `5da41cc8`: Manifest correction with verified file paths, real Cloudflare project names, and production audit data.
+> - `7a2a384a`: Support Tickets 404 route hard-gate and auto-migration guard.
+> - `773d22a7`: Real D1 APAC Singapore direct concurrency test suite.
+> - `8e55b447`: Atomic conditional SQL guards against cross-channel booking races.
 
 ---
 
@@ -73,23 +81,31 @@ Direct schema inspection (`SELECT name FROM sqlite_master` & `PRAGMA table_info(
 
 ---
 
-## 4. CONCURRENCY SAFETY & REAL CLOUDFLARE D1 STAGING PROOF
+## 4. CONCURRENCY SAFETY & REAL CLOUDFLARE E2E PROOF
 
-The D1 Concurrency Suite is **VERIFIED ON REAL CLOUDFLARE D1 STAGING** (Not a mock):
+The concurrency protection and cross-channel safety mechanisms are **FULLY VERIFIED ON REAL CLOUDFLARE WORKER AND D1 STAGING** (Zero mocks):
+- **Staging Worker Endpoint:** `https://bwork-pos-api-staging.ohnatza74185-ky.workers.dev` (Active Deployment `e6ed5abd-f249-4d6d-a05b-09d7620fb780`)
 - **Staging Database:** `bworkpos_staging_db` (`8511096e-3c57-428f-8b2c-98fdb297f705`) in Singapore (`SIN`).
-- **Execution Mechanism:** Parameterized multi-statement REST queries directly against Cloudflare's production D1 engine.
+- **Buffer Alignment:** `cleaning_buffer_minutes` aligned to `30` in Staging D1, matching Production D1.
+- **Credential Security:** Token hardcoding eliminated; credentials resolve securely via `CLOUDFLARE_API_TOKEN` / `CF_TOKEN` or user home default wrangler config without token leakage in logs or git history.
 
-### Verification of 10 Parallel Scenarios:
-1. **Online vs Online:** 2 simultaneous requests -> Exactly 1 won (201), 1 rejected (409), 1 row in D1.
-2. **POS vs Online:** Cross-channel race -> Exactly 1 won, 1 rejected with 409 conflict.
-3. **POS Extend vs Online:** Room extension slot race -> Resolved safely, active items preserved.
-4. **POS vs POS:** Two staff booking same room -> Exactly 1 won, 1 rejected with 409 conflict.
-5. **Extension vs Reschedule:** Concurrency race -> Handled cleanly without collision.
-6. **Cleaning Buffer (30m):** Boundary collision -> Rejected with 409 and buffer notice.
-7. **Multi-Room Booking:** Partial failure atomic rollback -> Left 0 orphan rows in D1.
-8. **5 Concurrent Requests Stress:** 5 simultaneous threads -> Exactly 1 won (201), 4 rejected (409).
-9. **Stale Availability (TOCTOU):** Stale commit attempt -> Safely trapped with 409 conflict.
-10. **Timeout / Retry Idempotency:** Balance replay -> Accepted first time (200), retry rejected (400), financial invariant `total = paid + balance` maintained, 0 duplicate transactions.
+### A. Real Worker HTTP E2E Validation (`realWorkerHttpE2E.cjs` - 11 Scenarios Over Real Network):
+1. **Online Booking vs Online Booking:** Concurrent HTTP POST to `/api/public/bookings` -> Exactly 1 won (201), 1 rejected (409 Conflict), exactly 1 item created in D1.
+2. **POS Booking vs Online Booking:** Cross-channel HTTP race (`/api/bookings` with Bearer auth vs `/api/public/bookings`) -> Exactly 1 won, 1 rejected with 409 conflict, zero double bookings.
+3. **Room Extension vs Online Booking:** POS `/api/bookings/:id/extend` vs Online new booking -> Resolved cleanly without double-booking.
+4. **Cleaning Buffer (30m):** Attempt inside buffer (11:15 after 10:00-11:00) -> Rejected with 409; attempt at boundary (11:30) -> Succeeded with 201.
+5. **Booking Reschedule Collision:** POS `/api/bookings/:id/reschedule` into occupied slot -> Trapped with `ERR_ROOM_OVERLAP`, original booking untouched.
+6. **Multi-Room Partial Failure:** Multi-item booking with 1 free + 1 occupied room -> Rejected with 409, atomic rollback leaves 0 items in both rooms.
+7. **Zero Orphan Shells:** Verification on D1 after conflict -> Zero orphan parent booking shells exist in D1 Staging.
+8. **Duplicate Payment Retry & Ledger Integrity:** Deposit booking balance payment (`/pay-balance`) -> Succeeded; replay retry rejected (400), invariant `total = paid + balance` (700 = 700 + 0) maintained, exactly 2 ledger transactions.
+9. **Slip Review CAS Concurrency:** Outdated `evidence_id` on `/reject-slip` -> Rejected with 409 `SLIP_VERSION_CONFLICT`; subsequent review attempts on non-reviewing status trapped.
+10. **Authentication & Authorization:** Unauthenticated (401), bogus token (401), valid staff token (200) strictly enforced.
+11. **Support Tickets Gate:** `/api/public/support/tickets` and `/api/pos/support/tickets` all return HTTP 404 Not Found.
+
+### B. Direct D1 Concurrency Engine Validation (`realD1StagingValidation.cjs` - 11 Scenarios):
+- Direct APAC Singapore D1 multi-statement execution verifies SQLite-level atomic conditional guards (`INSERT INTO ... SELECT ... WHERE NOT EXISTS (...)`) under high concurrency.
+- 5-thread stress race: 5 concurrent requests -> Exactly 1 winner, 4 rejected (409).
+- TOCTOU stale check: Stale availability check followed by sneak-in commit -> Safely trapped by conditional SQL.
 
 ---
 
@@ -107,14 +123,15 @@ The unapproved Support Tickets feature is **strictly isolated**:
    All `/api/public/support/*` and `/api/pos/support/*` endpoints return **HTTP 404** by default.
 2. **Schema Level Gate (`backend/worker.js` Line 2598):**
    `ensureD1Schema()` wraps all `CREATE TABLE IF NOT EXISTS support_tickets` in `if (env.ENABLE_SUPPORT_TICKETS === 'true')`, preventing table creation on Production D1.
-3. **Automated Verification:** Verified via [`scratch/test_support_404.js`](file:///C:/Users/Runrasa.P/.gemini/antigravity/brain/03721993-8ed4-4f8b-a41b-db0f7e984101/scratch/test_support_404.js) that all support routes return 404.
+3. **Automated Verification:** Verified via real HTTP tests that all support routes return 404.
 
 ---
 
 ## 6. BUILD & AUTOMATED TEST RESULTS
 
-- **Automated Regression Suites:** **109 / 109 tests passed (100%)**
-  - `realD1StagingValidation.cjs`: 11 / 11 PASS (Real Cloudflare APAC D1)
+- **Automated Regression Suites:** **120 / 120 tests passed (100%)**
+  - `realWorkerHttpE2E.cjs`: 11 / 11 PASS (12/12 assertions over HTTPS network to Cloudflare Worker Staging)
+  - `realD1StagingValidation.cjs`: 11 / 11 PASS (Real Cloudflare APAC D1 engine)
   - `stagingLineHardBlock.test.cjs`: 10 / 10 PASS
   - `crossChannelConcurrency.test.cjs`: 6 / 6 PASS
   - `depositBalanceWorkflow.test.cjs`: 20 / 20 PASS
