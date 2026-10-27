@@ -5112,6 +5112,10 @@ export default {
                 b.rejection_reason = s.rejection_reason || null;
                 b.rejection_time = s.rejection_time || null;
               }
+              // Invariant sanitation: A fully settled paid booking cannot be pending slip review
+              if (b.payment_status === 'paid' && b.slip_verify_status === 'pending_manual') {
+                b.slip_verify_status = 'approved_manual';
+              }
             });
           } catch (_) {}
 
@@ -6242,7 +6246,7 @@ export default {
                 payment_method = ?,
                 receipt_number = ?,
                 pin_code = ?,
-                slip_verify_status = 'manual_approved',
+                slip_verify_status = 'approved_manual',
                 slip_verified_at = ?,
                 paid_amount = total_amount,
                 balance_amount = 0
@@ -8136,6 +8140,9 @@ export default {
               if (!booking.slip_verify_status) booking.slip_verify_status = slipVerification.verification_status;
               booking.rejection_reason = slipVerification.rejection_reason || null;
               booking.rejection_time = slipVerification.created_at || null;
+            }
+            if (booking.payment_status === 'paid' && booking.slip_verify_status === 'pending_manual') {
+              booking.slip_verify_status = 'approved_manual';
             }
           } catch (_) {}
 

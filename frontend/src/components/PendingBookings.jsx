@@ -59,6 +59,7 @@ import {
   roundMoney,
   formatMoney,
   normalizeBookingFinancials,
+  getBookingUsageLifecycle,
   getPaymentMethodLabel,
   getTransactionTypeLabel,
   calculateRescheduleFinancials
@@ -2413,7 +2414,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     const isPaid = fin ? fin.is_paid : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
     const isCancelled = fin ? fin.is_cancelled : (b.payment_status === 'cancelled');
     const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
-    const isReviewing = fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || b.slip_verify_status === 'pending_manual') && !isPaid && !isCancelled && !isRejected);
+    const isReviewing = !isPaid && !isCancelled && !isRejected && (fin ? fin.is_reviewing : (b.payment_status === 'reviewing' || b.slip_verify_status === 'pending_manual'));
 
     // 1. reviewing -> ตรวจสลิป
     if (isReviewing) {
@@ -3079,7 +3080,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   const isPaid = fin ? fin.is_paid : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
                   const isCancelled = fin ? fin.is_cancelled : (b.payment_status === 'cancelled');
                   const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
-                  const isReviewing = fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected);
+                  const isReviewing = !isPaid && !isCancelled && !isRejected && (fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || !!b.slip_image_url)));
+                  const usageLife = getBookingUsageLifecycle(b);
 
                   const firstItem = b.items?.[0] || {};
                   const roomObj = roomsList.find(r => r.id === (firstItem.room_id || b.room_id));
@@ -3217,6 +3219,30 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                             <span className="pb-tertiary-text">
                               {tableSchedule.layoutLabel} • {tableSchedule.typeLabel}
                             </span>
+                          )}
+
+                          {usageLife && usageLife.key !== 'unknown' && (
+                            <div className="pb-usage-lifecycle-row" style={{ marginTop: '3px' }}>
+                              <span
+                                className={`pb-usage-pill ${usageLife.badgeClass}`}
+                                style={{
+                                  fontSize: '0.68rem',
+                                  fontWeight: 600,
+                                  padding: '1px 6px',
+                                  borderRadius: '4px',
+                                  backgroundColor: usageLife.bg,
+                                  color: usageLife.color,
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                              >
+                                {usageLife.is_active && (
+                                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', backgroundColor: '#ea580c', display: 'inline-block' }} />
+                                )}
+                                {usageLife.label}
+                              </span>
+                            </div>
                           )}
                         </div>
                       </td>
@@ -3387,7 +3413,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               const isPaid = fin ? fin.is_paid : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
               const isCancelled = fin ? fin.is_cancelled : (b.payment_status === 'cancelled');
               const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
-              const isReviewing = fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected);
+              const isReviewing = !isPaid && !isCancelled && !isRejected && (fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || !!b.slip_image_url)));
+              const usageLife = getBookingUsageLifecycle(b);
 
               const firstItem = b.items?.[0] || {};
               const roomObj = roomsList.find(r => r.id === (firstItem.room_id || b.room_id));
@@ -3501,6 +3528,30 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     ) : (
                       <div className="pb-mobile-layout-type">
                         {tableSchedule.layoutLabel} • {tableSchedule.typeLabel}
+                      </div>
+                    )}
+
+                    {usageLife && usageLife.key !== 'unknown' && (
+                      <div className="pb-usage-lifecycle-row" style={{ marginTop: '3px' }}>
+                        <span
+                          className={`pb-usage-pill ${usageLife.badgeClass}`}
+                          style={{
+                            fontSize: '0.68rem',
+                            fontWeight: 600,
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            backgroundColor: usageLife.bg,
+                            color: usageLife.color,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                        >
+                          {usageLife.is_active && (
+                            <span style={{ width: '5px', height: '5px', borderRadius: '50%', backgroundColor: '#ea580c', display: 'inline-block' }} />
+                          )}
+                          {usageLife.label}
+                        </span>
                       </div>
                     )}
                   </div>
