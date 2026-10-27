@@ -282,6 +282,7 @@ export default function RoomExtensionModal({
 
       const payload = {
         booking_item_id: selectedItemId,
+        current_end_time: preview?.current_end_time || selectedItem?.end_time || null,
         duration_minutes: activeDurationMinutes,
         payment_method: fee === 0 ? 'quota' : paymentMethod,
         use_quota: useQuota,

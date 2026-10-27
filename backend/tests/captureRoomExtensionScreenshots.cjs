@@ -7,9 +7,9 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const BASE_URL = 'http://localhost:5173';
-const API_URL = 'http://localhost:5000';
-const ARTIFACT_DIR = 'C:\\Users\\ADMIN\\.gemini\\antigravity\\brain\\93b1ef54-72e7-446f-a6a3-437743441774';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:5000';
+const API_URL = process.env.API_URL || 'http://localhost:5000';
+const ARTIFACT_DIR = process.env.ARTIFACT_DIR || 'C:\\Users\\Runrasa.P\\.gemini\\antigravity\\brain\\03721993-8ed4-4f8b-a41b-db0f7e984101';
 const EVIDENCE_DIR = path.join(__dirname, '../ui-review-evidence/room-extension');
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const CDP_PORT = 9231;

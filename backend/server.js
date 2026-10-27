@@ -3698,6 +3698,7 @@ app.post('/api/bookings/:id/extend', authenticateToken, async (req, res) => {
     const bookingId = Number(req.params.id);
     const {
       booking_item_id,
+      current_end_time,
       duration_minutes,
       payment_method,
       use_quota,
@@ -3756,6 +3757,13 @@ app.post('/api/bookings/:id/extend', authenticateToken, async (req, res) => {
         const err = new Error('ไม่พบข้อมูลห้องประชุม');
         err.statusCode = 404;
         throw err;
+      }
+
+      // CAS Concurrency Guard: Ensure staff baseline end_time matches database
+      if (current_end_time && item.end_time !== current_end_time) {
+        const raceErr = new Error('ข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง');
+        raceErr.statusCode = 409;
+        throw raceErr;
       }
 
       // Calculate new end time
@@ -3857,11 +3865,12 @@ app.post('/api/bookings/:id/extend', authenticateToken, async (req, res) => {
       // 6. Optimistic concurrency check: update booking_item with condition WHERE end_time = ?
       const newQuantity = roundMoney((Number(item.quantity) || 0) + additionalHours);
       const newItemSubtotal = roundMoney((Number(item.subtotal) || 0) + (additionalHours * hourlyRate));
+      const expectedEndTime = current_end_time || item.end_time;
       const itemUpdateRes = await dbQuery.run(
         `UPDATE booking_items
          SET end_time = ?, quantity = ?, subtotal = ?
          WHERE id = ? AND end_time = ?`,
-        [newEndISO, newQuantity, newItemSubtotal, item.id, item.end_time]
+        [newEndISO, newQuantity, newItemSubtotal, item.id, expectedEndTime]
       );
       if (itemUpdateRes.changes === 0) {
         const raceErr = new Error('ข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง');
@@ -6597,7 +6606,10 @@ async function runDailyAutomatedBackup() {
   }
 }
 
-setInterval(runDailyAutomatedBackup, 60 * 60 * 1000); // Check every hour
+const dailyBackupInterval = setInterval(runDailyAutomatedBackup, 60 * 60 * 1000); // Check every hour
+if (typeof dailyBackupInterval.unref === 'function') {
+  dailyBackupInterval.unref();
+}
 
 
 // Ensure uploads directory exists outside public folder (prevents deletion on frontend rebuilds)

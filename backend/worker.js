@@ -6641,6 +6641,11 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลห้องประชุม' }), { status: 404, headers: corsHeaders });
         }
 
+        // CAS Concurrency Guard: Ensure staff baseline end_time matches database
+        if (current_end_time && item.end_time !== current_end_time) {
+          return new Response(JSON.stringify({ error: 'ข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง' }), { status: 409, headers: corsHeaders });
+        }
+
         function addMinutesToLocalISO(isoString, minutes) {
           const norm = normalizeToLocalISO(isoString);
           const [datePart, timePart] = norm.split('T');
@@ -6749,6 +6754,7 @@ export default {
         const body = await request.json().catch(() => ({}));
         const {
           booking_item_id,
+          current_end_time,
           duration_minutes,
           payment_method,
           use_quota,
@@ -6952,12 +6958,13 @@ export default {
         const statements = [];
 
         // 1. Atomically update booking_items (Statement #0)
+        const expectedEndTime = current_end_time || item.end_time;
         statements.push(
           env.DB.prepare(
             `UPDATE booking_items
              SET end_time = ?, quantity = ?, subtotal = ?
              WHERE id = ? AND end_time = ?`
-          ).bind(newEndISO, newQuantity, newItemSubtotal, item.id, item.end_time)
+          ).bind(newEndISO, newQuantity, newItemSubtotal, item.id, expectedEndTime)
         );
 
         // 2. Atomically update bookings financials & quota (conditioned on item end_time)
