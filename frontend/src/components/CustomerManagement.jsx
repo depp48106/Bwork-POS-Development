@@ -29,7 +29,9 @@ import {
   Check,
   AlertCircle,
   FileClock,
-  Sparkles
+  Sparkles,
+  BarChart3,
+  User
 } from 'lucide-react';
 import ThaiDatePicker from './ThaiDatePicker';
 import {
@@ -42,29 +44,31 @@ import './CustomerManagement.css';
 export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [filterType, setFilterType] = useState('all');
-  const [filterStatus, setFilterStatus] = useState('active');
+  const [filterType, setFilterType] = useState('all'); // 'all' | 'basecamp' | 'shop'
+  const [filterStatus, setFilterStatus] = useState('all'); // 'all' | 'active' | 'inactive'
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Month & Year state for Quota calculation
   const now = new Date();
   const [selectedMonth, setSelectedMonth] = useState(String(now.getMonth() + 1));
   const [selectedYear, setSelectedYear] = useState(String(now.getFullYear()));
 
-  // Modals & Drawer State
+  // Modals & Unified Dialog State
   const [showAddEditModal, setShowAddEditModal] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState(null);
-
-  // Side Drawer state for Contract Management
-  const [showContractDrawer, setShowContractDrawer] = useState(false);
-  const [contractCustomer, setContractCustomer] = useState(null);
-  const [contractDrawerTab, setContractDrawerTab] = useState('overview'); // 'overview' | 'edit_dates' | 'renew' | 'history' | 'audit'
+  const [editModalTab, setEditModalTab] = useState('profile'); // 'profile' | 'contracts' | 'quota'
+  const [contractSubTab, setContractSubTab] = useState('overview'); // 'overview' | 'edit_dates' | 'renew'
   const [contractToEdit, setContractToEdit] = useState(null);
   const [editDateStep, setEditDateStep] = useState('input'); // 'input' | 'confirm'
   const [showTerminateInline, setShowTerminateInline] = useState(false);
 
+  // Rich Customer Detail State (Contracts, Quota, Audit Logs)
+  const [customerDetail, setCustomerDetail] = useState(null);
+  const [loadingCustomerDetail, setLoadingCustomerDetail] = useState(false);
   const [auditLogs, setAuditLogs] = useState([]);
   const [loadingAudit, setLoadingAudit] = useState(false);
 
+  // Basecamp Transfer Modal
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferUnitCustomer, setTransferUnitCustomer] = useState(null);
 
@@ -154,10 +158,11 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       const data = await res.json();
       if (data.success) {
         setCustomers(data.customers || []);
+      } else {
+        if (sysAlert) sysAlert(data.error || 'ไม่สามารถโหลดข้อมูลลูกค้าได้', 'error');
       }
     } catch (err) {
-      console.error('Failed to fetch customers:', err);
-      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการโหลดข้อมูลลูกค้า: ' + err.message, 'error');
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการโหลดข้อมูล: ' + err.message, 'error');
     } finally {
       setLoading(false);
     }
@@ -169,19 +174,14 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       const res = await fetch('/api/customers/contracts/alerts', { headers });
       const data = await res.json();
       if (data.success) {
-        setAlertsSummary(data);
+        setAlertsSummary(data.summary);
       }
-    } catch (err) {
-      console.error('Failed to fetch alerts:', err);
-    }
+    } catch (_) {}
   };
 
-  // Fetch Audit Logs for Customer (Admin Only)
+  // Fetch Audit Logs for Customer
   const fetchAuditLogs = async (customerId) => {
-    if (!isAdmin || !customerId) {
-      setAuditLogs([]);
-      return;
-    }
+    if (!customerId || !isAdmin) return;
     setLoadingAudit(true);
     try {
       const res = await fetch(`/api/customers/${customerId}/audit-logs`, { headers });
@@ -189,10 +189,65 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       if (data.success) {
         setAuditLogs(data.audit_logs || []);
       }
-    } catch (err) {
-      console.error('Failed to fetch audit logs:', err);
+    } catch (_) {
     } finally {
       setLoadingAudit(false);
+    }
+  };
+
+  // Fetch Detailed Customer Profile (with contracts & quota)
+  const fetchCustomerDetail = async (customerId, monthVal = selectedMonth, yearVal = selectedYear) => {
+    if (!customerId) return;
+    setLoadingCustomerDetail(true);
+    try {
+      const res = await fetch(`/api/customers/${customerId}?month=${monthVal}&year=${yearVal}`, { headers });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const fullCust = data.customer;
+        setCustomerDetail(fullCust);
+        const activeCtr = fullCust.contracts?.[0] || null;
+        setContractToEdit(activeCtr);
+        if (activeCtr) {
+          const initEdit = {
+            start_date: activeCtr.start_date || '',
+            end_date: activeCtr.end_date || '',
+            reason: ''
+          };
+          initialContractEditRef.current = initEdit;
+          setEditDateForm(initEdit);
+        } else {
+          initialContractEditRef.current = null;
+        }
+
+        const today = new Date();
+        const nextYear = new Date();
+        nextYear.setFullYear(today.getFullYear() + 1);
+        nextYear.setDate(nextYear.getDate() - 1);
+
+        setRenewForm({
+          contract_number: '',
+          start_date: today.toISOString().slice(0, 10),
+          end_date: nextYear.toISOString().slice(0, 10),
+          monthly_quota_hours: fullCust.customer_type === 'shop' ? 4.0 : (fullCust.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0),
+          notes: ''
+        });
+
+        setTerminateForm({
+          termination_date: today.toISOString().slice(0, 10),
+          reason: ''
+        });
+
+        if (isAdmin && fullCust.audit_logs) {
+          setAuditLogs(fullCust.audit_logs);
+        }
+      } else {
+        if (sysAlert) sysAlert(data.error || 'ไม่สามารถโหลดรายละเอียดสัญญาและโควตาได้', 'error');
+      }
+    } catch (err) {
+      console.error('Fetch customer detail error:', err);
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการโหลดรายละเอียดสัญญา: ' + err.message, 'error');
+    } finally {
+      setLoadingCustomerDetail(false);
     }
   };
 
@@ -201,42 +256,36 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     fetchAlerts();
   }, [filterType, filterStatus, selectedMonth, selectedYear]);
 
+  // Handle Search Debounce
   useEffect(() => {
-    const timer = setTimeout(() => {
+    const handler = setTimeout(() => {
       fetchCustomers();
     }, 300);
-    return () => clearTimeout(timer);
+    return () => clearTimeout(handler);
   }, [searchQuery]);
 
-  // Clean, Minimal Metrics Summary
+  // Calculate Summary Cards
   const summaryCards = useMemo(() => {
-    let totalCust = customers.length;
-    let activeCtr = 0;
-    let expiringCtr = 0;
-    let expiredCtr = 0;
+    const total = customers.length;
+    let active = 0;
+    let expiring = 0;
+    let expired = 0;
 
-    if (alertsSummary?.summary) {
-      const s = alertsSummary.summary;
-      activeCtr = s.total_active || 0;
-      expiringCtr = (s.expiring_30_days || 0) + (s.expiring_15_days || 0) + (s.expiring_7_days || 0);
-      expiredCtr = s.expired || 0;
-    } else {
-      customers.forEach(c => {
-        if (c.active_contract) {
-          const st = c.active_contract.evaluated_status;
-          if (st === 'ACTIVE') activeCtr++;
-          else if (st === 'EXPIRING') expiringCtr++;
-          else if (st === 'EXPIRED') expiredCtr++;
-        }
-      });
+    customers.forEach(c => {
+      if (c.active_contract) {
+        const st = c.active_contract.evaluated_status;
+        if (st === 'ACTIVE') active++;
+        else if (st === 'EXPIRING') expiring++;
+        else if (st === 'EXPIRED') expired++;
+      }
+    });
+
+    if (alertsSummary) {
+      expiring = alertsSummary.expiring_soon_count;
+      expired = alertsSummary.expired_count;
     }
 
-    return {
-      total: totalCust,
-      active: activeCtr,
-      expiring: expiringCtr,
-      expired: expiredCtr
-    };
+    return { total, active, expiring, expired };
   }, [customers, alertsSummary]);
 
   // Check if Customer Form has unsaved modifications
@@ -261,9 +310,30 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     );
   };
 
-  // Safe Close for Add/Edit Customer Modal (prompts if dirty)
+  // Check if Contract Form has unsaved changes
+  const isContractFormDirty = () => {
+    if (contractSubTab === 'edit_dates') {
+      if (!initialContractEditRef.current) return false;
+      const init = initialContractEditRef.current;
+      return (
+        editDateForm.start_date !== init.start_date ||
+        editDateForm.end_date !== init.end_date ||
+        (editDateForm.reason || '').trim() !== ''
+      );
+    }
+    if (contractSubTab === 'renew') {
+      return (
+        (renewForm.contract_number || '').trim() !== '' ||
+        (renewForm.notes || '').trim() !== ''
+      );
+    }
+    return false;
+  };
+
+  // Safe Close for Customer Modal (prompts if dirty)
   const handleRequestCloseAddEditModal = async () => {
-    if (isCustomerFormDirty()) {
+    const dirty = isCustomerFormDirty() || isContractFormDirty();
+    if (dirty) {
       const msg = 'คุณมีข้อมูลที่ยังไม่ได้บันทึก ต้องการยกเลิกและปิดหน้าต่างนี้หรือไม่?\n(ข้อมูลที่คุณกรอกไว้จะไม่ได้รับการบันทึก)';
       let confirmed = false;
       if (sysConfirm) {
@@ -275,83 +345,41 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     }
     setShowAddEditModal(false);
     setEditingCustomer(null);
+    setCustomerDetail(null);
     initialCustomerFormRef.current = null;
-  };
-
-  // Check if Contract Drawer has unsaved changes
-  const isContractDrawerDirty = () => {
-    if (contractDrawerTab === 'edit_dates') {
-      if (!initialContractEditRef.current) return false;
-      const init = initialContractEditRef.current;
-      return (
-        editDateForm.start_date !== init.start_date ||
-        editDateForm.end_date !== init.end_date ||
-        (editDateForm.reason || '').trim() !== ''
-      );
-    }
-    if (contractDrawerTab === 'renew') {
-      return (
-        (renewForm.contract_number || '').trim() !== '' ||
-        (renewForm.notes || '').trim() !== ''
-      );
-    }
-    return false;
-  };
-
-  // Safe Close for Contract Drawer (prompts if dirty)
-  const handleRequestCloseContractDrawer = async () => {
-    if (isContractDrawerDirty()) {
-      const msg = 'คุณมีข้อมูลการแก้ไขสัญญาที่ยังไม่ได้บันทึก ต้องการยกเลิกและปิดแถบด้านข้างหรือไม่?';
-      let confirmed = false;
-      if (sysConfirm) {
-        confirmed = await sysConfirm(msg);
-      } else {
-        confirmed = window.confirm(msg);
-      }
-      if (!confirmed) return;
-    }
-    setShowContractDrawer(false);
-    setContractDrawerTab('overview');
+    initialContractEditRef.current = null;
+    setContractSubTab('overview');
     setShowTerminateInline(false);
     setEditDateStep('input');
-    initialContractEditRef.current = null;
   };
 
-  // Global Escape key listener: isolated from ThaiDatePicker popovers via capture phase
+  // Global Escape key listener
   useEffect(() => {
     const handleEscapeKey = (e) => {
       if (e.key === 'Escape') {
         if (showAddEditModal) {
           handleRequestCloseAddEditModal();
-        } else if (showContractDrawer) {
-          handleRequestCloseContractDrawer();
         } else if (showTransferModal) {
           setShowTransferModal(false);
         }
       }
     };
-
-    if (showAddEditModal || showContractDrawer || showTransferModal) {
-      document.addEventListener('keydown', handleEscapeKey);
-      return () => {
-        document.removeEventListener('keydown', handleEscapeKey);
-      };
-    }
-  }, [showAddEditModal, showContractDrawer, showTransferModal, customerForm, editingCustomer, contractDrawerTab, editDateForm, renewForm]);
+    window.addEventListener('keydown', handleEscapeKey, true);
+    return () => window.removeEventListener('keydown', handleEscapeKey, true);
+  }, [showAddEditModal, showTransferModal, customerForm, editingCustomer, contractSubTab, editDateForm, renewForm]);
 
   // Open Create Customer Modal
   const handleOpenCreate = () => {
     setEditingCustomer(null);
+    setCustomerDetail(null);
+    setEditModalTab('profile');
     const today = new Date();
     const nextYear = new Date();
     nextYear.setFullYear(today.getFullYear() + 1);
     nextYear.setDate(nextYear.getDate() - 1);
 
-    const todayStr = today.toISOString().slice(0, 10);
-    const nextYearStr = nextYear.toISOString().slice(0, 10);
-
     const initialData = {
-      customer_type: 'basecamp',
+      customer_type: filterType === 'shop' ? 'shop' : 'basecamp',
       name: '',
       contact_name: '',
       phone: '',
@@ -360,8 +388,8 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       address: '',
       basecamp_sub_type: 'office',
       basecamp_unit: '401',
-      start_date: todayStr,
-      end_date: nextYearStr,
+      start_date: today.toISOString().slice(0, 10),
+      end_date: nextYear.toISOString().slice(0, 10),
       monthly_quota_hours: 4.0,
       contract_number: '',
       notes: ''
@@ -371,9 +399,21 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     setShowAddEditModal(true);
   };
 
-  // Open Edit Customer Info Modal
-  const handleOpenEdit = (c) => {
+  // Open Unified Modal for Existing Customer (Profile, Contracts, or Quota)
+  const handleOpenEdit = async (c, defaultTab = 'profile') => {
     setEditingCustomer(c);
+    setEditModalTab(defaultTab);
+    setContractSubTab('overview');
+    setShowTerminateInline(false);
+    setEditDateStep('input');
+
+    // Pre-populate initial fallback customerDetail from table row
+    setCustomerDetail({
+      ...c,
+      contracts: c.active_contract ? [c.active_contract] : [],
+      quota: c.quota_summary || null
+    });
+
     const initialData = {
       customer_type: c.customer_type,
       name: c.name || '',
@@ -388,14 +428,168 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       end_date: '',
       monthly_quota_hours: 4.0,
       contract_number: '',
-      notes: ''
+      notes: c.notes || ''
     };
     initialCustomerFormRef.current = initialData;
     setCustomerForm(initialData);
     setShowAddEditModal(true);
+
+    // Fetch authoritative customer details (contracts, quota, audit)
+    fetchCustomerDetail(c.id);
   };
 
-  // Submit Add or Edit Customer
+  // Alias for backward compatibility: opens unified modal directly to contracts tab
+  const handleOpenContractDrawer = (c, defaultSubTab = 'overview') => {
+    handleOpenEdit(c, 'contracts');
+    setContractSubTab(defaultSubTab);
+  };
+
+  // Start Edit Dates for a Specific Contract
+  const handleStartEditDates = (ctr) => {
+    if (ctr.status === 'TERMINATED') {
+      if (sysAlert) sysAlert('ไม่สามารถแก้ไขวันที่ของสัญญาที่ถูกยกเลิก (TERMINATED) แล้วได้ หากต้องการเปิดสัญญาใหม่ กรุณาใช้ฟังก์ชันต่อสัญญา (Renew)', 'warning');
+      return;
+    }
+    const initEdit = {
+      start_date: ctr.start_date || '',
+      end_date: ctr.end_date || '',
+      reason: ''
+    };
+    initialContractEditRef.current = initEdit;
+    setContractToEdit(ctr);
+    setEditDateForm(initEdit);
+    setEditDateStep('input');
+    setContractSubTab('edit_dates');
+  };
+
+  // Step 1 to Step 2 validation in Edit Dates
+  const handleProceedToConfirmEdit = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!contractToEdit) return;
+
+    if (!editDateForm.start_date || !editDateForm.end_date) {
+      if (sysAlert) sysAlert('กรุณาระบุวันเริ่มสัญญาและวันสิ้นสุดสัญญาให้ครบถ้วนในปฏิทินไทย', 'warning');
+      return;
+    }
+    if (editDateForm.start_date > editDateForm.end_date) {
+      if (sysAlert) sysAlert('วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา', 'warning');
+      return;
+    }
+    if (!editDateForm.reason.trim()) {
+      if (sysAlert) sysAlert('กรุณาระบุเหตุผลในการแก้ไขวันที่สัญญา (จำเป็นต้องบันทึกใน Audit Log)', 'warning');
+      return;
+    }
+
+    setEditDateStep('confirm');
+  };
+
+  // Submit Edit Contract Dates
+  const handleConfirmSubmitEdit = async () => {
+    if (!contractToEdit || !editingCustomer) return;
+
+    setIsSubmitting(true);
+    try {
+      const res = await fetch(`/api/customers/contracts/${contractToEdit.id}/dates`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          start_date: editDateForm.start_date,
+          end_date: editDateForm.end_date,
+          reason: editDateForm.reason.trim()
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (sysAlert) sysAlert('บันทึกการแก้ไขวันที่สัญญาและบันทึกประวัติเรียบร้อยแล้ว', 'success');
+        await fetchCustomerDetail(editingCustomer.id);
+        setEditDateStep('input');
+        setContractSubTab('overview');
+        initialContractEditRef.current = null;
+        fetchCustomers();
+        fetchAlerts();
+      } else {
+        if (sysAlert) sysAlert(data.error || 'ไม่สามารถแก้ไขวันที่สัญญาได้', 'error');
+      }
+    } catch (err) {
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาด: ' + err.message, 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Submit Renew Contract
+  const handleSubmitRenew = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!editingCustomer) return;
+
+    if (!renewForm.start_date || !renewForm.end_date) {
+      if (sysAlert) sysAlert('กรุณาระบุวันเริ่มและสิ้นสุดสัญญาในปฏิทินไทย', 'warning');
+      return;
+    }
+    if (renewForm.start_date > renewForm.end_date) {
+      if (sysAlert) sysAlert('วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา', 'warning');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const res = await fetch(`/api/customers/${editingCustomer.id}/contracts`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(renewForm)
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (sysAlert) sysAlert('บันทึกสัญญาใหม่/ต่อสัญญาเรียบร้อยแล้ว', 'success');
+        await fetchCustomerDetail(editingCustomer.id);
+        setContractSubTab('overview');
+        fetchCustomers();
+        fetchAlerts();
+      } else {
+        if (sysAlert) sysAlert(data.error || 'ไม่สามารถต่อสัญญาได้', 'error');
+      }
+    } catch (err) {
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาด: ' + err.message, 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Submit Terminate Contract
+  const handleSubmitTerminate = async (e) => {
+    e.preventDefault();
+    if (!customerDetail || !customerDetail.contracts?.[0]) return;
+    const activeContract = customerDetail.contracts[0];
+
+    const ok = sysConfirm ? await sysConfirm(`ยืนยันการยกเลิกสัญญา ${activeContract.contract_number} ก่อนกำหนด?`) : true;
+    if (!ok) return;
+
+    setIsSubmitting(true);
+    try {
+      const res = await fetch(`/api/customers/contracts/${activeContract.id}/terminate`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify(terminateForm)
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (sysAlert) sysAlert('ยกเลิกสัญญาเรียบร้อยแล้ว', 'success');
+        setShowTerminateInline(false);
+        await fetchCustomerDetail(editingCustomer.id);
+        setContractSubTab('overview');
+        fetchCustomers();
+        fetchAlerts();
+      } else {
+        if (sysAlert) sysAlert(data.error || 'ยกเลิกสัญญาไม่สำเร็จ', 'error');
+      }
+    } catch (err) {
+      if (sysAlert) sysAlert('เกิดข้อผิดพลาด: ' + err.message, 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Submit Add or Edit Customer Profile
   const handleSubmitCustomerForm = async (e) => {
     e.preventDefault();
     if (!customerForm.name.trim()) {
@@ -413,9 +607,9 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
         });
         const data = await res.json();
         if (data.success) {
-          if (sysAlert) sysAlert('บันทึกการแก้ไขข้อมูลเรียบร้อยแล้ว', 'success');
-          initialCustomerFormRef.current = null;
-          setShowAddEditModal(false);
+          if (sysAlert) sysAlert('บันทึกการแก้ไขข้อมูลลูกค้าเรียบร้อยแล้ว', 'success');
+          initialCustomerFormRef.current = { ...customerForm };
+          await fetchCustomerDetail(editingCustomer.id);
           fetchCustomers();
         } else {
           if (sysAlert) sysAlert(data.error || 'บันทึกไม่สำเร็จ', 'error');
@@ -448,12 +642,8 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
   const handleToggleStatus = async (c) => {
     const nextStatus = c.status === 'active' ? 'inactive' : 'active';
     const actionLabel = nextStatus === 'active' ? 'เปิดใช้งาน' : 'ปิดการใช้งาน (Inactive)';
-
-    const confirmMsg = `คุณต้องการ${actionLabel}ลูกค้ารายนี้ (${c.name}) ใช่หรือไม่?`;
-    if (sysConfirm) {
-      const ok = await sysConfirm(confirmMsg);
-      if (!ok) return;
-    }
+    const ok = sysConfirm ? await sysConfirm(`ต้องการ ${actionLabel} ลูกค้า "${c.name}" หรือไม่?`) : true;
+    if (!ok) return;
 
     try {
       const res = await fetch(`/api/customers/${c.id}/status`, {
@@ -463,7 +653,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       });
       const data = await res.json();
       if (data.success) {
-        if (sysAlert) sysAlert(data.message, 'success');
+        if (sysAlert) sysAlert(`เปลี่ยนสถานะเป็น ${actionLabel} เรียบร้อยแล้ว`, 'success');
         fetchCustomers();
       } else {
         if (sysAlert) sysAlert(data.error || 'เปลี่ยนสถานะไม่สำเร็จ', 'error');
@@ -473,232 +663,31 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     }
   };
 
-  // Open Side Drawer for Customer Contracts
-  const handleOpenContractDrawer = async (c, defaultTab = 'overview') => {
-    try {
-      const res = await fetch(`/api/customers/${c.id}`, { headers });
-      const data = await res.json();
-      if (data.success) {
-        const cust = data.customer;
-        setContractCustomer(cust);
-        setContractDrawerTab(defaultTab);
-        setEditDateStep('input');
-        setShowTerminateInline(false);
-
-        const currentActiveCtr = cust.contracts?.[0] || null;
-        setContractToEdit(currentActiveCtr);
-
-        if (currentActiveCtr) {
-          const initEdit = {
-            start_date: currentActiveCtr.start_date || '',
-            end_date: currentActiveCtr.end_date || '',
-            reason: ''
-          };
-          initialContractEditRef.current = initEdit;
-          setEditDateForm(initEdit);
-        } else {
-          initialContractEditRef.current = null;
-        }
-
-        const today = new Date();
-        const nextYear = new Date();
-        nextYear.setFullYear(today.getFullYear() + 1);
-        nextYear.setDate(nextYear.getDate() - 1);
-
-        setRenewForm({
-          contract_number: '',
-          start_date: today.toISOString().slice(0, 10),
-          end_date: nextYear.toISOString().slice(0, 10),
-          monthly_quota_hours: cust.customer_type === 'shop' ? 4.0 : (cust.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0),
-          notes: ''
-        });
-
-        setTerminateForm({
-          termination_date: today.toISOString().slice(0, 10),
-          reason: ''
-        });
-
-        setShowContractDrawer(true);
-
-        if (isAdmin) {
-          fetchAuditLogs(cust.id);
-        }
-      }
-    } catch (err) {
-      if (sysAlert) sysAlert('ไม่สามารถโหลดรายละเอียดสัญญาได้: ' + err.message, 'error');
-    }
-  };
-
-  // Start Edit Dates for a Specific Contract in Drawer
-  const handleStartEditDates = (ctr) => {
-    if (ctr.status === 'TERMINATED') {
-      if (sysAlert) sysAlert('ไม่สามารถแก้ไขวันที่ของสัญญาที่ถูกยกเลิก (TERMINATED) แล้วได้ หากต้องการเปิดสัญญาใหม่ กรุณาใช้ฟังก์ชันต่อสัญญา (Renew)', 'warning');
-      return;
-    }
-    const initEdit = {
-      start_date: ctr.start_date || '',
-      end_date: ctr.end_date || '',
-      reason: ''
-    };
-    initialContractEditRef.current = initEdit;
-    setContractToEdit(ctr);
-    setEditDateForm(initEdit);
-    setEditDateStep('input');
-    setContractDrawerTab('edit_dates');
-  };
-
-  // Step 1 to Step 2 validation in Edit Dates
-  const handleProceedToConfirmEdit = (e) => {
-    if (e && e.preventDefault) e.preventDefault();
-    if (!contractToEdit) return;
-
-    if (!editDateForm.start_date || !editDateForm.end_date) {
-      if (sysAlert) sysAlert('กรุณาระบุวันเริ่มสัญญาและวันสิ้นสุดสัญญาให้ครบถ้วนในปฏิทินไทย', 'warning');
-      return;
-    }
-    if (editDateForm.start_date > editDateForm.end_date) {
-      if (sysAlert) sysAlert('วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา', 'warning');
-      return;
-    }
-    if (!editDateForm.reason.trim()) {
-      if (sysAlert) sysAlert('กรุณาระบุเหตุผลในการแก้ไขวันที่สัญญา (จำเป็นต้องบันทึกใน Audit Log)', 'warning');
-      return;
-    }
-
-    setEditDateStep('confirm');
-  };
-
-  // Submit Edit Contract Dates
-  const handleConfirmSubmitEdit = async () => {
-    if (!contractToEdit) return;
-
-    setIsSubmitting(true);
-    try {
-      const res = await fetch(`/api/customers/contracts/${contractToEdit.id}/dates`, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify({
-          start_date: editDateForm.start_date,
-          end_date: editDateForm.end_date,
-          reason: editDateForm.reason.trim()
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        if (sysAlert) sysAlert('บันทึกการแก้ไขวันที่สัญญาและบันทึกประวัติเรียบร้อยแล้ว', 'success');
-
-        // Reload customer contract details
-        const custRes = await fetch(`/api/customers/${contractCustomer.id}`, { headers });
-        const custData = await custRes.json();
-        if (custData.success) {
-          setContractCustomer(custData.customer);
-          setContractToEdit(custData.customer.contracts?.[0] || null);
-        }
-        setEditDateStep('input');
-        setContractDrawerTab('overview');
-        initialContractEditRef.current = null;
-        fetchCustomers();
-        fetchAlerts();
-        if (isAdmin) fetchAuditLogs(contractCustomer.id);
-      } else {
-        if (sysAlert) sysAlert(data.error || 'ไม่สามารถแก้ไขวันที่สัญญาได้', 'error');
-      }
-    } catch (err) {
-      if (sysAlert) sysAlert('เกิดข้อผิดพลาด: ' + err.message, 'error');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // Submit Renew Contract
-  const handleSubmitRenew = async (e) => {
-    if (e && e.preventDefault) e.preventDefault();
-    if (!contractCustomer) return;
-
-    if (!renewForm.start_date || !renewForm.end_date) {
-      if (sysAlert) sysAlert('กรุณาระบุวันเริ่มและสิ้นสุดสัญญาในปฏิทินไทย', 'warning');
-      return;
-    }
-    if (renewForm.start_date > renewForm.end_date) {
-      if (sysAlert) sysAlert('วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา', 'warning');
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      const res = await fetch(`/api/customers/${contractCustomer.id}/contracts`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(renewForm)
-      });
-      const data = await res.json();
-      if (data.success) {
-        if (sysAlert) sysAlert('บันทึกสัญญาใหม่/ต่อสัญญาเรียบร้อยแล้ว', 'success');
-
-        // Reload drawer data
-        const custRes = await fetch(`/api/customers/${contractCustomer.id}`, { headers });
-        const custData = await custRes.json();
-        if (custData.success) {
-          setContractCustomer(custData.customer);
-          setContractToEdit(custData.customer.contracts?.[0] || null);
-        }
-        setContractDrawerTab('overview');
-        fetchCustomers();
-        fetchAlerts();
-        if (isAdmin) fetchAuditLogs(contractCustomer.id);
-      } else {
-        if (sysAlert) sysAlert(data.error || 'ไม่สามารถต่อสัญญาได้', 'error');
-      }
-    } catch (err) {
-      if (sysAlert) sysAlert('เกิดข้อผิดพลาด: ' + err.message, 'error');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // Submit Terminate Contract
-  const handleSubmitTerminate = async (e) => {
-    e.preventDefault();
-    if (!contractCustomer || !contractCustomer.contracts?.[0]) return;
-    const activeContract = contractCustomer.contracts[0];
-
-    const ok = sysConfirm ? await sysConfirm(`ยืนยันการยกเลิกสัญญา ${activeContract.contract_number} ก่อนกำหนด?`) : true;
+  // Delete Customer (Admin Only)
+  const handleDeleteCustomer = async (c) => {
+    if (!isAdmin) return;
+    const ok = sysConfirm ? await sysConfirm(`คำเตือน: คุณต้องการลบข้อมูลลูกค้า "${c.name}" ออกจากระบบถาวรหรือไม่?\n(ระบบจะลบประวัติสัญญาที่เกี่ยวข้องทั้งหมด)`) : false;
     if (!ok) return;
 
-    setIsSubmitting(true);
     try {
-      const res = await fetch(`/api/customers/contracts/${activeContract.id}/terminate`, {
-        method: 'PATCH',
-        headers,
-        body: JSON.stringify(terminateForm)
+      const res = await fetch(`/api/customers/${c.id}`, {
+        method: 'DELETE',
+        headers
       });
       const data = await res.json();
       if (data.success) {
-        if (sysAlert) sysAlert('ยกเลิกสัญญาเรียบร้อยแล้ว', 'success');
-        setShowTerminateInline(false);
-
-        // Reload drawer
-        const custRes = await fetch(`/api/customers/${contractCustomer.id}`, { headers });
-        const custData = await custRes.json();
-        if (custData.success) {
-          setContractCustomer(custData.customer);
-          setContractToEdit(custData.customer.contracts?.[0] || null);
-        }
-        setContractDrawerTab('overview');
+        if (sysAlert) sysAlert('ลบข้อมูลลูกค้าเรียบร้อยแล้ว', 'success');
         fetchCustomers();
         fetchAlerts();
-        if (isAdmin) fetchAuditLogs(contractCustomer.id);
       } else {
-        if (sysAlert) sysAlert(data.error || 'ยกเลิกสัญญาไม่สำเร็จ', 'error');
+        if (sysAlert) sysAlert(data.error || 'ลบข้อมูลไม่สำเร็จ', 'error');
       }
     } catch (err) {
       if (sysAlert) sysAlert('เกิดข้อผิดพลาด: ' + err.message, 'error');
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
-  // Open Transfer Unit Modal (Basecamp only)
+  // Transfer Basecamp Unit Modal Handlers
   const handleOpenTransferModal = (c) => {
     setTransferUnitCustomer(c);
     const today = new Date();
@@ -719,17 +708,15 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     setShowTransferModal(true);
   };
 
-  // Submit Transfer Unit
   const handleSubmitTransfer = async (e) => {
     e.preventDefault();
-    if (!transferUnitCustomer || !transferForm.name.trim()) {
+    if (!transferUnitCustomer) return;
+    if (!transferForm.name.trim()) {
       if (sysAlert) sysAlert('กรุณาระบุชื่อผู้เช่ารายใหม่', 'warning');
       return;
     }
 
-    const ok = sysConfirm
-      ? await sysConfirm(`ยืนยันการเปลี่ยนผู้เช่ายูนิต ${transferUnitCustomer.basecamp_unit} เป็น "${transferForm.name}"? ผู้เช่าเดิมจะถูกปิดสถานะ และยอดใช้โควต้าจะแยกจากกันอย่างเด็ดขาด`)
-      : true;
+    const ok = sysConfirm ? await sysConfirm(`ยืนยันการเปลี่ยนผู้เช่ายูนิต ${transferUnitCustomer.basecamp_unit} จาก "${transferUnitCustomer.name}" เป็น "${transferForm.name}"?`) : true;
     if (!ok) return;
 
     setIsSubmitting(true);
@@ -738,26 +725,17 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          basecamp_unit: transferUnitCustomer.basecamp_unit,
-          new_tenant: {
-            name: transferForm.name,
-            contact_name: transferForm.contact_name,
-            phone: transferForm.phone,
-            email: transferForm.email,
-            tax_id: transferForm.tax_id,
-            basecamp_sub_type: transferUnitCustomer.basecamp_sub_type
-          },
-          new_contract: {
-            start_date: transferForm.start_date,
-            end_date: transferForm.end_date,
-            monthly_quota_hours: transferForm.monthly_quota_hours
-          }
+          unit_number: transferUnitCustomer.basecamp_unit,
+          basecamp_sub_type: transferUnitCustomer.basecamp_sub_type,
+          previous_customer_id: transferUnitCustomer.id,
+          new_customer: transferForm
         })
       });
       const data = await res.json();
       if (data.success) {
-        if (sysAlert) sysAlert(data.message, 'success');
+        if (sysAlert) sysAlert(`เปลี่ยนผู้เช่ายูนิต ${transferUnitCustomer.basecamp_unit} สำเร็จเรียบร้อยแล้ว`, 'success');
         setShowTransferModal(false);
+        setTransferUnitCustomer(null);
         fetchCustomers();
         fetchAlerts();
       } else {
@@ -772,16 +750,12 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
 
   return (
     <div className="crm-container">
-      {/* 1. Dashboard Header */}
-      <div className="crm-header">
-        <div className="crm-title-area">
-          <div className="crm-title-row">
-            <Users size={22} className="crm-title-icon" />
-            <h1 className="crm-title">จัดการลูกค้าและสัญญา</h1>
-            <span className="crm-badge-corporate">Enterprise CRM</span>
-          </div>
+      {/* 1. Header & Quick Actions */}
+      <div className="crm-header-row">
+        <div>
+          <h1 className="crm-title">จัดการข้อมูลลูกค้า & สัญญา (Customer & Contracts)</h1>
           <p className="crm-subtitle">
-            Customer, Shop & Contract Lifecycle Console (Basecamp & Partner Shops)
+            จัดการข้อมูลผู้เช่า Basecamp, ร้านค้าพันธมิตร (Shop), โควต้าการจองห้องประชุม และสัญญาเช่า
           </p>
         </div>
 
@@ -790,9 +764,10 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
             type="button"
             className="crm-btn-primary"
             onClick={handleOpenCreate}
+            id="btn-add-customer"
           >
             <Plus size={16} />
-            <span>เพิ่มลูกค้า / ร้านค้า</span>
+            <span>เพิ่มลูกค้า / ร้านค้าใหม่</span>
           </button>
         </div>
       </div>
@@ -903,30 +878,31 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
               className={`crm-segment-btn ${filterStatus === 'active' ? 'active' : ''}`}
               onClick={() => setFilterStatus('active')}
             >
-              เปิดใช้งาน (Active)
+              Active
             </button>
             <button
               type="button"
               className={`crm-segment-btn ${filterStatus === 'inactive' ? 'active' : ''}`}
               onClick={() => setFilterStatus('inactive')}
             >
-              ปิดการใช้งาน
+              Inactive
             </button>
           </div>
         </div>
 
-        {/* Quota Month/Year Selector */}
+        {/* Quota Month Context Selector */}
         <div className="crm-filter-right">
-          <div className="crm-quota-period-picker">
-            <CalendarDays size={15} className="crm-picker-icon" />
-            <span className="crm-picker-label">รอบโควต้า:</span>
+          <div className="crm-month-picker-wrap">
+            <span className="crm-month-lbl">รอบโควต้า:</span>
             <select
               className="crm-select-compact"
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
             >
               {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
-                <option key={m} value={String(m)}>เดือน {m}</option>
+                <option key={m} value={String(m)}>
+                  {new Date(2026, m - 1, 1).toLocaleDateString('th-TH', { month: 'short' })}
+                </option>
               ))}
             </select>
             <select
@@ -934,101 +910,111 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
               value={selectedYear}
               onChange={(e) => setSelectedYear(e.target.value)}
             >
-              <option value="2025">พ.ศ. 2568</option>
-              <option value="2026">พ.ศ. 2569</option>
-              <option value="2027">พ.ศ. 2570</option>
+              {['2025', '2026', '2027', '2028'].map(y => (
+                <option key={y} value={y}>พ.ศ. {parseInt(y) + 543}</option>
+              ))}
             </select>
           </div>
         </div>
       </div>
 
-      {/* 4. Customer Data Table */}
+      {/* 4. Customer Table */}
       <div className="crm-table-container">
         <div className="crm-table-scroll">
           <table className="crm-table">
             <thead>
               <tr>
-                <th style={{ width: '150px' }}>ประเภท / ยูนิต</th>
-                <th style={{ minWidth: '220px' }}>ชื่อบริษัท / ร้านค้า</th>
-                <th style={{ minWidth: '190px' }}>ผู้ติดต่อและโทรศัพท์</th>
-                <th style={{ minWidth: '210px' }}>สัญญาและวันสิ้นสุด (พ.ศ.)</th>
-                <th style={{ minWidth: '200px' }}>โควต้า (ด.{selectedMonth}/{selectedYear})</th>
-                <th style={{ width: '100px' }}>สถานะ</th>
-                <th style={{ width: '220px', textAlign: 'right' }}>การจัดการ</th>
+                <th style={{ width: '22%' }}>ลูกค้า / ร้านค้า</th>
+                <th style={{ width: '12%' }}>ยูนิต / ประเภท</th>
+                <th style={{ width: '18%' }}>ข้อมูลติดต่อ</th>
+                <th style={{ width: '20%' }}>สถานะสัญญา (พ.ศ.)</th>
+                <th style={{ width: '16%' }}>โควต้าห้องประชุม</th>
+                <th style={{ width: '6%' }}>สถานะ</th>
+                <th style={{ width: '12%', textAlign: 'right' }}>จัดการ</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
                   <td colSpan={7} className="crm-table-placeholder">
-                    <RefreshCw size={24} className="animate-spin crm-spinner" />
+                    <RefreshCw size={24} className="crm-spin" />
                     <span>กำลังโหลดข้อมูลลูกค้า...</span>
                   </td>
                 </tr>
               ) : customers.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="crm-table-placeholder">
-                    <Info size={28} className="crm-placeholder-icon" />
+                    <Users size={32} />
                     <span>ไม่พบข้อมูลลูกค้าตามเงื่อนไขที่เลือก</span>
                   </td>
                 </tr>
               ) : (
                 customers.map((c) => {
-                  const activeContract = c.active_contract;
-                  const quota = c.quota || { max_quota: 4.0, used_quota: 0, remaining_quota: 4.0 };
-                  const percentUsed = quota.max_quota > 0 ? Math.min(100, Math.round((quota.used_quota / quota.max_quota) * 100)) : 0;
-                  const barColor = percentUsed >= 100 ? '#ef4444' : (percentUsed >= 60 ? '#f59e0b' : '#10b981');
+                  const activeContract = c.active_contract || null;
+                  const quota = c.quota_summary || {
+                    max_quota: 0,
+                    used_quota: 0,
+                    remaining_quota: 0,
+                    booking_count: 0
+                  };
+                  const percentUsed = quota.max_quota > 0
+                    ? Math.min(100, Math.round((quota.used_quota / quota.max_quota) * 100))
+                    : 0;
+                  const barColor = percentUsed >= 90 ? '#ef4444' : percentUsed >= 50 ? '#f59e0b' : '#10b981';
 
                   return (
-                    <tr key={c.id} className="crm-table-row">
-                      {/* Type / Unit Badge */}
+                    <tr key={c.id}>
+                      {/* Name & Type */}
                       <td>
-                        {c.customer_type === 'basecamp' ? (
-                          <div className="crm-type-badge basecamp">
-                            <Building2 size={13} />
-                            <span>{c.basecamp_sub_type === 'hotdesk' ? 'Hotdesk' : 'Office'} {c.basecamp_unit || '-'}</span>
+                        <div className="crm-cust-cell">
+                          <div className="crm-cust-name-row">
+                            <span className="crm-cust-name" onClick={() => handleOpenEdit(c, 'profile')} title="คลิกเพื่อแก้ไขข้อมูลลูกค้า">
+                              {c.name}
+                            </span>
+                            {c.customer_type === 'shop' ? (
+                              <span className="crm-badge shop"><Store size={10} /> Shop</span>
+                            ) : (
+                              <span className="crm-badge basecamp"><Building2 size={10} /> Basecamp</span>
+                            )}
                           </div>
-                        ) : (
-                          <div className="crm-type-badge shop">
-                            <Store size={13} />
-                            <span>Partner Shop</span>
-                          </div>
-                        )}
+                          {c.contact_name && (
+                            <div className="crm-cust-contact-name">ผู้ติดต่อ: {c.contact_name}</div>
+                          )}
+                        </div>
                       </td>
 
-                      {/* Company / Shop Name */}
+                      {/* Unit / Subtype */}
                       <td>
-                        <div className="crm-name-cell">
-                          <span className="crm-primary-name">{c.name}</span>
-                          {c.tax_id && <span className="crm-tax-num">TAX: {c.tax_id}</span>}
-                        </div>
+                        {c.customer_type === 'basecamp' ? (
+                          <div className="crm-unit-pill">
+                            <span className="unit-tag">{c.basecamp_sub_type === 'hotdesk' ? 'Hotdesk' : 'Office'}</span>
+                            <strong className="unit-number">{c.basecamp_unit || '-'}</strong>
+                          </div>
+                        ) : (
+                          <span className="crm-shop-location">ร้านค้าพันธมิตร</span>
+                        )}
                       </td>
 
                       {/* Contact Info */}
                       <td>
                         <div className="crm-contact-cell">
-                          {c.contact_name ? (
-                            <span className="crm-contact-person">{c.contact_name}</span>
-                          ) : (
-                            <span className="crm-text-muted">-</span>
+                          {c.phone && (
+                            <div className="crm-contact-item">
+                              <Phone size={12} />
+                              <span>{c.phone}</span>
+                            </div>
                           )}
-                          <div className="crm-contact-links">
-                            {c.phone && (
-                              <span className="crm-contact-pill">
-                                <Phone size={11} /> {c.phone}
-                              </span>
-                            )}
-                            {c.email && (
-                              <span className="crm-contact-pill">
-                                <Mail size={11} /> {c.email}
-                              </span>
-                            )}
-                          </div>
+                          {c.email && (
+                            <div className="crm-contact-item">
+                              <Mail size={12} />
+                              <span className="crm-ellipsis">{c.email}</span>
+                            </div>
+                          )}
                         </div>
                       </td>
 
                       {/* Contract Info with True Thai BE Date */}
-                      <td>
+                      <td style={{ cursor: 'pointer' }} onClick={() => handleOpenEdit(c, 'contracts')} title="คลิกเพื่อเปิดแท็บสัญญา">
                         {activeContract ? (
                           <div className="crm-contract-cell">
                             <div className="crm-contract-row-top">
@@ -1053,7 +1039,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                       </td>
 
                       {/* Quota Progress */}
-                      <td>
+                      <td style={{ cursor: 'pointer' }} onClick={() => handleOpenEdit(c, 'quota')} title="คลิกเพื่อดูรายละเอียดโควตา">
                         <div className="crm-quota-box">
                           <div className="crm-quota-numbers">
                             <span className="crm-quota-used">ใช้ {quota.used_quota} ชม.</span>
@@ -1084,23 +1070,23 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                       {/* Actions */}
                       <td style={{ textAlign: 'right' }}>
                         <div className="crm-action-btn-group">
-                          {/* Manage Contract Drawer Button */}
+                          {/* Manage Contract Tab Shortcut */}
                           <button
                             type="button"
                             className="crm-action-btn primary"
                             title="เปิดระบบจัดการสัญญาและวันที่"
-                            onClick={() => handleOpenContractDrawer(c, 'overview')}
+                            onClick={() => handleOpenEdit(c, 'contracts')}
                           >
                             <FileText size={13} />
                             <span>สัญญา</span>
                           </button>
 
-                          {/* Edit Customer Profile */}
+                          {/* Edit Customer Profile Tab Shortcut */}
                           <button
                             type="button"
                             className="crm-action-btn secondary"
                             title="แก้ไขข้อมูลลูกค้า"
-                            onClick={() => handleOpenEdit(c)}
+                            onClick={() => handleOpenEdit(c, 'profile')}
                           >
                             <Edit2 size={13} />
                           </button>
@@ -1120,12 +1106,24 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                           {/* Toggle Active / Inactive */}
                           <button
                             type="button"
-                            className={`crm-action-btn icon-toggle ${c.status}`}
-                            title={c.status === 'active' ? 'ปิดการใช้งาน' : 'เปิดใช้งาน'}
+                            className={`crm-action-btn ${c.status === 'active' ? 'toggle-active' : 'toggle-inactive'}`}
+                            title={c.status === 'active' ? 'ปิดการใช้งานลูกค้า' : 'เปิดการใช้งานลูกค้า'}
                             onClick={() => handleToggleStatus(c)}
                           >
-                            {c.status === 'active' ? <XCircle size={14} /> : <CheckCircle2 size={14} />}
+                            {c.status === 'active' ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
                           </button>
+
+                          {/* Admin Only Delete */}
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              className="crm-action-btn danger"
+                              title="ลบข้อมูลลูกค้าถาวร (Admin Only)"
+                              onClick={() => handleDeleteCustomer(c)}
+                            >
+                              <X size={13} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1138,723 +1136,55 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       </div>
 
       {/* =========================================================================
-          SLIDE-OVER SIDE DRAWER: CONTRACT CONSOLE (POLISHED & STREAMLINED)
-          ========================================================================= */}
-      {showContractDrawer && contractCustomer && (
-        <div className="crm-drawer-backdrop">
-          <div className="crm-drawer-panel" onClick={(e) => e.stopPropagation()}>
-            {/* 1. Compact Sticky Drawer Header */}
-            <div className="crm-drawer-header">
-              <div className="crm-drawer-header-left">
-                <div className="crm-drawer-header-badges">
-                  {contractCustomer.customer_type === 'basecamp' ? (
-                    <span className="crm-type-badge basecamp">
-                      <Building2 size={12} />
-                      {contractCustomer.basecamp_sub_type === 'hotdesk' ? 'Hotdesk' : 'Office'} {contractCustomer.basecamp_unit || '-'}
-                    </span>
-                  ) : (
-                    <span className="crm-type-badge shop">
-                      <Store size={12} /> Partner Shop
-                    </span>
-                  )}
-                  <span className={`crm-status-dot-badge ${contractCustomer.status}`}>
-                    <span className="dot" />
-                    {contractCustomer.status === 'active' ? 'Active' : 'Inactive'}
-                  </span>
-                </div>
-                <h2 className="crm-drawer-title">{contractCustomer.name}</h2>
-                <div className="crm-drawer-contact-line">
-                  {contractCustomer.contact_name && <span>{contractCustomer.contact_name}</span>}
-                  {contractCustomer.phone && <span>• {contractCustomer.phone}</span>}
-                  {contractCustomer.email && <span>• {contractCustomer.email}</span>}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="crm-drawer-close-btn"
-                onClick={handleRequestCloseContractDrawer}
-                title="ปิดแถบด้านข้าง (Close)"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* 2. Streamlined Drawer Navigation (Clean 3-Tab Segmented Bar or Contextual Back Bar) */}
-            {(contractDrawerTab === 'edit_dates' || contractDrawerTab === 'renew') ? (
-              <div className="crm-drawer-sub-nav">
-                <button
-                  type="button"
-                  className="crm-drawer-back-btn crm-subnav-back-btn"
-                  onClick={async () => {
-                    if (isContractDrawerDirty()) {
-                      const msg = 'คุณมีข้อมูลการแก้ไขสัญญาที่ยังไม่ได้บันทึก ต้องการยกเลิกและกลับสู่ภาพรวมสัญญาหรือไม่?';
-                      const ok = sysConfirm ? await sysConfirm(msg) : window.confirm(msg);
-                      if (!ok) return;
-                    }
-                    setContractDrawerTab('overview');
-                    setEditDateStep('input');
-                    setShowTerminateInline(false);
-                  }}
-                  title="กลับสู่ภาพรวมสัญญา"
-                >
-                  <ChevronLeft size={16} />
-                  <span>กลับสู่ภาพรวมสัญญา</span>
-                </button>
-                <div className="crm-drawer-sub-badge">
-                  {contractDrawerTab === 'edit_dates' ? (
-                    <span className="crm-sub-badge edit">
-                      <Edit2 size={12} /> แก้ไขวันที่สัญญาเดิม
-                    </span>
-                  ) : (
-                    <span className="crm-sub-badge renew">
-                      <Plus size={12} /> ต่อสัญญาฉบับใหม่
-                    </span>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="crm-drawer-nav-bar">
-                <div className="crm-drawer-tabs-grid">
-                  <button
-                    type="button"
-                    className={`crm-drawer-tab-btn ${contractDrawerTab === 'overview' ? 'active' : ''}`}
-                    onClick={() => {
-                      setContractDrawerTab('overview');
-                      setShowTerminateInline(false);
-                    }}
-                  >
-                    <FileText size={14} />
-                    <span>ภาพรวม</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={`crm-drawer-tab-btn ${contractDrawerTab === 'history' ? 'active' : ''}`}
-                    onClick={() => {
-                      setContractDrawerTab('history');
-                      setShowTerminateInline(false);
-                    }}
-                  >
-                    <History size={14} />
-                    <span>ประวัติสัญญา ({contractCustomer.contracts?.length || 0})</span>
-                  </button>
-
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      className={`crm-drawer-tab-btn ${contractDrawerTab === 'audit' ? 'active' : ''}`}
-                      onClick={() => {
-                        setContractDrawerTab('audit');
-                        setShowTerminateInline(false);
-                      }}
-                    >
-                      <ShieldCheck size={14} />
-                      <span>Audit Log</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* 3. Scrollable Drawer Body (Clean Single Container, No Nested Cards) */}
-            <div className="crm-drawer-body">
-              {/* TAB 1: OVERVIEW */}
-              {contractDrawerTab === 'overview' && (
-                <div className="crm-tab-pane">
-                  {contractCustomer.contracts?.[0] ? (
-                    <div className="crm-overview-section">
-                      {/* Contract Summary Box */}
-                      <div className="crm-summary-hero-box">
-                        <div className="crm-hero-headline">
-                          <div>
-                            <span className="crm-sub-lbl">สัญญาที่ใช้งานปัจจุบัน</span>
-                            <div className="crm-hero-id">{contractCustomer.contracts[0].contract_number}</div>
-                          </div>
-                          <span className={`crm-urgency-tag large ${contractCustomer.contracts[0].urgency}`}>
-                            {contractCustomer.contracts[0].evaluated_status} ({contractCustomer.contracts[0].days_left} วัน)
-                          </span>
-                        </div>
-
-                        <div className="crm-hero-dates-strip">
-                          <div className="crm-hds-item">
-                            <span className="lbl">วันเริ่มสัญญา (พ.ศ.)</span>
-                            <span className="val">{formatThaiDate(contractCustomer.contracts[0].start_date)}</span>
-                          </div>
-                          <ChevronRight size={16} className="crm-hds-arrow" />
-                          <div className="crm-hds-item">
-                            <span className="lbl">วันสิ้นสุดสัญญา (พ.ศ.)</span>
-                            <span className="val highlight">{formatThaiDate(contractCustomer.contracts[0].end_date)}</span>
-                          </div>
-                        </div>
-
-                        <div className="crm-hero-meta-row">
-                          <div className="crm-meta-item">
-                            <Clock size={14} />
-                            <span>โควต้าห้องประชุม: <strong>{contractCustomer.contracts[0].monthly_quota_hours} ชม./เดือน</strong></span>
-                          </div>
-                          {contractCustomer.contracts[0].notes && (
-                            <div className="crm-meta-item notes">
-                              <Info size={14} />
-                              <span>{contractCustomer.contracts[0].notes}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="crm-hero-btn-row">
-                          {canManageContracts && contractCustomer.contracts[0].status !== 'TERMINATED' && (
-                            <button
-                              type="button"
-                              className="crm-btn-action-primary"
-                              onClick={() => handleStartEditDates(contractCustomer.contracts[0])}
-                            >
-                              <Edit2 size={13} />
-                              <span>แก้ไขวันที่สัญญา</span>
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="crm-btn-action-secondary"
-                            onClick={() => setContractDrawerTab('renew')}
-                          >
-                            <Plus size={14} />
-                            <span>ต่อสัญญาใหม่</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Inline Danger Action: Terminate Contract */}
-                      {contractCustomer.contracts?.[0]?.status === 'ACTIVE' && (
-                        <div className="crm-terminate-wrapper">
-                          {!showTerminateInline ? (
-                            <div className="crm-terminate-bar">
-                              <div className="crm-terminate-text">
-                                <span className="title">ต้องการยกเลิกสัญญาก่อนกำหนด?</span>
-                                <span className="desc">สถานะจะเปลี่ยนเป็น TERMINATED และสิทธิ์โควต้าจะถูกระงับ</span>
-                              </div>
-                              <button
-                                type="button"
-                                className="crm-btn-quiet-danger"
-                                onClick={() => setShowTerminateInline(true)}
-                              >
-                                <AlertTriangle size={13} />
-                                <span>ยกเลิกสัญญา</span>
-                              </button>
-                            </div>
-                          ) : (
-                            <form onSubmit={handleSubmitTerminate} className="crm-terminate-form-box">
-                              <div className="crm-tfb-header">
-                                <AlertTriangle size={16} color="#dc2626" />
-                                <h4>ขอยกเลิกสัญญาก่อนกำหนด ({contractCustomer.contracts[0].contract_number})</h4>
-                              </div>
-
-                              <div className="crm-form-group">
-                                <label className="crm-form-label">
-                                  วันที่มีผลยกเลิกสัญญา (ปฏิทินไทย พ.ศ.) <span className="req">*</span>
-                                </label>
-                                <ThaiDatePicker
-                                  value={terminateForm.termination_date}
-                                  onChange={(val) => setTerminateForm(prev => ({ ...prev, termination_date: val }))}
-                                  required
-                                  align="left"
-                                />
-                              </div>
-
-                              <div className="crm-form-group">
-                                <label className="crm-form-label">
-                                  เหตุผลในการยกเลิกสัญญา <span className="req">*</span>
-                                </label>
-                                <textarea
-                                  rows={2}
-                                  className="crm-form-textarea"
-                                  placeholder="ระบุเหตุผล เช่น ย้ายสถานที่ประกอบการ, ไม่ประสงค์เช่าต่อ..."
-                                  value={terminateForm.reason}
-                                  onChange={(e) => setTerminateForm(prev => ({ ...prev, reason: e.target.value }))}
-                                  required
-                                />
-                              </div>
-
-                              <div className="crm-tfb-actions">
-                                <button
-                                  type="button"
-                                  className="crm-btn-secondary"
-                                  onClick={() => setShowTerminateInline(false)}
-                                  disabled={isSubmitting}
-                                >
-                                  ยกเลิก
-                                </button>
-                                <button
-                                  type="submit"
-                                  className="crm-btn-danger"
-                                  disabled={isSubmitting}
-                                >
-                                  {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันการยกเลิกสัญญา'}
-                                </button>
-                              </div>
-                            </form>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="crm-drawer-empty-state">
-                      <Info size={24} />
-                      <p>ลูกค้ารายนี้ยังไม่มีสัญญาที่บันทึกไว้ในระบบ</p>
-                      <button
-                        type="button"
-                        className="crm-btn-primary"
-                        onClick={() => setContractDrawerTab('renew')}
-                      >
-                        <Plus size={14} />
-                        <span>สร้างสัญญาใหม่ (Create Contract)</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* TAB 2: EDIT CONTRACT DATES */}
-              {contractDrawerTab === 'edit_dates' && contractToEdit && (
-                <div className="crm-tab-pane">
-                  {editDateStep === 'input' ? (
-                    <div className="crm-edit-pane-container">
-                      {/* Section Header with quiet micro-copy */}
-                      <div className="crm-section-lead">
-                        <div className="crm-section-lead-title">
-                          <Edit2 size={15} className="crm-lead-icon" />
-                          <h3>แก้ไขวันที่สัญญา</h3>
-                        </div>
-                        <p className="crm-section-lead-desc">
-                          การแก้ไขจะบันทึกทับวันที่ของสัญญาเดิม (<strong>{contractToEdit.contract_number}</strong>) โดยไม่เปลี่ยนเลขสัญญา ไม่รีเซ็ตโควต้า และไม่กระทบต่อประวัติการจองเดิม
-                        </p>
-                      </div>
-
-                      {/* Reference line */}
-                      <div className="crm-ref-strip">
-                        <span className="lbl">วันที่ปัจจุบันในระบบ:</span>
-                        <span className="val">{formatThaiDate(contractToEdit.start_date)} ถึง {formatThaiDate(contractToEdit.end_date)} (พ.ศ.)</span>
-                      </div>
-
-                      {/* 2-Column Responsive Date Pickers with Adaptive Alignment */}
-                      <div className="crm-form-grid-2">
-                        <div className="crm-form-group">
-                          <label className="crm-form-label">
-                            <Calendar size={13} />
-                            <span>วันเริ่มสัญญาใหม่ (พ.ศ.)</span>
-                            <span className="req">*</span>
-                          </label>
-                          <ThaiDatePicker
-                            value={editDateForm.start_date}
-                            onChange={(val) => setEditDateForm(prev => ({ ...prev, start_date: val }))}
-                            required
-                            align="left"
-                          />
-                        </div>
-
-                        <div className="crm-form-group">
-                          <label className="crm-form-label">
-                            <Calendar size={13} />
-                            <span>วันสิ้นสุดสัญญาใหม่ (พ.ศ.)</span>
-                            <span className="req">*</span>
-                          </label>
-                          <ThaiDatePicker
-                            value={editDateForm.end_date}
-                            onChange={(val) => setEditDateForm(prev => ({ ...prev, end_date: val }))}
-                            required
-                            align="right"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Reason */}
-                      <div className="crm-form-group">
-                        <label className="crm-form-label">
-                          <ShieldCheck size={13} color="#2563eb" />
-                          <span>เหตุผลในการแก้ไขวันที่สัญญา</span>
-                          <span className="req">*</span>
-                          <span className="crm-label-hint">(จำเป็นต้องบันทึกใน Audit Log)</span>
-                        </label>
-                        <textarea
-                          rows={3}
-                          className="crm-form-textarea"
-                          placeholder="เช่น ปรับวันเริ่มสัญญาให้ตรงตามเอกสารส่งมอบพื้นที่จริง, ขยายเวลาสัญญาชดเชย..."
-                          value={editDateForm.reason}
-                          onChange={(e) => setEditDateForm(prev => ({ ...prev, reason: e.target.value }))}
-                          required
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    /* Step 2: Inline Diff Confirmation inside Drawer */
-                    <div className="crm-confirm-diff-container">
-                      <div className="crm-section-lead">
-                        <div className="crm-section-lead-title">
-                          <AlertCircle size={16} color="#2563eb" />
-                          <h3>ตรวจสอบการแก้ไขวันที่สัญญา</h3>
-                        </div>
-                        <p className="crm-section-lead-desc">
-                          กรุณาตรวจสอบความถูกต้องของข้อมูลสัญญาก่อนบันทึกการเปลี่ยนแปลง
-                        </p>
-                      </div>
-
-                      <div className="crm-diff-summary-card">
-                        <div className="crm-dsc-head">
-                          <span>สัญญาเลขที่: <strong>{contractToEdit.contract_number}</strong></span>
-                        </div>
-
-                        <div className="crm-diff-table">
-                          <div className="crm-diff-thead">
-                            <span>รายการ</span>
-                            <span>วันที่เดิม</span>
-                            <span>วันที่แก้ไขใหม่ (พ.ศ.)</span>
-                          </div>
-                          <div className="crm-diff-trow">
-                            <span className="lbl">วันเริ่มสัญญา:</span>
-                            <span className="old">{formatThaiDate(contractToEdit.start_date)}</span>
-                            <span className="new highlight">{formatThaiDate(editDateForm.start_date)}</span>
-                          </div>
-                          <div className="crm-diff-trow">
-                            <span className="lbl">วันสิ้นสุดสัญญา:</span>
-                            <span className="old">{formatThaiDate(contractToEdit.end_date)}</span>
-                            <span className="new highlight">{formatThaiDate(editDateForm.end_date)}</span>
-                          </div>
-                        </div>
-
-                        <div className="crm-dsc-reason">
-                          <span className="lbl">เหตุผลที่ระบุ:</span>
-                          <p className="txt">{editDateForm.reason}</p>
-                        </div>
-
-                        <div className="crm-dsc-notice">
-                          <ShieldCheck size={14} color="#059669" />
-                          <span>การแก้ไขนี้จะถูกบันทึกลง Audit Log พร้อมชื่อผู้ใช้งานของคุณ ({user?.username || 'staff'})</span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* TAB 3: RENEW CONTRACT */}
-              {contractDrawerTab === 'renew' && (
-                <div className="crm-tab-pane">
-                  <div className="crm-section-lead">
-                    <div className="crm-section-lead-title">
-                      <Sparkles size={15} className="crm-lead-icon" />
-                      <h3>ต่อสัญญาใหม่ (Renew Contract)</h3>
-                    </div>
-                    <p className="crm-section-lead-desc">
-                      สร้างสัญญาฉบับใหม่สำหรับรอบถัดไป และคงประวัติสัญญาเดิมไว้ในระบบอย่างครบถ้วน
-                    </p>
-                  </div>
-
-                  <div className="crm-form-grid-2">
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">
-                        <Calendar size={13} />
-                        <span>วันเริ่มสัญญาใหม่ (พ.ศ.)</span>
-                        <span className="req">*</span>
-                      </label>
-                      <ThaiDatePicker
-                        value={renewForm.start_date}
-                        onChange={(val) => setRenewForm(prev => ({ ...prev, start_date: val }))}
-                        required
-                        align="left"
-                      />
-                    </div>
-
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">
-                        <Calendar size={13} />
-                        <span>วันสิ้นสุดสัญญาใหม่ (พ.ศ.)</span>
-                        <span className="req">*</span>
-                      </label>
-                      <ThaiDatePicker
-                        value={renewForm.end_date}
-                        onChange={(val) => setRenewForm(prev => ({ ...prev, end_date: val }))}
-                        required
-                        align="right"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="crm-form-grid-2">
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">
-                        <Clock size={13} />
-                        <span>โควต้าห้องประชุม (ชม./เดือน)</span>
-                        <span className="req">*</span>
-                      </label>
-                      <input
-                        type="number"
-                        step="0.5"
-                        className="crm-form-input"
-                        value={renewForm.monthly_quota_hours}
-                        onChange={(e) => setRenewForm(prev => ({ ...prev, monthly_quota_hours: parseFloat(e.target.value) || 0 }))}
-                        required
-                      />
-                    </div>
-
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">
-                        <FileText size={13} />
-                        <span>เลขสัญญา (เว้นว่างเพื่อสร้างอัตโนมัติ)</span>
-                      </label>
-                      <input
-                        type="text"
-                        className="crm-form-input"
-                        placeholder="เช่น CTR-BC-401-2027"
-                        value={renewForm.contract_number}
-                        onChange={(e) => setRenewForm(prev => ({ ...prev, contract_number: e.target.value }))}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">หมายเหตุการต่อสัญญา</label>
-                    <textarea
-                      rows={2}
-                      className="crm-form-textarea"
-                      placeholder="เช่น ต่อสัญญารอบปีที่ 2, เงื่อนไขส่วนลดเดิม..."
-                      value={renewForm.notes}
-                      onChange={(e) => setRenewForm(prev => ({ ...prev, notes: e.target.value }))}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 4: CONTRACT HISTORY */}
-              {contractDrawerTab === 'history' && (
-                <div className="crm-tab-pane">
-                  <div className="crm-section-lead">
-                    <div className="crm-section-lead-title">
-                      <History size={15} className="crm-lead-icon" />
-                      <h3>ประวัติสัญญาทั้งหมด ({contractCustomer.contracts?.length || 0} ฉบับ)</h3>
-                    </div>
-                    <p className="crm-section-lead-desc">
-                      รายการสัญญาทั้งหมดของ {contractCustomer.name} จัดเรียงตามรอบระยะเวลาสัญญา
-                    </p>
-                  </div>
-
-                  <div className="crm-history-stream">
-                    {contractCustomer.contracts?.map((ctr) => (
-                      <div key={ctr.id} className="crm-history-card">
-                        <div className="crm-hc-header">
-                          <div className="crm-hc-id-group">
-                            <span className="crm-hc-id">{ctr.contract_number}</span>
-                            <span className={`crm-urgency-tag ${ctr.urgency}`}>
-                              {ctr.evaluated_status}
-                            </span>
-                          </div>
-                          {canManageContracts && ctr.status !== 'TERMINATED' && (
-                            <button
-                              type="button"
-                              className="crm-action-btn secondary"
-                              onClick={() => handleStartEditDates(ctr)}
-                              title="แก้ไขวันที่ของสัญญานี้"
-                            >
-                              <Edit2 size={12} />
-                              <span>แก้วันที่</span>
-                            </button>
-                          )}
-                        </div>
-
-                        <div className="crm-hc-dates">
-                          <span>ระยะเวลา: </span>
-                          <strong>{formatThaiDate(ctr.start_date)}</strong>
-                          <span> ถึง </span>
-                          <strong>{formatThaiDate(ctr.end_date)}</strong>
-                          <span className="crm-be-pill">พ.ศ.</span>
-                        </div>
-
-                        <div className="crm-hc-footer">
-                          <span>โควต้า: {ctr.monthly_quota_hours} ชม./เดือน</span>
-                          {ctr.notes && <span>• {ctr.notes}</span>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 5: AUDIT LOG (Admin Only) */}
-              {contractDrawerTab === 'audit' && isAdmin && (
-                <div className="crm-tab-pane">
-                  <div className="crm-section-lead">
-                    <div className="crm-section-lead-title">
-                      <ShieldCheck size={16} color="#2563eb" />
-                      <h3>บันทึกประวัติการแก้ไขสัญญา (Audit History)</h3>
-                      <span className="crm-admin-pill">Admin</span>
-                    </div>
-                    <p className="crm-section-lead-desc">
-                      บันทึกการกระทำและการแก้ไขสัญญาของผู้ใช้งานในระบบอย่างปลอดภัย
-                    </p>
-                  </div>
-
-                  {loadingAudit ? (
-                    <div className="crm-drawer-empty-state">
-                      <RefreshCw size={20} className="animate-spin crm-spinner" />
-                      <span>กำลังโหลดบันทึก Audit Log...</span>
-                    </div>
-                  ) : auditLogs.length === 0 ? (
-                    <div className="crm-drawer-empty-state">
-                      <History size={24} style={{ color: '#94a3b8' }} />
-                      <p>ยังไม่มีประวัติการแก้ไขข้อมูลของลูกค้ารายนี้</p>
-                    </div>
-                  ) : (
-                    <div className="crm-audit-stream">
-                      {auditLogs.map((log) => {
-                        let detailsObj = null;
-                        try {
-                          detailsObj = typeof log.details === 'string' ? JSON.parse(log.details) : log.details;
-                        } catch (_) {
-                          detailsObj = { raw: log.details };
-                        }
-
-                        return (
-                          <div key={log.id} className="crm-audit-entry">
-                            <div className="crm-ae-top">
-                              <div className="crm-ae-badge-row">
-                                <span className="crm-ae-action-tag">{log.action}</span>
-                                <span className="crm-ae-user">โดย: <strong>{log.performed_by}</strong></span>
-                              </div>
-                              <span className="crm-ae-time">{formatThaiDateTime(log.created_at)}</span>
-                            </div>
-
-                            {log.action === 'EDIT_CONTRACT_DATES' && detailsObj && (
-                              <div className="crm-ae-diff-box">
-                                <div className="crm-ae-diff-row">
-                                  <span className="lbl">วันเริ่มสัญญา:</span>
-                                  <span className="old">{formatThaiDate(detailsObj.old_start_date)}</span>
-                                  <ChevronRight size={12} />
-                                  <span className="new">{formatThaiDate(detailsObj.new_start_date)}</span>
-                                </div>
-                                <div className="crm-ae-diff-row">
-                                  <span className="lbl">วันสิ้นสุดสัญญา:</span>
-                                  <span className="old">{formatThaiDate(detailsObj.old_end_date)}</span>
-                                  <ChevronRight size={12} />
-                                  <span className="new">{formatThaiDate(detailsObj.new_end_date)}</span>
-                                </div>
-                                {detailsObj.change_reason && (
-                                  <div className="crm-ae-reason-row">
-                                    <strong>เหตุผล:</strong> {detailsObj.change_reason}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-
-                            {log.action !== 'EDIT_CONTRACT_DATES' && (
-                              <div className="crm-ae-raw">
-                                {typeof log.details === 'string' ? log.details : JSON.stringify(log.details)}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* 4. Unified Sticky Action Footer (ONLY when editing or renewing, no redundant close buttons) */}
-            {(contractDrawerTab === 'edit_dates' || contractDrawerTab === 'renew') && (
-              <div className="crm-drawer-action-footer">
-                {contractDrawerTab === 'edit_dates' && editDateStep === 'input' && (
-                  <>
-                    <button
-                      type="button"
-                      className="crm-btn-secondary"
-                      onClick={async () => {
-                        if (isContractDrawerDirty()) {
-                          const msg = 'คุณมีข้อมูลการแก้ไขสัญญาที่ยังไม่ได้บันทึก ต้องการยกเลิกและกลับสู่ภาพรวมสัญญาหรือไม่?';
-                          const ok = sysConfirm ? await sysConfirm(msg) : window.confirm(msg);
-                          if (!ok) return;
-                        }
-                        setContractDrawerTab('overview');
-                        setEditDateStep('input');
-                      }}
-                    >
-                      ยกเลิก
-                    </button>
-                    <button
-                      type="button"
-                      className="crm-btn-primary"
-                      onClick={handleProceedToConfirmEdit}
-                    >
-                      <span>ตรวจสอบข้อมูลก่อนบันทึก</span>
-                      <ChevronRight size={15} />
-                    </button>
-                  </>
-                )}
-
-                {contractDrawerTab === 'edit_dates' && editDateStep === 'confirm' && (
-                  <>
-                    <button
-                      type="button"
-                      className="crm-btn-secondary"
-                      onClick={() => setEditDateStep('input')}
-                      disabled={isSubmitting}
-                    >
-                      <ChevronLeft size={15} />
-                      <span>ย้อนกลับไปแก้ไข</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="crm-btn-primary"
-                      onClick={handleConfirmSubmitEdit}
-                      disabled={isSubmitting}
-                    >
-                      {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันการแก้ไขวันที่สัญญา'}
-                    </button>
-                  </>
-                )}
-
-                {contractDrawerTab === 'renew' && (
-                  <>
-                    <button
-                      type="button"
-                      className="crm-btn-secondary"
-                      onClick={() => setContractDrawerTab('overview')}
-                      disabled={isSubmitting}
-                    >
-                      ยกเลิก
-                    </button>
-                    <button
-                      type="button"
-                      className="crm-btn-primary"
-                      onClick={handleSubmitRenew}
-                      disabled={isSubmitting}
-                    >
-                      {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันการต่อสัญญาใหม่'}
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* =========================================================================
-          MODAL: CREATE / EDIT CUSTOMER (WIDE 3-SECTION ARCHITECTURE)
+          UNIFIED MODAL: EDIT CUSTOMER / CONTRACTS / QUOTA (OR CREATE CUSTOMER)
           ========================================================================= */}
       {showAddEditModal && (
         <div className="crm-modal-backdrop">
           <div
             className={`crm-modal-dialog crm-modal-dialog-wide ${editingCustomer ? 'edit-mode' : ''}`}
             onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: editingCustomer ? '980px' : '1100px' }}
           >
+            {/* Modal Header */}
             <div className="crm-modal-header">
               <div className="crm-modal-title">
                 <div className="crm-modal-icon-badge">
-                  {editingCustomer ? <Edit2 size={18} /> : <Plus size={18} />}
+                  {editingCustomer ? (
+                    editModalTab === 'contracts' ? <FileText size={18} /> : editModalTab === 'quota' ? <Clock size={18} /> : <User size={18} />
+                  ) : (
+                    <Plus size={18} />
+                  )}
                 </div>
                 <div>
-                  <h3>{editingCustomer ? 'แก้ไขข้อมูลลูกค้า' : 'เพิ่มลูกค้า / ร้านค้าใหม่'}</h3>
+                  <h3>
+                    {editingCustomer ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                        <span>{editingCustomer.name}</span>
+                        {editingCustomer.customer_type === 'basecamp' ? (
+                          <span className="crm-badge basecamp" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
+                            <Building2 size={11} /> {editingCustomer.basecamp_sub_type === 'hotdesk' ? 'Hotdesk' : 'Office'} {editingCustomer.basecamp_unit}
+                          </span>
+                        ) : (
+                          <span className="crm-badge shop" style={{ fontSize: '0.72rem', padding: '2px 8px' }}>
+                            <Store size={11} /> Partner Shop
+                          </span>
+                        )}
+                        <span className={`crm-status-dot-badge ${editingCustomer.status}`} style={{ fontSize: '0.72rem' }}>
+                          <span className="dot" />
+                          {editingCustomer.status === 'active' ? 'Active' : 'Inactive'}
+                        </span>
+                      </span>
+                    ) : (
+                      'เพิ่มลูกค้า / ร้านค้าใหม่'
+                    )}
+                  </h3>
                   <p className="crm-modal-subtitle">
                     {editingCustomer
-                      ? 'แก้ไขรายละเอียดข้อมูลผู้เช่าหรือร้านค้าพันธมิตร'
+                      ? (editModalTab === 'profile'
+                          ? 'แก้ไขข้อมูลผู้เช่า ข้อมูลติดต่อ และรายละเอียดทั่วไป'
+                          : editModalTab === 'contracts'
+                            ? 'จัดการสัญญาเช่า วันที่เริ่ม/สิ้นสุด การต่อสัญญา และประวัติสัญญา'
+                            : 'ตรวจสอบโควต้าการใช้งานห้องประชุม สิทธิประโยชน์ และเงื่อนไขตามสัญญา')
                       : 'กรอกข้อมูลผู้เช่าและกำหนดระยะเวลาสัญญาเริ่มต้นเพื่อเปิดใช้งานระบบ'}
                   </p>
                 </div>
@@ -1869,276 +1199,994 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
               </button>
             </div>
 
-            <form onSubmit={handleSubmitCustomerForm} className="crm-modal-form">
-              <div className="crm-modal-body">
-                <div className={`crm-wide-modal-grid ${editingCustomer ? 'edit-mode' : ''}`}>
-                  {/* SECTION 1: ข้อมูลผู้เช่า / บริษัท (Customer Information) */}
-                  <div className="crm-modal-section-card">
-                    <div className="crm-section-headline">
-                      <Building2 size={16} />
-                      <span>ส่วนที่ 1: ข้อมูลผู้เช่า / บริษัท</span>
-                    </div>
-
-                    {!editingCustomer && (
-                      <div className="crm-form-group">
-                        <label className="crm-form-label">ประเภทลูกค้า <span className="req">*</span></label>
-                        <div className="crm-type-selector-grid">
-                          <button
-                            type="button"
-                            className={`crm-type-select-btn ${customerForm.customer_type === 'basecamp' ? 'active' : ''}`}
-                            onClick={() => {
-                              setCustomerForm({
-                                ...customerForm,
-                                customer_type: 'basecamp',
-                                monthly_quota_hours: customerForm.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0
-                              });
-                            }}
-                          >
-                            <Building2 size={16} />
-                            <div>
-                              <strong>Basecamp</strong>
-                              <span className="sub">ผู้เช่าออฟฟิศ/ฮอทเดสก์ ชั้น 4</span>
-                            </div>
-                          </button>
-
-                          <button
-                            type="button"
-                            className={`crm-type-select-btn ${customerForm.customer_type === 'shop' ? 'active' : ''}`}
-                            onClick={() => {
-                              setCustomerForm({
-                                ...customerForm,
-                                customer_type: 'shop',
-                                monthly_quota_hours: 4.0
-                              });
-                            }}
-                          >
-                            <Store size={16} />
-                            <div>
-                              <strong>Partner Shop</strong>
-                              <span className="sub">ร้านค้าพันธมิตรในอาคาร</span>
-                            </div>
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {customerForm.customer_type === 'basecamp' && (
-                      <div className="crm-form-grid-2">
-                        <div className="crm-form-group">
-                          <label className="crm-form-label">ประเภทยูนิต</label>
-                          <select
-                            className="crm-form-select"
-                            value={customerForm.basecamp_sub_type}
-                            onChange={(e) => {
-                              const sub = e.target.value;
-                              setCustomerForm({
-                                ...customerForm,
-                                basecamp_sub_type: sub,
-                                basecamp_unit: sub === 'office' ? '401' : '419',
-                                monthly_quota_hours: sub === 'office' ? 4.0 : 2.0
-                              });
-                            }}
-                          >
-                            <option value="office">Office (โควต้า 4 ชม./ด.)</option>
-                            <option value="hotdesk">Hotdesk (โควต้า 2 ชม./ด.)</option>
-                          </select>
-                        </div>
-
-                        <div className="crm-form-group">
-                          <label className="crm-form-label">เลขยูนิตชั้น 4</label>
-                          <select
-                            className="crm-form-select"
-                            value={customerForm.basecamp_unit}
-                            onChange={(e) => setCustomerForm({ ...customerForm, basecamp_unit: e.target.value })}
-                          >
-                            {customerForm.basecamp_sub_type === 'office'
-                              ? officeUnits.map(u => <option key={u} value={u}>Office {u}</option>)
-                              : hotdeskUnits.map(u => <option key={u} value={u}>Hotdesk {u}</option>)
-                            }
-                          </select>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">
-                        {customerForm.customer_type === 'shop' ? 'ชื่อร้านค้าพันธมิตร' : 'ชื่อบริษัท / ผู้เช่า'}
-                        <span className="req">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        className="crm-form-input"
-                        placeholder="เช่น บจก. เทคโนโลยีอนาคต หรือ Koo.Koo Cafe"
-                        value={customerForm.name}
-                        onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })}
-                        required
-                      />
-                    </div>
-
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">เลขประจำตัวผู้เสียภาษี (Tax ID)</label>
-                      <input
-                        type="text"
-                        className="crm-form-input"
-                        placeholder="13 หลัก (ถ้ามี)"
-                        value={customerForm.tax_id}
-                        onChange={(e) => setCustomerForm({ ...customerForm, tax_id: e.target.value })}
-                      />
-                    </div>
-                  </div>
-
-                  {/* SECTION 2: ข้อมูลการติดต่อ (Contact Details) */}
-                  <div className="crm-modal-section-card">
-                    <div className="crm-section-headline">
-                      <Phone size={16} />
-                      <span>ส่วนที่ 2: ข้อมูลการติดต่อ</span>
-                    </div>
-
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">ชื่อผู้ติดต่อประสานงาน</label>
-                      <input
-                        type="text"
-                        className="crm-form-input"
-                        placeholder="เช่น คุณสมชาย จัดการดี"
-                        value={customerForm.contact_name}
-                        onChange={(e) => setCustomerForm({ ...customerForm, contact_name: e.target.value })}
-                      />
-                    </div>
-
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">เบอร์โทรศัพท์</label>
-                      <input
-                        type="tel"
-                        className="crm-form-input"
-                        placeholder="08X-XXX-XXXX"
-                        value={customerForm.phone}
-                        onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value })}
-                      />
-                    </div>
-
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">อีเมล</label>
-                      <input
-                        type="email"
-                        className="crm-form-input"
-                        placeholder="contact@company.com"
-                        value={customerForm.email}
-                        onChange={(e) => setCustomerForm({ ...customerForm, email: e.target.value })}
-                      />
-                    </div>
-
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">ที่อยู่สำหรับการออกเอกสาร</label>
-                      <textarea
-                        rows={2}
-                        className="crm-form-textarea"
-                        placeholder="ที่อยู่บริษัทสำหรับการออกใบกำกับภาษี..."
-                        value={customerForm.address}
-                        onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })}
-                      />
-                    </div>
-                  </div>
-
-                  {/* SECTION 3: ข้อมูลสัญญาเริ่มต้น (Initial Contract — ปฏิทินไทย พ.ศ.) */}
-                  {!editingCustomer && (
-                    <div className="crm-modal-section-card crm-contract-init-card">
-                      <div className="crm-section-headline">
-                        <Calendar size={16} />
-                        <span>ส่วนที่ 3: ข้อมูลสัญญาเริ่มต้น (ปฏิทินไทย พ.ศ.)</span>
-                      </div>
-
-                      <div className="crm-contract-init-fields">
-                        <div className="crm-form-group">
-                          <label className="crm-form-label">
-                            วันเริ่มสัญญา (พ.ศ.) <span className="req">*</span>
-                          </label>
-                          <ThaiDatePicker
-                            value={customerForm.start_date}
-                            onChange={(val) => setCustomerForm(prev => ({ ...prev, start_date: val }))}
-                            required
-                            align="left"
-                          />
-                        </div>
-
-                        <div className="crm-form-group">
-                          <label className="crm-form-label">
-                            วันสิ้นสุดสัญญา (พ.ศ.) <span className="req">*</span>
-                          </label>
-                          <ThaiDatePicker
-                            value={customerForm.end_date}
-                            onChange={(val) => setCustomerForm(prev => ({ ...prev, end_date: val }))}
-                            required
-                            align="right"
-                          />
-                        </div>
-
-                        <div className="crm-form-grid-2 crm-contract-meta-grid">
-                          <div className="crm-form-group">
-                            <label className="crm-form-label">โควต้า (ชม./ด.) <span className="req">*</span></label>
-                            <input
-                              type="number"
-                              step="0.5"
-                              className="crm-form-input"
-                              value={customerForm.monthly_quota_hours}
-                              onChange={(e) => setCustomerForm({ ...customerForm, monthly_quota_hours: parseFloat(e.target.value) || 0 })}
-                              required
-                            />
-                          </div>
-
-                          <div className="crm-form-group">
-                            <label className="crm-form-label">หมายเลขสัญญา</label>
-                            <input
-                              type="text"
-                              className="crm-form-input"
-                              placeholder="สร้างอัตโนมัติ"
-                              value={customerForm.contract_number}
-                              onChange={(e) => setCustomerForm({ ...customerForm, contract_number: e.target.value })}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+            {/* Segmented Modal Tab Bar (Only when Editing an Existing Customer) */}
+            {editingCustomer && (
+              <div className="crm-modal-tabs-bar">
+                <button
+                  type="button"
+                  className={`crm-modal-tab-btn ${editModalTab === 'profile' ? 'active' : ''}`}
+                  onClick={() => setEditModalTab('profile')}
+                >
+                  <User size={15} />
+                  <span>ข้อมูลลูกค้า</span>
+                  {isCustomerFormDirty() && (
+                    <span className="crm-modal-tab-badge amber" title="มีการเปลี่ยนแปลงที่ยังไม่ได้บันทึก">•</span>
                   )}
-                </div>
-              </div>
+                </button>
 
-              <div className="crm-modal-footer">
-                <div className="crm-modal-footer-hint">
-                  <span className="req">*</span> จำเป็นต้องระบุข้อมูล
-                </div>
-                <div className="crm-modal-footer-actions">
-                  <button
-                    type="button"
-                    className="crm-btn-secondary"
-                    onClick={handleRequestCloseAddEditModal}
-                    disabled={isSubmitting}
-                  >
-                    ยกเลิก
-                  </button>
-                  <button
-                    type="submit"
-                    className="crm-btn-primary"
-                    disabled={isSubmitting}
-                  >
-                    {isSubmitting ? 'กำลังบันทึก...' : (editingCustomer ? 'บันทึกการแก้ไข' : 'สร้างลูกค้าใหม่')}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className={`crm-modal-tab-btn ${editModalTab === 'contracts' ? 'active' : ''}`}
+                  onClick={() => setEditModalTab('contracts')}
+                >
+                  <FileText size={15} />
+                  <span>สัญญา</span>
+                  <span className="crm-modal-tab-badge">
+                    {customerDetail?.contracts?.length || editingCustomer.contracts?.length || (editingCustomer.active_contract ? 1 : 0)}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  className={`crm-modal-tab-btn ${editModalTab === 'quota' ? 'active' : ''}`}
+                  onClick={() => setEditModalTab('quota')}
+                >
+                  <Clock size={15} />
+                  <span>โควตาการใช้งาน</span>
+                  <span className="crm-modal-tab-badge green">
+                    {customerDetail?.quota?.remaining_hours ?? editingCustomer.quota_summary?.remaining_quota ?? 0} ชม.
+                  </span>
+                </button>
               </div>
-            </form>
+            )}
+
+            {/* TAB 1: Customer Profile (OR Full Creation Form if !editingCustomer) */}
+            {(!editingCustomer || editModalTab === 'profile') && (
+              <form onSubmit={handleSubmitCustomerForm} className="crm-modal-form">
+                <div className="crm-modal-body">
+                  <div className={`crm-wide-modal-grid ${editingCustomer ? 'edit-mode' : ''}`}>
+                    {/* SECTION 1: ข้อมูลผู้เช่า / บริษัท */}
+                    <div className="crm-modal-section-card">
+                      <div className="crm-section-headline">
+                        <Building2 size={16} />
+                        <span>ส่วนที่ 1: ข้อมูลผู้เช่า / บริษัท</span>
+                      </div>
+
+                      {!editingCustomer && (
+                        <div className="crm-form-group">
+                          <label className="crm-form-label">ประเภทลูกค้า <span className="req">*</span></label>
+                          <div className="crm-type-selector-grid">
+                            <button
+                              type="button"
+                              className={`crm-type-select-btn ${customerForm.customer_type === 'basecamp' ? 'active' : ''}`}
+                              onClick={() => {
+                                setCustomerForm({
+                                  ...customerForm,
+                                  customer_type: 'basecamp',
+                                  monthly_quota_hours: customerForm.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0
+                                });
+                              }}
+                            >
+                              <Building2 size={16} />
+                              <div>
+                                <strong>Basecamp</strong>
+                                <span className="sub">ผู้เช่าออฟฟิศ/ฮอทเดสก์ ชั้น 4</span>
+                              </div>
+                            </button>
+
+                            <button
+                              type="button"
+                              className={`crm-type-select-btn ${customerForm.customer_type === 'shop' ? 'active' : ''}`}
+                              onClick={() => {
+                                setCustomerForm({
+                                  ...customerForm,
+                                  customer_type: 'shop',
+                                  monthly_quota_hours: 4.0
+                                });
+                              }}
+                            >
+                              <Store size={16} />
+                              <div>
+                                <strong>Partner Shop</strong>
+                                <span className="sub">ร้านค้าพันธมิตรในอาคาร</span>
+                              </div>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {customerForm.customer_type === 'basecamp' && (
+                        <div className="crm-form-grid-2">
+                          <div className="crm-form-group">
+                            <label className="crm-form-label">ประเภทยูนิต</label>
+                            <select
+                              className="crm-form-select"
+                              value={customerForm.basecamp_sub_type}
+                              onChange={(e) => {
+                                const sub = e.target.value;
+                                setCustomerForm({
+                                  ...customerForm,
+                                  basecamp_sub_type: sub,
+                                  basecamp_unit: sub === 'office' ? '401' : '419',
+                                  monthly_quota_hours: sub === 'office' ? 4.0 : 2.0
+                                });
+                              }}
+                            >
+                              <option value="office">Office (โควต้า 4 ชม./ด.)</option>
+                              <option value="hotdesk">Hotdesk (โควต้า 2 ชม./ด.)</option>
+                            </select>
+                          </div>
+
+                          <div className="crm-form-group">
+                            <label className="crm-form-label">เลขยูนิตชั้น 4</label>
+                            <select
+                              className="crm-form-select"
+                              value={customerForm.basecamp_unit}
+                              onChange={(e) => setCustomerForm({ ...customerForm, basecamp_unit: e.target.value })}
+                            >
+                              {customerForm.basecamp_sub_type === 'office'
+                                ? officeUnits.map(u => <option key={u} value={u}>Office {u}</option>)
+                                : hotdeskUnits.map(u => <option key={u} value={u}>Hotdesk {u}</option>)
+                              }
+                            </select>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="crm-form-group">
+                        <label className="crm-form-label">
+                          {customerForm.customer_type === 'shop' ? 'ชื่อร้านค้าพันธมิตร' : 'ชื่อบริษัท / ผู้เช่า'}
+                          <span className="req">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          className="crm-form-input"
+                          placeholder="เช่น บจก. เทคโนโลยีอนาคต หรือ Koo.Koo Cafe"
+                          value={customerForm.name}
+                          onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })}
+                          required
+                        />
+                      </div>
+
+                      <div className="crm-form-group">
+                        <label className="crm-form-label">เลขประจำตัวผู้เสียภาษี (Tax ID)</label>
+                        <input
+                          type="text"
+                          className="crm-form-input"
+                          placeholder="13 หลัก (ถ้ามี)"
+                          value={customerForm.tax_id}
+                          onChange={(e) => setCustomerForm({ ...customerForm, tax_id: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
+                    {/* SECTION 2: ข้อมูลการติดต่อ */}
+                    <div className="crm-modal-section-card">
+                      <div className="crm-section-headline">
+                        <Phone size={16} />
+                        <span>ส่วนที่ 2: ข้อมูลการติดต่อ</span>
+                      </div>
+
+                      <div className="crm-form-group">
+                        <label className="crm-form-label">ชื่อผู้ติดต่อประสานงาน</label>
+                        <input
+                          type="text"
+                          className="crm-form-input"
+                          placeholder="เช่น คุณสมชาย จัดการดี"
+                          value={customerForm.contact_name}
+                          onChange={(e) => setCustomerForm({ ...customerForm, contact_name: e.target.value })}
+                        />
+                      </div>
+
+                      <div className="crm-form-group">
+                        <label className="crm-form-label">เบอร์โทรศัพท์</label>
+                        <input
+                          type="tel"
+                          className="crm-form-input"
+                          placeholder="08X-XXX-XXXX"
+                          value={customerForm.phone}
+                          onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value })}
+                        />
+                      </div>
+
+                      <div className="crm-form-group">
+                        <label className="crm-form-label">อีเมล</label>
+                        <input
+                          type="email"
+                          className="crm-form-input"
+                          placeholder="contact@company.com"
+                          value={customerForm.email}
+                          onChange={(e) => setCustomerForm({ ...customerForm, email: e.target.value })}
+                        />
+                      </div>
+
+                      <div className="crm-form-group">
+                        <label className="crm-form-label">ที่อยู่สำหรับการออกเอกสาร</label>
+                        <textarea
+                          rows={2}
+                          className="crm-form-textarea"
+                          placeholder="ที่อยู่บริษัทสำหรับการออกใบกำกับภาษี..."
+                          value={customerForm.address}
+                          onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
+                    {/* SECTION 3: ข้อมูลสัญญาเริ่มต้น (Only when Creating New Customer) */}
+                    {!editingCustomer && (
+                      <div className="crm-modal-section-card crm-contract-init-card">
+                        <div className="crm-section-headline">
+                          <Calendar size={16} />
+                          <span>ส่วนที่ 3: ข้อมูลสัญญาเริ่มต้น (ปฏิทินไทย พ.ศ.)</span>
+                        </div>
+
+                        <div className="crm-contract-init-fields">
+                          <div className="crm-form-group">
+                            <label className="crm-form-label">
+                              วันเริ่มสัญญา (พ.ศ.) <span className="req">*</span>
+                            </label>
+                            <ThaiDatePicker
+                              value={customerForm.start_date}
+                              onChange={(val) => setCustomerForm(prev => ({ ...prev, start_date: val }))}
+                              required
+                              align="left"
+                            />
+                          </div>
+
+                          <div className="crm-form-group">
+                            <label className="crm-form-label">
+                              วันสิ้นสุดสัญญา (พ.ศ.) <span className="req">*</span>
+                            </label>
+                            <ThaiDatePicker
+                              value={customerForm.end_date}
+                              onChange={(val) => setCustomerForm(prev => ({ ...prev, end_date: val }))}
+                              required
+                              align="right"
+                            />
+                          </div>
+
+                          <div className="crm-form-grid-2 crm-contract-meta-grid">
+                            <div className="crm-form-group">
+                              <label className="crm-form-label">โควต้า (ชม./ด.) <span className="req">*</span></label>
+                              <input
+                                type="number"
+                                step="0.5"
+                                className="crm-form-input"
+                                value={customerForm.monthly_quota_hours}
+                                onChange={(e) => setCustomerForm({ ...customerForm, monthly_quota_hours: parseFloat(e.target.value) || 0 })}
+                                required
+                              />
+                            </div>
+
+                            <div className="crm-form-group">
+                              <label className="crm-form-label">หมายเลขสัญญา</label>
+                              <input
+                                type="text"
+                                className="crm-form-input"
+                                placeholder="สร้างอัตโนมัติ"
+                                value={customerForm.contract_number}
+                                onChange={(e) => setCustomerForm({ ...customerForm, contract_number: e.target.value })}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Footer Actions */}
+                <div className="crm-modal-footer">
+                  <div className="crm-modal-footer-hint">
+                    <span className="req">*</span> จำเป็นต้องระบุข้อมูล
+                  </div>
+                  <div className="crm-modal-footer-actions">
+                    <button
+                      type="button"
+                      className="crm-btn-secondary"
+                      onClick={handleRequestCloseAddEditModal}
+                      disabled={isSubmitting}
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      type="submit"
+                      className="crm-btn-primary"
+                      disabled={isSubmitting}
+                    >
+                      {isSubmitting ? 'กำลังบันทึก...' : (editingCustomer ? 'บันทึกข้อมูลลูกค้า' : 'สร้างข้อมูลลูกค้าและสัญญา')}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            )}
+
+            {/* TAB 2: Contracts Management */}
+            {editingCustomer && editModalTab === 'contracts' && (
+              <div className="crm-modal-tab-content">
+                {loadingCustomerDetail && !customerDetail ? (
+                  <div className="crm-table-placeholder" style={{ padding: '40px' }}>
+                    <RefreshCw size={24} className="crm-spin" />
+                    <span>กำลังโหลดรายละเอียดสัญญา...</span>
+                  </div>
+                ) : (
+                  <>
+                    {/* Sub-navigation bar when editing dates or renewing */}
+                    {(contractSubTab === 'edit_dates' || contractSubTab === 'renew') && (
+                      <div className="crm-drawer-sub-nav" style={{ marginBottom: '16px' }}>
+                        <button
+                          type="button"
+                          className="crm-drawer-back-btn crm-subnav-back-btn"
+                          onClick={async () => {
+                            if (isContractFormDirty()) {
+                              const msg = 'คุณมีข้อมูลการแก้ไขสัญญาที่ยังไม่ได้บันทึก ต้องการยกเลิกและกลับสู่ภาพรวมสัญญาหรือไม่?';
+                              const ok = sysConfirm ? await sysConfirm(msg) : window.confirm(msg);
+                              if (!ok) return;
+                            }
+                            setContractSubTab('overview');
+                            setEditDateStep('input');
+                            setShowTerminateInline(false);
+                          }}
+                        >
+                          <ChevronLeft size={16} />
+                          <span>กลับสู่ภาพรวมสัญญา</span>
+                        </button>
+                        <div className="crm-drawer-sub-badge">
+                          {contractSubTab === 'edit_dates' ? (
+                            <span className="crm-sub-badge edit">
+                              <Edit2 size={12} /> แก้ไขวันที่สัญญาเดิม
+                            </span>
+                          ) : (
+                            <span className="crm-sub-badge renew">
+                              <Plus size={12} /> ต่อสัญญาฉบับใหม่
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* SUB-VIEW 1: OVERVIEW */}
+                    {contractSubTab === 'overview' && (
+                      <div className="crm-tab-pane">
+                        {customerDetail?.contracts && customerDetail.contracts.length > 0 ? (
+                          <div className="crm-overview-section">
+                            {/* Active Contract Hero Box */}
+                            <div className="crm-summary-hero-box">
+                              <div className="crm-hero-headline">
+                                <div>
+                                  <span className="crm-sub-lbl">สัญญาที่ใช้งานปัจจุบัน</span>
+                                  <div className="crm-hero-id">{customerDetail.contracts[0].contract_number}</div>
+                                </div>
+                                <span className={`crm-urgency-tag large ${customerDetail.contracts[0].urgency}`}>
+                                  {customerDetail.contracts[0].evaluated_status} ({customerDetail.contracts[0].days_left} วัน)
+                                </span>
+                              </div>
+
+                              <div className="crm-hero-dates-strip">
+                                <div className="crm-hds-item">
+                                  <span className="lbl">วันเริ่มสัญญา (พ.ศ.)</span>
+                                  <span className="val">{formatThaiDate(customerDetail.contracts[0].start_date)}</span>
+                                </div>
+                                <ChevronRight size={16} className="crm-hds-arrow" />
+                                <div className="crm-hds-item">
+                                  <span className="lbl">วันสิ้นสุดสัญญา (พ.ศ.)</span>
+                                  <span className="val highlight">{formatThaiDate(customerDetail.contracts[0].end_date)}</span>
+                                </div>
+                              </div>
+
+                              <div className="crm-hero-meta-row">
+                                <div className="crm-meta-item">
+                                  <Clock size={14} />
+                                  <span>โควต้าห้องประชุม: <strong>{customerDetail.contracts[0].monthly_quota_hours} ชม./เดือน</strong></span>
+                                </div>
+                                {customerDetail.contracts[0].notes && (
+                                  <div className="crm-meta-item notes">
+                                    <Info size={14} />
+                                    <span>{customerDetail.contracts[0].notes}</span>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="crm-hero-btn-row">
+                                {canManageContracts && customerDetail.contracts[0].status !== 'TERMINATED' && (
+                                  <button
+                                    type="button"
+                                    className="crm-btn-action-primary"
+                                    onClick={() => handleStartEditDates(customerDetail.contracts[0])}
+                                  >
+                                    <Edit2 size={13} />
+                                    <span>แก้ไขวันที่สัญญา</span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="crm-btn-action-secondary"
+                                  onClick={() => setContractSubTab('renew')}
+                                >
+                                  <Plus size={14} />
+                                  <span>ต่อสัญญาใหม่</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Inline Danger Action: Terminate Contract */}
+                            {customerDetail.contracts[0]?.status === 'ACTIVE' && (
+                              <div className="crm-terminate-wrapper" style={{ marginTop: '16px' }}>
+                                {!showTerminateInline ? (
+                                  <div className="crm-terminate-bar">
+                                    <div className="crm-terminate-text">
+                                      <span className="title">ต้องการยกเลิกสัญญาก่อนกำหนด?</span>
+                                      <span className="desc">สถานะจะเปลี่ยนเป็น TERMINATED และสิทธิ์โควต้าจะถูกระงับ</span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="crm-btn-quiet-danger"
+                                      onClick={() => setShowTerminateInline(true)}
+                                    >
+                                      <AlertTriangle size={13} />
+                                      <span>ยกเลิกสัญญา</span>
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <form onSubmit={handleSubmitTerminate} className="crm-terminate-form-box">
+                                    <div className="crm-tfb-header">
+                                      <AlertTriangle size={16} color="#dc2626" />
+                                      <h4>ขอยกเลิกสัญญาก่อนกำหนด ({customerDetail.contracts[0].contract_number})</h4>
+                                    </div>
+
+                                    <div className="crm-form-group">
+                                      <label className="crm-form-label">
+                                        วันที่มีผลยกเลิกสัญญา (ปฏิทินไทย พ.ศ.) <span className="req">*</span>
+                                      </label>
+                                      <ThaiDatePicker
+                                        value={terminateForm.termination_date}
+                                        onChange={(val) => setTerminateForm(prev => ({ ...prev, termination_date: val }))}
+                                        required
+                                        align="left"
+                                      />
+                                    </div>
+
+                                    <div className="crm-form-group">
+                                      <label className="crm-form-label">
+                                        เหตุผลในการยกเลิกสัญญา <span className="req">*</span>
+                                      </label>
+                                      <textarea
+                                        rows={2}
+                                        className="crm-form-textarea"
+                                        placeholder="ระบุเหตุผล เช่น ย้ายสถานที่ประกอบการ, ไม่ประสงค์เช่าต่อ..."
+                                        value={terminateForm.reason}
+                                        onChange={(e) => setTerminateForm(prev => ({ ...prev, reason: e.target.value }))}
+                                        required
+                                      />
+                                    </div>
+
+                                    <div className="crm-tfb-actions">
+                                      <button
+                                        type="button"
+                                        className="crm-btn-secondary"
+                                        onClick={() => setShowTerminateInline(false)}
+                                        disabled={isSubmitting}
+                                      >
+                                        ยกเลิก
+                                      </button>
+                                      <button
+                                        type="submit"
+                                        className="crm-btn-danger"
+                                        disabled={isSubmitting}
+                                      >
+                                        {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันการยกเลิกสัญญา'}
+                                      </button>
+                                    </div>
+                                  </form>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Contract History List */}
+                            <div className="crm-history-section" style={{ marginTop: '24px' }}>
+                              <h4 style={{ margin: '0 0 12px 0', fontSize: '0.95rem', fontWeight: 700, color: '#0f172a' }}>
+                                ประวัติสัญญาทั้งหมด ({customerDetail.contracts.length} ฉบับ)
+                              </h4>
+                              <div className="crm-contracts-history-list">
+                                {customerDetail.contracts.map((ctr) => (
+                                  <div key={ctr.id} className="crm-contract-history-card">
+                                    <div className="crm-chc-top">
+                                      <div className="crm-chc-id">
+                                        <FileText size={14} />
+                                        <strong>{ctr.contract_number}</strong>
+                                      </div>
+                                      <span className={`crm-status-dot-badge ${ctr.status.toLowerCase()}`}>
+                                        <span className="dot" />
+                                        {ctr.evaluated_status || ctr.status}
+                                      </span>
+                                    </div>
+                                    <div className="crm-chc-dates">
+                                      <span>ช่วงสัญญา: <strong>{formatThaiDate(ctr.start_date)} – {formatThaiDate(ctr.end_date)}</strong></span>
+                                      <span>โควต้า: <strong>{ctr.monthly_quota_hours} ชม./ด.</strong></span>
+                                    </div>
+                                    {ctr.notes && (
+                                      <div className="crm-chc-notes">หมายเหตุ: {ctr.notes}</div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Contract Audit Trail (Admin Only) */}
+                            {isAdmin && (
+                              <div className="crm-audit-section" style={{ marginTop: '24px' }}>
+                                <h4 style={{ margin: '0 0 12px 0', fontSize: '0.95rem', fontWeight: 700, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <ShieldCheck size={16} color="#059669" />
+                                  <span>ประวัติการตรวจสอบและการแก้ไขสัญญา (Audit History)</span>
+                                </h4>
+                                {loadingAudit ? (
+                                  <div className="crm-table-placeholder" style={{ padding: '20px' }}>
+                                    <RefreshCw size={18} className="crm-spin" />
+                                    <span>กำลังโหลด Audit Logs...</span>
+                                  </div>
+                                ) : auditLogs.length === 0 ? (
+                                  <div className="crm-table-placeholder" style={{ padding: '20px', background: '#f8fafc', borderRadius: '8px' }}>
+                                    <span>ยังไม่มีประวัติการแก้ไขสัญญาของลูกค้ารายนี้</span>
+                                  </div>
+                                ) : (
+                                  <div className="crm-audit-list">
+                                    {auditLogs.map((log) => {
+                                      let parsedDetails = null;
+                                      try {
+                                        parsedDetails = typeof log.details === 'string' ? JSON.parse(log.details) : log.details;
+                                      } catch (_) {
+                                        parsedDetails = { raw: log.details };
+                                      }
+
+                                      return (
+                                        <div key={log.id} className="crm-audit-card">
+                                          <div className="crm-audit-header">
+                                            <span className="crm-audit-action">{log.action}</span>
+                                            <span className="crm-audit-actor">โดย: <strong>{log.performed_by}</strong></span>
+                                            <span className="crm-audit-time">{formatThaiDateTime(log.created_at)}</span>
+                                          </div>
+                                          {parsedDetails?.reason && (
+                                            <div className="crm-audit-reason">
+                                              เหตุผล: "{parsedDetails.reason}"
+                                            </div>
+                                          )}
+                                          {parsedDetails?.previous_period && (
+                                            <div className="crm-audit-diff">
+                                              เดิม: {parsedDetails.previous_period.start_date} ถึง {parsedDetails.previous_period.end_date} →
+                                              ใหม่: {parsedDetails.new_period?.start_date} ถึง {parsedDetails.new_period?.end_date}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="crm-drawer-empty-state" style={{ padding: '40px 20px', textAlign: 'center' }}>
+                            <Info size={32} color="#64748b" style={{ margin: '0 auto 12px auto' }} />
+                            <p style={{ margin: '0 0 16px 0', fontSize: '0.92rem', color: '#475569' }}>
+                              ลูกค้ารายนี้ยังไม่มีสัญญาที่บันทึกไว้ในระบบ
+                            </p>
+                            <button
+                              type="button"
+                              className="crm-btn-primary"
+                              onClick={() => setContractSubTab('renew')}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', margin: '0 auto' }}
+                            >
+                              <Plus size={14} />
+                              <span>สร้างสัญญาใหม่ (Create Contract)</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SUB-VIEW 2: EDIT CONTRACT DATES */}
+                    {contractSubTab === 'edit_dates' && contractToEdit && (
+                      <div className="crm-tab-pane">
+                        {editDateStep === 'input' ? (
+                          <div className="crm-edit-pane-container">
+                            <div className="crm-edit-callout">
+                              <Info size={16} />
+                              <div>
+                                <strong>แก้ไขระยะเวลาสัญญา: {contractToEdit.contract_number}</strong>
+                                <p>กำหนดวันเริ่มต้นและวันสิ้นสุดสัญญาใหม่ในปฏิทินไทย พ.ศ. พร้อมระบุเหตุผลในการแก้ไข</p>
+                              </div>
+                            </div>
+
+                            <form onSubmit={handleProceedToConfirmEdit} className="crm-contract-edit-form">
+                              <div className="crm-form-group">
+                                <label className="crm-form-label">
+                                  วันเริ่มสัญญาใหม่ (ปฏิทินไทย พ.ศ.) <span className="req">*</span>
+                                </label>
+                                <ThaiDatePicker
+                                  value={editDateForm.start_date}
+                                  onChange={(val) => setEditDateForm(prev => ({ ...prev, start_date: val }))}
+                                  required
+                                  align="left"
+                                />
+                                <span className="crm-form-hint">{getThaiDateInputHint(editDateForm.start_date)}</span>
+                              </div>
+
+                              <div className="crm-form-group">
+                                <label className="crm-form-label">
+                                  วันสิ้นสุดสัญญาใหม่ (ปฏิทินไทย พ.ศ.) <span className="req">*</span>
+                                </label>
+                                <ThaiDatePicker
+                                  value={editDateForm.end_date}
+                                  onChange={(val) => setEditDateForm(prev => ({ ...prev, end_date: val }))}
+                                  required
+                                  align="right"
+                                />
+                                <span className="crm-form-hint">{getThaiDateInputHint(editDateForm.end_date)}</span>
+                              </div>
+
+                              <div className="crm-form-group">
+                                <label className="crm-form-label">
+                                  เหตุผลในการแก้ไขวันที่สัญญา <span className="req">*</span>
+                                </label>
+                                <textarea
+                                  rows={3}
+                                  className="crm-form-textarea"
+                                  placeholder="ระบุเหตุผล เช่น ขยายเวลาตามข้อตกลงพิเศษ, แก้ไขวันเริ่มตามเอกสารแนบท้าย..."
+                                  value={editDateForm.reason}
+                                  onChange={(e) => setEditDateForm(prev => ({ ...prev, reason: e.target.value }))}
+                                  required
+                                />
+                              </div>
+
+                              <div className="crm-modal-footer-actions" style={{ marginTop: '20px' }}>
+                                <button
+                                  type="button"
+                                  className="crm-btn-secondary"
+                                  onClick={() => setContractSubTab('overview')}
+                                >
+                                  ยกเลิก
+                                </button>
+                                <button
+                                  type="submit"
+                                  className="crm-btn-primary"
+                                >
+                                  ถัดไป: ตรวจสอบและยืนยัน
+                                </button>
+                              </div>
+                            </form>
+                          </div>
+                        ) : (
+                          /* STEP 2: CONFIRMATION */
+                          <div className="crm-confirm-pane-container">
+                            <div className="crm-confirm-card">
+                              <div className="crm-cc-header">
+                                <ShieldAlert size={20} color="#f59e0b" />
+                                <h3>ยืนยันการแก้ไขวันที่สัญญา {contractToEdit.contract_number}</h3>
+                              </div>
+
+                              <div className="crm-cc-body">
+                                <div className="crm-cc-diff-row">
+                                  <div className="crm-cc-diff-col old">
+                                    <span className="lbl">ช่วงสัญญาเดิม</span>
+                                    <div className="val">{formatThaiDate(contractToEdit.start_date)}</div>
+                                    <div className="sub-val">ถึง {formatThaiDate(contractToEdit.end_date)}</div>
+                                  </div>
+                                  <ChevronRight size={20} className="crm-cc-arrow" />
+                                  <div className="crm-cc-diff-col new">
+                                    <span className="lbl">ช่วงสัญญาใหม่ (ที่แก้ไข)</span>
+                                    <div className="val highlight">{formatThaiDate(editDateForm.start_date)}</div>
+                                    <div className="sub-val highlight">ถึง {formatThaiDate(editDateForm.end_date)}</div>
+                                  </div>
+                                </div>
+
+                                <div className="crm-cc-reason-box">
+                                  <strong>เหตุผลในการแก้ไข:</strong>
+                                  <p>"{editDateForm.reason}"</p>
+                                </div>
+                              </div>
+
+                              <div className="crm-cc-actions">
+                                <button
+                                  type="button"
+                                  className="crm-btn-secondary"
+                                  onClick={() => setEditDateStep('input')}
+                                  disabled={isSubmitting}
+                                >
+                                  ย้อนกลับไปแก้ไข
+                                </button>
+                                <button
+                                  type="button"
+                                  className="crm-btn-primary"
+                                  onClick={handleConfirmSubmitEdit}
+                                  disabled={isSubmitting}
+                                >
+                                  {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันการบันทึกวันที่สัญญา'}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SUB-VIEW 3: RENEW / CREATE CONTRACT */}
+                    {contractSubTab === 'renew' && (
+                      <div className="crm-tab-pane">
+                        <div className="crm-renew-pane-container">
+                          <div className="crm-edit-callout">
+                            <Plus size={16} />
+                            <div>
+                              <strong>ต่อสัญญาฉบับใหม่ หรือ สร้างสัญญา: {editingCustomer.name}</strong>
+                              <p>เปิดสัญญาใหม่เพื่อขยายระยะเวลาและสิทธิ์การใช้งานโควต้าห้องประชุม</p>
+                            </div>
+                          </div>
+
+                          <form onSubmit={handleSubmitRenew} className="crm-contract-edit-form">
+                            <div className="crm-form-group">
+                              <label className="crm-form-label">หมายเลขสัญญาใหม่</label>
+                              <input
+                                type="text"
+                                className="crm-form-input"
+                                placeholder="เว้นว่างไว้เพื่อสร้างอัตโนมัติ"
+                                value={renewForm.contract_number}
+                                onChange={(e) => setRenewForm(prev => ({ ...prev, contract_number: e.target.value }))}
+                              />
+                            </div>
+
+                            <div className="crm-form-group">
+                              <label className="crm-form-label">
+                                วันเริ่มสัญญาใหม่ (ปฏิทินไทย พ.ศ.) <span className="req">*</span>
+                              </label>
+                              <ThaiDatePicker
+                                value={renewForm.start_date}
+                                onChange={(val) => setRenewForm(prev => ({ ...prev, start_date: val }))}
+                                required
+                                align="left"
+                              />
+                              <span className="crm-form-hint">{getThaiDateInputHint(renewForm.start_date)}</span>
+                            </div>
+
+                            <div className="crm-form-group">
+                              <label className="crm-form-label">
+                                วันสิ้นสุดสัญญาใหม่ (ปฏิทินไทย พ.ศ.) <span className="req">*</span>
+                              </label>
+                              <ThaiDatePicker
+                                value={renewForm.end_date}
+                                onChange={(val) => setRenewForm(prev => ({ ...prev, end_date: val }))}
+                                required
+                                align="right"
+                              />
+                              <span className="crm-form-hint">{getThaiDateInputHint(renewForm.end_date)}</span>
+                            </div>
+
+                            <div className="crm-form-group">
+                              <label className="crm-form-label">
+                                โควต้าห้องประชุม (ชม./เดือน) <span className="req">*</span>
+                              </label>
+                              <input
+                                type="number"
+                                step="0.5"
+                                className="crm-form-input"
+                                value={renewForm.monthly_quota_hours}
+                                onChange={(e) => setRenewForm(prev => ({ ...prev, monthly_quota_hours: parseFloat(e.target.value) || 0 }))}
+                                required
+                              />
+                            </div>
+
+                            <div className="crm-form-group">
+                              <label className="crm-form-label">หมายเหตุสัญญา</label>
+                              <textarea
+                                rows={2}
+                                className="crm-form-textarea"
+                                placeholder="ระบุเงื่อนไขพิเศษหรือข้อตกลง..."
+                                value={renewForm.notes}
+                                onChange={(e) => setRenewForm(prev => ({ ...prev, notes: e.target.value }))}
+                              />
+                            </div>
+
+                            <div className="crm-modal-footer-actions" style={{ marginTop: '20px' }}>
+                              <button
+                                type="button"
+                                className="crm-btn-secondary"
+                                onClick={() => setContractSubTab('overview')}
+                                disabled={isSubmitting}
+                              >
+                                ยกเลิก
+                              </button>
+                              <button
+                                type="submit"
+                                className="crm-btn-primary"
+                                disabled={isSubmitting}
+                              >
+                                {isSubmitting ? 'กำลังบันทึก...' : 'บันทึกสัญญาใหม่'}
+                              </button>
+                            </div>
+                          </form>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* TAB 3: Usage Quota & Benefits */}
+            {editingCustomer && editModalTab === 'quota' && (
+              <div className="crm-modal-tab-content">
+                {loadingCustomerDetail && !customerDetail ? (
+                  <div className="crm-table-placeholder" style={{ padding: '40px' }}>
+                    <RefreshCw size={24} className="crm-spin" />
+                    <span>กำลังโหลดข้อมูลโควตา...</span>
+                  </div>
+                ) : (
+                  <div className="crm-quota-tab-container">
+                    {/* Month Context Selector */}
+                    <div className="crm-quota-month-selector">
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <CalendarDays size={16} color="#0284c7" />
+                        <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#0f172a' }}>
+                          รอบการใช้งานประจำเดือน:
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <select
+                          className="crm-select-compact"
+                          value={selectedMonth}
+                          onChange={(e) => {
+                            const newM = e.target.value;
+                            setSelectedMonth(newM);
+                            fetchCustomerDetail(editingCustomer.id, newM, selectedYear);
+                          }}
+                        >
+                          {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                            <option key={m} value={String(m)}>
+                              {new Date(2026, m - 1, 1).toLocaleDateString('th-TH', { month: 'long' })}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          className="crm-select-compact"
+                          value={selectedYear}
+                          onChange={(e) => {
+                            const newY = e.target.value;
+                            setSelectedYear(newY);
+                            fetchCustomerDetail(editingCustomer.id, selectedMonth, newY);
+                          }}
+                        >
+                          {['2025', '2026', '2027', '2028'].map(y => (
+                            <option key={y} value={y}>พ.ศ. {parseInt(y) + 543}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* 3 Hero Metric Cards */}
+                    {(() => {
+                      const quota = customerDetail?.quota || editingCustomer.quota_summary || {
+                        max_quota: 0,
+                        used_hours: 0,
+                        remaining_hours: 0,
+                        booking_count: 0,
+                        contract_eligible: true
+                      };
+                      const usedHours = Number(quota.used_hours ?? quota.used_quota ?? 0);
+                      const maxQuota = Number(quota.max_quota ?? 4.0);
+                      const remainingHours = Number(quota.remaining_hours ?? quota.remaining_quota ?? 0);
+                      const isEligible = quota.contract_eligible !== false;
+                      const percentUsed = maxQuota > 0 ? Math.min(100, Math.round((usedHours / maxQuota) * 100)) : 0;
+                      const barColor = !isEligible ? '#94a3b8' : (percentUsed >= 90 ? '#ef4444' : percentUsed >= 50 ? '#f59e0b' : '#10b981');
+
+                      return (
+                        <>
+                          <div className="crm-quota-hero-grid">
+                            <div className="crm-quota-hero-card total">
+                              <span className="crm-quota-card-lbl">โควตาสิทธิประโยชน์ต่อเดือน</span>
+                              <div className="crm-quota-card-val">{maxQuota} ชม.</div>
+                              <span className="crm-quota-card-sub">
+                                {editingCustomer.customer_type === 'shop'
+                                  ? 'ร้านค้าพันธมิตร (Shop 4 ชม./ด.)'
+                                  : (editingCustomer.basecamp_sub_type === 'hotdesk' ? 'Hotdesk (2 ชม./ด.)' : 'Office (4 ชม./ด.)')}
+                              </span>
+                            </div>
+
+                            <div className="crm-quota-hero-card used">
+                              <span className="crm-quota-card-lbl">ชั่วโมงที่ใช้ไปแล้วในเดือนนี้</span>
+                              <div className="crm-quota-card-val" style={{ color: '#d97706' }}>{usedHours} ชม.</div>
+                              <span className="crm-quota-card-sub">
+                                จาก {quota.booking_count || 0} รายการการจอง
+                              </span>
+                            </div>
+
+                            <div className={`crm-quota-hero-card remaining ${remainingHours === 0 ? 'depleted' : ''}`}>
+                              <span className="crm-quota-card-lbl">ชั่วโมงโควตาคงเหลือ</span>
+                              <div className={`crm-quota-card-val remaining ${remainingHours === 0 ? 'depleted' : ''}`}>
+                                {remainingHours} ชม.
+                              </div>
+                              <span className="crm-quota-card-sub">
+                                {remainingHours > 0 ? 'พร้อมใช้งานสำหรับการจอง' : 'โควตาในรอบเดือนนี้ถูกใช้หมดแล้ว'}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Progress Meter Box */}
+                          <div className="crm-quota-meter-box">
+                            <div className="crm-quota-meter-header">
+                              <span>ความคืบหน้าการใช้โควตาห้องประชุม</span>
+                              <span>{percentUsed}% ({usedHours} / {maxQuota} ชม.)</span>
+                            </div>
+                            <div className="crm-quota-meter-track">
+                              <div
+                                className="crm-quota-meter-fill"
+                                style={{ width: `${percentUsed}%`, backgroundColor: barColor }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Eligibility Status Banner */}
+                          <div className={`crm-quota-eligibility-banner ${isEligible ? 'eligible' : 'ineligible'}`}>
+                            {isEligible ? (
+                              <>
+                                <CheckCircle2 size={20} color="#16a34a" style={{ flexShrink: 0, marginTop: '2px' }} />
+                                <div>
+                                  <h4>สัญญามีผลสมบูรณ์ — ได้รับสิทธิ์ใช้งานโควตาตามเงื่อนไข</h4>
+                                  <p>
+                                    ลูกค้ารายนี้มีสัญญาเช่าที่ยังไม่หมดอายุ สามารถใช้ชั่วโมงโควตาเพื่อจองห้องประชุมได้ฟรีจนกว่าโควตาในรอบเดือนจะหมด
+                                  </p>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <AlertTriangle size={20} color="#dc2626" style={{ flexShrink: 0, marginTop: '2px' }} />
+                                <div>
+                                  <h4>สิทธิ์โควตาถูกระงับ — สัญญาหมดอายุหรือถูกยกเลิก</h4>
+                                  <p>
+                                    เนื่องจากสัญญาเช่าของลูกค้ารายนี้สิ้นสุดลงหรือถูกยกเลิก การจองห้องประชุมจะถูกคิดค่าบริการตามอัตรามาตรฐาน (สามารถต่อสัญญาใหม่เพื่อรับสิทธิ์โควตา)
+                                  </p>
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          {/* Terms & Business Rules Reference Box */}
+                          <div className="crm-quota-rules-card">
+                            <h4>
+                              <Info size={14} color="#0284c7" />
+                              <span>ข้อกำหนดและเงื่อนไขการใช้โควตา (Bwork Rules)</span>
+                            </h4>
+                            <ul>
+                              <li><strong>ร้านค้าพันธมิตร (Shop):</strong> ได้รับโควตา 4 ชั่วโมงต่อเดือน</li>
+                              <li><strong>ผู้เช่าสำนักงาน (Basecamp Office):</strong> ได้รับโควตา 4 ชั่วโมงต่อเดือน</li>
+                              <li><strong>ผู้เช่าโต๊ะทำงาน (Basecamp Hotdesk):</strong> ได้รับโควตา 2 ชั่วโมงต่อเดือน</li>
+                              <li>โควตาจะถูกรีเซ็ตใหม่ในวันที่ 1 ของทุกเดือน ไม่สามารถสะสมหรือยกยอดไปใช้ในเดือนถัดไปได้</li>
+                              <li>แต่ละร้านค้า / ยูนิต มีสิทธิ์โควตาแยกกันโดยสมบูรณ์ ไม่สามารถโอนสิทธิ์ข้ามยูนิตได้</li>
+                            </ul>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* =========================================================================
-          MODAL: TRANSFER BASECAMP TENANT
-          ========================================================================= */}
+      {/* 5. Basecamp Unit Transfer Modal (Intact) */}
       {showTransferModal && transferUnitCustomer && (
         <div className="crm-modal-backdrop">
           <div className="crm-modal-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="crm-modal-header">
               <div className="crm-modal-title">
-                <ArrowRightLeft size={18} />
-                <h3>เปลี่ยนผู้เช่ายูนิต {transferUnitCustomer.basecamp_unit}</h3>
+                <div className="crm-modal-icon-badge">
+                  <ArrowRightLeft size={18} />
+                </div>
+                <div>
+                  <h3>เปลี่ยนผู้เช่ายูนิต {transferUnitCustomer.basecamp_unit}</h3>
+                  <p className="crm-modal-subtitle">
+                    ยกเลิกสัญญาผู้เช่าเดิม ({transferUnitCustomer.name}) และเปิดสัญญาใหม่ให้ผู้เช่ารายใหม่
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
@@ -2149,97 +2197,77 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
               </button>
             </div>
 
-            <form onSubmit={handleSubmitTransfer}>
+            <form onSubmit={handleSubmitTransfer} className="crm-modal-form">
               <div className="crm-modal-body">
-                <div className="crm-transfer-notice">
-                  <ShieldAlert size={18} />
-                  <div>
-                    <strong>การแยกประวัติอย่างปลอดภัย:</strong> ผู้เช่าเดิม (<strong>{transferUnitCustomer.name}</strong>) จะถูกปรับสถานะเป็น Inactive และยุติสัญญาเดิม โดยยอดใช้โควต้าและประวัติการจองของผู้เช่าเดิมจะไม่ถูกโอนมายังผู้เช่ารายใหม่
-                  </div>
-                </div>
-
                 <div className="crm-form-group">
-                  <label className="crm-form-label">ชื่อบริษัท / ผู้เช่ารายใหม่ <span className="req">*</span></label>
+                  <label className="crm-form-label">
+                    ชื่อผู้เช่ารายใหม่ <span className="req">*</span>
+                  </label>
                   <input
                     type="text"
                     className="crm-form-input"
-                    placeholder="ชื่อผู้เช่ารายใหม่..."
+                    placeholder="เช่น บจก. พัฒนาการดี"
                     value={transferForm.name}
                     onChange={(e) => setTransferForm({ ...transferForm, name: e.target.value })}
                     required
                   />
                 </div>
 
-                <div className="crm-form-grid-2">
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">ชื่อผู้ติดต่อ</label>
-                    <input
-                      type="text"
-                      className="crm-form-input"
-                      placeholder="คุณสมศักดิ์..."
-                      value={transferForm.contact_name}
-                      onChange={(e) => setTransferForm({ ...transferForm, contact_name: e.target.value })}
-                    />
-                  </div>
-
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">เบอร์โทรศัพท์</label>
-                    <input
-                      type="tel"
-                      className="crm-form-input"
-                      placeholder="08X-XXX-XXXX"
-                      value={transferForm.phone}
-                      onChange={(e) => setTransferForm({ ...transferForm, phone: e.target.value })}
-                    />
-                  </div>
+                <div className="crm-form-group">
+                  <label className="crm-form-label">ชื่อผู้ติดต่อ</label>
+                  <input
+                    type="text"
+                    className="crm-form-input"
+                    placeholder="เช่น คุณมานะ ใจดี"
+                    value={transferForm.contact_name}
+                    onChange={(e) => setTransferForm({ ...transferForm, contact_name: e.target.value })}
+                  />
                 </div>
 
-                <div className="crm-form-grid-2">
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">อีเมล</label>
-                    <input
-                      type="email"
-                      className="crm-form-input"
-                      value={transferForm.email}
-                      onChange={(e) => setTransferForm({ ...transferForm, email: e.target.value })}
-                    />
-                  </div>
-
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">เลขประจำตัวผู้เสียภาษี</label>
-                    <input
-                      type="text"
-                      className="crm-form-input"
-                      value={transferForm.tax_id}
-                      onChange={(e) => setTransferForm({ ...transferForm, tax_id: e.target.value })}
-                    />
-                  </div>
+                <div className="crm-form-group">
+                  <label className="crm-form-label">เบอร์โทรศัพท์</label>
+                  <input
+                    type="tel"
+                    className="crm-form-input"
+                    placeholder="08X-XXX-XXXX"
+                    value={transferForm.phone}
+                    onChange={(e) => setTransferForm({ ...transferForm, phone: e.target.value })}
+                  />
                 </div>
 
-                <div className="crm-form-grid-2">
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">
-                      วันเริ่มสัญญาใหม่ (พ.ศ.) <span className="req">*</span>
-                    </label>
-                    <ThaiDatePicker
-                      value={transferForm.start_date}
-                      onChange={(val) => setTransferForm(prev => ({ ...prev, start_date: val }))}
-                      required
-                      align="left"
-                    />
-                  </div>
+                <div className="crm-form-group">
+                  <label className="crm-form-label">อีเมล</label>
+                  <input
+                    type="email"
+                    className="crm-form-input"
+                    placeholder="contact@newcompany.com"
+                    value={transferForm.email}
+                    onChange={(e) => setTransferForm({ ...transferForm, email: e.target.value })}
+                  />
+                </div>
 
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">
-                      วันสิ้นสุดสัญญาใหม่ (พ.ศ.) <span className="req">*</span>
-                    </label>
-                    <ThaiDatePicker
-                      value={transferForm.end_date}
-                      onChange={(val) => setTransferForm(prev => ({ ...prev, end_date: val }))}
-                      required
-                      align="right"
-                    />
-                  </div>
+                <div className="crm-form-group">
+                  <label className="crm-form-label">
+                    วันเริ่มสัญญาใหม่ (ปฏิทินไทย พ.ศ.) <span className="req">*</span>
+                  </label>
+                  <ThaiDatePicker
+                    value={transferForm.start_date}
+                    onChange={(val) => setTransferForm(prev => ({ ...prev, start_date: val }))}
+                    required
+                    align="left"
+                  />
+                </div>
+
+                <div className="crm-form-group">
+                  <label className="crm-form-label">
+                    วันสิ้นสุดสัญญาใหม่ (ปฏิทินไทย พ.ศ.) <span className="req">*</span>
+                  </label>
+                  <ThaiDatePicker
+                    value={transferForm.end_date}
+                    onChange={(val) => setTransferForm(prev => ({ ...prev, end_date: val }))}
+                    required
+                    align="right"
+                  />
                 </div>
               </div>
 
