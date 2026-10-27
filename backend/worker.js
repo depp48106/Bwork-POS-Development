@@ -8490,57 +8490,64 @@ export default {
 
         const nowIso = new Date().toISOString();
 
-        // ----------------------------------------------------
-        // Client QR is an UNVERIFIED hint, not proof decoded from this image.
-        // Syntax/duplicate checks do not verify payment, amount or recipient.
-        // ----------------------------------------------------
-        const parsedQR = typeof qr_data === 'string' ? parseThaiBankSlipQR(qr_data) : null;
+        // Client QR is an optional metadata hint; image content is verified by POS staff
+        const parsedQR = typeof qr_data === 'string' && qr_data.trim() ? parseThaiBankSlipQR(qr_data) : null;
+        const transRef = parsedQR?.transRef || null;
+        const bankCode = parsedQR?.bankCode || null;
+        const bankName = parsedQR?.bankName || null;
 
-        // 1. REJECT if no QR, invalid QR, unreadable, or Merchant Payment QR
-        if (!qr_data || !parsedQR || !parsedQR.isValidSlipQR || !parsedQR.transRef || parsedQR.isMerchantPaymentQR) {
-          return new Response(JSON.stringify({
-            success: false,
-            auto_approved: false,
-            error: parsedQR?.rejectionReason || 'ไม่สามารถตรวจสอบ QR Code จากสลิปได้ กรุณาอัปโหลดสลิปโอนเงินที่ถูกต้อง'
-          }), { status: 400, headers: corsHeaders });
+        // Anti-fraud checks IF transRef exists
+        if (transRef) {
+          // Prevent customer from re-uploading the same rejected slip for this booking
+          const rejectedOnSameBooking = await env.DB.prepare(
+            "SELECT id FROM slip_verifications WHERE booking_id = ? AND trans_ref = ? AND verification_status = 'rejected' LIMIT 1"
+          ).bind(booking.id, transRef).first();
+
+          if (rejectedOnSameBooking || (booking.payment_status === 'rejected' && booking.slip_trans_ref === transRef)) {
+            return new Response(JSON.stringify({
+              success: false,
+              auto_approved: false,
+              error: 'สลิปนี้เคยถูกปฏิเสธแล้ว กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'
+            }), { status: 400, headers: corsHeaders });
+          }
+
+          // Check duplicate across other bookings (anti-fraud: paid bookings)
+          const duplicate = await env.DB.prepare(
+            "SELECT id, receipt_number FROM bookings WHERE slip_trans_ref = ? AND id != ? AND payment_status = 'paid' LIMIT 1"
+          ).bind(transRef, booking.id).first();
+
+          if (duplicate) {
+            return new Response(JSON.stringify({
+              success: false,
+              auto_approved: false,
+              error: `สลิปนี้เคยถูกนำมาใช้งานในระบบแล้ว (รหัสการจอง: ${duplicate.receipt_number || duplicate.id}) ไม่สามารถใช้ซ้ำได้`
+            }), { status: 400, headers: corsHeaders });
+          }
         }
 
-        // 2. ANTI-FRAUD: Check duplicate slip by transRef
-        // 2A. Prevent customer from re-uploading the same rejected slip for this booking
-        const rejectedOnSameBooking = await env.DB.prepare(
-          "SELECT id FROM slip_verifications WHERE booking_id = ? AND trans_ref = ? AND verification_status = 'rejected' LIMIT 1"
-        ).bind(booking.id, parsedQR.transRef).first();
-
-        if (rejectedOnSameBooking || (booking.payment_status === 'rejected' && booking.slip_trans_ref === parsedQR.transRef)) {
-          return new Response(JSON.stringify({
-            success: false,
-            auto_approved: false,
-            error: 'สลิปนี้เคยถูกปฏิเสธแล้ว กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'
-          }), { status: 400, headers: corsHeaders });
-        }
-
-        // 2B. Check duplicate across other bookings
-        const duplicate = await env.DB.prepare(
-          'SELECT id, receipt_number FROM bookings WHERE slip_trans_ref = ? AND id != ?'
-        ).bind(parsedQR.transRef, booking.id).first();
-
-        if (duplicate) {
-          return new Response(JSON.stringify({
-            success: false,
-            auto_approved: false,
-            error: `สลิปนี้เคยถูกนำมาใช้งานในระบบแล้ว (รหัสการจอง: ${duplicate.receipt_number || duplicate.id}) ไม่สามารถใช้ซ้ำได้`
-          }), { status: 400, headers: corsHeaders });
-        }
-
-        // 3. ENTER MANUAL REVIEW (NEVER auto-approve as paid on Worker without OCR/amount verification)
+        // Save file to private R2 storage with magic bytes & MIME security checks
         if (!env.BUCKET) {
           return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
         }
-        let savedSlipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId: booking.id, uploadedBy: 'customer' });
+
+        let savedSlipUrl;
+        try {
+          savedSlipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId: booking.id, uploadedBy: 'customer' });
+        } catch (fileErr) {
+          return new Response(JSON.stringify({
+            success: false,
+            auto_approved: false,
+            error: fileErr.message.includes('corrupted') || fileErr.message.includes('MIME') || fileErr.message.includes('format')
+              ? 'ข้อมูลไฟล์รูปภาพไม่ถูกต้อง (Magic Bytes ไม่ตรงกับ PNG, JPG หรือ WEBP)'
+              : (fileErr.message || 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง')
+          }), { status: 400, headers: corsHeaders });
+        }
+
         // Guard against Cloudflare D1 SQLITE_TOOBIG (1MB limit)
         if (savedSlipUrl && typeof savedSlipUrl === 'string' && savedSlipUrl.length > 700000) {
           savedSlipUrl = savedSlipUrl.substring(0, 650000);
         }
+
         const updated = await env.DB.prepare(`
           UPDATE bookings
           SET slip_image_url = ?,
@@ -8549,24 +8556,25 @@ export default {
               slip_verified_at = NULL,
               slip_verify_status = 'pending_manual'
           WHERE id = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')
-        `).bind(savedSlipUrl || 'uploaded', parsedQR.transRef, booking.id).run();
+        `).bind(savedSlipUrl || 'uploaded', transRef || booking.slip_trans_ref || null, booking.id).run();
+
         if (updated.meta?.changes !== 1) {
           return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'สถานะรายการจองเปลี่ยนแล้ว กรุณาตรวจสอบรายการอีกครั้ง' }), { status: 409, headers: corsHeaders });
         }
 
-        // 4. Record in slip_verifications table for audit trail
+        // Record in slip_verifications table for audit trail
         try {
           await env.DB.prepare(`
             INSERT INTO slip_verifications (
               booking_id, trans_ref, bank_code, bank_name, slip_image_url,
               is_auto_approved, confidence_score, raw_qr_data, verification_status,
               rejection_reason, created_at
-            ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', 'QR จาก client ยังไม่ยืนยันกับภาพ รอเจ้าหน้าที่ตรวจสอบยอดเงินและบัญชีผู้รับ', ?)
+            ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', NULL, ?)
           `).bind(
             booking.id,
-            parsedQR.transRef,
-            parsedQR.bankCode || '000',
-            parsedQR.bankName || 'ธนาคารพาณิชย์',
+            transRef || null,
+            bankCode || '000',
+            bankName || 'รูปภาพรอเจ้าหน้าที่ตรวจสอบ',
             savedSlipUrl || 'uploaded',
             qr_data || '',
             nowIso
@@ -8583,12 +8591,10 @@ export default {
           success: true,
           auto_approved: false,
           status: 'reviewing',
-          qr_verified: false,
-          verification_source: 'client_qr_unverified',
           slipUrl: savedSlipUrl,
-          transRef: parsedQR.transRef,
-          bankName: parsedQR.bankName,
-          message: 'ระบบได้รับหลักฐานการโอนเงินแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบยอดเงินก่อนยืนยันการจอง'
+          transRef: transRef || null,
+          bankName: bankName || null,
+          message: 'ส่งหลักฐานการชำระเงินเรียบร้อยแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบ'
         }), { headers: corsHeaders });
       }
 

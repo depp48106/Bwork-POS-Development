@@ -7220,7 +7220,7 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
 
     const matches = slip_image.match(/^data:(image\/(png|jpeg|jpg|webp));base64,(.+)$/);
     if (!matches) {
-      return res.status(400).json({ error: 'รูปแบบไฟล์ไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ (PNG, JPG)' });
+      return res.status(400).json({ error: 'รูปแบบไฟล์ไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ (PNG, JPG, WEBP)' });
     }
 
     const imageBuffer = Buffer.from(matches[3], 'base64');
@@ -7228,38 +7228,45 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
       return res.status(400).json({ error: 'ขนาดรูปภาพเกิน 10MB กรุณาอัปโหลดรูปที่มีขนาดเล็กลง' });
     }
 
-    const ext = matches[2] === 'jpeg' ? 'jpg' : matches[2];
+    // Verify magic bytes on the binary buffer (supported image types only)
+    if (imageBuffer.length < 4) {
+      return res.status(400).json({ error: 'ไฟล์รูปภาพไม่สมบูรณ์' });
+    }
+    const isPng = imageBuffer[0] === 0x89 && imageBuffer[1] === 0x50 && imageBuffer[2] === 0x4E && imageBuffer[3] === 0x47;
+    const isJpg = imageBuffer[0] === 0xFF && imageBuffer[1] === 0xD8 && imageBuffer[2] === 0xFF;
+    const isWebp = imageBuffer.length >= 12 &&
+      imageBuffer[0] === 0x52 && imageBuffer[1] === 0x49 && imageBuffer[2] === 0x46 && imageBuffer[3] === 0x46 &&
+      imageBuffer[8] === 0x57 && imageBuffer[9] === 0x45 && imageBuffer[10] === 0x42 && imageBuffer[11] === 0x50;
+
+    if (!isPng && !isJpg && !isWebp) {
+      return res.status(400).json({ error: 'ข้อมูลไฟล์รูปภาพไม่ถูกต้อง (Magic Bytes ไม่ตรงกับ PNG, JPG หรือ WEBP)' });
+    }
+
+    const ext = isPng ? 'png' : (isWebp ? 'webp' : 'jpg');
     const fileName = `slip_BK${String(targetBookingId).padStart(6, '0')}_${Date.now()}.${ext}`;
     const filePath = path.join(slipDir, fileName);
     fs.writeFileSync(filePath, imageBuffer);
 
     const slipUrl = `/uploads/slips/${fileName}`;
 
-    // Run Local 5-Tier Automated Slip Verification
-    const verifyResult = await verifySlip(imageBuffer, booking, dbQuery, req.body.qr_data);
-    const nowIso = getBangkokLocalISO(new Date());
-
-    // 1. REJECT IMMEDIATELY if NOT a valid bank slip (e.g. meme image, animal photo, payment QR, or no QR code)
-    if (!verifyResult.isValid || verifyResult.confidence === 0) {
-      // Clean up saved file if invalid
-      if (fs.existsSync(filePath)) {
-        try { fs.unlinkSync(filePath); } catch (e) {}
-      }
-
-      return res.status(400).json({
-        success: false,
-        auto_approved: false,
-        error: verifyResult.reasons[0] || 'รูปภาพที่เลือกไม่ใช่สลิปโอนเงินของธนาคาร กรุณาแนบสลิปจริงที่มี Mini QR Code ชัดเจน'
-      });
+    // Optional client QR extraction for metadata (non-blocking; image content is verified by POS staff)
+    let parsedQR = null;
+    if (typeof req.body.qr_data === 'string' && req.body.qr_data.trim()) {
+      try {
+        parsedQR = parseThaiBankSlipQR(req.body.qr_data);
+      } catch (_) {}
     }
+    const transRef = parsedQR?.transRef || null;
+    const bankCode = parsedQR?.bankCode || null;
+    const bankName = parsedQR?.bankName || null;
 
-    // 1B. Prevent customer from re-uploading the same rejected slip for this booking
-    if (verifyResult.transRef) {
+    if (transRef) {
+      // 1. Prevent customer from re-uploading the same rejected slip for this booking
       const prevRejected = await dbQuery.get(
         "SELECT id FROM slip_verifications WHERE booking_id = ? AND trans_ref = ? AND verification_status = 'rejected' LIMIT 1",
-        [targetBookingId, verifyResult.transRef]
+        [targetBookingId, transRef]
       );
-      if (prevRejected || (booking.payment_status === 'rejected' && booking.slip_trans_ref === verifyResult.transRef)) {
+      if (prevRejected || (booking.payment_status === 'rejected' && booking.slip_trans_ref === transRef)) {
         if (fs.existsSync(filePath)) {
           try { fs.unlinkSync(filePath); } catch (e) {}
         }
@@ -7269,128 +7276,80 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
           error: 'สลิปนี้เคยถูกปฏิเสธแล้ว กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'
         });
       }
-    }
 
-    // Only the approved former target-correction class can enter local manual review.
-    if (verifyResult.manualReviewRequired === true && !verifyResult.eligibleForAutoApproval &&
-        verifyResult.details?.ocr?.receiverOcrUncertain === true) {
-      try {
-        await dbQuery.transaction(async () => {
-          const current = await dbQuery.get('SELECT id, total_amount, payment_status FROM bookings WHERE id = ?', [targetBookingId]);
-          if (!current || ['paid', 'cancelled'].includes(current.payment_status) ||
-              Number(current.total_amount) !== verifyResult.expectedAmount) throw new Error('BOOKING_STATE_CHANGED');
-          const existing = await dbQuery.get('SELECT booking_id FROM slip_verifications WHERE trans_ref = ? LIMIT 1', [verifyResult.transRef]);
-          const paid = await dbQuery.get("SELECT id FROM bookings WHERE slip_trans_ref = ? AND payment_status = 'paid' LIMIT 1", [verifyResult.transRef]);
-          if (existing || paid) throw new Error('DUPLICATE_SLIP');
-          await dbQuery.run(
-            "INSERT INTO slip_verifications (booking_id, trans_ref, bank_code, bank_name, amount, is_auto_approved, confidence_score, verification_status, rejection_reason, created_at) VALUES (?, ?, ?, ?, ?, 0, ?, 'pending_manual', ?, ?)",
-            [targetBookingId, verifyResult.transRef, verifyResult.bankCode, verifyResult.bankName,
-              verifyResult.detectedAmount, verifyResult.confidence, 'receiver_ocr_uncertain', nowIso]
-          );
-          const update = await dbQuery.run(
-            "UPDATE bookings SET slip_image_url = ?, slip_trans_ref = ?, slip_verified_at = NULL, slip_verify_status = 'pending_manual', payment_status = 'reviewing' WHERE id = ? AND total_amount = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')",
-            [slipUrl, verifyResult.transRef, targetBookingId, verifyResult.expectedAmount]
-          );
-          if (update?.changes !== 1) throw new Error('BOOKING_STATE_CHANGED');
-        });
-      } catch (error) {
-        if (fs.existsSync(filePath)) { try { fs.unlinkSync(filePath); } catch (_) {} }
-        return res.status(/DUPLICATE|UNIQUE|BOOKING_STATE_CHANGED/.test(String(error.message)) ? 409 : 503)
-          .json({ success: false, auto_approved: false, error: 'ไม่สามารถบันทึกสลิปเพื่อตรวจสอบได้ กรุณาตรวจสอบสถานะรายการแล้วลองใหม่' });
-      }
-      return res.json({ success: true, auto_approved: false, slipUrl, verifyResult,
-        message: 'ข้อมูลชื่อผู้รับอ่านได้ไม่ชัดเจน กรุณารอเจ้าหน้าที่ตรวจสอบสลิป' });
-    }
-
-    // 2. AUTO-APPROVE if valid bank slip and all criteria pass
-    if (verifyResult.eligibleForAutoApproval) {
-      // Auto-approved! Generate receipt_number and pin_code if not present
-      let receiptNumber = booking.receipt_number;
-      if (!receiptNumber) {
-        receiptNumber = await generateReceiptNumber();
-      }
-
-      let pinCode = booking.pin_code;
-      if (!pinCode) {
-        pinCode = await generateUniquePinCode();
-      }
-
-      await commitVerifiedSlip(verifyResult, booking, dbQuery, async () => {
-        const updateRes = await dbQuery.run(
-          `UPDATE bookings
-           SET slip_image_url = ?,
-               payment_status = 'paid',
-               payment_method = 'transfer',
-               receipt_number = ?,
-               pin_code = ?,
-               slip_trans_ref = ?,
-               slip_verified_at = ?,
-               slip_verify_status = 'auto_approved'
-           WHERE id = ? AND total_amount = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')`,
-          [slipUrl, receiptNumber, pinCode, verifyResult.transRef, nowIso, targetBookingId, verifyResult.expectedAmount]
-        );
-        if (pinCode) {
-          await dbQuery.run(
-            `UPDATE booking_items
-             SET pin_code = ?
-             WHERE booking_id = ?
-               AND room_id IS NOT NULL
-               AND id = (
-                 SELECT MIN(bi2.id) FROM booking_items bi2
-                 WHERE bi2.booking_id = ? AND bi2.room_id IS NOT NULL
-               )`,
-            [pinCode, targetBookingId, targetBookingId]
-          );
-        }
-        return updateRes;
-      });
-
-      if (!verifyResult.autoApproved) {
+      // 2. Check duplicate across other bookings (anti-fraud)
+      const duplicate = await dbQuery.get(
+        "SELECT id, receipt_number FROM bookings WHERE slip_trans_ref = ? AND id != ? AND payment_status = 'paid' LIMIT 1",
+        [transRef, targetBookingId]
+      );
+      if (duplicate) {
         if (fs.existsSync(filePath)) {
           try { fs.unlinkSync(filePath); } catch (e) {}
         }
-        return res.status(verifyResult.errorCode === 'DUPLICATE_SLIP' ? 409 : 503).json({
+        return res.status(400).json({
           success: false,
           auto_approved: false,
-          code: verifyResult.errorCode,
-          error: verifyResult.reasons[0] || 'ระบบไม่สามารถบันทึกผลตรวจสอบสลิปได้'
+          error: `สลิปนี้เคยถูกนำมาใช้งานในระบบแล้ว (รหัสการจอง: ${duplicate.receipt_number || duplicate.id}) ไม่สามารถใช้ซ้ำได้`
         });
       }
+    }
 
-      // Send LINE confirmation if customer has line_user_id
-      if (booking.line_user_id) {
-        try {
-          const tokenSetting = await dbQuery.get('SELECT value FROM settings WHERE key = ?', ['line_channel_access_token']);
-          if (tokenSetting && tokenSetting.value) {
-            await sendLineNotification(targetBookingId);
-          }
-        } catch (lineErr) {
-          console.warn('LINE notification warning:', lineErr.message);
+    const nowIso = getBangkokLocalISO(new Date());
+
+    try {
+      await dbQuery.transaction(async () => {
+        const updateRes = await dbQuery.run(
+          `UPDATE bookings
+           SET slip_image_url = ?,
+               slip_trans_ref = ?,
+               slip_verified_at = NULL,
+               slip_verify_status = 'pending_manual',
+               payment_status = 'reviewing'
+           WHERE id = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')`,
+          [slipUrl, transRef || booking.slip_trans_ref || null, targetBookingId]
+        );
+
+        if (!updateRes || updateRes.changes !== 1) {
+          throw new Error('BOOKING_STATE_CHANGED');
         }
-      }
 
-      return res.json({
-        success: true,
-        auto_approved: true,
-        slipUrl,
-        receiptNumber,
-        pinCode,
-        verifyResult,
-        message: 'สลิปถูกต้อง! ระบบอนุมัติการจองและออกใบเสร็จให้อัตโนมัติเรียบร้อยแล้ว'
+        await dbQuery.run(
+          `INSERT INTO slip_verifications (
+            booking_id, trans_ref, bank_code, bank_name, slip_image_url,
+            is_auto_approved, confidence_score, raw_qr_data, verification_status,
+            rejection_reason, created_at
+          ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', NULL, ?)`,
+          [
+            targetBookingId,
+            transRef || null,
+            bankCode || '000',
+            bankName || 'รูปภาพรอเจ้าหน้าที่ตรวจสอบ',
+            slipUrl,
+            req.body.qr_data || '',
+            nowIso
+          ]
+        );
       });
-    } else {
-      // Automatic-only flow: an inconclusive result is a failed verification,
-      // never a successful upload waiting for manual staff review.
+    } catch (error) {
       if (fs.existsSync(filePath)) {
-        try { fs.unlinkSync(filePath); } catch (e) {}
+        try { fs.unlinkSync(filePath); } catch (_) {}
       }
-      return res.status(422).json({
+      return res.status(/BOOKING_STATE_CHANGED/.test(String(error.message)) ? 409 : 503).json({
         success: false,
         auto_approved: false,
-        verifyResult,
-        error: verifyResult.reasons[0] || 'ระบบยังไม่สามารถยืนยันชื่อบัญชีผู้รับและยอดเงินได้ กรุณาใช้สลิปต้นฉบับที่ชัดเจนแล้วอัปโหลดใหม่'
+        error: 'ไม่สามารถบันทึกหลักฐานเพื่อตรวจสอบได้ กรุณาตรวจสอบสถานะรายการแล้วลองใหม่'
       });
     }
+
+    return res.json({
+      success: true,
+      auto_approved: false,
+      status: 'reviewing',
+      slipUrl,
+      transRef: transRef || null,
+      bankName: bankName || null,
+      message: 'ส่งหลักฐานการชำระเงินเรียบร้อยแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบ'
+    });
   } catch (err) {
     res.status(500).json({ error: 'เกิดข้อผิดพลาด: ' + err.message });
   }
