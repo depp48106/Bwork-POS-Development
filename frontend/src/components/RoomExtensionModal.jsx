@@ -59,6 +59,25 @@ function validateSlipFileSignature(file) {
   });
 }
 
+function addMinutesToLocalISO(isoString, minutes) {
+  if (!isoString) return '';
+  const norm = isoString.includes('T') ? isoString.replace(' ', 'T') : `${isoString}T00:00:00`;
+  const [datePart, timePart] = norm.split('T');
+  const [h, m, s] = (timePart || '00:00:00').split(':').map(Number);
+  const totalM = (isNaN(h) ? 0 : h) * 60 + (isNaN(m) ? 0 : m) + Number(minutes);
+  const newDate = new Date(datePart + 'T00:00:00');
+  const dayOffset = Math.floor(totalM / (24 * 60));
+  if (dayOffset > 0) newDate.setDate(newDate.getDate() + dayOffset);
+  const remM = ((totalM % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const newH = String(Math.floor(remM / 60)).padStart(2, '0');
+  const newM = String(remM % 60).padStart(2, '0');
+  const newS = String(s || 0).padStart(2, '0');
+  const y = newDate.getFullYear();
+  const mo = String(newDate.getMonth() + 1).padStart(2, '0');
+  const d = String(newDate.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${d}T${newH}:${newM}:${newS}`;
+}
+
 const DURATION_PRESETS = [
   { label: '+30 นาที', sub: '0.5 ชั่วโมง', minutes: 30 },
   { label: '+1 ชั่วโมง', sub: '60 นาที', minutes: 60 },
@@ -104,15 +123,24 @@ export default function RoomExtensionModal({
   useEffect(() => {
     if (!isOpen || !booking) return;
 
-    const items = booking.items || [];
-    const roomItems = items.filter(it => it.room_id);
+    const items = (booking.items && booking.items.length > 0)
+      ? booking.items.filter(it => it && it.room_id)
+      : (booking.room_id ? [{
+          id: booking.booking_item_id || booking.id || 1,
+          booking_id: booking.booking_id || booking.id,
+          room_id: booking.room_id,
+          room_name: booking.room_name,
+          start_time: booking.start_time,
+          end_time: booking.end_time,
+          layout: booking.layout || 'standard'
+        }] : []);
 
     if (initialItem && initialItem.room_id) {
-      setSelectedItemId(initialItem.id);
-    } else if (roomItems.length > 0) {
-      setSelectedItemId(roomItems[0].id);
+      setSelectedItemId(initialItem.id || initialItem.booking_item_id || items[0]?.id || 1);
+    } else if (items.length > 0) {
+      setSelectedItemId(items[0].id || items[0].booking_item_id || 1);
     } else {
-      setSelectedItemId(null);
+      setSelectedItemId(1);
     }
 
     // Reset defaults
@@ -294,9 +322,19 @@ export default function RoomExtensionModal({
 
   if (!isOpen || !booking) return null;
 
-  const roomItems = (booking.items || []).filter(it => it.room_id);
-  const activeItem = roomItems.find(it => it.id === selectedItemId) || roomItems[0];
-  const roomName = activeItem?.room_name || preview?.room_name || 'ห้องประชุม';
+  const roomItems = (booking?.items && booking.items.length > 0)
+    ? booking.items.filter(it => it && it.room_id)
+    : (booking?.room_id ? [{
+        id: booking.booking_item_id || booking.id || 1,
+        booking_id: booking.booking_id || booking.id,
+        room_id: booking.room_id,
+        room_name: booking.room_name,
+        start_time: booking.start_time,
+        end_time: booking.end_time,
+        layout: booking.layout || 'standard'
+      }] : []);
+  const activeItem = (selectedItemId ? roomItems.find(it => it.id === selectedItemId) : null) || roomItems[0] || null;
+  const roomName = activeItem?.room_name || preview?.room_name || (booking?.room_id ? `ห้อง #${booking.room_id}` : 'ห้องประชุม');
 
   // Format times for display
   const formatTimeOnly = (isoStr) => {
@@ -480,7 +518,7 @@ export default function RoomExtensionModal({
               <div>
                 <div>ห้องว่าง สามารถต่อเวลาได้จนถึง <strong>{newEnd} น.</strong></div>
                 <div style={{ fontSize: '0.74rem', opacity: 0.85, marginTop: '2px' }}>
-                  ระบบเว้น Cleaning Buffer 30 นาทีอัตโนมัติก่อนคิวถัดไป (คิวถัดไปจองได้ตั้งแต่ {addMinutesToLocalISO(preview.new_end_time, 30).split('T')[1].substring(0, 5)} น.)
+                  ระบบเว้น Cleaning Buffer 30 นาทีอัตโนมัติก่อนคิวถัดไป (คิวถัดไปจองได้ตั้งแต่ {preview?.new_end_time ? addMinutesToLocalISO(preview.new_end_time, 30).split('T')[1]?.substring(0, 5) : '--:--'} น.)
                 </div>
               </div>
             </div>

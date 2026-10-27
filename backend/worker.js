@@ -3725,7 +3725,7 @@ export default {
         const year = url.searchParams.get('year');
 
         let query = `
-          SELECT bi.start_time, bi.end_time, bi.room_id, bi.subtotal, bi.price, bi.quantity, bi.layout, bi.booking_type,
+          SELECT bi.id as booking_item_id, bi.id, bi.start_time, bi.end_time, bi.room_id, bi.subtotal, bi.price, bi.quantity, bi.layout, bi.booking_type,
                  bi.guest_count as item_guest_count,
                  r.name as room_name,
                  b.id as booking_id, b.customer_name, b.payment_status, b.booking_source, b.department, b.contact, b.guest_count

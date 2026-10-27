@@ -5256,41 +5256,6 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                 <Check size={13} /> ชำระเงินสำเร็จ
               </span>
               <div style={{ display: 'flex', gap: '8px' }}>
-                {/* Room Extension (ต่อเวลาห้อง) */}
-              {viewedEvent && viewedEvent.room_id && (
-                <button
-                  type="button"
-                  id="btn-drawer-extend-room"
-                  style={{
-                    flex: 1.2,
-                    height: '42px',
-                    borderRadius: '12px',
-                    fontWeight: 800,
-                    fontSize: '0.84rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '6px',
-                    backgroundColor: 'rgba(37, 99, 235, 0.08)',
-                    color: '#2563eb',
-                    border: '1.5px solid #2563eb',
-                    cursor: 'pointer'
-                  }}
-                  onClick={() => {
-                    const bId = viewedEvent.booking_id || viewedEvent.id;
-                    const bookingObj = {
-                      ...viewedEvent,
-                      id: bId,
-                      items: [viewedEvent]
-                    };
-                    setExtensionModalData({ booking: bookingObj, item: viewedEvent });
-                  }}
-                >
-                  <Clock size={16} />
-                  <span>ต่อเวลาห้อง</span>
-                </button>
-              )}
-
               {onNavigate && (
                   <button
                     type="button"
@@ -6066,6 +6031,54 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               >
                 ปิดหน้าต่าง
               </button>
+
+              {/* Room Extension (ต่อเวลาห้อง) */}
+              {viewedEvent && (viewedEvent.room_id || (viewedEvent.items && viewedEvent.items.some(i => i.room_id))) && !['cancelled', 'failed', 'rejected'].includes(viewedEvent.payment_status) && (
+                <button
+                  type="button"
+                  id="btn-drawer-extend-room"
+                  style={{
+                    flex: 1.2,
+                    height: '42px',
+                    borderRadius: '12px',
+                    fontWeight: 800,
+                    fontSize: '0.84rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                    color: '#2563eb',
+                    border: '1.5px solid #2563eb',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => {
+                    const bId = viewedEvent.booking_id || viewedEvent.id;
+                    const bookingObj = {
+                      ...viewedEvent,
+                      id: bId,
+                      booking_id: bId,
+                      items: viewedEvent.items && viewedEvent.items.length > 0 ? viewedEvent.items : [{
+                        ...viewedEvent,
+                        id: viewedEvent.booking_item_id || viewedEvent.id || 1,
+                        booking_id: bId,
+                        room_id: viewedEvent.room_id,
+                        room_name: viewedEvent.room_name,
+                        start_time: viewedEvent.start_time,
+                        end_time: viewedEvent.end_time,
+                        layout: viewedEvent.layout || 'standard'
+                      }]
+                    };
+                    setExtensionModalData({
+                      booking: bookingObj,
+                      item: bookingObj.items[0]
+                    });
+                  }}
+                >
+                  <Clock size={16} />
+                  <span>ต่อเวลาห้อง</span>
+                </button>
+              )}
 
               {(() => {
                 const fin = normalizeBookingFinancials(viewedEvent);
