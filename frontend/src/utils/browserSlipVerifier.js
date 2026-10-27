@@ -155,7 +155,9 @@ export async function analyzeSlipInBrowser(imageUrl, bookingInfo, settings, onPr
       transRefMasked: '-'
     },
     amount: {
-      expected: bookingInfo?.total_amount || 0,
+      expected: ((bookingInfo?.payment_status === 'deposit' || Number(bookingInfo?.paid_amount || 0) > 0) && Number(bookingInfo?.balance_amount || 0) > 0)
+        ? Number(bookingInfo.balance_amount)
+        : (Number(bookingInfo?.total_amount) || 0),
       detected: null,
       matched: false, // true | false | null
       statusText: 'กำลังอ่าน...'
@@ -237,9 +239,11 @@ export async function analyzeSlipInBrowser(imageUrl, bookingInfo, settings, onPr
     const detectedAmt = analysis.detectedAmount;
     result.amount.detected = detectedAmt;
     if (detectedAmt !== null) {
-      const expSatang = toSatang(bookingInfo?.total_amount || 0);
+      const isDepositBooking = (bookingInfo?.payment_status === 'deposit' || Number(bookingInfo?.paid_amount || 0) > 0) && Number(bookingInfo?.balance_amount || 0) > 0;
+      const targetExpected = isDepositBooking ? Number(bookingInfo.balance_amount) : (Number(bookingInfo?.total_amount) || 0);
+      const expSatang = toSatang(targetExpected);
       const detSatang = toSatang(detectedAmt);
-      if (expSatang === detSatang) {
+      if (expSatang === detSatang || (isDepositBooking && detSatang === toSatang(bookingInfo?.total_amount || 0))) {
         result.amount.matched = true;
         result.amount.statusText = 'ตรง';
       } else {

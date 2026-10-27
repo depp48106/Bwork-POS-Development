@@ -108,7 +108,7 @@ export default function ConfirmPage() {
 
   // Dynamic Countdown Timer based on paymentDeadline as Source of Truth
   useEffect(() => {
-    if (!booking || uploadSuccess || booking.payment_status === 'paid') return;
+    if (!booking || uploadSuccess || booking.payment_status === 'paid' || isDeposit) return;
 
     if (booking.payment_status === 'cancelled') {
       setIsExpired(true);
@@ -438,10 +438,6 @@ export default function ConfirmPage() {
         const result = await processSlipFile(file);
         setSlipPreview(result.dataUrl);
         setSlipQrData(result.qrData);
-        if (result.qrData) {
-          setToastMessage('✅ ตรวจพบ QR Code สลิปธนาคาร (พร้อมระบบอนุมัติอัตโนมัติ)');
-          setTimeout(() => setToastMessage(''), 4000);
-        }
       } catch (err) {
         const reader = new FileReader();
         reader.onload = () => setSlipPreview(reader.result);
@@ -530,20 +526,22 @@ export default function ConfirmPage() {
         setError(data.error || (
           res.status >= 500
             ? 'ระบบตรวจสอบสลิปขัดข้องชั่วคราว กรุณาลองส่งสลิปอีกครั้ง'
-            : 'ไม่สามารถตรวจสอบ QR Code จากสลิปได้ กรุณาอัปโหลดสลิปโอนเงินที่ถูกต้อง'
+            : 'ไม่สามารถส่งหลักฐานการชำระเงินได้ กรุณาลองใหม่อีกครั้ง'
         ));
       }
     } catch (err) {
-      setError('ไม่สามารถติดต่อระบบตรวจสอบสลิปได้ กรุณารอสักครู่แล้วลองใหม่อีกครั้ง');
+      setError('ไม่สามารถติดต่อระบบส่งหลักฐานได้ กรุณารอสักครู่แล้วลองใหม่อีกครั้ง');
     } finally {
       setUploading(false);
     }
   };
 
   const totalAmt = booking ? parseFloat(booking.total_amount || 0) : 0;
+  const isDeposit = Boolean((booking?.payment_status === 'deposit' || Number(booking?.paid_amount || 0) > 0) && Number(booking?.balance_amount || 0) > 0);
+  const payableAmt = isDeposit ? parseFloat(booking.balance_amount || 0) : totalAmt;
   const qrImageSrc = paymentSettings.qr_image || '/bwork_payment_qr.png';
 
-  const isPaidOrAutoApproved = Boolean(uploadResultData?.auto_approved || booking?.payment_status === 'paid');
+  const isPaidOrAutoApproved = Boolean(booking?.payment_status === 'paid');
   const bookingForCalendar = booking ? {
     ...booking,
     booking_code: displayBookingCode,
@@ -662,14 +660,10 @@ export default function ConfirmPage() {
               </div>
 
               <h2 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 8px 0' }}>
-                {booking?.payment_status === 'paid'
-                  ? 'การจองห้องประชุมได้รับการยืนยันแล้ว'
-                  : 'ชำระเงินสำเร็จ! (ระบบตรวจสอบสลิปอัตโนมัติ)'}
+                การจองห้องประชุมได้รับการยืนยันแล้ว
               </h2>
               <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', maxWidth: '500px', margin: '0 auto 16px auto' }}>
-                {booking?.payment_status === 'paid'
-                  ? 'รายการจองของท่านได้รับการชำระเงินและยืนยันเรียบร้อยแล้ว'
-                  : 'ระบบได้ตรวจสอบสลิปโอนเงินของท่านถูกต้องเรียบร้อยแล้ว การจองห้องประชุมได้รับการยืนยันทันที'}
+                รายการจองของท่านได้รับการชำระเงินและยืนยันเรียบร้อยแล้ว
               </p>
 
               {/* Reception Contact Box */}
@@ -703,12 +697,10 @@ export default function ConfirmPage() {
               </div>
 
               <h2 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 8px 0' }}>
-                {uploadResultData?.is_resubmission ? 'ส่งสลิปใหม่เรียบร้อยแล้ว' : 'ระบบได้รับหลักฐานการโอนเงินแล้ว'}
+                ส่งหลักฐานการชำระเงินเรียบร้อยแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบ
               </h2>
               <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', maxWidth: '500px', margin: '0 auto 16px auto' }}>
-                {uploadResultData?.is_resubmission
-                  ? 'ระบบกำลังรอเจ้าหน้าที่ตรวจสอบอีกครั้ง'
-                  : 'ระบบได้รับหลักฐานการโอนเงินแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบยอดเงินก่อนยืนยันการจอง'}
+                ระบบได้รับหลักฐานการชำระเงินแล้ว เจ้าหน้าที่จะตรวจสอบยอดเงินและยืนยันการจองผ่าน POS โดยเร็วที่สุด
               </p>
 
               <div style={{
@@ -725,8 +717,8 @@ export default function ConfirmPage() {
                 flexDirection: 'column',
                 gap: '4px'
               }}>
-                <strong>สถานะ: กำลังรอเจ้าหน้าที่ตรวจสอบยอดเงิน</strong>
-                <span>{uploadResultData?.message || 'เจ้าหน้าที่จะตรวจสอบยอดโอนและยืนยันการจองให้ท่านโดยเร็วที่สุดครับ'}</span>
+                <strong>สถานะ: กำลังรอเจ้าหน้าที่ตรวจสอบ</strong>
+                <span>{uploadResultData?.message || 'เจ้าหน้าที่จะตรวจสอบยอดเงินและยืนยันการจองให้ท่านโดยเร็วที่สุดครับ'}</span>
               </div>
             </>
           )}
@@ -911,10 +903,17 @@ export default function ConfirmPage() {
             </div>
 
             <div style={{ textAlign: 'right', flexShrink: 0 }}>
-              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>ยอดชำระทั้งสิ้น</div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--primary)' }}>
-                ฿{Number(totalAmt).toLocaleString()}
+              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                {isDeposit ? 'ยอดคงเหลือที่ต้องชำระ' : 'ยอดชำระทั้งสิ้น'}
               </div>
+              <div style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--primary)' }}>
+                ฿{Number(payableAmt).toLocaleString()}
+              </div>
+              {isDeposit && (
+                <div style={{ fontSize: '0.72rem', color: '#16a34a', marginTop: '2px' }}>
+                  (ชำระมัดจำแล้ว ฿{Number(booking.paid_amount || 0).toLocaleString()})
+                </div>
+              )}
             </div>
           </div>
 
@@ -1127,10 +1126,17 @@ export default function ConfirmPage() {
 
               {/* Amount to pay */}
               <div style={{ marginTop: '16px', textAlign: 'center' }}>
-                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>ยอดเงินที่ต้องชำระ</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'var(--primary)', lineHeight: 1.2 }}>
-                  ฿{Number(totalAmt).toLocaleString()}
+                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                  {isDeposit ? 'ยอดเงินคงเหลือที่ต้องชำระ' : 'ยอดเงินที่ต้องชำระ'}
                 </div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'var(--primary)', lineHeight: 1.2 }}>
+                  ฿{Number(payableAmt).toLocaleString()}
+                </div>
+                {isDeposit && (
+                  <div style={{ fontSize: '0.74rem', color: '#16a34a', marginTop: '2px', fontWeight: 600 }}>
+                    (ชำระมัดจำแล้ว ฿{Number(booking.paid_amount || 0).toLocaleString()} / ยอดรวม ฿{Number(totalAmt).toLocaleString()})
+                  </div>
+                )}
                 <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
                   รองรับ PromptPay ทุกธนาคาร / บัตรเครดิต (VISA, Mastercard)
                 </div>
@@ -1259,10 +1265,10 @@ export default function ConfirmPage() {
                     </div>
                     <div>
                       <div style={{ fontWeight: 800, fontSize: '0.92rem', color: 'var(--text-main)' }}>
-                        แตะที่นี่เพื่อเลือกรูปภาพสลิป
+                        แตะที่นี่เพื่อเลือกรูปภาพหลักฐานการชำระเงิน
                       </div>
                       <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        รองรับไฟล์ JPG, PNG (ภาพถ่ายจากมือถือ)
+                        รองรับไฟล์ JPG, PNG, WEBP (ภาพถ่ายหรือภาพบันทึกหน้าจอ)
                       </div>
                     </div>
                   </>
@@ -1298,7 +1304,7 @@ export default function ConfirmPage() {
                 }}
               >
                 <Upload size={18} />
-                <span>{uploading ? 'กำลังอ่านและตรวจสอบสลิป...' : 'ส่งสลิปยืนยันการชำระเงิน'}</span>
+                <span>{uploading ? 'กำลังส่งหลักฐานการชำระเงิน...' : 'ส่งหลักฐานยืนยันการชำระเงิน'}</span>
               </button>
             </form>
           </div>

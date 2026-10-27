@@ -1,5 +1,6 @@
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
+import RoomExtensionModal from './RoomExtensionModal';
 import AuthenticatedSlipImage from './AuthenticatedSlipImage';
 import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useCallback } from 'react';
@@ -164,6 +165,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
   // Payment Transactions History for Detail Modal (Phase 4)
   const [paymentTransactions, setPaymentTransactions] = useState([]);
   const [attachSlipModalData, setAttachSlipModalData] = useState(null);
+  const [extensionModalData, setExtensionModalData] = useState(null);
   const [isLoadingPayments, setIsLoadingPayments] = useState(false);
   const activePaymentFetchBookingIdRef = useRef(null);
 
@@ -955,10 +957,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
       const payload = {
         amount: amountNum,
-        payment_method: collectBalanceMethod
+        payment_method: collectBalanceMethod,
+        expected_slip_url: collectBalanceBooking.slip_image_url || null,
+        evidence_id: collectBalanceBooking.slip_verification_id || null
       };
       if (collectBalanceSlipBase64 && (collectBalanceMethod === 'transfer' || collectBalanceMethod === 'promptpay')) {
         payload.slip_image = collectBalanceSlipBase64;
+      } else if (collectBalanceBooking.slip_image_url && (collectBalanceMethod === 'transfer' || collectBalanceMethod === 'promptpay')) {
+        payload.slip_url = collectBalanceBooking.slip_image_url;
       }
 
       const res = await fetch(`/api/bookings/${collectBalanceBooking.id}/pay-balance`, {
@@ -1209,10 +1215,19 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           reason_code: rejectReasonCode,
-          custom_note: rejectCustomNote.trim()
+          custom_note: rejectCustomNote.trim(),
+          expected_slip_url: rejectTargetBooking.slip_image_url || null,
+          evidence_id: rejectTargetBooking.slip_verification_id || null
         })
       });
       const data = await res.json();
+      if (res.status === 409) {
+        setShowRejectSlipModal(false);
+        setRejectTargetBooking(null);
+        await sysAlert(data.error || 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุด');
+        fetchBookings(true, false, true);
+        return;
+      }
       if (res.ok && data.success) {
         setShowRejectSlipModal(false);
         setRejectTargetBooking(null);
@@ -2323,7 +2338,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
       const isCancelled = b.payment_status === 'cancelled';
       const isRejected = b.payment_status === 'rejected' || b.slip_verify_status === 'rejected';
-      return !isPaid && !isCancelled && !isRejected && (b.payment_status === 'reviewing' || !!b.slip_image_url);
+      const isPendingSlip = b.payment_status === 'reviewing' || b.slip_verify_status === 'pending_manual';
+      return !isPaid && !isCancelled && !isRejected && isPendingSlip;
     });
   }, [dimFilteredList]);
 
@@ -2332,8 +2348,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
       const isCancelled = b.payment_status === 'cancelled';
       const isRejected = b.payment_status === 'rejected' || b.slip_verify_status === 'rejected';
-      const isReviewing = (b.payment_status === 'reviewing' || !!b.slip_image_url);
-      return !isPaid && !isCancelled && (!isReviewing || isRejected);
+      const isPendingSlip = b.payment_status === 'reviewing' || b.slip_verify_status === 'pending_manual';
+      return !isPaid && !isCancelled && (!isPendingSlip || isRejected);
     });
   }, [dimFilteredList]);
 
@@ -2365,7 +2381,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
       const isCancelled = b.payment_status === 'cancelled';
       const isRejected = b.payment_status === 'rejected' || b.slip_verify_status === 'rejected';
-      return !isPaid && !isCancelled && !isRejected && (b.payment_status === 'reviewing' || !!b.slip_image_url);
+      const isPendingSlip = b.payment_status === 'reviewing' || b.slip_verify_status === 'pending_manual';
+      return !isPaid && !isCancelled && !isRejected && isPendingSlip;
     }).length;
   }, [bookings]);
 
@@ -2375,8 +2392,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       const isPaid = b.payment_status === 'paid' || b.payment_status === 'internal_free';
       const isCancelled = b.payment_status === 'cancelled';
       const isRejected = b.payment_status === 'rejected' || b.slip_verify_status === 'rejected';
-      const isReviewing = (b.payment_status === 'reviewing' || !!b.slip_image_url);
-      return !isPaid && !isCancelled && !isReviewing && !isRejected;
+      const isPendingSlip = b.payment_status === 'reviewing' || b.slip_verify_status === 'pending_manual';
+      return !isPaid && !isCancelled && !isPendingSlip && !isRejected;
     }).length;
   }, [bookings]);
 
@@ -2396,7 +2413,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
     const isPaid = fin ? fin.is_paid : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
     const isCancelled = fin ? fin.is_cancelled : (b.payment_status === 'cancelled');
     const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
-    const isReviewing = fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || !!b.slip_image_url) && !isPaid && !isCancelled && !isRejected);
+    const isReviewing = fin ? fin.is_reviewing : ((b.payment_status === 'reviewing' || b.slip_verify_status === 'pending_manual') && !isPaid && !isCancelled && !isRejected);
 
     // 1. reviewing -> ตรวจสลิป
     if (isReviewing) {
@@ -3715,6 +3732,24 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
               <FileText size={14} style={{ color: 'var(--primary-color)' }} />
               <span>ดูรายละเอียดการจอง</span>
             </div>
+
+            {/* Room Extension (ต่อเวลาห้อง) */}
+            {activeActionMenuBooking.payment_status !== 'cancelled' && (activeActionMenuBooking.items || []).some(it => it.room_id) && (
+              <div
+                id="pb-menu-item-extend-room"
+                onClick={() => {
+                  const b = activeActionMenuBooking;
+                  setActiveActionMenuBooking(null);
+                  setActionMenuPos(null);
+                  const roomItem = (b.items || []).find(it => it.room_id);
+                  setExtensionModalData({ booking: b, item: roomItem });
+                }}
+                className="action-menu-item"
+              >
+                <Clock size={14} style={{ color: '#2563eb' }} />
+                <span>ต่อเวลาห้อง</span>
+              </div>
+            )}
 
             {/* 2. Edit Schedule (แก้ไขวัน/เวลา) */}
             {activeActionMenuBooking.payment_status !== 'cancelled' && (
@@ -5309,6 +5344,29 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     ปิดหน้าต่าง
                   </button>
 
+                  {/* Room Extension (ต่อเวลาห้อง) */}
+                  {!isCancelled && (b.items || []).some(it => it.room_id) && (
+                    <button
+                      type="button"
+                      id="pb-detail-btn-extend-room"
+                      className="pb-detail-btn-secondary"
+                      onClick={() => {
+                        const roomItem = (b.items || []).find(it => it.room_id);
+                        setExtensionModalData({ booking: b, item: roomItem });
+                      }}
+                      style={{
+                        borderColor: '#2563eb',
+                        color: '#2563eb',
+                        backgroundColor: 'rgba(37, 99, 235, 0.06)',
+                        fontWeight: 750
+                      }}
+                      aria-label="ต่อเวลาการใช้งานห้องประชุม"
+                    >
+                      <Clock size={14} style={{ color: '#2563eb' }} />
+                      <span>ต่อเวลาห้อง</span>
+                    </button>
+                  )}
+
                   {/* Separate Edit: แก้ไขวัน/เวลา */}
                   {!isCancelled && (
                     <button
@@ -5984,12 +6042,31 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           <span className="pb-slip-summary-label">ช่องทาง / วิธีชำระ</span>
                           <span className="pb-slip-summary-val">{channelLabel} · {paymentMethodLabel}</span>
                         </div>
-                        <div className="pb-slip-summary-amount-box">
-                          <span className="pb-slip-summary-label" style={{ fontWeight: 600 }}>ยอดที่ต้องชำระตามบิล</span>
-                          <span className="pb-slip-amount-val" style={{ color: isPaid ? '#16a34a' : 'var(--text-main)' }}>
-                            ฿{Number(viewingSlipBooking.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </span>
-                        </div>
+                        {((viewingSlipBooking.payment_status === 'deposit' || Number(viewingSlipBooking.paid_amount || 0) > 0) && Number(viewingSlipBooking.balance_amount || 0) > 0) ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '100%', marginTop: '4px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem' }}>
+                              <span className="pb-slip-summary-label">ยอดรวมทั้งสิ้น</span>
+                              <span style={{ fontWeight: 600 }}>฿{Number(viewingSlipBooking.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', color: '#16a34a' }}>
+                              <span className="pb-slip-summary-label">มัดจำที่ชำระแล้ว</span>
+                              <span style={{ fontWeight: 600 }}>+฿{Number(viewingSlipBooking.paid_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                            <div className="pb-slip-summary-amount-box" style={{ marginTop: '2px' }}>
+                              <span className="pb-slip-summary-label" style={{ fontWeight: 700, color: '#dc2626' }}>ยอดคงเหลือที่ต้องชำระ (สลิปนี้)</span>
+                              <span className="pb-slip-amount-val" style={{ color: '#dc2626' }}>
+                                ฿{Number(viewingSlipBooking.balance_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="pb-slip-summary-amount-box">
+                            <span className="pb-slip-summary-label" style={{ fontWeight: 600 }}>ยอดที่ต้องชำระตามบิล</span>
+                            <span className="pb-slip-amount-val" style={{ color: isPaid ? '#16a34a' : 'var(--text-main)' }}>
+                              ฿{Number(viewingSlipBooking.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -6019,9 +6096,17 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                               </span>
                             </div>
                             <div>
-                              <div className="pb-ocr-data-label">ยอดที่ต้องชำระ</div>
+                              <div className="pb-ocr-data-label">
+                                {((viewingSlipBooking.payment_status === 'deposit' || Number(viewingSlipBooking.paid_amount || 0) > 0) && Number(viewingSlipBooking.balance_amount || 0) > 0)
+                                  ? 'ยอดคงเหลือที่ต้องชำระ'
+                                  : 'ยอดที่ต้องชำระ'}
+                              </div>
                               <div className="pb-ocr-data-val">
-                                ฿{Number(viewingSlipBooking.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                ฿{Number(
+                                  ((viewingSlipBooking.payment_status === 'deposit' || Number(viewingSlipBooking.paid_amount || 0) > 0) && Number(viewingSlipBooking.balance_amount || 0) > 0)
+                                    ? viewingSlipBooking.balance_amount
+                                    : (viewingSlipBooking.total_amount || 0)
+                                ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                               </div>
                             </div>
                             <div>
@@ -9188,6 +9273,27 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             if (bId) {
               fetchPaymentTransactions(bId);
               setSelectedBooking(prev => prev ? ({ ...prev, slip_image_url: resData.slip_url }) : prev);
+              fetchBookings(true, false, true);
+            }
+          }}
+          sysAlert={sysAlert}
+        />
+      )}
+
+      {/* ROOM EXTENSION MODAL */}
+      {extensionModalData && (
+        <RoomExtensionModal
+          isOpen={!!extensionModalData}
+          booking={extensionModalData.booking}
+          initialItem={extensionModalData.item}
+          onClose={() => setExtensionModalData(null)}
+          onSuccess={(updatedBooking) => {
+            const bId = extensionModalData.booking?.id;
+            if (bId) {
+              fetchPaymentTransactions(bId);
+              if (selectedBooking && selectedBooking.id === bId) {
+                setSelectedBooking(updatedBooking);
+              }
               fetchBookings(true, false, true);
             }
           }}

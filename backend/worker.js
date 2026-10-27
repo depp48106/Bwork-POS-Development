@@ -690,6 +690,7 @@ function safeEqualString(a, b) {
   }
   return result === 0;
 }
+
 async function authenticateUser(request, env, requiredRole = null) {
   const authHeader = request.headers.get('authorization');
   const token = authHeader && authHeader.split(' ')[1];
@@ -792,6 +793,27 @@ async function getCleaningBufferMinutes(env) {
   return 30;
 }
 
+function addMinutesToLocalISO(isoString, minutes) {
+  if (!isoString) return '';
+  const norm = normalizeToLocalISO(isoString);
+  const [datePart, timePart] = norm.split('T');
+  const [h, m, s] = (timePart || '00:00:00').split(':').map(Number);
+  const totalM = h * 60 + m + Number(minutes);
+  const newDate = new Date(datePart + 'T00:00:00');
+  const dayOffset = Math.floor(totalM / (24 * 60));
+  if (dayOffset > 0) {
+    newDate.setDate(newDate.getDate() + dayOffset);
+  }
+  const remM = ((totalM % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const newH = String(Math.floor(remM / 60)).padStart(2, '0');
+  const newM = String(remM % 60).padStart(2, '0');
+  const newS = String(s || 0).padStart(2, '0');
+  const y = newDate.getFullYear();
+  const mo = String(newDate.getMonth() + 1).padStart(2, '0');
+  const d = String(newDate.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${d}T${newH}:${newM}:${newS}`;
+}
+
 async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId = null, excludeBookingItemId = null) {
   const normStart = normalizeToLocalISO(startISO);
   const normEnd = normalizeToLocalISO(endISO);
@@ -807,7 +829,8 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
     FROM booking_items bi
     JOIN bookings b ON bi.booking_id = b.id
     WHERE bi.room_id = ?
-      AND (b.payment_status IS NULL OR b.payment_status != 'cancelled')
+      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+      AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
   `;
   const params = [roomId];
   if (excludeBookingItemId) {
@@ -1326,7 +1349,6 @@ async function saveUploadedFile(env, fileData, folder = 'uploads', metadata = {}
     for (let i = 0; i < len; i++) {
       bytes[i] = binaryStr.charCodeAt(i);
     }
-
     // Magic Bytes Validation
     if (!validateFileMagicBytes(bytes, contentType)) {
       throw new Error('File content corrupted or does not match declared MIME type (' + contentType + ')');
@@ -1382,11 +1404,12 @@ async function saveUploadedFile(env, fileData, folder = 'uploads', metadata = {}
       if (isFinancial) {
         throw new Error('R2 storage bucket is not configured. Financial documents cannot be stored as raw base64.');
       }
-      return fileData;
+      return fileData; // Store Data URL directly in DB if R2 not bound
     }
   }
   return fileData;
 }
+
 
 // ==========================================
 // THAI BANK SLIP MINI QR VERIFIER & PARSER
@@ -2572,6 +2595,88 @@ async function ensureD1Schema(env) {
     )`).run();
   } catch (e) {}
 
+  if (env.ENABLE_SUPPORT_TICKETS === "true") {
+  const supportTables = [
+    `CREATE TABLE IF NOT EXISTS support_tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_number TEXT UNIQUE NOT NULL,
+      access_token TEXT,
+      customer_id INTEGER,
+      customer_name TEXT NOT NULL,
+      customer_phone TEXT NOT NULL,
+      line_user_id TEXT,
+      booking_id INTEGER,
+      booking_code TEXT,
+      room_id INTEGER,
+      category TEXT NOT NULL,
+      other_category TEXT,
+      subject TEXT NOT NULL,
+      description TEXT NOT NULL,
+      priority TEXT NOT NULL DEFAULT 'normal',
+      status TEXT NOT NULL DEFAULT 'NEW',
+      assigned_to TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      resolved_at DATETIME,
+      closed_at DATETIME
+    )`,
+    `CREATE TABLE IF NOT EXISTS support_ticket_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      sender_type TEXT NOT NULL,
+      sender_name TEXT NOT NULL,
+      verified_sender_id TEXT,
+      message TEXT NOT NULL,
+      visibility TEXT NOT NULL DEFAULT 'public',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS support_ticket_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      message_id INTEGER,
+      file_url TEXT NOT NULL,
+      r2_object_key TEXT,
+      file_name TEXT,
+      content_type TEXT,
+      file_size INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS support_ticket_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      actor_type TEXT NOT NULL,
+      actor_id TEXT,
+      actor_name TEXT,
+      event_type TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS support_ticket_reads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL,
+      staff_username TEXT NOT NULL,
+      last_read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(ticket_id, staff_username)
+    )`
+  ];
+
+  for (const sql of supportTables) {
+    try {
+      await env.DB.prepare(sql).run();
+    } catch (e) {}
+  }
+
+  try {
+    await env.DB.prepare("ALTER TABLE support_tickets ADD COLUMN other_category TEXT").run();
+  } catch (e) {}
+
+  try {
+    await env.DB.prepare("ALTER TABLE support_tickets ADD COLUMN access_token TEXT").run();
+  } catch (e) {}
+  }
+
   schemaInitialized = true;
 }
 
@@ -2728,6 +2833,13 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
+    // Support Tickets Feature Gate (Hard blocked by default in production)
+    if (pathname.startsWith('/api/public/support') || pathname.startsWith('/api/pos/support')) {
+      if (env.ENABLE_SUPPORT_TICKETS !== 'true') {
+        return new Response(JSON.stringify({ error: 'Support tickets feature is disabled' }), { status: 404, headers: corsHeaders });
+      }
+    }
+
     try {
       // Ensure D1 database schema has all latest columns
       await ensureD1Schema(env);
@@ -2823,11 +2935,13 @@ export default {
                  WHERE slip_image_url IN (?, ?, ?, ?)
                     OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url IN (?, ?, ?, ?))
                     OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url IN (?, ?, ?, ?))
+                    OR id IN (SELECT booking_id FROM slip_verifications WHERE slip_image_url IN (?, ?, ?, ?))
                  LIMIT 1`
               ).bind(
-                exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
-                exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
-                exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3]
+                ...exactCandidates,
+                ...exactCandidates,
+                ...exactCandidates,
+                ...exactCandidates
               ).first();
             }
 
@@ -2868,26 +2982,21 @@ export default {
             }
           }
         }
-
-        // 3. Fetch from R2 Bucket
         if (!env.BUCKET) {
           return new Response(JSON.stringify({ error: 'Storage service unavailable' }), { status: 503, headers: corsHeaders });
         }
-
-        let object = await env.BUCKET.get(filePath);
-        if (!object && !filePath.startsWith('uploads/')) {
-          object = await env.BUCKET.get(`uploads/${filePath}`);
-        } else if (!object && filePath.startsWith('uploads/')) {
-          object = await env.BUCKET.get(filePath.replace(/^uploads\//, ''));
-        }
-        if (!object) {
-          return new Response(JSON.stringify({ error: 'File Not Found' }), { status: 404, headers: corsHeaders });
-        }
-
-        const headers = new Headers();
-        object.writeHttpMetadata(headers);
-        headers.set('Access-Control-Allow-Origin', '*');
-
+          let object = await env.BUCKET.get(filePath);
+          if (!object && !filePath.startsWith('uploads/')) {
+            object = await env.BUCKET.get(`uploads/${filePath}`);
+          } else if (!object && filePath.startsWith('uploads/')) {
+            object = await env.BUCKET.get(filePath.replace(/^uploads\//, ''));
+          }
+          if (!object) {
+            return new Response('File Not Found', { status: 404 });
+          }
+          const headers = new Headers();
+          object.writeHttpMetadata(headers);
+          headers.set('Access-Control-Allow-Origin', '*');
         if (isFinancialOrSensitive) {
           headers.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
           const isDownload = url.searchParams.get('download') === '1' || request.headers.get('accept') === 'application/octet-stream';
@@ -2900,7 +3009,6 @@ export default {
         } else {
           headers.set('Cache-Control', 'public, max-age=31536000, immutable');
         }
-
         return new Response(object.body, { headers });
       }
 
@@ -3650,7 +3758,7 @@ export default {
         const year = url.searchParams.get('year');
 
         let query = `
-          SELECT bi.start_time, bi.end_time, bi.room_id, bi.subtotal, bi.price, bi.quantity, bi.layout, bi.booking_type,
+          SELECT bi.id as booking_item_id, bi.id, bi.start_time, bi.end_time, bi.room_id, bi.subtotal, bi.price, bi.quantity, bi.layout, bi.booking_type,
                  bi.guest_count as item_guest_count,
                  r.name as room_name,
                  b.id as booking_id, b.customer_name, b.payment_status, b.booking_source, b.department, b.contact, b.guest_count
@@ -4983,7 +5091,7 @@ export default {
 
           try {
             const { results: slipRows } = await env.DB.prepare(
-              `SELECT booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, rejection_reason, created_at as rejection_time
+              `SELECT id, booking_id, slip_image_url, trans_ref, verification_status, amount, bank_name, rejection_reason, created_at as rejection_time
                FROM slip_verifications
                WHERE booking_id IN (${placeholders})
                ORDER BY id DESC`
@@ -4997,6 +5105,7 @@ export default {
             bookings.forEach(b => {
               const s = slipByBookingId[b.id];
               if (s) {
+                b.slip_verification_id = s.id;
                 if (!b.slip_image_url) b.slip_image_url = s.slip_image_url;
                 if (!b.slip_trans_ref) b.slip_trans_ref = s.trans_ref;
                 if (!b.slip_verify_status) b.slip_verify_status = s.verification_status;
@@ -5372,10 +5481,11 @@ export default {
             nowIso
           ).run();
         } catch (dbErr) {
+          console.warn('[Create-Booking] Falling back to simplified insert:', dbErr?.message);
           insBooking = await env.DB.prepare(
-            `INSERT INTO bookings (customer_name, department, contact, total_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, checkin_status, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
-          ).bind(customer_name, department || '', contact || '', fin.total_amount, fin.payment_status, payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
+            `INSERT INTO bookings (customer_name, department, contact, subtotal_amount, total_amount, paid_amount, balance_amount, payment_status, payment_method, receipt_number, pin_code, booking_source, line_user_id, checkin_status, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+          ).bind(customer_name, department || '', contact || '', fin.subtotal_amount, fin.total_amount, fin.paid_amount, fin.balance_amount, fin.payment_status, payment_method || 'cash', receiptNumber, pinCode, booking_source || 'walkin', line_user_id || null, nowIso).run();
         }
 
         const bookingId = insBooking.meta.last_row_id;
@@ -5419,6 +5529,9 @@ export default {
           }
         }
 
+        const bufferMins = await getCleaningBufferMinutes(env);
+        let itemInsertConflict = null;
+
         for (let item of items) {
           const normStart = (item.room_id && item.start_time) ? normalizeToLocalISO(item.start_time) : null;
           const normEnd = (item.room_id && item.end_time) ? normalizeToLocalISO(item.end_time) : null;
@@ -5436,7 +5549,79 @@ export default {
             }
           }
 
-          try {
+          if (item.room_id && normStart && normEnd) {
+            const itemEndBuffered = addMinutesToLocalISO(normEnd, bufferMins);
+            let insItemRes;
+            try {
+              insItemRes = await env.DB.prepare(
+                `INSERT INTO booking_items (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code)
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM booking_items bi
+                   JOIN bookings b ON bi.booking_id = b.id
+                   WHERE bi.room_id = ?
+                     AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                     AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+                     AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                          AND ? > bi.start_time)
+                 )`
+              ).bind(
+                bookingId,
+                item.room_id || null,
+                item.service_id || null,
+                item.quantity || 1,
+                item.price || 0,
+                normStart,
+                normEnd,
+                item.subtotal || 0,
+                item.layout || 'standard',
+                item.booking_type || 'hourly',
+                itemGuestCount,
+                itemPin,
+                item.room_id,
+                normStart,
+                `+${bufferMins} minutes`,
+                itemEndBuffered
+              ).run();
+            } catch (itemErr) {
+              insItemRes = await env.DB.prepare(
+                `INSERT INTO booking_items (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code)
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM booking_items bi
+                   JOIN bookings b ON bi.booking_id = b.id
+                   WHERE bi.room_id = ?
+                     AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                     AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+                     AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                          AND ? > bi.start_time)
+                 )`
+              ).bind(
+                bookingId,
+                item.room_id || null,
+                item.service_id || null,
+                item.quantity || 1,
+                item.price || 0,
+                normStart,
+                normEnd,
+                item.subtotal || 0,
+                item.layout || 'standard',
+                item.booking_type || 'hourly',
+                itemPin,
+                item.room_id,
+                normStart,
+                `+${bufferMins} minutes`,
+                itemEndBuffered
+              ).run();
+            }
+
+            if (insItemRes?.meta?.changes !== 1) {
+              const rObj = await env.DB.prepare('SELECT name FROM rooms WHERE id = ?').bind(item.room_id).first();
+              const latestConflict = await checkRoomOverlap(env, item.room_id, normStart, normEnd);
+              itemInsertConflict = formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins });
+              break;
+            }
+          } else {
             await env.DB.prepare(
               `INSERT INTO booking_items (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -5452,26 +5637,17 @@ export default {
               item.layout || 'standard',
               item.booking_type || 'hourly',
               itemGuestCount,
-              item.room_id ? itemPin : null
-            ).run();
-          } catch (itemErr) {
-            await env.DB.prepare(
-              `INSERT INTO booking_items (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, pin_code)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-            ).bind(
-              bookingId,
-              item.room_id || null,
-              item.service_id || null,
-              item.quantity || 1,
-              item.price || 0,
-              normStart,
-              normEnd,
-              item.subtotal || 0,
-              item.layout || 'standard',
-              item.booking_type || 'hourly',
-              item.room_id ? itemPin : null
+              null
             ).run();
           }
+        }
+
+        if (itemInsertConflict) {
+          await env.DB.prepare('DELETE FROM booking_items WHERE booking_id = ?').bind(bookingId).run();
+          await env.DB.prepare('DELETE FROM payment_transactions WHERE booking_id = ?').bind(bookingId).run();
+          await env.DB.prepare('DELETE FROM booking_history WHERE booking_id = ?').bind(bookingId).run();
+          await env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId).run();
+          return new Response(JSON.stringify({ error: itemInsertConflict }), { status: 409, headers: corsHeaders });
         }
 
         const savedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
@@ -5580,7 +5756,7 @@ export default {
         const parts = pathname.split('/');
         const bookingId = parts[3];
         const body = await request.json().catch(() => ({}));
-        const { reason_code, custom_note } = body;
+        const { reason_code, custom_note, expected_slip_url, evidence_id } = body;
 
         // Reason code validation
         if (!reason_code || !REJECT_REASON_MAP[reason_code]) {
@@ -5607,20 +5783,59 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
         }
 
-        // Precondition: current payment_status must be 'reviewing' only
-        if (booking.payment_status !== 'reviewing') {
+        // Precondition: must be currently in review ('reviewing' OR slip_verify_status === 'pending_manual')
+        const isPendingReview = booking.payment_status === 'reviewing' || booking.slip_verify_status === 'pending_manual';
+        if (!isPendingReview || booking.payment_status === 'paid' || booking.payment_status === 'cancelled') {
           return new Response(JSON.stringify({
             error: `ไม่สามารถปฏิเสธสลิปได้เนื่องจากรายการจองอยู่ในสถานะ '${booking.payment_status}' (อนุญาตเฉพาะสถานะรอตรวจสอบ 'reviewing' เท่านั้น)`
           }), { status: 409, headers: corsHeaders });
         }
 
-        // Atomic conditional update
-        const updateResult = await env.DB.prepare(`
-          UPDATE bookings
-          SET payment_status = 'rejected',
-              slip_verify_status = 'rejected'
-          WHERE id = ? AND payment_status = 'reviewing'
-        `).bind(bookingId).run();
+        // Concurrency CAS guard: Staff reviewing older slip while customer submitted newer slip
+        const latestSv = await env.DB.prepare(
+          'SELECT id, slip_image_url FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1'
+        ).bind(bookingId).first();
+        if (evidence_id && latestSv && String(latestSv.id) !== String(evidence_id)) {
+          return new Response(JSON.stringify({
+            error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+            code: 'SLIP_VERSION_CONFLICT'
+          }), { status: 409, headers: corsHeaders });
+        }
+        if (expected_slip_url && booking.slip_image_url && booking.slip_image_url !== expected_slip_url) {
+          return new Response(JSON.stringify({
+            error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+            code: 'SLIP_VERSION_CONFLICT'
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        const hasDeposit = (booking.payment_status === 'deposit' || Number(booking.paid_amount || 0) > 0);
+        let updateResult;
+
+        if (hasDeposit) {
+          // Find previous completed deposit transaction's slip_url if available
+          const prevTx = await env.DB.prepare(
+            `SELECT slip_url FROM payment_transactions
+             WHERE booking_id = ? AND status = 'completed' AND slip_url IS NOT NULL
+             ORDER BY id DESC LIMIT 1`
+          ).bind(bookingId).first();
+          const prevDepositSlipUrl = prevTx?.slip_url || null;
+
+          // Keep deposit payment_status, mark slip as rejected, revert slip_image_url to deposit slip if available
+          updateResult = await env.DB.prepare(`
+            UPDATE bookings
+            SET slip_verify_status = 'rejected',
+                slip_image_url = COALESCE(?, slip_image_url)
+            WHERE id = ? AND (payment_status = 'deposit' OR slip_verify_status = 'pending_manual')
+          `).bind(prevDepositSlipUrl, bookingId).run();
+        } else {
+          // Atomic conditional update for unpaid booking
+          updateResult = await env.DB.prepare(`
+            UPDATE bookings
+            SET payment_status = 'rejected',
+                slip_verify_status = 'rejected'
+            WHERE id = ? AND payment_status = 'reviewing'
+          `).bind(bookingId).run();
+        }
 
         if (updateResult.meta?.changes !== 1) {
           return new Response(JSON.stringify({
@@ -6197,7 +6412,7 @@ export default {
         const parts = pathname.split('/');
         const bookingId = parts[3];
         const body = await request.json().catch(() => ({}));
-        const { amount, payment_method, slip_image } = body;
+        const { amount, payment_method, slip_image, expected_slip_url, evidence_id } = body;
 
         const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         if (!booking) {
@@ -6235,6 +6450,25 @@ export default {
           }), { status: 400, headers: corsHeaders });
         }
 
+        // Concurrency CAS guard: Staff reviewing older slip while customer submitted newer slip
+        if (booking.slip_verify_status === 'pending_manual' || booking.payment_status === 'reviewing') {
+          const latestSv = await env.DB.prepare(
+            'SELECT id, slip_image_url FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1'
+          ).bind(bookingId).first();
+          if (evidence_id && latestSv && String(latestSv.id) !== String(evidence_id)) {
+            return new Response(JSON.stringify({
+              error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+              code: 'SLIP_VERSION_CONFLICT'
+            }), { status: 409, headers: corsHeaders });
+          }
+          if (expected_slip_url && booking.slip_image_url && booking.slip_image_url !== expected_slip_url) {
+            return new Response(JSON.stringify({
+              error: 'ลูกค้าได้ส่งหลักฐานการชำระเงินฉบับใหม่เข้ามาแล้ว กรุณารีเฟรชเพื่อตรวจสอบหลักฐานล่าสุดก่อนดำเนินการ',
+              code: 'SLIP_VERSION_CONFLICT'
+            }), { status: 409, headers: corsHeaders });
+          }
+        }
+
         const newPaid = roundMoney(currentPaid + payAmount);
         const newBalance = roundMoney(Math.max(0, netTotal - newPaid));
         const newStatus = newBalance <= 0 ? 'paid' : 'deposit';
@@ -6270,6 +6504,8 @@ export default {
           }
         } else if (body.slip_url) {
           slipUrl = String(body.slip_url).trim();
+        } else if (booking.slip_image_url && booking.slip_verify_status === 'pending_manual') {
+          slipUrl = booking.slip_image_url;
         }
 
         // Concurrency-safe atomic update guard
@@ -6277,11 +6513,13 @@ export default {
           `UPDATE bookings
            SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?,
                receipt_number = COALESCE(receipt_number, ?),
-               slip_image_url = COALESCE(slip_image_url, ?)
+               slip_image_url = COALESCE(?, slip_image_url),
+               slip_verify_status = CASE WHEN slip_verify_status = 'pending_manual' THEN 'approved_manual' ELSE slip_verify_status END,
+               slip_verified_at = CASE WHEN slip_verify_status = 'pending_manual' THEN ? ELSE slip_verified_at END
            WHERE id = ?
-             AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free')
+             AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free', 'paid')
              AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?`
-        ).bind(newPaid, newBalance, newStatus, method, receiptNumber, slipUrl, booking.id, payAmount).run();
+        ).bind(newPaid, newBalance, newStatus, method, receiptNumber, slipUrl, nowIso, booking.id, payAmount).run();
 
         if (updateRes.meta?.changes !== 1) {
           return new Response(JSON.stringify({
@@ -6294,6 +6532,19 @@ export default {
            (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
            VALUES (?, ?, ?, ?, 'balance', 'completed', ?)`
         ).bind(booking.id, payAmount, method, slipUrl, nowIso).run();
+
+        if (booking.slip_verify_status === 'pending_manual') {
+          try {
+            const latestSv = await env.DB.prepare(
+              "SELECT id FROM slip_verifications WHERE booking_id = ? AND verification_status = 'pending_manual' ORDER BY id DESC LIMIT 1"
+            ).bind(booking.id).first();
+            if (latestSv) {
+              await env.DB.prepare(
+                "UPDATE slip_verifications SET verification_status = 'approved_manual', amount = COALESCE(amount, ?) WHERE id = ?"
+              ).bind(payAmount, latestSv.id).run();
+            }
+          } catch (_) {}
+        }
 
         try {
           const historyPayload = {
@@ -6447,6 +6698,433 @@ export default {
           is_replacement: isReplacement
         }), { headers: corsHeaders });
       }
+
+            // ----------------------------------------------------
+      // ROOM EXTENSION WORKFLOW ENDPOINTS (PARITY)
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/extension-preview') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        const urlObj = new URL(request.url);
+        const bookingItemId = urlObj.searchParams.get('booking_item_id') ? Number(urlObj.searchParams.get('booking_item_id')) : null;
+        const durationMinutes = Math.max(15, Math.min(480, Number(urlObj.searchParams.get('duration_minutes')) || 60));
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+        if (['cancelled', 'failed', 'rejected'].includes(booking.payment_status)) {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถต่อเวลาสำหรับการจองที่ถูกยกเลิกแล้ว' }), { status: 400, headers: corsHeaders });
+        }
+
+        let item = null;
+        if (bookingItemId) {
+          item = await env.DB.prepare('SELECT * FROM booking_items WHERE id = ? AND booking_id = ?').bind(bookingItemId, bookingId).first();
+        } else {
+          item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1').bind(bookingId).first();
+        }
+
+        if (!item || !item.room_id) {
+          return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องที่สามารถต่อเวลาได้ในการจองนี้' }), { status: 404, headers: corsHeaders });
+        }
+        if (item.checkin_status === 'cancelled') {
+          return new Response(JSON.stringify({ error: 'รายการห้องนี้ถูกยกเลิกไปแล้ว' }), { status: 400, headers: corsHeaders });
+        }
+
+        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first();
+        if (!room) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลห้องประชุม' }), { status: 404, headers: corsHeaders });
+        }
+
+        // CAS Concurrency Guard: Ensure staff baseline end_time matches database
+        if (current_end_time && item.end_time !== current_end_time) {
+          return new Response(JSON.stringify({ error: 'ข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง' }), { status: 409, headers: corsHeaders });
+        }
+
+        const newEndISO = addMinutesToLocalISO(item.end_time, durationMinutes);
+
+        // Check room overlap in worker
+        const overlapResult = await checkRoomOverlap(env, item.room_id, item.start_time, newEndISO, null, item.id);
+
+        const additionalHours = durationMinutes / 60;
+        const hourlyRate = item.layout === 'classroom'
+          ? (room.classroom_hourly_rate || room.hourly_rate)
+          : room.hourly_rate;
+
+        const grossExtensionFee = roundMoney(additionalHours * hourlyRate);
+
+        let remainingQuota = 0;
+        let contractEligible = false;
+        let contractDetails = null;
+
+        if (booking.customer_id || booking.customer_type === 'shop' || booking.customer_type === 'basecamp') {
+          try {
+            const quotaCalc = await calculateWorkerCustomerQuota(env, {
+              customerId: booking.customer_id,
+              customerType: booking.customer_type,
+              basecampSubType: booking.basecamp_sub_type,
+              basecampUnit: booking.basecamp_unit,
+              serviceDate: item.start_time
+            });
+            remainingQuota = quotaCalc.remaining_quota || 0;
+            contractEligible = quotaCalc.contract_eligible || false;
+            contractDetails = quotaCalc.contract || null;
+          } catch (qErr) {
+            console.error('Error evaluating quota in worker extension preview:', qErr);
+          }
+        }
+
+        const isInternalFree = booking.customer_type === 'builtland' || booking.payment_status === 'internal_free' || booking.billing_option === 'internal_free';
+        const maxQuotaDeductible = contractEligible ? Math.min(additionalHours, remainingQuota) : 0;
+        const estimatedFeeWithQuota = isInternalFree ? 0 : roundMoney(Math.max(0, additionalHours - maxQuotaDeductible) * hourlyRate);
+
+        return new Response(JSON.stringify({
+          success: true,
+          booking_id: booking.id,
+          booking_code: booking.booking_code || `#${booking.id}`,
+          customer_name: booking.customer_name,
+          customer_type: booking.customer_type,
+          booking_item_id: item.id,
+          room_id: item.room_id,
+          room_name: room.name,
+          layout: item.layout || 'standard',
+          start_time: item.start_time,
+          current_end_time: item.end_time,
+          new_end_time: newEndISO,
+          duration_minutes: durationMinutes,
+          additional_hours: additionalHours,
+          hourly_rate: hourlyRate,
+          gross_extension_fee: grossExtensionFee,
+          is_internal_free: isInternalFree,
+          available: !overlapResult.hasOverlap,
+          conflict: overlapResult.hasOverlap ? {
+            is_cleaning_buffer: overlapResult.isCleaningBuffer,
+            buffer_minutes: overlapResult.bufferMinutes,
+            booking: overlapResult.booking,
+            message: formatOverlapErrorMessage(room.name, overlapResult)
+          } : null,
+          cleaning_buffer_minutes: overlapResult.bufferMinutes,
+          quota: {
+            contract_eligible: contractEligible,
+            remaining_quota: remainingQuota,
+            max_quota_deductible: maxQuotaDeductible,
+            estimated_fee_with_quota: estimatedFeeWithQuota,
+            contract: contractDetails
+          },
+          current_financials: {
+            total_amount: roundMoney(Number(booking.total_amount) || 0),
+            paid_amount: roundMoney(Number(booking.paid_amount) || 0),
+            balance_amount: roundMoney(Number(booking.balance_amount) || 0),
+            payment_status: booking.payment_status
+          }
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/extend') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        const body = await request.json().catch(() => ({}));
+        const {
+          booking_item_id,
+          current_end_time,
+          duration_minutes,
+          payment_method,
+          use_quota,
+          amount_paid,
+          slip_image,
+          notes
+        } = body;
+
+        const durationMinutes = Math.max(15, Math.min(480, Number(duration_minutes) || 60));
+        const method = payment_method || 'cash';
+        const staffName = auth.user?.username || auth.user?.fullname || auth.user?.name || auth.user?.role || 'staff';
+        const nowIso = new Date().toISOString();
+
+        const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+        if (['cancelled', 'failed', 'rejected'].includes(booking.payment_status)) {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถต่อเวลาสำหรับรายการจองที่ถูกยกเลิกแล้ว' }), { status: 400, headers: corsHeaders });
+        }
+
+        let item = null;
+        if (booking_item_id) {
+          item = await env.DB.prepare('SELECT * FROM booking_items WHERE id = ? AND booking_id = ?').bind(Number(booking_item_id), bookingId).first();
+        } else {
+          item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? AND room_id IS NOT NULL ORDER BY id ASC LIMIT 1').bind(bookingId).first();
+        }
+
+        if (!item || !item.room_id) {
+          return new Response(JSON.stringify({ error: 'ไม่พบรายการห้องที่สามารถต่อเวลาได้ในการจองนี้' }), { status: 404, headers: corsHeaders });
+        }
+        if (item.checkin_status === 'cancelled') {
+          return new Response(JSON.stringify({ error: 'รายการห้องนี้ถูกยกเลิกไปแล้ว' }), { status: 400, headers: corsHeaders });
+        }
+
+        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first();
+        if (!room) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลห้องประชุม' }), { status: 404, headers: corsHeaders });
+        }
+
+        const newEndISO = addMinutesToLocalISO(item.end_time, durationMinutes);
+
+        // Check overlap guard inside worker
+        const overlapResult = await checkRoomOverlap(env, item.room_id, item.start_time, newEndISO, null, item.id);
+        if (overlapResult.hasOverlap) {
+          return new Response(JSON.stringify({
+            error: formatOverlapErrorMessage(room.name, overlapResult),
+            conflict: overlapResult
+          }), { status: 409, headers: corsHeaders });
+        }
+
+        const additionalHours = durationMinutes / 60;
+        const hourlyRate = item.layout === 'classroom'
+          ? (room.classroom_hourly_rate || room.hourly_rate)
+          : room.hourly_rate;
+
+        const isInternalFree = booking.customer_type === 'builtland' || booking.payment_status === 'internal_free' || booking.billing_option === 'internal_free';
+
+        let quotaDeducted = 0;
+        let extensionFee = 0;
+
+        if (isInternalFree) {
+          extensionFee = 0;
+        } else if (use_quota && (booking.customer_id || booking.customer_type === 'shop' || booking.customer_type === 'basecamp')) {
+          const quotaCalc = await calculateWorkerCustomerQuota(env, {
+            customerId: booking.customer_id,
+            customerType: booking.customer_type,
+            basecampSubType: booking.basecamp_sub_type,
+            basecampUnit: booking.basecamp_unit,
+            serviceDate: item.start_time
+          });
+          if (quotaCalc.contract_eligible && quotaCalc.remaining_quota > 0) {
+            quotaDeducted = Math.min(additionalHours, quotaCalc.remaining_quota);
+          }
+          const chargeableHours = Math.max(0, additionalHours - quotaDeducted);
+          extensionFee = roundMoney(chargeableHours * hourlyRate);
+        } else {
+          extensionFee = roundMoney(additionalHours * hourlyRate);
+        }
+
+        let payAmount = 0;
+        if (extensionFee > 0) {
+          if (method === 'unpaid') {
+            payAmount = 0;
+          } else if (amount_paid !== undefined) {
+            payAmount = roundMoney(Math.max(0, Math.min(Number(amount_paid), extensionFee)));
+          } else {
+            payAmount = extensionFee;
+          }
+        }
+
+        let slipUrl = null;
+        let uploadedR2Key = null;
+        const r2Bucket = env.BUCKET || env.SLIP_BUCKET;
+        if (slip_image) {
+          if (typeof slip_image !== 'string' || !slip_image.startsWith('data:image/')) {
+            return new Response(JSON.stringify({ error: 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ PNG, JPG หรือ WEBP' }), { status: 400, headers: corsHeaders });
+          }
+          if (slip_image.length > 10 * 1024 * 1024 * 1.37) {
+            return new Response(JSON.stringify({ error: 'ไฟล์สลิปมีขนาดใหญ่เกินไป (จำกัดไม่เกิน 10MB)' }), { status: 400, headers: corsHeaders });
+          }
+          if (!r2Bucket) {
+            return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
+          }
+          try {
+            slipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId, paymentId: 'extension', uploadedBy: staffName });
+            if (!slipUrl || slipUrl.startsWith('data:')) {
+              return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลง R2 ได้' }), { status: 500, headers: corsHeaders });
+            }
+            uploadedR2Key = slipUrl.replace('/uploads/', '');
+          } catch (r2Err) {
+            console.error('[Room Extension] R2 upload error in worker:', r2Err);
+            return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกไฟล์สลิปลงระบบจัดเก็บได้ กรุณาลองใหม่อีกครั้ง' }), { status: 500, headers: corsHeaders });
+          }
+        } else if (body.slip_url) {
+          slipUrl = String(body.slip_url).trim();
+        }
+
+        const newQuantity = roundMoney((Number(item.quantity) || 0) + additionalHours);
+        const newItemSubtotal = roundMoney((Number(item.subtotal) || 0) + (additionalHours * hourlyRate));
+
+        const oldTotal = roundMoney(Math.max(0, Number(booking.total_amount) || 0));
+        const oldPaid = roundMoney(Math.max(0, Number(booking.paid_amount) || 0));
+        const newTotal = roundMoney(oldTotal + extensionFee);
+        const newPaid = roundMoney(oldPaid + payAmount);
+        const newBalance = roundMoney(Math.max(0, newTotal - newPaid));
+        const newQuotaHours = roundMoney((Number(booking.quota_hours_used) || 0) + quotaDeducted);
+
+        let newStatus = booking.payment_status;
+        if (booking.payment_status === 'internal_free' || isInternalFree) {
+          newStatus = 'internal_free';
+        } else if (newTotal === 0 && newQuotaHours > 0) {
+          newStatus = 'paid';
+        } else if (newBalance <= 0) {
+          newStatus = 'paid';
+        } else if (newPaid > 0) {
+          newStatus = 'deposit';
+        } else {
+          newStatus = booking.payment_status === 'deposit' ? 'deposit' : 'pending';
+        }
+
+        const oldTimeFormatted = item.end_time.includes('T') ? item.end_time.split('T')[1].substring(0, 5) : item.end_time;
+        const newTimeFormatted = newEndISO.includes('T') ? newEndISO.split('T')[1].substring(0, 5) : newEndISO;
+        const durationLabel = durationMinutes >= 60 ? `${durationMinutes / 60} ชม.` : `${durationMinutes} นาที`;
+
+        let auditDesc = `ต่อเวลาห้อง ${room.name} จาก ${oldTimeFormatted} เป็น ${newTimeFormatted} (+${durationLabel})`;
+        if (quotaDeducted > 0) {
+          auditDesc += ` (ใช้โควตา ${quotaDeducted} ชม.)`;
+        }
+        if (extensionFee > 0) {
+          auditDesc += ` ค่าบริการ ฿${extensionFee.toLocaleString()}`;
+          if (payAmount > 0) {
+            auditDesc += ` ชำระแล้ว ฿${payAmount.toLocaleString()} (${method})${slipUrl ? ' พร้อมแนบสลิป' : ''}`;
+          } else {
+            auditDesc += ' (ค้างชำระ)';
+          }
+        }
+
+        const historyPayload = {
+          action: 'extend_room',
+          booking_id: booking.id,
+          booking_item_id: item.id,
+          room_id: item.room_id,
+          room_name: room.name,
+          previous_end_time: item.end_time,
+          new_end_time: newEndISO,
+          duration_minutes: durationMinutes,
+          hourly_rate: hourlyRate,
+          extension_fee: extensionFee,
+          quota_deducted: quotaDeducted,
+          amount_paid: payAmount,
+          payment_method: method,
+          slip_url: slipUrl,
+          notes: notes || null,
+          performed_by: staffName,
+          timestamp: nowIso,
+          description: auditDesc
+        };
+
+        // All-or-nothing D1 Batch: All 4 statements executed atomically in single transaction
+        const statements = [];
+
+        // 1. Atomically update booking_items (Statement #0) with CAS & Overlap Guards
+        const expectedEndTime = current_end_time || item.end_time;
+        const bufferMins = await getCleaningBufferMinutes(env);
+        const newEndBufferedISO = addMinutesToLocalISO(newEndISO, bufferMins);
+
+        statements.push(
+          env.DB.prepare(
+            `UPDATE booking_items
+             SET end_time = ?, quantity = ?, subtotal = ?
+             WHERE id = ? AND end_time = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM booking_items bi
+                 JOIN bookings b ON bi.booking_id = b.id
+                 WHERE bi.room_id = ?
+                   AND bi.id != ?
+                   AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                   AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+                   AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                        AND ? > bi.start_time)
+               )`
+          ).bind(
+            newEndISO, newQuantity, newItemSubtotal, item.id, expectedEndTime,
+            item.room_id, item.id, item.end_time, `+${bufferMins} minutes`, newEndBufferedISO
+          )
+        );
+
+        // 2. Atomically update bookings financials & quota (conditioned on item end_time)
+        statements.push(
+          env.DB.prepare(
+            `UPDATE bookings
+             SET total_amount = ?, paid_amount = ?, balance_amount = ?,
+                 payment_status = ?, quota_hours_used = ?,
+                 subtotal_amount = COALESCE(subtotal_amount, total_amount) + ?
+             WHERE id = ? AND (SELECT end_time FROM booking_items WHERE id = ?) = ?`
+          ).bind(newTotal, newPaid, newBalance, newStatus, newQuotaHours, (additionalHours * hourlyRate), booking.id, item.id, newEndISO)
+        );
+
+        // 3. Payment transaction: ONLY inserted if actually paid or quota (NEVER for unpaid extension)
+        const effectiveMethod = (extensionFee === 0 && quotaDeducted > 0) ? 'quota' : method;
+        if (payAmount > 0 || quotaDeducted > 0) {
+          statements.push(
+            env.DB.prepare(
+              `INSERT INTO payment_transactions
+               (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
+               SELECT ?, ?, ?, ?, 'extension', 'completed', ?
+               WHERE (SELECT end_time FROM booking_items WHERE id = ?) = ?`
+            ).bind(booking.id, payAmount, effectiveMethod, slipUrl, nowIso, item.id, newEndISO)
+          );
+        }
+
+        // 4. Booking history audit log
+        statements.push(
+          env.DB.prepare(
+            `INSERT INTO booking_history
+             (booking_id, action, details, performed_by, created_at)
+             SELECT ?, 'extend_room', ?, ?, ?
+             WHERE (SELECT end_time FROM booking_items WHERE id = ?) = ?`
+          ).bind(booking.id, JSON.stringify(historyPayload), staffName, nowIso, item.id, newEndISO)
+        );
+
+        try {
+          const batchResults = await env.DB.batch(statements);
+          if (batchResults[0]?.meta?.changes !== 1) {
+            if (uploadedR2Key && r2Bucket) {
+              await r2Bucket.delete(uploadedR2Key).catch(() => {});
+            }
+            return new Response(JSON.stringify({
+              error: 'ข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง'
+            }), { status: 409, headers: corsHeaders });
+          }
+        } catch (batchErr) {
+          if (uploadedR2Key && r2Bucket) {
+            await r2Bucket.delete(uploadedR2Key).catch(() => {});
+          }
+          console.error('[Room Extension] Atomic batch execution failed:', batchErr);
+          return new Response(JSON.stringify({
+            error: 'เกิดข้อผิดพลาดในการบันทึกข้อมูลต่อเวลาห้อง กรุณาลองใหม่อีกครั้ง'
+          }), { status: 500, headers: corsHeaders });
+        }
+
+        const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(booking.id).first();
+        const { results: updatedItems } = await env.DB.prepare(
+          `SELECT bi.*, r.name as room_name, r.capacity as room_capacity,
+                  s.name as service_name, s.category as service_category
+           FROM booking_items bi
+           LEFT JOIN rooms r ON bi.room_id = r.id
+           LEFT JOIN services s ON bi.service_id = s.id
+           WHERE bi.booking_id = ?`
+        ).bind(booking.id).all();
+        if (updatedBooking) {
+          updatedBooking.items = updatedItems || [];
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          message: `ต่อเวลาห้อง ${room.name} เป็นเวลา ${newEndISO.split('T')[1].substring(0, 5)} น. เรียบร้อยแล้ว`,
+          booking: updatedBooking,
+          booking_id: booking.id,
+          booking_item_id: item.id,
+          room_name: room.name,
+          previous_end_time: item.end_time,
+          new_end_time: newEndISO,
+          duration_minutes: durationMinutes,
+          extension_fee: extensionFee,
+          amount_paid: payAmount,
+          quota_deducted: quotaDeducted,
+          slip_url: slipUrl
+        }), { headers: corsHeaders });
+      }
+
 
       // Cancel booking endpoint (Soft cancel + LINE Notification)
       
@@ -6665,7 +7343,8 @@ export default {
 
         let fileUrl = null;
         try {
-          fileUrl = await saveUploadedFile(env, file_data, 'tax-invoices', { bookingId, uploadedBy: staffName, invoiceNumber: invoice_number });
+          const staffNameForUpload = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+          fileUrl = await saveUploadedFile(env, file_data, 'tax-invoices', { bookingId, uploadedBy: staffNameForUpload, invoiceNumber: invoice_number });
           if (!fileUrl || fileUrl.startsWith('data:')) {
             return new Response(JSON.stringify({ error: 'ไม่สามารถบันทึกเอกสารลง R2 ได้' }), { status: 500, headers: corsHeaders });
           }
@@ -6966,11 +7645,24 @@ export default {
           }), { status: 400, headers: corsHeaders });
         }
 
+        const bufferMins = await getCleaningBufferMinutes(env);
+        const newEndBufferedISO = addMinutesToLocalISO(newEndISO, bufferMins);
+
         const updateItemStmt = env.DB.prepare(
           `UPDATE booking_items
            SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ?
            WHERE id = ? AND booking_id = ? AND start_time = ? AND end_time = ? AND room_id = ?
-             AND (SELECT subtotal_amount FROM bookings WHERE id = ?) = ?`
+             AND (SELECT subtotal_amount FROM bookings WHERE id = ?) = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM booking_items bi
+               JOIN bookings b ON bi.booking_id = b.id
+               WHERE bi.room_id = ?
+                 AND bi.id != ?
+                 AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                 AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+                 AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                      AND ? > bi.start_time)
+             )`
         ).bind(
           targetRoomId,
           newStartISO,
@@ -6986,7 +7678,12 @@ export default {
           currentItem.end_time,
           currentItem.room_id,
           bookingId,
-          booking.subtotal_amount
+          booking.subtotal_amount,
+          targetRoomId,
+          currentItem.id,
+          newStartISO,
+          `+${bufferMins} minutes`,
+          newEndBufferedISO
         );
 
         const updateBookingSql = isPrimaryItem
@@ -7433,6 +8130,7 @@ export default {
               'SELECT * FROM slip_verifications WHERE booking_id = ? ORDER BY id DESC LIMIT 1'
             ).bind(bookingId).first();
             if (slipVerification) {
+              booking.slip_verification_id = slipVerification.id;
               if (!booking.slip_image_url) booking.slip_image_url = slipVerification.slip_image_url;
               if (!booking.slip_trans_ref) booking.slip_trans_ref = slipVerification.trans_ref;
               if (!booking.slip_verify_status) booking.slip_verify_status = slipVerification.verification_status;
@@ -7972,7 +8670,8 @@ export default {
         } catch (_) {}
 
         const createdAtMs = Date.parse(booking.created_at);
-        const isExpiredByTime = Number.isFinite(createdAtMs) && (Date.now() - createdAtMs >= windowMins * 60 * 1000);
+        const isDepositRemaining = (booking.payment_status === 'deposit' || Number(booking.paid_amount || 0) > 0) && Number(booking.balance_amount || 0) > 0;
+        const isExpiredByTime = !isDepositRemaining && Number.isFinite(createdAtMs) && (Date.now() - createdAtMs >= windowMins * 60 * 1000);
 
         if (booking.payment_status === 'paid') {
           return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้ว ไม่สามารถแนบสลิปซ้ำได้' }), { status: 409, headers: corsHeaders });
@@ -7995,86 +8694,98 @@ export default {
 
         const nowIso = new Date().toISOString();
 
-        // ----------------------------------------------------
-        // Client QR is an UNVERIFIED hint, not proof decoded from this image.
-        // Syntax/duplicate checks do not verify payment, amount or recipient.
-        // ----------------------------------------------------
-        const parsedQR = typeof qr_data === 'string' ? parseThaiBankSlipQR(qr_data) : null;
+        // Client QR is an optional metadata hint; image content is verified by POS staff
+        const parsedQR = typeof qr_data === 'string' && qr_data.trim() ? parseThaiBankSlipQR(qr_data) : null;
+        const transRef = parsedQR?.transRef || null;
+        const bankCode = parsedQR?.bankCode || null;
+        const bankName = parsedQR?.bankName || null;
 
-        // 1. REJECT if no QR, invalid QR, unreadable, or Merchant Payment QR
-        if (!qr_data || !parsedQR || !parsedQR.isValidSlipQR || !parsedQR.transRef || parsedQR.isMerchantPaymentQR) {
-          return new Response(JSON.stringify({
-            success: false,
-            auto_approved: false,
-            error: parsedQR?.rejectionReason || 'ไม่สามารถตรวจสอบ QR Code จากสลิปได้ กรุณาอัปโหลดสลิปโอนเงินที่ถูกต้อง'
-          }), { status: 400, headers: corsHeaders });
+        // Anti-fraud checks IF transRef exists
+        if (transRef) {
+          // Prevent customer from re-uploading the same rejected slip for this booking
+          const rejectedOnSameBooking = await env.DB.prepare(
+            "SELECT id FROM slip_verifications WHERE booking_id = ? AND trans_ref = ? AND verification_status = 'rejected' LIMIT 1"
+          ).bind(booking.id, transRef).first();
+
+          if (rejectedOnSameBooking || (booking.payment_status === 'rejected' && booking.slip_trans_ref === transRef)) {
+            return new Response(JSON.stringify({
+              success: false,
+              auto_approved: false,
+              error: 'สลิปนี้เคยถูกปฏิเสธแล้ว กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'
+            }), { status: 400, headers: corsHeaders });
+          }
+
+          // Check duplicate across other bookings (anti-fraud: paid bookings)
+          const duplicate = await env.DB.prepare(
+            "SELECT id, receipt_number FROM bookings WHERE slip_trans_ref = ? AND id != ? AND payment_status = 'paid' LIMIT 1"
+          ).bind(transRef, booking.id).first();
+
+          if (duplicate) {
+            return new Response(JSON.stringify({
+              success: false,
+              auto_approved: false,
+              error: `สลิปนี้เคยถูกนำมาใช้งานในระบบแล้ว (รหัสการจอง: ${duplicate.receipt_number || duplicate.id}) ไม่สามารถใช้ซ้ำได้`
+            }), { status: 400, headers: corsHeaders });
+          }
         }
 
-        // 2. ANTI-FRAUD: Check duplicate slip by transRef
-        // 2A. Prevent customer from re-uploading the same rejected slip for this booking
-        const rejectedOnSameBooking = await env.DB.prepare(
-          "SELECT id FROM slip_verifications WHERE booking_id = ? AND trans_ref = ? AND verification_status = 'rejected' LIMIT 1"
-        ).bind(booking.id, parsedQR.transRef).first();
-
-        if (rejectedOnSameBooking || (booking.payment_status === 'rejected' && booking.slip_trans_ref === parsedQR.transRef)) {
-          return new Response(JSON.stringify({
-            success: false,
-            auto_approved: false,
-            error: 'สลิปนี้เคยถูกปฏิเสธแล้ว กรุณาแนบสลิปใหม่ที่มีการโอนเงินถูกต้อง'
-          }), { status: 400, headers: corsHeaders });
-        }
-
-        // 2B. Check duplicate across other bookings
-        const duplicate = await env.DB.prepare(
-          'SELECT id, receipt_number FROM bookings WHERE slip_trans_ref = ? AND id != ?'
-        ).bind(parsedQR.transRef, booking.id).first();
-
-        if (duplicate) {
-          return new Response(JSON.stringify({
-            success: false,
-            auto_approved: false,
-            error: `สลิปนี้เคยถูกนำมาใช้งานในระบบแล้ว (รหัสการจอง: ${duplicate.receipt_number || duplicate.id}) ไม่สามารถใช้ซ้ำได้`
-          }), { status: 400, headers: corsHeaders });
-        }
-
-        // 3. ENTER MANUAL REVIEW (NEVER auto-approve as paid on Worker without OCR/amount verification)
+        // Save file to private R2 storage with magic bytes & MIME security checks
         if (!env.BUCKET) {
           return new Response(JSON.stringify({ error: 'ระบบจัดเก็บไฟล์ (R2) ไม่พร้อมใช้งาน ไม่สามารถบันทึกสลิปได้' }), { status: 500, headers: corsHeaders });
         }
-        let savedSlipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId: booking.id, uploadedBy: 'customer' });
+
+        let savedSlipUrl;
+        try {
+          savedSlipUrl = await saveUploadedFile(env, slip_image, 'payment-slips', { bookingId: booking.id, uploadedBy: 'customer' });
+        } catch (fileErr) {
+          return new Response(JSON.stringify({
+            success: false,
+            auto_approved: false,
+            error: fileErr.message.includes('corrupted') || fileErr.message.includes('MIME') || fileErr.message.includes('format')
+              ? 'ข้อมูลไฟล์รูปภาพไม่ถูกต้อง (Magic Bytes ไม่ตรงกับ PNG, JPG หรือ WEBP)'
+              : (fileErr.message || 'รูปแบบไฟล์รูปภาพไม่ถูกต้อง')
+          }), { status: 400, headers: corsHeaders });
+        }
+
         // Guard against Cloudflare D1 SQLITE_TOOBIG (1MB limit)
         if (savedSlipUrl && typeof savedSlipUrl === 'string' && savedSlipUrl.length > 700000) {
           savedSlipUrl = savedSlipUrl.substring(0, 650000);
         }
+
+        // Sets payment_status = 'reviewing' for unpaid bookings, or preserves 'deposit' for deposit bookings
+        const targetPaymentStatus = isDepositRemaining ? 'deposit' : 'reviewing';
+
         const updated = await env.DB.prepare(`
           UPDATE bookings
           SET slip_image_url = ?,
-              payment_status = 'reviewing',
+              payment_status = ?,
               slip_trans_ref = ?,
               slip_verified_at = NULL,
               slip_verify_status = 'pending_manual'
           WHERE id = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')
-        `).bind(savedSlipUrl || 'uploaded', parsedQR.transRef, booking.id).run();
+        `).bind(savedSlipUrl || 'uploaded', targetPaymentStatus, transRef || booking.slip_trans_ref || null, booking.id).run();
+
         if (updated.meta?.changes !== 1) {
           return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'สถานะรายการจองเปลี่ยนแล้ว กรุณาตรวจสอบรายการอีกครั้ง' }), { status: 409, headers: corsHeaders });
         }
 
-        // 4. Record in slip_verifications table for audit trail
+        // Record in slip_verifications table for audit trail
         try {
           await env.DB.prepare(`
             INSERT INTO slip_verifications (
               booking_id, trans_ref, bank_code, bank_name, slip_image_url,
               is_auto_approved, confidence_score, raw_qr_data, verification_status,
-              rejection_reason, created_at
-            ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', 'QR จาก client ยังไม่ยืนยันกับภาพ รอเจ้าหน้าที่ตรวจสอบยอดเงินและบัญชีผู้รับ', ?)
+              rejection_reason, created_at, amount
+            ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', NULL, ?, ?)
           `).bind(
             booking.id,
-            parsedQR.transRef,
-            parsedQR.bankCode || '000',
-            parsedQR.bankName || 'ธนาคารพาณิชย์',
+            transRef || null,
+            bankCode || '000',
+            bankName || 'รูปภาพรอเจ้าหน้าที่ตรวจสอบ',
             savedSlipUrl || 'uploaded',
             qr_data || '',
-            nowIso
+            nowIso,
+            isDepositRemaining ? (Number(booking.balance_amount) || 0) : (Number(booking.total_amount) || 0)
           ).run();
         } catch (svErr) {
           return new Response(JSON.stringify({
@@ -8087,13 +8798,11 @@ export default {
         return new Response(JSON.stringify({
           success: true,
           auto_approved: false,
-          status: 'reviewing',
-          qr_verified: false,
-          verification_source: 'client_qr_unverified',
+          status: isDepositRemaining ? 'deposit' : 'reviewing',
           slipUrl: savedSlipUrl,
-          transRef: parsedQR.transRef,
-          bankName: parsedQR.bankName,
-          message: 'ระบบได้รับหลักฐานการโอนเงินแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบยอดเงินก่อนยืนยันการจอง'
+          transRef: transRef || null,
+          bankName: bankName || null,
+          message: 'ส่งหลักฐานการชำระเงินเรียบร้อยแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบ'
         }), { headers: corsHeaders });
       }
 
@@ -8439,18 +9148,53 @@ export default {
         }
 
         const bookingId = insBooking.meta.last_row_id;
+        const bufferMins = await getCleaningBufferMinutes(env);
+        const fullEndBuffered = addMinutesToLocalISO(fullEnd, bufferMins);
 
+        let insItemRes;
         try {
-          await env.DB.prepare(
+          insItemRes = await env.DB.prepare(
             `INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code)
-             VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).bind(bookingId, room_id, subtotal, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode).run();
+             SELECT ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?
+             WHERE NOT EXISTS (
+               SELECT 1 FROM booking_items bi
+               JOIN bookings b ON bi.booking_id = b.id
+               WHERE bi.room_id = ?
+                 AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                 AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+                 AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                      AND ? > bi.start_time)
+             )`
+          ).bind(
+            bookingId, room_id, subtotal, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode,
+            room_id, fullStart, `+${bufferMins} minutes`, fullEndBuffered
+          ).run();
         } catch (itemErr) {
           console.warn('Extended item insert failed, falling back to core item schema:', itemErr);
-          await env.DB.prepare(
+          insItemRes = await env.DB.prepare(
             `INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal)
-             VALUES (?, ?, 1, ?, ?, ?, ?)`
-          ).bind(bookingId, room_id, subtotal, fullStart, fullEnd, subtotal).run();
+             SELECT ?, ?, 1, ?, ?, ?, ?
+             WHERE NOT EXISTS (
+               SELECT 1 FROM booking_items bi
+               JOIN bookings b ON bi.booking_id = b.id
+               WHERE bi.room_id = ?
+                 AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                 AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+                 AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                      AND ? > bi.start_time)
+             )`
+          ).bind(
+            bookingId, room_id, subtotal, fullStart, fullEnd, subtotal,
+            room_id, fullStart, `+${bufferMins} minutes`, fullEndBuffered
+          ).run();
+        }
+
+        if (insItemRes?.meta?.changes !== 1) {
+          await env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId).run();
+          const latestConflict = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
+          return new Response(JSON.stringify({
+            error: formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins })
+          }), { status: 409, headers: corsHeaders });
         }
 
         const bookingCode = `BK-${String(bookingId).padStart(6, '0')}`;
@@ -9384,10 +10128,654 @@ export default {
       }
 
       // ==========================================
-      // CUSTOMER SUPPORT TICKETS & NOTIFICATIONS - DISABLED IN THIS PRODUCTION RELEASE
+      // CUSTOMER SUPPORT TICKETS & NOTIFICATIONS
       // ==========================================
-      if (pathname.startsWith('/api/public/support') || pathname.startsWith('/api/pos/support')) {
-        return new Response(JSON.stringify({ error: 'Support tickets feature is disabled in this release' }), { status: 404, headers: corsHeaders });
+
+      // 1. POST /api/public/support/upload
+      if (pathname === '/api/public/support/upload' && method === 'POST') {
+        const body = await request.json();
+        const base64Data = body.base64Data || body.image;
+        if (!base64Data) {
+          return new Response(JSON.stringify({ error: 'กรุณาส่งข้อมูลรูปภาพ' }), { status: 400, headers: corsHeaders });
+        }
+        const fileUrl = await saveUploadedFile(env, base64Data, 'support');
+        return new Response(JSON.stringify({
+          success: true,
+          file_url: fileUrl,
+          file_name: body.imageName || 'attachment.jpg'
+        }), { headers: corsHeaders });
+      }
+
+      // 2. POST /api/public/support/tickets
+      if (pathname === '/api/public/support/tickets' && method === 'POST') {
+        const body = await request.json();
+        const {
+          category, other_category, subject, description, customer_name, customer_phone,
+          line_user_id, booking_code, priority = 'normal', attachments = []
+        } = body;
+
+        const validCategories = ['booking', 'payment', 'facility', 'general', 'other'];
+        if (!category || !validCategories.includes(category)) {
+          return new Response(JSON.stringify({ error: 'หมวดหมู่ปัญหาไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+        if (category === 'other') {
+          if (!other_category || typeof other_category !== 'string' || !other_category.trim()) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุประเภทปัญหาอื่น ๆ' }), { status: 400, headers: corsHeaders });
+          }
+          if (other_category.trim().length > 100) {
+            return new Response(JSON.stringify({ error: 'ประเภทปัญหาอื่น ๆ ต้องไม่เกิน 100 ตัวอักษร' }), { status: 400, headers: corsHeaders });
+          }
+        }
+        const finalOtherCategory = category === 'other' ? String(other_category).trim() : null;
+
+        if (!subject || !subject.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณากรอกหัวข้อปัญหา' }), { status: 400, headers: corsHeaders });
+        }
+        if (!description || !description.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณากรอกรายละเอียดปัญหา' }), { status: 400, headers: corsHeaders });
+        }
+        if (!customer_name || !customer_name.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุชื่อผู้ติดต่อ' }), { status: 400, headers: corsHeaders });
+        }
+        if (!customer_phone || !customer_phone.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุเบอร์โทรศัพท์' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Process attachments
+        const processedAttachments = [];
+        for (const att of (attachments || []).slice(0, 3)) {
+          let url = att.file_url;
+          if (att.base64Data) {
+            url = await saveUploadedFile(env, att.base64Data, 'support');
+          }
+          if (url) {
+            processedAttachments.push({
+              file_url: url,
+              file_name: att.file_name || 'attachment.jpg',
+              content_type: att.content_type || 'image/jpeg',
+              file_size: att.file_size || null
+            });
+          }
+        }
+
+        let inserted = null;
+        let attempts = 0;
+        const accessToken = generateWorkerTicketToken();
+        while (!inserted && attempts < 5) {
+          attempts++;
+          const ticketNumber = await generateWorkerUniqueTicketNumber(env);
+          try {
+            const insRes = await env.DB.prepare(
+              `INSERT INTO support_tickets
+               (ticket_number, access_token, customer_name, customer_phone, line_user_id, booking_code, category, other_category, subject, description, priority, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEW', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+            ).bind(
+              ticketNumber,
+              accessToken,
+              customer_name.trim(),
+              customer_phone.trim(),
+              line_user_id || null,
+              booking_code ? String(booking_code).trim().toUpperCase() : null,
+              category,
+              finalOtherCategory,
+              subject.trim(),
+              description.trim(),
+              priority
+            ).run();
+
+            const ticketId = insRes.meta?.last_row_id;
+            inserted = { id: ticketId, ticket_number: ticketNumber };
+          } catch (insErr) {
+            if (insErr.message && insErr.message.includes('UNIQUE')) continue;
+            throw insErr;
+          }
+        }
+
+        if (!inserted) {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถสร้าง Ticket ได้ กรุณาลองใหม่' }), { status: 500, headers: corsHeaders });
+        }
+
+        // Insert initial message
+        const msgRes = await env.DB.prepare(
+          `INSERT INTO support_ticket_messages
+           (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)
+           VALUES (?, 'customer', ?, ?, ?, 'public', CURRENT_TIMESTAMP)`
+        ).bind(
+          inserted.id,
+          customer_name.trim(),
+          line_user_id || customer_phone.trim(),
+          description.trim()
+        ).run();
+        const msgId = msgRes.meta?.last_row_id;
+
+        // Insert attachments
+        for (const att of processedAttachments) {
+          await env.DB.prepare(
+            `INSERT INTO support_ticket_attachments
+             (ticket_id, message_id, file_url, file_name, content_type, file_size, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+          ).bind(inserted.id, msgId, att.file_url, att.file_name, att.content_type, att.file_size).run();
+        }
+
+        // Record event
+        await recordWorkerTicketEvent(env, {
+          ticketId: inserted.id,
+          actorType: 'customer',
+          actorId: line_user_id || customer_phone,
+          actorName: customer_name,
+          eventType: 'CREATED',
+          newValue: 'NEW',
+          notes: `เปิด Ticket: ${subject.trim()}`
+        });
+
+        return new Response(JSON.stringify({
+          success: true,
+          ticket_id: inserted.id,
+          ticket_number: inserted.ticket_number,
+          access_token: accessToken,
+          status: 'NEW',
+          category,
+          other_category: finalOtherCategory,
+          subject: subject.trim()
+        }), { status: 201, headers: corsHeaders });
+      }
+
+      // 3. GET /api/public/support/tickets (List customer tickets with server auth)
+      if (pathname === '/api/public/support/tickets' && method === 'GET') {
+        const auth = await extractWorkerCustomerAuth(request, url, env);
+
+        if (!auth.lineUserId && !auth.bookingToken && (!auth.ticketTokens || auth.ticketTokens.length === 0)) {
+          return new Response(JSON.stringify({
+            error: 'กรุณายืนยันตัวตนด้วย LINE หรือ Ticket Token เพื่อดูประวัติการแจ้งปัญหา'
+          }), { status: 401, headers: corsHeaders });
+        }
+
+        const conditions = [];
+        const params = [];
+
+        if (auth.lineUserId) {
+          conditions.push('t.line_user_id = ?');
+          params.push(auth.lineUserId);
+        }
+        if (auth.ticketTokens.length > 0) {
+          const placeholders = auth.ticketTokens.map(() => '?').join(', ');
+          conditions.push(`t.access_token IN (${placeholders})`);
+          params.push(...auth.ticketTokens);
+        }
+        if (auth.bookingToken) {
+          conditions.push('t.booking_id IN (SELECT id FROM bookings WHERE qr_token = ?)');
+          params.push(auth.bookingToken);
+        }
+
+        const sql = `
+          SELECT t.id, t.ticket_number, t.category, t.other_category, t.subject, t.description,
+                 t.status, t.priority, t.booking_code, t.created_at, t.updated_at,
+            (SELECT COUNT(*) FROM support_ticket_messages WHERE ticket_id = t.id AND visibility = 'public') AS message_count,
+            (SELECT COUNT(*) FROM support_ticket_attachments a JOIN support_ticket_messages m ON a.message_id = m.id WHERE a.ticket_id = t.id AND m.visibility = 'public') AS attachment_count
+          FROM support_tickets t
+          WHERE ${conditions.join(' OR ')}
+          ORDER BY t.created_at DESC LIMIT 50
+        `;
+        const { results: tickets } = await env.DB.prepare(sql).bind(...params).all();
+        return new Response(JSON.stringify({ success: true, tickets: tickets || [] }), { headers: corsHeaders });
+      }
+
+      // 4. Customer Ticket Detail & Messages (Server-authoritative ownership check)
+      const publicTicketDetailMatch = pathname.match(/^\/api\/public\/support\/tickets\/([A-Za-z0-9\-]+)$/);
+      if (publicTicketDetailMatch && method === 'GET') {
+        const ticketNumber = publicTicketDetailMatch[1];
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE ticket_number = ?").bind(ticketNumber).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const auth = await extractWorkerCustomerAuth(request, url, env);
+        const isOwner = await verifyWorkerTicketOwnership(env, ticket, auth);
+        if (!isOwner) {
+          const hasAnyAuth = Boolean(auth.ticketToken || auth.lineUserId || auth.bookingToken);
+          return new Response(JSON.stringify({
+            error: hasAnyAuth ? 'ท่านไม่มีสิทธิ์เข้าถึง Ticket นี้' : 'กรุณาระบุสิทธิ์การเข้าถึง Ticket'
+          }), { status: hasAnyAuth ? 403 : 401, headers: corsHeaders });
+        }
+
+        // Strip access_token from response
+        const { access_token, ...safeTicket } = ticket;
+
+        const { results: messages } = await env.DB.prepare(
+          "SELECT * FROM support_ticket_messages WHERE ticket_id = ? AND visibility = 'public' ORDER BY created_at ASC"
+        ).bind(ticket.id).all();
+
+        const { results: attachments } = await env.DB.prepare(
+          "SELECT a.* FROM support_ticket_attachments a JOIN support_ticket_messages m ON a.message_id = m.id WHERE a.ticket_id = ? AND m.visibility = 'public' ORDER BY a.created_at ASC"
+        ).bind(ticket.id).all();
+
+        const attachMap = {};
+        (attachments || []).forEach(a => {
+          if (!attachMap[a.message_id]) attachMap[a.message_id] = [];
+          attachMap[a.message_id].push(a);
+        });
+
+        const enrichedMessages = (messages || []).map(m => ({
+          ...m,
+          attachments: attachMap[m.id] || []
+        }));
+
+        return new Response(JSON.stringify({ success: true, ticket: safeTicket, messages: enrichedMessages }), { headers: corsHeaders });
+      }
+
+      // 4b. GET /api/public/support/tickets/:ticketNumber/attachments/:attachmentId
+      const publicAttachmentMatch = pathname.match(/^\/api\/public\/support\/tickets\/([A-Za-z0-9\-]+)\/attachments\/([0-9]+)$/);
+      if (publicAttachmentMatch && method === 'GET') {
+        const ticketNumber = publicAttachmentMatch[1];
+        const attachmentId = parseInt(publicAttachmentMatch[2], 10);
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE ticket_number = ?").bind(ticketNumber).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const auth = await extractWorkerCustomerAuth(request, url, env);
+        const isOwner = await verifyWorkerTicketOwnership(env, ticket, auth);
+        if (!isOwner) {
+          const hasAnyAuth = Boolean(auth.ticketToken || auth.lineUserId || auth.bookingToken);
+          return new Response(JSON.stringify({
+            error: hasAnyAuth ? 'ท่านไม่มีสิทธิ์เข้าถึงไฟล์แนบนี้' : 'กรุณาระบุสิทธิ์การเข้าถึงไฟล์แนบ'
+          }), { status: hasAnyAuth ? 403 : 401, headers: corsHeaders });
+        }
+
+        const attachment = await env.DB.prepare(
+          "SELECT a.*, m.visibility FROM support_ticket_attachments a JOIN support_ticket_messages m ON a.message_id = m.id WHERE a.ticket_id = ? AND a.id = ?"
+        ).bind(ticket.id, attachmentId).first();
+
+        if (!attachment) {
+          return new Response(JSON.stringify({ error: 'ไม่พบไฟล์แนบนี้' }), { status: 404, headers: corsHeaders });
+        }
+
+        if (attachment.visibility === 'internal') {
+          return new Response(JSON.stringify({ error: 'ท่านไม่มีสิทธิ์เข้าถึงไฟล์แนบนี้' }), { status: 403, headers: corsHeaders });
+        }
+
+        return new Response(JSON.stringify({ success: true, attachment }), { headers: corsHeaders });
+      }
+
+      // 4c. Customer Ticket Reply with ownership verification
+      const publicTicketReplyMatch = pathname.match(/^\/api\/public\/support\/tickets\/([A-Za-z0-9\-]+)\/messages$/);
+      if (publicTicketReplyMatch && method === 'POST') {
+        const ticketNumber = publicTicketReplyMatch[1];
+        const body = await request.json();
+        const { message, sender_name, sender_phone, line_user_id, attachments = [] } = body;
+        if (!message || !message.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณากรอกข้อความ' }), { status: 400, headers: corsHeaders });
+        }
+
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE ticket_number = ?").bind(ticketNumber).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const auth = await extractWorkerCustomerAuth(request, url, env);
+        const isOwner = await verifyWorkerTicketOwnership(env, ticket, auth);
+        if (!isOwner) {
+          const hasAnyAuth = Boolean(auth.ticketToken || auth.lineUserId || auth.bookingToken);
+          return new Response(JSON.stringify({
+            error: hasAnyAuth ? 'ท่านไม่มีสิทธิ์ตอบกลับ Ticket นี้' : 'กรุณาระบุสิทธิ์การเข้าถึง Ticket'
+          }), { status: hasAnyAuth ? 403 : 401, headers: corsHeaders });
+        }
+
+        const senderName = sender_name || ticket.customer_name || 'ลูกค้า';
+        const senderId = auth.lineUserId || line_user_id || sender_phone || ticket.customer_phone;
+
+        const msgRes = await env.DB.prepare(
+          `INSERT INTO support_ticket_messages (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)
+           VALUES (?, 'customer', ?, ?, ?, 'public', CURRENT_TIMESTAMP)`
+        ).bind(ticket.id, senderName, senderId, message.trim()).run();
+        const msgId = msgRes.meta?.last_row_id;
+
+        // Process attachments
+        for (const att of (attachments || []).slice(0, 3)) {
+          let url = att.file_url;
+          if (att.base64Data) {
+            url = await saveUploadedFile(env, att.base64Data, 'support');
+          }
+          if (url) {
+            await env.DB.prepare(
+              `INSERT INTO support_ticket_attachments (ticket_id, message_id, file_url, file_name, content_type, file_size, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+            ).bind(ticket.id, msgId, url, att.file_name || 'attachment.jpg', att.content_type || 'image/jpeg', att.file_size || null).run();
+          }
+        }
+
+        // Reopen if closed/resolved
+        let newStatus = ticket.status;
+        if (['RESOLVED', 'CLOSED'].includes(ticket.status)) {
+          newStatus = 'REOPENED';
+          await env.DB.prepare("UPDATE support_tickets SET status = 'REOPENED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ticket.id).run();
+          await recordWorkerTicketEvent(env, {
+            ticketId: ticket.id,
+            actorType: 'customer',
+            actorId: senderId,
+            actorName: senderName,
+            eventType: 'STATUS_CHANGE',
+            oldValue: ticket.status,
+            newValue: 'REOPENED',
+            notes: 'ลูกค้าตอบกลับทำให้เปิด Ticket ใหม่อัตโนมัติ'
+          });
+        } else {
+          await env.DB.prepare("UPDATE support_tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ticket.id).run();
+        }
+
+        return new Response(JSON.stringify({ success: true, message_id: msgId, ticket_status: newStatus }), { status: 201, headers: corsHeaders });
+      }
+
+      // 5. POS Staff Notifications Count
+      if (pathname.startsWith('/api/pos/support')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        const user = auth.user;
+        const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+        const perms = (user?.permissions || '').split(',').map(p => p.trim());
+        if (!isAdmin && !perms.some(p => ['tickets', 'admin-management'].includes(p))) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงระบบแจ้งปัญหา' }), { status: 403, headers: corsHeaders });
+        }
+      }
+
+      if (pathname === '/api/pos/support/notifications/count' && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const newRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM support_tickets WHERE status = 'NEW'").first();
+        const openRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM support_tickets WHERE status IN ('NEW', 'ACKNOWLEDGED', 'IN_PROGRESS', 'REOPENED')").first();
+        const unreadRow = await env.DB.prepare(
+          `SELECT COUNT(DISTINCT t.id) AS count
+           FROM support_tickets t
+           JOIN support_ticket_messages m ON t.id = m.ticket_id
+           LEFT JOIN support_ticket_reads r ON t.id = r.ticket_id AND r.staff_username = ?
+           WHERE t.status NOT IN ('CLOSED')
+             AND m.created_at > COALESCE(r.last_read_at, '1970-01-01')
+             AND (m.sender_type = 'customer' OR m.verified_sender_id != ?)`
+        ).bind(auth.user?.username || 'system', auth.user?.username || 'system').first();
+
+        return new Response(JSON.stringify({
+          success: true,
+          newTicketsCount: newRow?.count || 0,
+          openTicketsCount: openRow?.count || 0,
+          unreadCount: unreadRow?.count || 0
+        }), { headers: corsHeaders });
+      }
+
+      // 6. POS Staff Tickets List
+      if (pathname === '/api/pos/support/tickets' && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const statusParam = url.searchParams.get('status');
+        const categoryParam = url.searchParams.get('category');
+        const priorityParam = url.searchParams.get('priority');
+        const assignedParam = url.searchParams.get('assigned_to');
+        const qParam = url.searchParams.get('q');
+        const limitParam = parseInt(url.searchParams.get('limit') || '50', 10);
+        const offsetParam = parseInt(url.searchParams.get('offset') || '0', 10);
+
+        const conditions = [];
+        const params = [];
+        if (statusParam && statusParam !== 'ALL') {
+          conditions.push('t.status = ?');
+          params.push(statusParam);
+        }
+        if (categoryParam && categoryParam !== 'ALL') {
+          conditions.push('t.category = ?');
+          params.push(categoryParam);
+        }
+        if (priorityParam && priorityParam !== 'ALL') {
+          conditions.push('t.priority = ?');
+          params.push(priorityParam);
+        }
+        if (assignedParam && assignedParam !== 'ALL') {
+          conditions.push('t.assigned_to = ?');
+          params.push(assignedParam);
+        }
+        if (qParam && qParam.trim()) {
+          const search = `%${qParam.trim()}%`;
+          const cleanDigits = qParam.replace(/[^0-9]/g, '');
+          const phoneSearch = cleanDigits.length >= 4 ? `%${cleanDigits}%` : search;
+          conditions.push(
+            '(t.ticket_number LIKE ? OR t.customer_name LIKE ? OR t.customer_phone LIKE ? OR REPLACE(REPLACE(t.customer_phone, "-", ""), " ", "") LIKE ? OR t.booking_code LIKE ? OR t.subject LIKE ?)'
+          );
+          params.push(search, search, search, phoneSearch, search, search);
+        }
+
+        const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+        const countRow = await env.DB.prepare(`SELECT COUNT(*) AS total FROM support_tickets t ${whereClause}`).bind(...params).first();
+        const total = countRow?.total || 0;
+
+        const sql = `
+          SELECT t.*,
+            r.name as room_name,
+            (SELECT COUNT(*) FROM support_ticket_messages WHERE ticket_id = t.id) AS message_count,
+            (SELECT COUNT(*) FROM support_ticket_attachments WHERE ticket_id = t.id) AS attachment_count,
+            (SELECT MAX(created_at) FROM support_ticket_messages WHERE ticket_id = t.id) AS last_message_at,
+            COALESCE(
+              (SELECT last_read_at FROM support_ticket_reads WHERE ticket_id = t.id AND staff_username = ?),
+              '1970-01-01'
+            ) AS staff_last_read_at
+          FROM support_tickets t
+          LEFT JOIN rooms r ON t.room_id = r.id
+          ${whereClause}
+          ORDER BY
+            CASE t.priority
+              WHEN 'urgent' THEN 1
+              WHEN 'high' THEN 2
+              WHEN 'normal' THEN 3
+              WHEN 'low' THEN 4
+              ELSE 5
+            END ASC,
+            t.updated_at DESC
+          LIMIT ? OFFSET ?
+        `;
+        const { results: tickets } = await env.DB.prepare(sql).bind(auth.user?.username || 'system', ...params, limitParam, offsetParam).all();
+        const enriched = (tickets || []).map(r => ({
+          ...r,
+          is_unread_for_staff: r.last_message_at ? (r.last_message_at > r.staff_last_read_at) : false
+        }));
+
+        return new Response(JSON.stringify({ success: true, tickets: enriched, total, limit: limitParam, offset: offsetParam }), { headers: corsHeaders });
+      }
+
+      // 7. POS Staff Ticket Detail
+      const staffTicketDetailMatch = pathname.match(/^\/api\/pos\/support\/tickets\/(\d+)$/);
+      if (staffTicketDetailMatch && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const ticketId = parseInt(staffTicketDetailMatch[1], 10);
+        const ticket = await env.DB.prepare(
+          `SELECT t.*, r.name as room_name,
+            b.payment_status as booking_payment_status,
+            b.checkin_status as booking_checkin_status,
+            (SELECT MIN(start_time) FROM booking_items WHERE booking_id = b.id) AS start_time,
+            (SELECT MAX(end_time) FROM booking_items WHERE booking_id = b.id) AS end_time
+           FROM support_tickets t
+           LEFT JOIN rooms r ON t.room_id = r.id
+           LEFT JOIN bookings b ON t.booking_id = b.id
+           WHERE t.id = ?`
+        ).bind(ticketId).first();
+
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const { results: messages } = await env.DB.prepare("SELECT * FROM support_ticket_messages WHERE ticket_id = ? ORDER BY created_at ASC").bind(ticketId).all();
+        const { results: attachments } = await env.DB.prepare("SELECT * FROM support_ticket_attachments WHERE ticket_id = ? ORDER BY created_at ASC").bind(ticketId).all();
+        const { results: events } = await env.DB.prepare("SELECT * FROM support_ticket_events WHERE ticket_id = ? ORDER BY created_at DESC").bind(ticketId).all();
+
+        const attachMap = {};
+        (attachments || []).forEach(a => {
+          if (!attachMap[a.message_id]) attachMap[a.message_id] = [];
+          attachMap[a.message_id].push(a);
+        });
+
+        const enrichedMessages = (messages || []).map(m => ({
+          ...m,
+          attachments: attachMap[m.id] || []
+        }));
+
+        // Mark read
+        if (auth.user?.username) {
+          await env.DB.prepare(
+            `INSERT INTO support_ticket_reads (ticket_id, staff_username, last_read_at)
+             VALUES (?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(ticket_id, staff_username) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`
+          ).bind(ticketId, auth.user.username).run().catch(() => {});
+        }
+
+        return new Response(JSON.stringify({ success: true, ticket, messages: enrichedMessages, attachments: attachments || [], events: events || [] }), { headers: corsHeaders });
+      }
+
+      // 8. POS Staff Update Ticket (Status, Priority, Assignee)
+      if (staffTicketDetailMatch && method === 'PATCH') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const ticketId = parseInt(staffTicketDetailMatch[1], 10);
+        const body = await request.json();
+        const { status, priority, assigned_to, notes } = body;
+
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE id = ?").bind(ticketId).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const updates = [];
+        const params = [];
+        const staffUser = auth.user;
+
+        if (status && status !== ticket.status) {
+          updates.push('status = ?');
+          params.push(status);
+          if (status === 'RESOLVED') updates.push('resolved_at = CURRENT_TIMESTAMP');
+          else if (status === 'CLOSED') updates.push('closed_at = CURRENT_TIMESTAMP');
+
+          await recordWorkerTicketEvent(env, {
+            ticketId,
+            actorType: 'staff',
+            actorId: staffUser.username,
+            actorName: staffUser.fullname || staffUser.username,
+            eventType: 'STATUS_CHANGE',
+            oldValue: ticket.status,
+            newValue: status,
+            notes: notes || `เปลี่ยนสถานะเป็น ${status}`
+          });
+        }
+
+        if (priority && priority !== ticket.priority) {
+          updates.push('priority = ?');
+          params.push(priority);
+          await recordWorkerTicketEvent(env, {
+            ticketId,
+            actorType: 'staff',
+            actorId: staffUser.username,
+            actorName: staffUser.fullname || staffUser.username,
+            eventType: 'PRIORITY_CHANGE',
+            oldValue: ticket.priority,
+            newValue: priority,
+            notes: `เปลี่ยนระดับความสำคัญเป็น ${priority}`
+          });
+        }
+
+        if (assigned_to !== undefined && assigned_to !== ticket.assigned_to) {
+          updates.push('assigned_to = ?');
+          params.push(assigned_to || null);
+          await recordWorkerTicketEvent(env, {
+            ticketId,
+            actorType: 'staff',
+            actorId: staffUser.username,
+            actorName: staffUser.fullname || staffUser.username,
+            eventType: 'ASSIGN_STAFF',
+            oldValue: ticket.assigned_to,
+            newValue: assigned_to || 'unassigned',
+            notes: assigned_to ? `มอบหมายงานให้ ${assigned_to}` : 'ยกเลิกการมอบหมาย'
+          });
+        }
+
+        if (notes && notes.trim()) {
+          await env.DB.prepare(
+            `INSERT INTO support_ticket_messages (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)
+             VALUES (?, 'staff', ?, ?, ?, 'internal', CURRENT_TIMESTAMP)`
+          ).bind(ticketId, staffUser.fullname || staffUser.username, staffUser.username, notes.trim()).run();
+        }
+
+        if (updates.length > 0) {
+          updates.push('updated_at = CURRENT_TIMESTAMP');
+          params.push(ticketId);
+          await env.DB.prepare(`UPDATE support_tickets SET ${updates.join(', ')} WHERE id = ?`).bind(...params).run();
+        }
+
+        const updated = await env.DB.prepare("SELECT * FROM support_tickets WHERE id = ?").bind(ticketId).first();
+        return new Response(JSON.stringify({ success: true, ticket: updated }), { headers: corsHeaders });
+      }
+
+      // 9. POS Staff Reply or Note
+      const staffTicketMsgMatch = pathname.match(/^\/api\/pos\/support\/tickets\/(\d+)\/messages$/);
+      if (staffTicketMsgMatch && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const ticketId = parseInt(staffTicketMsgMatch[1], 10);
+        const body = await request.json();
+        const { message, visibility = 'public', attachments = [] } = body;
+        if (!message || !message.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณากรอกข้อความ' }), { status: 400, headers: corsHeaders });
+        }
+
+        const ticket = await env.DB.prepare("SELECT * FROM support_tickets WHERE id = ?").bind(ticketId).first();
+        if (!ticket) {
+          return new Response(JSON.stringify({ error: 'ไม่พบ Ticket' }), { status: 404, headers: corsHeaders });
+        }
+
+        const staffUser = auth.user;
+        const staffName = staffUser.fullname || staffUser.username || 'เจ้าหน้าที่';
+
+        const msgRes = await env.DB.prepare(
+          `INSERT INTO support_ticket_messages (ticket_id, sender_type, sender_name, verified_sender_id, message, visibility, created_at)
+           VALUES (?, 'staff', ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+        ).bind(ticketId, staffName, staffUser.username, message.trim(), visibility).run();
+        const msgId = msgRes.meta?.last_row_id;
+
+        for (const att of (attachments || []).slice(0, 3)) {
+          let url = att.file_url;
+          if (att.base64Data) {
+            url = await saveUploadedFile(env, att.base64Data, 'support');
+          }
+          if (url) {
+            await env.DB.prepare(
+              `INSERT INTO support_ticket_attachments (ticket_id, message_id, file_url, file_name, content_type, file_size, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+            ).bind(ticketId, msgId, url, att.file_name || 'attachment.jpg', att.content_type || 'image/jpeg', att.file_size || null).run();
+          }
+        }
+
+        if (visibility === 'public' && ticket.status === 'NEW') {
+          await env.DB.prepare("UPDATE support_tickets SET status = 'IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ticketId).run();
+        } else {
+          await env.DB.prepare("UPDATE support_tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(ticketId).run();
+        }
+
+        return new Response(JSON.stringify({ success: true, message_id: msgId, visibility }), { status: 201, headers: corsHeaders });
+      }
+
+      // 10. POS Staff Mark Read
+      const staffTicketReadMatch = pathname.match(/^\/api\/pos\/support\/tickets\/(\d+)\/read$/);
+      if (staffTicketReadMatch && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const ticketId = parseInt(staffTicketReadMatch[1], 10);
+        await env.DB.prepare(
+          `INSERT INTO support_ticket_reads (ticket_id, staff_username, last_read_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(ticket_id, staff_username) DO UPDATE SET last_read_at = CURRENT_TIMESTAMP`
+        ).bind(ticketId, auth.user.username).run().catch(() => {});
+
+        return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
       }
 
       // LINE Webhook Endpoint
@@ -9550,7 +10938,8 @@ const BACKUP_TABLES = [
   'customers', 'departments', 'settings', 'bookings',
   'booking_items', 'quotations', 'quotation_items',
   'payment_transactions', 'timeline_notes', 'booking_history',
-  'cash_shifts', 'cash_drawer_logs'
+  'cash_shifts', 'cash_drawer_logs',
+  'support_tickets', 'support_ticket_messages', 'support_ticket_attachments', 'support_ticket_events', 'support_ticket_reads'
 ];
 
 async function generateD1DumpSql(env) {

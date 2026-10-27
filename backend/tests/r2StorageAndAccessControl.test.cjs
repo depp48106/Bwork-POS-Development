@@ -1,18 +1,20 @@
 /**
- * BWORK-POS | R2 STORAGE & ACCESS CONTROL TEST SUITE
- * 
- * Tests:
- * 1. Upload: Booking slip, Walk-in slip, Historical slip, Slip replacement, Tax invoice PDF/Image
- * 2. Retrieval: Preview inline vs Download attachment, Booking history retrieval, Audit preservation
- * 3. Access Control: Admin PASS, Staff PASS, Customer PASS (qr_token, verified LINE ID token),
- *    IDOR 403 FAIL, Unauthenticated 401 FAIL, Traversal 400 FAIL,
- *    Task 8 Hardening: Self-asserted contact/line_user_id BLOCKED
- * 4. Failure Cases: Missing bucket 500, Magic bytes mismatch 400, Corrupted data 400, Orphan file cleanup
- * 5. Financial Safety: Total/Paid/Balance unchanged during slip replacement
- * 6. Ticket Exclusion: 404 on all support ticket endpoints
+ *BWORK-POS | R2 STORAGE & ACCESS CONTROL TEST SUITE
+ *
+ *Tests:
+ *1. Upload: Booking slip, Walk-in slip, Historical slip, Slip replacement, Tax invoice PDF/Image
+ *2. Retrieval: Preview inline vs Download attachment, Booking history retrieval, Audit preservation
+ *3. Access Control: Admin PASS, Staff PASS, Customer PASS (qr_token, verified LINE ID token),
+ *   IDOR 403 FAIL, Unauthenticated 401 FAIL, Traversal 400 FAIL,
+ *   Task 8 Hardening: Self-asserted contact/line_user_id BLOCKED
+ *4. Failure Cases: Missing bucket 500, Magic bytes mismatch 400, Corrupted data 400, Orphan file cleanup
+ *5. Financial Safety: Total/Paid/Balance unchanged during slip replacement
+ *6. Ticket Exclusion: 404 on all support ticket endpoints
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 const crypto = require('crypto');
 
@@ -620,17 +622,17 @@ async function runTests() {
     assert.strictEqual(cleanedUp, null, 'Orphan file must be cleaned up from R2');
   });
 
-  console.log('\n--- 6. SUPPORT TICKETS EXCLUSION TESTS ---');
+  console.log('\n--- 6. MIGRATION D1 RELEASE & DEV INTEGRITY TESTS ---');
 
-  test('Support ticket endpoints in worker.js are disabled (404)', () => {
-    const workerCode = require('fs').readFileSync('D:/Project BL/Bwork-POS/backend/worker.js', 'utf8');
-    assert(workerCode.includes("pathname.startsWith('/api/public/support')"), 'Support public route disabled guard missing');
-    assert(workerCode.includes("pathname.startsWith('/api/pos/support')"), 'Support POS route disabled guard missing');
-    assert(workerCode.includes("'Support tickets feature is disabled in this release'"), 'Disabled response missing');
+  test('Support ticket endpoints in worker.js are preserved in development', () => {
+    const workerCode = fs.readFileSync(path.join(__dirname, '..', 'worker.js'), 'utf8');
+    assert(workerCode.includes("pathname === '/api/public/support/tickets'"), 'Support public route should be preserved in development');
+    assert(workerCode.includes("pathname === '/api/pos/support/notifications/count'"), 'Support POS route should be preserved in development');
+
   });
 
   test('Zero ticket tables created in migrations_d1_release.sql', () => {
-    const sql = require('fs').readFileSync('D:/Project BL/Bwork-POS/backend/migrations_d1_release.sql', 'utf8');
+    const sql = fs.readFileSync(path.join(__dirname, '..', 'migrations_d1_release.sql'), 'utf8');
     assert(!sql.includes('CREATE TABLE support_tickets'), 'support_tickets must not exist in D1 release SQL');
     assert(!sql.includes('CREATE TABLE ticket_messages'), 'ticket_messages must not exist in D1 release SQL');
     assert(!sql.includes('CREATE TABLE ticket_attachments'), 'ticket_attachments must not exist in D1 release SQL');
