@@ -108,7 +108,7 @@ export default function ConfirmPage() {
 
   // Dynamic Countdown Timer based on paymentDeadline as Source of Truth
   useEffect(() => {
-    if (!booking || uploadSuccess || booking.payment_status === 'paid') return;
+    if (!booking || uploadSuccess || booking.payment_status === 'paid' || isDeposit) return;
 
     if (booking.payment_status === 'cancelled') {
       setIsExpired(true);
@@ -537,6 +537,8 @@ export default function ConfirmPage() {
   };
 
   const totalAmt = booking ? parseFloat(booking.total_amount || 0) : 0;
+  const isDeposit = Boolean((booking?.payment_status === 'deposit' || Number(booking?.paid_amount || 0) > 0) && Number(booking?.balance_amount || 0) > 0);
+  const payableAmt = isDeposit ? parseFloat(booking.balance_amount || 0) : totalAmt;
   const qrImageSrc = paymentSettings.qr_image || '/bwork_payment_qr.png';
 
   const isPaidOrAutoApproved = Boolean(booking?.payment_status === 'paid');
@@ -901,10 +903,17 @@ export default function ConfirmPage() {
             </div>
 
             <div style={{ textAlign: 'right', flexShrink: 0 }}>
-              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>ยอดชำระทั้งสิ้น</div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--primary)' }}>
-                ฿{Number(totalAmt).toLocaleString()}
+              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                {isDeposit ? 'ยอดคงเหลือที่ต้องชำระ' : 'ยอดชำระทั้งสิ้น'}
               </div>
+              <div style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--primary)' }}>
+                ฿{Number(payableAmt).toLocaleString()}
+              </div>
+              {isDeposit && (
+                <div style={{ fontSize: '0.72rem', color: '#16a34a', marginTop: '2px' }}>
+                  (ชำระมัดจำแล้ว ฿{Number(booking.paid_amount || 0).toLocaleString()})
+                </div>
+              )}
             </div>
           </div>
 
@@ -1117,10 +1126,17 @@ export default function ConfirmPage() {
 
               {/* Amount to pay */}
               <div style={{ marginTop: '16px', textAlign: 'center' }}>
-                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>ยอดเงินที่ต้องชำระ</div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'var(--primary)', lineHeight: 1.2 }}>
-                  ฿{Number(totalAmt).toLocaleString()}
+                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                  {isDeposit ? 'ยอดเงินคงเหลือที่ต้องชำระ' : 'ยอดเงินที่ต้องชำระ'}
                 </div>
+                <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'var(--primary)', lineHeight: 1.2 }}>
+                  ฿{Number(payableAmt).toLocaleString()}
+                </div>
+                {isDeposit && (
+                  <div style={{ fontSize: '0.74rem', color: '#16a34a', marginTop: '2px', fontWeight: 600 }}>
+                    (ชำระมัดจำแล้ว ฿{Number(booking.paid_amount || 0).toLocaleString()} / ยอดรวม ฿{Number(totalAmt).toLocaleString()})
+                  </div>
+                )}
                 <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
                   รองรับ PromptPay ทุกธนาคาร / บัตรเครดิต (VISA, Mastercard)
                 </div>

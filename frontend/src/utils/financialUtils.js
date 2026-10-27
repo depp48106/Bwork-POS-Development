@@ -270,7 +270,7 @@ export function normalizeBookingFinancials(booking = {}) {
   const isFailed = status === 'failed';
   const isPaid = status === 'paid';
   const isDeposit = status === 'deposit';
-  const isReviewing = status === 'reviewing' || (!!booking.slip_image_url && !isPaid && !isCancelled);
+  const isReviewing = status === 'reviewing' || booking.slip_verify_status === 'pending_manual' || (!!booking.slip_image_url && !isPaid && !isCancelled && booking.slip_verify_status !== 'rejected' && booking.slip_verify_status !== 'approved_manual' && booking.slip_verify_status !== 'auto_approved' && booking.slip_verify_status !== 'approved');
   const isRejected = status === 'rejected' || booking.slip_verify_status === 'rejected';
   const isPending = !isPaid && !isCancelled && !isDeposit && !isReviewing && !isRejected;
 

@@ -206,11 +206,13 @@ app.use('/uploads', async (req, res, next) => {
            WHERE slip_image_url IN (?, ?, ?, ?)
               OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url IN (?, ?, ?, ?))
               OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url IN (?, ?, ?, ?))
+              OR id IN (SELECT booking_id FROM slip_verifications WHERE slip_image_url IN (?, ?, ?, ?))
            LIMIT 1`,
           [
-            exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
-            exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
-            exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3]
+            ...exactCandidates,
+            ...exactCandidates,
+            ...exactCandidates,
+            ...exactCandidates
           ]
         );
       }
@@ -2706,21 +2708,45 @@ app.post('/api/bookings/:id/reject-slip', authenticateToken, async (req, res) =>
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
     }
 
-    // Precondition: current payment_status must be 'reviewing' only
-    if (booking.payment_status !== 'reviewing') {
+    // Precondition: must be currently in review ('reviewing' OR slip_verify_status === 'pending_manual')
+    const isPendingReview = booking.payment_status === 'reviewing' || booking.slip_verify_status === 'pending_manual';
+    if (!isPendingReview || booking.payment_status === 'paid' || booking.payment_status === 'cancelled') {
       return res.status(409).json({
         error: `ไม่สามารถปฏิเสธสลิปได้เนื่องจากรายการจองอยู่ในสถานะ '${booking.payment_status}' (อนุญาตเฉพาะสถานะรอตรวจสอบ 'reviewing' เท่านั้น)`
       });
     }
 
-    // Atomic conditional update
-    const updateResult = await dbQuery.run(
-      `UPDATE bookings
-       SET payment_status = 'rejected',
-           slip_verify_status = 'rejected'
-       WHERE id = ? AND payment_status = 'reviewing'`,
-      [id]
-    );
+    const hasDeposit = (booking.payment_status === 'deposit' || Number(booking.paid_amount || 0) > 0);
+    let updateResult;
+
+    if (hasDeposit) {
+      // Find previous completed deposit transaction's slip_url if available
+      const prevTx = await dbQuery.get(
+        `SELECT slip_url FROM payment_transactions
+         WHERE booking_id = ? AND status = 'completed' AND slip_url IS NOT NULL
+         ORDER BY id DESC LIMIT 1`,
+        [id]
+      );
+      const prevDepositSlipUrl = prevTx?.slip_url || null;
+
+      // Keep deposit payment_status, mark slip as rejected, revert slip_image_url to deposit slip if available
+      updateResult = await dbQuery.run(
+        `UPDATE bookings
+         SET slip_verify_status = 'rejected',
+             slip_image_url = COALESCE(?, slip_image_url)
+         WHERE id = ? AND (payment_status = 'deposit' OR slip_verify_status = 'pending_manual')`,
+        [prevDepositSlipUrl, id]
+      );
+    } else {
+      // Atomic conditional update for unpaid booking
+      updateResult = await dbQuery.run(
+        `UPDATE bookings
+         SET payment_status = 'rejected',
+             slip_verify_status = 'rejected'
+         WHERE id = ? AND payment_status = 'reviewing'`,
+        [id]
+      );
+    }
 
     if (!updateResult || updateResult.changes !== 1) {
       return res.status(409).json({ error: 'สถานะรายการจองถูกเปลี่ยนแปลงไปแล้ว ไม่สามารถดำเนินการได้' });
@@ -3267,19 +3293,23 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
       slipUrl = `/uploads/slips/${fileName}`;
     } else if (req.body.slip_url) {
       slipUrl = String(req.body.slip_url).trim();
+    } else if (booking.slip_image_url && booking.slip_verify_status === 'pending_manual') {
+      slipUrl = booking.slip_image_url;
     }
 
     await dbQuery.transaction(async () => {
-      // Concurrency check: enforce canonical remaining >= payAmount in UPDATE condition
+      // Concurrency check: enforce canonical remaining >= payAmount in UPDATE condition & exclude paid
       const updateRes = await dbQuery.run(
         `UPDATE bookings
          SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?,
              receipt_number = COALESCE(receipt_number, ?),
-             slip_image_url = COALESCE(slip_image_url, ?)
+             slip_image_url = COALESCE(?, slip_image_url),
+             slip_verify_status = CASE WHEN slip_verify_status = 'pending_manual' THEN 'approved_manual' ELSE slip_verify_status END,
+             slip_verified_at = CASE WHEN slip_verify_status = 'pending_manual' THEN ? ELSE slip_verified_at END
          WHERE id = ?
-           AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free')
+           AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free', 'paid')
            AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?`,
-        [newPaid, newBalance, newStatus, method, receiptNumber, slipUrl, booking.id, payAmount]
+        [newPaid, newBalance, newStatus, method, receiptNumber, slipUrl, nowIso, booking.id, payAmount]
       );
       if (updateRes.changes === 0) {
         const raceErr = new Error('ยอดคงเหลือถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง');
@@ -3294,6 +3324,19 @@ app.post('/api/bookings/:id/pay-balance', authenticateToken, async (req, res) =>
          VALUES (?, ?, ?, ?, 'balance', 'completed', ?)`,
         [booking.id, payAmount, method, slipUrl, nowIso]
       );
+
+      if (booking.slip_verify_status === 'pending_manual') {
+        const latestSv = await dbQuery.get(
+          "SELECT id FROM slip_verifications WHERE booking_id = ? AND verification_status = 'pending_manual' ORDER BY id DESC LIMIT 1",
+          [booking.id]
+        );
+        if (latestSv) {
+          await dbQuery.run(
+            "UPDATE slip_verifications SET verification_status = 'approved_manual', amount = COALESCE(amount, ?) WHERE id = ?",
+            [payAmount, latestSv.id]
+          );
+        }
+      }
 
       const historyPayload = {
         action: 'pay_balance',
@@ -7196,7 +7239,8 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
     const paymentWindowMs = paymentWindowMinutes * 60 * 1000;
     const createdAtMs = new Date(String(booking.created_at).replace(' ', 'T')).getTime();
-    const isExpiredByTime = !isNaN(createdAtMs) && (Date.now() - createdAtMs >= paymentWindowMs);
+    const isDepositRemaining = (booking.payment_status === 'deposit' || Number(booking.paid_amount || 0) > 0) && Number(booking.balance_amount || 0) > 0;
+    const isExpiredByTime = !isDepositRemaining && !isNaN(createdAtMs) && (Date.now() - createdAtMs >= paymentWindowMs);
 
     if (booking.payment_status === 'cancelled' || isExpiredByTime) {
       if (booking.payment_status !== 'cancelled') {
@@ -7298,15 +7342,18 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
 
     try {
       await dbQuery.transaction(async () => {
+        // Sets payment_status = 'reviewing' for unpaid bookings, or preserves 'deposit' for deposit bookings
+        const targetPaymentStatus = isDepositRemaining ? 'deposit' : 'reviewing';
+
         const updateRes = await dbQuery.run(
           `UPDATE bookings
            SET slip_image_url = ?,
                slip_trans_ref = ?,
                slip_verified_at = NULL,
                slip_verify_status = 'pending_manual',
-               payment_status = 'reviewing'
+               payment_status = ?
            WHERE id = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')`,
-          [slipUrl, transRef || booking.slip_trans_ref || null, targetBookingId]
+          [slipUrl, transRef || booking.slip_trans_ref || null, targetPaymentStatus, targetBookingId]
         );
 
         if (!updateRes || updateRes.changes !== 1) {
@@ -7317,8 +7364,8 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
           `INSERT INTO slip_verifications (
             booking_id, trans_ref, bank_code, bank_name, slip_image_url,
             is_auto_approved, confidence_score, raw_qr_data, verification_status,
-            rejection_reason, created_at
-          ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', NULL, ?)`,
+            rejection_reason, created_at, amount
+          ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', NULL, ?, ?)`,
           [
             targetBookingId,
             transRef || null,
@@ -7326,7 +7373,8 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
             bankName || 'รูปภาพรอเจ้าหน้าที่ตรวจสอบ',
             slipUrl,
             req.body.qr_data || '',
-            nowIso
+            nowIso,
+            isDepositRemaining ? (Number(booking.balance_amount) || 0) : (Number(booking.total_amount) || 0)
           ]
         );
       });
@@ -7344,7 +7392,7 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     return res.json({
       success: true,
       auto_approved: false,
-      status: 'reviewing',
+      status: isDepositRemaining ? 'deposit' : 'reviewing',
       slipUrl,
       transRef: transRef || null,
       bankName: bankName || null,

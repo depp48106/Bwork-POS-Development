@@ -2904,11 +2904,13 @@ export default {
                  WHERE slip_image_url IN (?, ?, ?, ?)
                     OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url IN (?, ?, ?, ?))
                     OR id IN (SELECT booking_id FROM tax_invoices WHERE file_url IN (?, ?, ?, ?))
+                    OR id IN (SELECT booking_id FROM slip_verifications WHERE slip_image_url IN (?, ?, ?, ?))
                  LIMIT 1`
               ).bind(
-                exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
-                exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3],
-                exactCandidates[0], exactCandidates[1], exactCandidates[2], exactCandidates[3]
+                ...exactCandidates,
+                ...exactCandidates,
+                ...exactCandidates,
+                ...exactCandidates
               ).first();
             }
 
@@ -5682,20 +5684,42 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
         }
 
-        // Precondition: current payment_status must be 'reviewing' only
-        if (booking.payment_status !== 'reviewing') {
+        // Precondition: must be currently in review ('reviewing' OR slip_verify_status === 'pending_manual')
+        const isPendingReview = booking.payment_status === 'reviewing' || booking.slip_verify_status === 'pending_manual';
+        if (!isPendingReview || booking.payment_status === 'paid' || booking.payment_status === 'cancelled') {
           return new Response(JSON.stringify({
             error: `ไม่สามารถปฏิเสธสลิปได้เนื่องจากรายการจองอยู่ในสถานะ '${booking.payment_status}' (อนุญาตเฉพาะสถานะรอตรวจสอบ 'reviewing' เท่านั้น)`
           }), { status: 409, headers: corsHeaders });
         }
 
-        // Atomic conditional update
-        const updateResult = await env.DB.prepare(`
-          UPDATE bookings
-          SET payment_status = 'rejected',
-              slip_verify_status = 'rejected'
-          WHERE id = ? AND payment_status = 'reviewing'
-        `).bind(bookingId).run();
+        const hasDeposit = (booking.payment_status === 'deposit' || Number(booking.paid_amount || 0) > 0);
+        let updateResult;
+
+        if (hasDeposit) {
+          // Find previous completed deposit transaction's slip_url if available
+          const prevTx = await env.DB.prepare(
+            `SELECT slip_url FROM payment_transactions
+             WHERE booking_id = ? AND status = 'completed' AND slip_url IS NOT NULL
+             ORDER BY id DESC LIMIT 1`
+          ).bind(bookingId).first();
+          const prevDepositSlipUrl = prevTx?.slip_url || null;
+
+          // Keep deposit payment_status, mark slip as rejected, revert slip_image_url to deposit slip if available
+          updateResult = await env.DB.prepare(`
+            UPDATE bookings
+            SET slip_verify_status = 'rejected',
+                slip_image_url = COALESCE(?, slip_image_url)
+            WHERE id = ? AND (payment_status = 'deposit' OR slip_verify_status = 'pending_manual')
+          `).bind(prevDepositSlipUrl, bookingId).run();
+        } else {
+          // Atomic conditional update for unpaid booking
+          updateResult = await env.DB.prepare(`
+            UPDATE bookings
+            SET payment_status = 'rejected',
+                slip_verify_status = 'rejected'
+            WHERE id = ? AND payment_status = 'reviewing'
+          `).bind(bookingId).run();
+        }
 
         if (updateResult.meta?.changes !== 1) {
           return new Response(JSON.stringify({
@@ -6345,6 +6369,8 @@ export default {
           }
         } else if (body.slip_url) {
           slipUrl = String(body.slip_url).trim();
+        } else if (booking.slip_image_url && booking.slip_verify_status === 'pending_manual') {
+          slipUrl = booking.slip_image_url;
         }
 
         // Concurrency-safe atomic update guard
@@ -6352,11 +6378,13 @@ export default {
           `UPDATE bookings
            SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = ?,
                receipt_number = COALESCE(receipt_number, ?),
-               slip_image_url = COALESCE(slip_image_url, ?)
+               slip_image_url = COALESCE(?, slip_image_url),
+               slip_verify_status = CASE WHEN slip_verify_status = 'pending_manual' THEN 'approved_manual' ELSE slip_verify_status END,
+               slip_verified_at = CASE WHEN slip_verify_status = 'pending_manual' THEN ? ELSE slip_verified_at END
            WHERE id = ?
-             AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free')
+             AND payment_status NOT IN ('cancelled', 'failed', 'rejected', 'internal_free', 'paid')
              AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?`
-        ).bind(newPaid, newBalance, newStatus, method, receiptNumber, slipUrl, booking.id, payAmount).run();
+        ).bind(newPaid, newBalance, newStatus, method, receiptNumber, slipUrl, nowIso, booking.id, payAmount).run();
 
         if (updateRes.meta?.changes !== 1) {
           return new Response(JSON.stringify({
@@ -6369,6 +6397,19 @@ export default {
            (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at)
            VALUES (?, ?, ?, ?, 'balance', 'completed', ?)`
         ).bind(booking.id, payAmount, method, slipUrl, nowIso).run();
+
+        if (booking.slip_verify_status === 'pending_manual') {
+          try {
+            const latestSv = await env.DB.prepare(
+              "SELECT id FROM slip_verifications WHERE booking_id = ? AND verification_status = 'pending_manual' ORDER BY id DESC LIMIT 1"
+            ).bind(booking.id).first();
+            if (latestSv) {
+              await env.DB.prepare(
+                "UPDATE slip_verifications SET verification_status = 'approved_manual', amount = COALESCE(amount, ?) WHERE id = ?"
+              ).bind(payAmount, latestSv.id).run();
+            }
+          } catch (_) {}
+        }
 
         try {
           const historyPayload = {
@@ -8467,7 +8508,8 @@ export default {
         } catch (_) {}
 
         const createdAtMs = Date.parse(booking.created_at);
-        const isExpiredByTime = Number.isFinite(createdAtMs) && (Date.now() - createdAtMs >= windowMins * 60 * 1000);
+        const isDepositRemaining = (booking.payment_status === 'deposit' || Number(booking.paid_amount || 0) > 0) && Number(booking.balance_amount || 0) > 0;
+        const isExpiredByTime = !isDepositRemaining && Number.isFinite(createdAtMs) && (Date.now() - createdAtMs >= windowMins * 60 * 1000);
 
         if (booking.payment_status === 'paid') {
           return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้ว ไม่สามารถแนบสลิปซ้ำได้' }), { status: 409, headers: corsHeaders });
@@ -8548,15 +8590,18 @@ export default {
           savedSlipUrl = savedSlipUrl.substring(0, 650000);
         }
 
+        // Sets payment_status = 'reviewing' for unpaid bookings, or preserves 'deposit' for deposit bookings
+        const targetPaymentStatus = isDepositRemaining ? 'deposit' : 'reviewing';
+
         const updated = await env.DB.prepare(`
           UPDATE bookings
           SET slip_image_url = ?,
-              payment_status = 'reviewing',
+              payment_status = ?,
               slip_trans_ref = ?,
               slip_verified_at = NULL,
               slip_verify_status = 'pending_manual'
           WHERE id = ? AND COALESCE(payment_status, 'pending') NOT IN ('paid', 'cancelled')
-        `).bind(savedSlipUrl || 'uploaded', transRef || booking.slip_trans_ref || null, booking.id).run();
+        `).bind(savedSlipUrl || 'uploaded', targetPaymentStatus, transRef || booking.slip_trans_ref || null, booking.id).run();
 
         if (updated.meta?.changes !== 1) {
           return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'สถานะรายการจองเปลี่ยนแล้ว กรุณาตรวจสอบรายการอีกครั้ง' }), { status: 409, headers: corsHeaders });
@@ -8568,8 +8613,8 @@ export default {
             INSERT INTO slip_verifications (
               booking_id, trans_ref, bank_code, bank_name, slip_image_url,
               is_auto_approved, confidence_score, raw_qr_data, verification_status,
-              rejection_reason, created_at
-            ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', NULL, ?)
+              rejection_reason, created_at, amount
+            ) VALUES (?, ?, ?, ?, ?, 0, 0, ?, 'pending_manual', NULL, ?, ?)
           `).bind(
             booking.id,
             transRef || null,
@@ -8577,7 +8622,8 @@ export default {
             bankName || 'รูปภาพรอเจ้าหน้าที่ตรวจสอบ',
             savedSlipUrl || 'uploaded',
             qr_data || '',
-            nowIso
+            nowIso,
+            isDepositRemaining ? (Number(booking.balance_amount) || 0) : (Number(booking.total_amount) || 0)
           ).run();
         } catch (svErr) {
           return new Response(JSON.stringify({
@@ -8590,7 +8636,7 @@ export default {
         return new Response(JSON.stringify({
           success: true,
           auto_approved: false,
-          status: 'reviewing',
+          status: isDepositRemaining ? 'deposit' : 'reviewing',
           slipUrl: savedSlipUrl,
           transRef: transRef || null,
           bankName: bankName || null,

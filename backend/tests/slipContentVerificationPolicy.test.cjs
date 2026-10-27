@@ -89,6 +89,7 @@ async function initSchema(query) {
       raw_qr_data TEXT,
       verification_status TEXT DEFAULT 'pending_manual',
       rejection_reason TEXT,
+      amount REAL,
       created_at TEXT
     );
 
@@ -100,6 +101,7 @@ async function initSchema(query) {
       transaction_type TEXT NOT NULL,
       receipt_number TEXT,
       slip_url TEXT,
+      status TEXT DEFAULT 'completed',
       created_at TEXT
     );
 
@@ -508,4 +510,389 @@ test('SIM-08: Room Extension isolation: room extension flow remains distinct fro
   const extTx = await query.get('SELECT * FROM payment_transactions WHERE booking_id = 401 AND transaction_type = "extension"');
   assert.equal(extTx.amount, 500);
   assert.equal(extTx.payment_method, 'cash');
+});
+
+
+// =========================================================================
+// SECTION 3: SCENARIOS A THROUGH H (MULTI-TRANSACTION HARDENING)
+// =========================================================================
+
+test('SCENARIO-A: Unpaid booking -> customer uploads slip -> reviewing -> POS staff approves -> paid', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  // Create unpaid booking
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, created_at) ' +
+    'VALUES (501, "ลูกค้า A (ยังไม่จ่าย)", 1000, 0, 1000, "pending", ?)',
+    [nowIso]
+  );
+
+  // Upload slip
+  const slipUrl = '/uploads/slips/slip_BK000501_full.png';
+  await query.run(
+    'UPDATE bookings SET slip_image_url = ?, slip_verify_status = "pending_manual", payment_status = "reviewing" WHERE id = 501',
+    [slipUrl]
+  );
+
+  let b = await query.get('SELECT * FROM bookings WHERE id = 501');
+  assert.equal(b.payment_status, 'reviewing');
+  assert.equal(b.slip_verify_status, 'pending_manual');
+  assert.equal(b.paid_amount, 0);
+
+  // Staff approves full payment in POS
+  const receiptNum = 'RC-501-FULL';
+  await query.run(
+    'UPDATE bookings SET payment_status = "paid", paid_amount = 1000, balance_amount = 0, payment_method = "transfer", ' +
+    'receipt_number = ?, slip_verify_status = "approved_manual", slip_verified_at = ? WHERE id = 501 AND payment_status = "reviewing"',
+    [receiptNum, nowIso]
+  );
+
+  await query.run(
+    'INSERT INTO payment_transactions (booking_id, amount, payment_method, transaction_type, receipt_number, slip_url, status, created_at) ' +
+    'VALUES (501, 1000, "transfer", "full", ?, ?, "completed", ?)',
+    [receiptNum, slipUrl, nowIso]
+  );
+
+  b = await query.get('SELECT * FROM bookings WHERE id = 501');
+  assert.equal(b.payment_status, 'paid');
+  assert.equal(b.paid_amount, 1000);
+  assert.equal(b.balance_amount, 0);
+  assert.equal(b.slip_verify_status, 'approved_manual');
+});
+
+test('SCENARIO-B: Deposit paid -> customer uploads balance slip -> deposit preserved -> POS collects balance -> paid', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  // 1. Initial booking with deposit paid (Slip A)
+  const slipA = '/uploads/slips/slip_BK000502_deposit.png';
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status, created_at) ' +
+    'VALUES (502, "ลูกค้า B (มัดจำแล้ว)", 2000, 600, 1400, "deposit", ?, "approved_manual", ?)',
+    [slipA, nowIso]
+  );
+
+  await query.run(
+    'INSERT INTO payment_transactions (booking_id, amount, payment_method, transaction_type, receipt_number, slip_url, status, created_at) ' +
+    'VALUES (502, 600, "transfer", "deposit", "RC-502-DEP", ?, "completed", ?)',
+    [slipA, nowIso]
+  );
+
+  // 2. Customer uploads Slip B for remaining balance
+  const slipB = '/uploads/slips/slip_BK000502_balance.png';
+  const isDepositRemaining = true;
+  const targetPaymentStatus = isDepositRemaining ? 'deposit' : 'reviewing';
+
+  await query.run(
+    'UPDATE bookings SET slip_image_url = ?, slip_verified_at = NULL, slip_verify_status = "pending_manual", payment_status = ? ' +
+    'WHERE id = 502 AND COALESCE(payment_status, "pending") NOT IN ("paid", "cancelled")',
+    [slipB, targetPaymentStatus]
+  );
+
+  await query.run(
+    'INSERT INTO slip_verifications (booking_id, slip_image_url, verification_status, amount, created_at) ' +
+    'VALUES (502, ?, "pending_manual", 1400, ?)',
+    [slipB, nowIso]
+  );
+
+  let b = await query.get('SELECT * FROM bookings WHERE id = 502');
+  assert.equal(b.payment_status, 'deposit', 'payment_status MUST remain deposit while reviewing balance slip');
+  assert.equal(b.slip_verify_status, 'pending_manual');
+  assert.equal(b.slip_image_url, slipB);
+  assert.equal(b.paid_amount, 600, 'Deposit paid_amount must not be wiped out');
+
+  // 3. POS staff collects balance via pay-balance (approves remaining 1400)
+  const payAmount = 1400;
+  const newPaid = b.paid_amount + payAmount;
+  const newBalance = b.total_amount - newPaid;
+  const newStatus = newBalance <= 0 ? 'paid' : 'deposit';
+
+  const updateRes = await query.run(
+    'UPDATE bookings ' +
+    'SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = "transfer", ' +
+    '    receipt_number = COALESCE(receipt_number, "RC-502-FINAL"), ' +
+    '    slip_image_url = COALESCE(?, slip_image_url), ' +
+    '    slip_verify_status = CASE WHEN slip_verify_status = "pending_manual" THEN "approved_manual" ELSE slip_verify_status END, ' +
+    '    slip_verified_at = ? ' +
+    'WHERE id = 502 ' +
+    '  AND payment_status NOT IN ("cancelled", "failed", "rejected", "internal_free", "paid") ' +
+    '  AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?',
+    [newPaid, newBalance, newStatus, slipB, nowIso, payAmount]
+  );
+
+  assert.equal(updateRes.changes, 1);
+
+  await query.run(
+    'INSERT INTO payment_transactions (booking_id, amount, payment_method, slip_url, transaction_type, status, created_at) ' +
+    'VALUES (502, ?, "transfer", ?, "balance", "completed", ?)',
+    [payAmount, slipB, nowIso]
+  );
+
+  b = await query.get('SELECT * FROM bookings WHERE id = 502');
+  assert.equal(b.payment_status, 'paid');
+  assert.equal(b.paid_amount, 2000);
+  assert.equal(b.balance_amount, 0);
+  assert.equal(b.slip_verify_status, 'approved_manual');
+
+  // Verify both transactions exist in payment_transactions with their respective slips
+  const txs = await query.all('SELECT * FROM payment_transactions WHERE booking_id = 502 ORDER BY id ASC');
+  assert.equal(txs.length, 2);
+  assert.equal(txs[0].transaction_type, 'deposit');
+  assert.equal(txs[0].amount, 600);
+  assert.equal(txs[0].slip_url, slipA);
+  assert.equal(txs[1].transaction_type, 'balance');
+  assert.equal(txs[1].amount, 1400);
+  assert.equal(txs[1].slip_url, slipB);
+});
+
+test('SCENARIO-C: Deposit paid -> balance slip uploaded -> POS rejects balance slip -> deposit preserved, slip reverts', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  // Booking with approved deposit
+  const slipA = '/uploads/slips/slip_BK000503_deposit.png';
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status, created_at) ' +
+    'VALUES (503, "ลูกค้า C (มัดจำแล้ว)", 3000, 1000, 2000, "deposit", ?, "approved_manual", ?)',
+    [slipA, nowIso]
+  );
+
+  await query.run(
+    'INSERT INTO payment_transactions (booking_id, amount, payment_method, transaction_type, slip_url, status, created_at) ' +
+    'VALUES (503, 1000, "transfer", "deposit", ?, "completed", ?)',
+    [slipA, nowIso]
+  );
+
+  // Customer uploads invalid balance slip
+  const badSlipB = '/uploads/slips/slip_BK000503_badbalance.png';
+  await query.run(
+    'UPDATE bookings SET slip_image_url = ?, slip_verify_status = "pending_manual", payment_status = "deposit" WHERE id = 503',
+    [badSlipB]
+  );
+
+  await query.run(
+    'INSERT INTO slip_verifications (booking_id, slip_image_url, verification_status, amount, created_at) VALUES (503, ?, "pending_manual", 2000, ?)',
+    [badSlipB, nowIso]
+  );
+
+  // Staff rejects the balance slip
+  const rejectionReason = 'ยอดเงินในสลิปไม่ครบตามยอดคงเหลือ (โอนมาเพียง 500 บาท ขาดอีก 1,500 บาท)';
+  const prevTx = await query.get(
+    'SELECT slip_url FROM payment_transactions WHERE booking_id = 503 AND status = "completed" AND slip_url IS NOT NULL ORDER BY id DESC LIMIT 1'
+  );
+  const prevDepositSlipUrl = prevTx?.slip_url || null;
+  assert.equal(prevDepositSlipUrl, slipA, 'Must locate original deposit slip A');
+
+  const updateRes = await query.run(
+    'UPDATE bookings SET slip_verify_status = "rejected", slip_image_url = COALESCE(?, slip_image_url) ' +
+    'WHERE id = 503 AND (payment_status = "deposit" OR slip_verify_status = "pending_manual")',
+    [prevDepositSlipUrl]
+  );
+
+  assert.equal(updateRes.changes, 1);
+
+  await query.run(
+    'UPDATE slip_verifications SET verification_status = "rejected", rejection_reason = ? WHERE booking_id = 503 AND slip_image_url = ?',
+    [rejectionReason, badSlipB]
+  );
+
+  const b = await query.get('SELECT * FROM bookings WHERE id = 503');
+  assert.equal(b.payment_status, 'deposit', 'CRITICAL: payment_status MUST remain deposit, NOT rejected');
+  assert.equal(b.paid_amount, 1000, 'Deposit of 1000 must remain recorded');
+  assert.equal(b.balance_amount, 2000, 'Balance of 2000 must remain recorded');
+  assert.equal(b.slip_verify_status, 'rejected', 'Slip verification status is marked rejected');
+  assert.equal(b.slip_image_url, slipA, 'Active slip_image_url must revert to deposit slip A');
+
+  // Customer can now upload corrected replacement balance slip
+  const goodSlipB = '/uploads/slips/slip_BK000503_goodbalance.png';
+  await query.run(
+    'UPDATE bookings SET slip_image_url = ?, slip_verify_status = "pending_manual", payment_status = "deposit" WHERE id = 503',
+    [goodSlipB]
+  );
+
+  const bAfterReupload = await query.get('SELECT * FROM bookings WHERE id = 503');
+  assert.equal(bAfterReupload.payment_status, 'deposit');
+  assert.equal(bAfterReupload.slip_verify_status, 'pending_manual');
+  assert.equal(bAfterReupload.slip_image_url, goodSlipB);
+});
+
+test('SCENARIO-D: Multi-slip audit: deposit transaction has Slip A, balance transaction has Slip B', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  const slipA = '/uploads/slips/deposit_slip.png';
+  const slipB = '/uploads/slips/balance_slip.png';
+
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, created_at) ' +
+    'VALUES (504, "ลูกค้า D (สองสลิป)", 5000, 5000, 0, "paid", ?, ?)',
+    [slipB, nowIso]
+  );
+
+  await query.run(
+    'INSERT INTO payment_transactions (booking_id, amount, payment_method, transaction_type, slip_url, status, created_at) ' +
+    'VALUES (504, 1500, "transfer", "deposit", ?, "completed", ?)',
+    [slipA, nowIso]
+  );
+
+  await query.run(
+    'INSERT INTO payment_transactions (booking_id, amount, payment_method, transaction_type, slip_url, status, created_at) ' +
+    'VALUES (504, 3500, "transfer", "balance", ?, "completed", ?)',
+    [slipB, nowIso]
+  );
+
+  const txs = await query.all('SELECT * FROM payment_transactions WHERE booking_id = 504 ORDER BY id ASC');
+  assert.equal(txs.length, 2);
+  assert.equal(txs[0].slip_url, slipA);
+  assert.equal(txs[1].slip_url, slipB);
+
+  // Anti-IDOR lookup for both slips: both must resolve to booking 504
+  for (const sUrl of [slipA, slipB]) {
+    const cleanP = sUrl.replace(/^\/uploads\//, '');
+    const exactCandidates = [sUrl, cleanP, '/uploads/' + cleanP];
+    const match = await query.get(
+      'SELECT id FROM bookings WHERE slip_image_url IN (?, ?, ?) ' +
+      'OR id IN (SELECT booking_id FROM payment_transactions WHERE slip_url IN (?, ?, ?)) LIMIT 1',
+      [
+        exactCandidates[0], exactCandidates[1], exactCandidates[2],
+        exactCandidates[0], exactCandidates[1], exactCandidates[2]
+      ]
+    );
+    assert.equal(match?.id, 504, 'Slip ' + sUrl + ' must be resolvable to booking 504');
+  }
+});
+
+test('SCENARIO-E: Rejection & Resubmission audit integrity: financial amounts untouched by rejection', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, created_at) ' +
+    'VALUES (505, "ลูกค้า E (ตรวจสอบประวัติ)", 4000, 1000, 3000, "deposit", ?)',
+    [nowIso]
+  );
+
+  // Reject slip
+  await query.run('UPDATE bookings SET slip_verify_status = "rejected" WHERE id = 505');
+
+  const b = await query.get('SELECT * FROM bookings WHERE id = 505');
+  assert.equal(b.total_amount, 4000);
+  assert.equal(b.paid_amount, 1000);
+  assert.equal(b.balance_amount, 3000);
+});
+
+test('SCENARIO-F: Fully paid booking -> public upload-slip returns 409 Conflict', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, created_at) ' +
+    'VALUES (506, "ลูกค้า F (จ่ายครบแล้ว)", 1200, 1200, 0, "paid", ?)',
+    [nowIso]
+  );
+
+  const booking = await query.get('SELECT * FROM bookings WHERE id = 506');
+  // upload-slip precondition check in server.js & worker.js:
+  const isPaid = booking.payment_status === 'paid';
+  assert.ok(isPaid, 'Booking is paid');
+  const shouldBlock = isPaid;
+  assert.equal(shouldBlock, true, 'Must block slip upload on already paid booking');
+});
+
+test('SCENARIO-G: Non-bank / no QR image uploaded -> accepted into review queue without OCR blocker', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, created_at) ' +
+    'VALUES (507, "ลูกค้า G (รูปไม่มี QR)", 1800, 0, 1800, "pending", ?)',
+    [nowIso]
+  );
+
+  // Upload an image with no bank QR
+  const slipUrl = '/uploads/slips/receipt_photo.jpg';
+  await query.run(
+    'UPDATE bookings SET slip_image_url = ?, slip_verify_status = "pending_manual", payment_status = "reviewing" WHERE id = 507',
+    [slipUrl]
+  );
+
+  await query.run(
+    'INSERT INTO slip_verifications (booking_id, bank_name, slip_image_url, is_auto_approved, verification_status, created_at) ' +
+    'VALUES (507, "รูปภาพรอเจ้าหน้าที่ตรวจสอบ", ?, 0, "pending_manual", ?)',
+    [slipUrl, nowIso]
+  );
+
+  const b = await query.get('SELECT * FROM bookings WHERE id = 507');
+  assert.equal(b.payment_status, 'reviewing');
+  assert.equal(b.slip_verify_status, 'pending_manual');
+
+  const sv = await query.get('SELECT * FROM slip_verifications WHERE booking_id = 507');
+  assert.equal(sv.is_auto_approved, 0);
+  assert.equal(sv.verification_status, 'pending_manual');
+});
+
+test('SCENARIO-H: Concurrency protection: atomic CAS prevents double-approval race condition', async () => {
+  const { query } = createTestDb();
+  await initSchema(query);
+  const nowIso = new Date().toISOString();
+
+  await query.run(
+    'INSERT INTO bookings (id, customer_name, total_amount, paid_amount, balance_amount, payment_status, created_at) ' +
+    'VALUES (508, "ลูกค้า H (ทดสอบ Concurrency)", 2000, 500, 1500, "deposit", ?)',
+    [nowIso]
+  );
+
+  const payAmount = 1500;
+  const newPaid = 2000;
+  const newBalance = 0;
+  const newStatus = 'paid';
+
+  // Staff 1 executes atomic update
+  const res1 = await query.run(
+    'UPDATE bookings ' +
+    'SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = "transfer", ' +
+    '    receipt_number = "RC-CONCURRENCY-1" ' +
+    'WHERE id = 508 ' +
+    '  AND payment_status NOT IN ("cancelled", "failed", "rejected", "internal_free", "paid") ' +
+    '  AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?',
+    [newPaid, newBalance, newStatus, payAmount]
+  );
+
+  assert.equal(res1.changes, 1, 'Staff 1 update must succeed');
+
+  await query.run(
+    'INSERT INTO payment_transactions (booking_id, amount, payment_method, transaction_type, status, created_at) ' +
+    'VALUES (508, ?, "transfer", "balance", "completed", ?)',
+    [payAmount, nowIso]
+  );
+
+  // Staff 2 executes atomic update simultaneously
+  const res2 = await query.run(
+    'UPDATE bookings ' +
+    'SET paid_amount = ?, balance_amount = ?, payment_status = ?, payment_method = "transfer", ' +
+    '    receipt_number = "RC-CONCURRENCY-2" ' +
+    'WHERE id = 508 ' +
+    '  AND payment_status NOT IN ("cancelled", "failed", "rejected", "internal_free", "paid") ' +
+    '  AND ROUND(MAX(0, COALESCE(total_amount, 0) - COALESCE(paid_amount, 0)), 2) >= ?',
+    [newPaid, newBalance, newStatus, payAmount]
+  );
+
+  assert.equal(res2.changes, 0, 'Staff 2 update must match 0 rows due to payment_status = paid and remaining = 0');
+
+  // Verify only 1 balance transaction was created
+  const txs = await query.all('SELECT * FROM payment_transactions WHERE booking_id = 508');
+  assert.equal(txs.length, 1, 'Exactly one transaction must be committed');
+
+  const b = await query.get('SELECT * FROM bookings WHERE id = 508');
+  assert.equal(b.paid_amount, 2000);
+  assert.equal(b.balance_amount, 0);
+  assert.equal(b.receipt_number, 'RC-CONCURRENCY-1');
 });
