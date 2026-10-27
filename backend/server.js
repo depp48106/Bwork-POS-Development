@@ -1213,7 +1213,7 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
     FROM booking_items bi
     JOIN bookings b ON bi.booking_id = b.id
     WHERE bi.room_id = ?
-      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed'))
+      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
       AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
   `;
   const params = [roomId];
@@ -1746,26 +1746,69 @@ app.post('/api/bookings', async (req, res) => {
           }
         }
 
-        await dbQuery.run(
-          `INSERT INTO booking_items
-           (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            bookingId,
-            item.room_id || null,
-            item.service_id || null,
-            item.quantity || 1,
-            item.price || 0,
-            normStart,
-            normEnd,
-            item.subtotal || 0,
-            item.layout || 'standard',
-            item.booking_type || 'hourly',
-            itemGuestCount,
-            itemPin,
-            'pending'
-          ]
-        );
+        if (item.room_id && normStart && normEnd) {
+          const bufferMins = await getCleaningBufferMinutes();
+          const itemEndBuffered = addMinutesToLocalISO(normEnd, bufferMins);
+          const insRes = await dbQuery.run(
+            `INSERT INTO booking_items
+             (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending'
+             WHERE NOT EXISTS (
+               SELECT 1 FROM booking_items bi
+               JOIN bookings b ON bi.booking_id = b.id
+               WHERE bi.room_id = ?
+                 AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                 AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+                 AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                      AND ? > bi.start_time)
+             )`,
+            [
+              bookingId,
+              item.room_id || null,
+              item.service_id || null,
+              item.quantity || 1,
+              item.price || 0,
+              normStart,
+              normEnd,
+              item.subtotal || 0,
+              item.layout || 'standard',
+              item.booking_type || 'hourly',
+              itemGuestCount,
+              itemPin,
+              item.room_id,
+              normStart,
+              `+${bufferMins} minutes`,
+              itemEndBuffered
+            ]
+          );
+          if (insRes.changes === 0) {
+            const rObj = await dbQuery.get('SELECT name FROM rooms WHERE id = ?', [item.room_id]);
+            const latestConflict = await checkRoomOverlap(item.room_id, normStart, normEnd);
+            const conflictErr = new Error(formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }));
+            conflictErr.statusCode = 409;
+            throw conflictErr;
+          }
+        } else {
+          await dbQuery.run(
+            `INSERT INTO booking_items
+             (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+            [
+              bookingId,
+              item.room_id || null,
+              item.service_id || null,
+              item.quantity || 1,
+              item.price || 0,
+              normStart,
+              normEnd,
+              item.subtotal || 0,
+              item.layout || 'standard',
+              item.booking_type || 'hourly',
+              itemGuestCount,
+              null
+            ]
+          );
+        }
       }
 
       const savedBooking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
@@ -3862,18 +3905,33 @@ app.post('/api/bookings/:id/extend', authenticateToken, async (req, res) => {
         slipUrl = String(req.body.slip_url).trim();
       }
 
-      // 6. Optimistic concurrency check: update booking_item with condition WHERE end_time = ?
+      // 6. Optimistic concurrency check: update booking_item with condition WHERE end_time = ? and atomic overlap check
+      const bufferMins = await getCleaningBufferMinutes();
+      const newEndBufferedISO = addMinutesToLocalISO(newEndISO, bufferMins);
       const newQuantity = roundMoney((Number(item.quantity) || 0) + additionalHours);
       const newItemSubtotal = roundMoney((Number(item.subtotal) || 0) + (additionalHours * hourlyRate));
       const expectedEndTime = current_end_time || item.end_time;
       const itemUpdateRes = await dbQuery.run(
         `UPDATE booking_items
          SET end_time = ?, quantity = ?, subtotal = ?
-         WHERE id = ? AND end_time = ?`,
-        [newEndISO, newQuantity, newItemSubtotal, item.id, expectedEndTime]
+         WHERE id = ? AND end_time = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM booking_items bi
+             JOIN bookings b ON bi.booking_id = b.id
+             WHERE bi.room_id = ?
+               AND bi.id != ?
+               AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+               AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+               AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                    AND ? > bi.start_time)
+           )`,
+        [
+          newEndISO, newQuantity, newItemSubtotal, item.id, expectedEndTime,
+          item.room_id, item.id, item.end_time, `+${bufferMins} minutes`, newEndBufferedISO
+        ]
       );
       if (itemUpdateRes.changes === 0) {
-        const raceErr = new Error('ข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง');
+        const raceErr = new Error('ห้องถูกจองในช่วงเวลาดังกล่าวแล้ว หรือข้อมูลเวลาของห้องถูกเปลี่ยนแปลงไปแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง');
         raceErr.statusCode = 409;
         throw raceErr;
       }
@@ -4981,10 +5039,22 @@ const handleReschedule = async (req, res) => {
         throw overlapErr;
       }
 
+      const bufferMins = await getCleaningBufferMinutes();
+      const newEndBufferedISO = addMinutesToLocalISO(newEndISO, bufferMins);
       const itemUpdateRes = await dbQuery.run(
         `UPDATE booking_items
          SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ?
-         WHERE id = ? AND booking_id = ? AND start_time = ?`,
+         WHERE id = ? AND booking_id = ? AND start_time = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM booking_items bi
+             JOIN bookings b ON bi.booking_id = b.id
+             WHERE bi.room_id = ?
+               AND bi.id != ?
+               AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+               AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+               AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                    AND ? > bi.start_time)
+           )`,
         [
           targetRoomId,
           newStartISO,
@@ -4996,11 +5066,16 @@ const handleReschedule = async (req, res) => {
           newPinCode,
           currentItem.id,
           bookingId,
-          currentItem.start_time
+          currentItem.start_time,
+          targetRoomId,
+          currentItem.id,
+          newStartISO,
+          `+${bufferMins} minutes`,
+          newEndBufferedISO
         ]
       );
       if (itemUpdateRes.changes === 0) {
-        const staleErr = new Error('ข้อมูลการจองถูกแก้ไขโดยผู้ใช้อื่น กรุณารีเฟรชและลองใหม่อีกครั้ง');
+        const staleErr = new Error('ข้อมูลการจองถูกแก้ไขโดยผู้ใช้อื่น หรือห้องถูกจองในช่วงเวลาดังกล่าวแล้ว กรุณารีเฟรชและลองใหม่อีกครั้ง');
         staleErr.status = 409;
         staleErr.code = 'ERR_CONCURRENT_MODIFICATION';
         throw staleErr;
@@ -7029,13 +7104,32 @@ app.post('/api/public/bookings', async (req, res) => {
       );
       const bookingId = bookingResult.id;
 
-      // Insert booking item (with guest_count)
-      await dbQuery.run(
+      // Insert booking item with atomic conditional overlap check
+      const bufferMins = await getCleaningBufferMinutes();
+      const fullEndBuffered = addMinutesToLocalISO(fullEnd, bufferMins);
+      const itemInsertRes = await dbQuery.run(
         `INSERT INTO booking_items
          (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [bookingId, room_id, quantity, price, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode, 'pending']
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM booking_items bi
+           JOIN bookings b ON bi.booking_id = b.id
+           WHERE bi.room_id = ?
+             AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+             AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+             AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                  AND ? > bi.start_time)
+         )`,
+        [
+          bookingId, room_id, quantity, price, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode,
+          room_id, fullStart, `+${bufferMins} minutes`, fullEndBuffered
+        ]
       );
+      if (itemInsertRes.changes === 0) {
+        const conflictErr = new Error('ห้องไม่ว่างในช่วงเวลาดังกล่าว หรือติดระยะเวลาทำความสะอาด');
+        conflictErr.statusCode = 409;
+        throw conflictErr;
+      }
 
       const bookingCode = `BK-${String(bookingId).padStart(6, '0')}`;
 
