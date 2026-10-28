@@ -363,5 +363,34 @@ test('Minimal & Clean Customer and Contract Management Verification Suite', asyn
     assert.ok(cssContent.includes(':focus-visible'), 'Must define keyboard focus states');
   });
 
+  await t.test('12. Customer Create Wide Modal Architecture & Responsive Layout Verification', async () => {
+    const cssPath = path.join(__dirname, '../../frontend/src/components/CustomerManagement.css');
+    const cssContent = fs.readFileSync(cssPath, 'utf8');
+    const jsxPath = path.join(__dirname, '../../frontend/src/components/CustomerManagement.jsx');
+    const jsxContent = fs.readFileSync(jsxPath, 'utf8');
+
+    // Verify Wide Modal Classes in JSX
+    assert.ok(jsxContent.includes('crm-modal-dialog crm-modal-wide'), 'Must apply crm-modal-wide class to dialog');
+    assert.ok(jsxContent.includes('crm-modal-body-wide'), 'Must apply crm-modal-body-wide to body');
+    assert.ok(jsxContent.includes('crm-form-two-col'), 'Must define 2-column upper section grid');
+    assert.ok(jsxContent.includes('crm-initial-contract-card'), 'Must define initial contract card');
+    assert.ok(jsxContent.includes('crm-contract-grid-responsive'), 'Must define responsive contract grid');
+
+    // Verify Wide Modal CSS definitions
+    assert.ok(cssContent.includes('.crm-modal-dialog.crm-modal-wide'), 'CSS must define wide modal dialog');
+    assert.ok(cssContent.includes('min(1180px, 94vw)'), 'Wide modal must set max-width min(1180px, 94vw)');
+    assert.ok(cssContent.includes('.crm-modal-form'), 'CSS must define crm-modal-form');
+    assert.ok(cssContent.includes('.crm-form-two-col'), 'CSS must define 2-column grid layout');
+    assert.ok(cssContent.includes('.crm-contract-grid-responsive'), 'CSS must define responsive contract grid');
+    assert.ok(cssContent.includes('overscroll-behavior: contain'), 'Must prevent background scroll chain');
+
+    // Verify Sticky Header & Footer in CSS
+    assert.ok(cssContent.includes('flex-shrink: 0'), 'Header and Footer must have flex-shrink: 0');
+
+    // Verify Mobile & Tablet Media Query Adaptations
+    assert.ok(cssContent.includes('@media (max-width: 768px)'), 'Must include 768px media query');
+    assert.ok(cssContent.includes('@media (max-width: 480px)'), 'Must include 480px mobile sheet media query');
+  });
+
   db.close();
 });

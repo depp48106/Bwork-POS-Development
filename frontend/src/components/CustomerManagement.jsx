@@ -1112,18 +1112,21 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       {/* =========================================================================
           MODAL 1: CUSTOMER PROFILE (CREATE / EDIT) — CLEAN, FOCUSED & MINIMAL
           ========================================================================= */}
+      {/* =========================================================================
+          MODAL 1: CUSTOMER PROFILE ADD / EDIT — WIDE RESPONSIVE MODAL
+          ========================================================================= */}
       {showAddEditModal && (
         <div className="crm-modal-backdrop" onClick={handleRequestCloseAddEditModal}>
-          <div className="crm-modal-dialog" onClick={(e) => e.stopPropagation()}>
+          <div className="crm-modal-dialog crm-modal-wide" onClick={(e) => e.stopPropagation()}>
             <div className="crm-modal-header">
               <div className="crm-modal-title">
                 <div className="crm-modal-icon-badge">
-                  {editingCustomer ? <Edit2 size={16} /> : <Plus size={16} />}
+                  {editingCustomer ? <Edit2 size={18} /> : <Plus size={18} />}
                 </div>
                 <div>
                   <h3>{editingCustomer ? `แก้ไขข้อมูล: ${editingCustomer.name}` : 'เพิ่มลูกค้า / ร้านค้าใหม่'}</h3>
                   <p className="crm-modal-subtitle">
-                    {editingCustomer ? 'อัปเดตข้อมูลผู้เช่าและช่องทางการติดต่อ' : 'สร้างข้อมูลลูกค้าใหม่พร้อมสัญญาเริ่มต้น'}
+                    {editingCustomer ? 'อัปเดตข้อมูลผู้เช่าและช่องทางการติดต่อ' : 'สร้างข้อมูลลูกค้าใหม่พร้อมสัญญาเริ่มต้นและสิทธิ์การใช้งานโควตา'}
                   </p>
                 </div>
               </div>
@@ -1132,190 +1135,194 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                 className="crm-modal-close-btn"
                 onClick={handleRequestCloseAddEditModal}
                 disabled={isSubmitting}
+                title="ปิดหน้าต่าง (Esc)"
               >
                 <X size={18} />
               </button>
             </div>
 
             <form onSubmit={handleSubmitCustomerForm} className="crm-modal-form">
-              <div className="crm-modal-body">
-                {/* SECTION 1: ข้อมูลผู้เช่า / บริษัท */}
-                <div className="crm-form-section">
-                  <div className="crm-form-section-title">
-                    <Building2 size={15} />
-                    <span>ข้อมูลผู้เช่า / บริษัท</span>
-                  </div>
-
-                  {!editingCustomer && (
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">ประเภทลูกค้า <span className="req">*</span></label>
-                      <div className="crm-type-selector-grid">
-                        <button
-                          type="button"
-                          className={`crm-type-btn ${customerForm.customer_type === 'basecamp' ? 'active' : ''}`}
-                          onClick={() => {
-                            setCustomerForm({
-                              ...customerForm,
-                              customer_type: 'basecamp',
-                              monthly_quota_hours: customerForm.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0
-                            });
-                          }}
-                        >
-                          <Building2 size={16} />
-                          <div>
-                            <strong>Basecamp</strong>
-                            <span>ผู้เช่าออฟฟิศ/ฮอทเดสก์ ชั้น 4</span>
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          className={`crm-type-btn ${customerForm.customer_type === 'shop' ? 'active' : ''}`}
-                          onClick={() => {
-                            setCustomerForm({
-                              ...customerForm,
-                              customer_type: 'shop',
-                              monthly_quota_hours: 4.0
-                            });
-                          }}
-                        >
-                          <Store size={16} />
-                          <div>
-                            <strong>Partner Shop</strong>
-                            <span>ร้านค้าพันธมิตรในอาคาร</span>
-                          </div>
-                        </button>
-                      </div>
+              <div className="crm-modal-body crm-modal-body-wide">
+                {/* UPPER SECTION: 2-COLUMN GRID (LEFT: TENANT INFO, RIGHT: CONTACT INFO) */}
+                <div className="crm-form-two-col">
+                  {/* LEFT COLUMN: ข้อมูลผู้เช่า / บริษัท */}
+                  <div className="crm-form-section">
+                    <div className="crm-form-section-title">
+                      <Building2 size={16} />
+                      <span>{customerForm.customer_type === 'shop' ? 'ข้อมูลร้านค้าพันธมิตร' : 'ข้อมูลผู้เช่า / นิติบุคคล'}</span>
                     </div>
-                  )}
 
-                  {customerForm.customer_type === 'basecamp' && (
-                    <div className="crm-form-grid-2">
+                    {!editingCustomer && (
                       <div className="crm-form-group">
-                        <label className="crm-form-label">ประเภทยูนิต</label>
-                        <select
-                          className="crm-form-select"
-                          value={customerForm.basecamp_sub_type}
-                          onChange={(e) => {
-                            const sub = e.target.value;
-                            setCustomerForm({
-                              ...customerForm,
-                              basecamp_sub_type: sub,
-                              basecamp_unit: sub === 'office' ? '401' : '419',
-                              monthly_quota_hours: sub === 'office' ? 4.0 : 2.0
-                            });
-                          }}
-                        >
-                          <option value="office">Office (โควตา 4 ชม./ด.)</option>
-                          <option value="hotdesk">Hotdesk (โควตา 2 ชม./ด.)</option>
-                        </select>
+                        <label className="crm-form-label">ประเภทลูกค้า <span className="req">*</span></label>
+                        <div className="crm-type-selector-grid">
+                          <button
+                            type="button"
+                            className={`crm-type-btn ${customerForm.customer_type === 'basecamp' ? 'active' : ''}`}
+                            onClick={() => {
+                              setCustomerForm({
+                                ...customerForm,
+                                customer_type: 'basecamp',
+                                monthly_quota_hours: customerForm.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0
+                              });
+                            }}
+                          >
+                            <Building2 size={16} />
+                            <div>
+                              <strong>Basecamp</strong>
+                              <span>ผู้เช่าออฟฟิศ/ฮอทเดสก์ ชั้น 4</span>
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            className={`crm-type-btn ${customerForm.customer_type === 'shop' ? 'active' : ''}`}
+                            onClick={() => {
+                              setCustomerForm({
+                                ...customerForm,
+                                customer_type: 'shop',
+                                monthly_quota_hours: 4.0
+                              });
+                            }}
+                          >
+                            <Store size={16} />
+                            <div>
+                              <strong>Partner Shop</strong>
+                              <span>ร้านค้าพันธมิตรในอาคาร</span>
+                            </div>
+                          </button>
+                        </div>
                       </div>
+                    )}
 
-                      <div className="crm-form-group">
-                        <label className="crm-form-label">เลขยูนิตชั้น 4</label>
-                        <select
-                          className="crm-form-select"
-                          value={customerForm.basecamp_unit}
-                          onChange={(e) => setCustomerForm({ ...customerForm, basecamp_unit: e.target.value })}
-                        >
-                          {customerForm.basecamp_sub_type === 'office'
-                            ? officeUnits.map(u => <option key={u} value={u}>Office {u}</option>)
-                            : hotdeskUnits.map(u => <option key={u} value={u}>Hotdesk {u}</option>)
-                          }
-                        </select>
+                    {customerForm.customer_type === 'basecamp' && (
+                      <div className="crm-form-grid-2">
+                        <div className="crm-form-group">
+                          <label className="crm-form-label">ประเภทยูนิต</label>
+                          <select
+                            className="crm-form-select"
+                            value={customerForm.basecamp_sub_type}
+                            onChange={(e) => {
+                              const sub = e.target.value;
+                              setCustomerForm({
+                                ...customerForm,
+                                basecamp_sub_type: sub,
+                                basecamp_unit: sub === 'office' ? '401' : '419',
+                                monthly_quota_hours: sub === 'office' ? 4.0 : 2.0
+                              });
+                            }}
+                          >
+                            <option value="office">Office (โควตา 4 ชม./ด.)</option>
+                            <option value="hotdesk">Hotdesk (โควตา 2 ชม./ด.)</option>
+                          </select>
+                        </div>
+
+                        <div className="crm-form-group">
+                          <label className="crm-form-label">เลขยูนิตชั้น 4</label>
+                          <select
+                            className="crm-form-select"
+                            value={customerForm.basecamp_unit}
+                            onChange={(e) => setCustomerForm({ ...customerForm, basecamp_unit: e.target.value })}
+                          >
+                            {customerForm.basecamp_sub_type === 'office'
+                              ? officeUnits.map(u => <option key={u} value={u}>Office {u}</option>)
+                              : hotdeskUnits.map(u => <option key={u} value={u}>Hotdesk {u}</option>)
+                            }
+                          </select>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">
-                      {customerForm.customer_type === 'shop' ? 'ชื่อร้านค้าพันธมิตร' : 'ชื่อบริษัท / ผู้เช่า'}
-                      <span className="req">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      className="crm-form-input"
-                      placeholder="เช่น บจก. เทคโนโลยีอนาคต หรือ Koo.Koo Cafe"
-                      value={customerForm.name}
-                      onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })}
-                      required
-                    />
-                  </div>
-
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">เลขประจำตัวผู้เสียภาษี (Tax ID)</label>
-                    <input
-                      type="text"
-                      className="crm-form-input"
-                      placeholder="13 หลัก (ถ้ามี)"
-                      value={customerForm.tax_id}
-                      onChange={(e) => setCustomerForm({ ...customerForm, tax_id: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                {/* SECTION 2: ข้อมูลการติดต่อและที่อยู่ */}
-                <div className="crm-form-section">
-                  <div className="crm-form-section-title">
-                    <Phone size={15} />
-                    <span>ข้อมูลการติดต่อและเอกสาร</span>
-                  </div>
-
-                  <div className="crm-form-grid-2">
                     <div className="crm-form-group">
-                      <label className="crm-form-label">ชื่อผู้ติดต่อประสานงาน</label>
+                      <label className="crm-form-label">
+                        {customerForm.customer_type === 'shop' ? 'ชื่อร้านค้าพันธมิตร' : 'ชื่อบริษัท / ผู้เช่า'}
+                        <span className="req">*</span>
+                      </label>
                       <input
                         type="text"
                         className="crm-form-input"
-                        placeholder="คุณสมชาย จัดการดี"
-                        value={customerForm.contact_name}
-                        onChange={(e) => setCustomerForm({ ...customerForm, contact_name: e.target.value })}
+                        placeholder="เช่น บจก. เทคโนโลยีอนาคต หรือ Koo.Koo Cafe"
+                        value={customerForm.name}
+                        onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })}
+                        required
                       />
                     </div>
 
                     <div className="crm-form-group">
-                      <label className="crm-form-label">เบอร์โทรศัพท์</label>
+                      <label className="crm-form-label">เลขประจำตัวผู้เสียภาษี (Tax ID)</label>
                       <input
-                        type="tel"
+                        type="text"
                         className="crm-form-input"
-                        placeholder="08X-XXX-XXXX"
-                        value={customerForm.phone}
-                        onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value })}
+                        placeholder="13 หลัก (ถ้ามี)"
+                        value={customerForm.tax_id}
+                        onChange={(e) => setCustomerForm({ ...customerForm, tax_id: e.target.value })}
                       />
                     </div>
                   </div>
 
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">อีเมล</label>
-                    <input
-                      type="email"
-                      className="crm-form-input"
-                      placeholder="contact@company.com"
-                      value={customerForm.email}
-                      onChange={(e) => setCustomerForm({ ...customerForm, email: e.target.value })}
-                    />
-                  </div>
-
-                  <div className="crm-form-group">
-                    <label className="crm-form-label">ที่อยู่สำหรับการออกเอกสาร</label>
-                    <textarea
-                      rows={2}
-                      className="crm-form-textarea"
-                      placeholder="ที่อยู่บริษัทสำหรับออกใบกำกับภาษี..."
-                      value={customerForm.address}
-                      onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                {/* SECTION 3: เฉพาะสร้างลูกค้าใหม่ (ข้อมูลสัญญาเริ่มต้น) */}
-                {!editingCustomer && (
-                  <div className="crm-form-section initial-contract">
+                  {/* RIGHT COLUMN: ข้อมูลการติดต่อและเอกสาร */}
+                  <div className="crm-form-section">
                     <div className="crm-form-section-title">
-                      <Calendar size={15} />
-                      <span>ข้อมูลสัญญาเริ่มต้น (ปฏิทินไทย พ.ศ.)</span>
+                      <Phone size={16} />
+                      <span>ข้อมูลการติดต่อและเอกสาร</span>
                     </div>
 
                     <div className="crm-form-grid-2">
+                      <div className="crm-form-group">
+                        <label className="crm-form-label">ชื่อผู้ติดต่อประสานงาน</label>
+                        <input
+                          type="text"
+                          className="crm-form-input"
+                          placeholder="คุณสมชาย จัดการดี"
+                          value={customerForm.contact_name}
+                          onChange={(e) => setCustomerForm({ ...customerForm, contact_name: e.target.value })}
+                        />
+                      </div>
+
+                      <div className="crm-form-group">
+                        <label className="crm-form-label">เบอร์โทรศัพท์</label>
+                        <input
+                          type="tel"
+                          className="crm-form-input"
+                          placeholder="08X-XXX-XXXX"
+                          value={customerForm.phone}
+                          onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="crm-form-group">
+                      <label className="crm-form-label">อีเมล</label>
+                      <input
+                        type="email"
+                        className="crm-form-input"
+                        placeholder="contact@company.com"
+                        value={customerForm.email}
+                        onChange={(e) => setCustomerForm({ ...customerForm, email: e.target.value })}
+                      />
+                    </div>
+
+                    <div className="crm-form-group">
+                      <label className="crm-form-label">ที่อยู่สำหรับการออกเอกสาร</label>
+                      <textarea
+                        rows={customerForm.customer_type === 'basecamp' && !editingCustomer ? 4 : 3}
+                        className="crm-form-textarea"
+                        placeholder="ที่อยู่บริษัทสำหรับออกใบกำกับภาษี / จัดส่งเอกสาร..."
+                        value={customerForm.address}
+                        onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* BOTTOM FULL-WIDTH SECTION: เฉพาะสร้างลูกค้าใหม่ (ข้อมูลสัญญาเริ่มต้น) */}
+                {!editingCustomer && (
+                  <div className="crm-form-section initial-contract crm-initial-contract-card">
+                    <div className="crm-form-section-title">
+                      <Calendar size={16} />
+                      <span>ข้อมูลสัญญาเริ่มต้นและโควตาห้องประชุม (ปฏิทินไทย พ.ศ.)</span>
+                    </div>
+
+                    <div className="crm-contract-grid-responsive">
                       <div className="crm-form-group">
                         <label className="crm-form-label">วันเริ่มสัญญา <span className="req">*</span></label>
                         <ThaiDatePicker
@@ -1332,12 +1339,10 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                           value={customerForm.end_date}
                           onChange={(val) => setCustomerForm(prev => ({ ...prev, end_date: val }))}
                           required
-                          align="right"
+                          align="left"
                         />
                       </div>
-                    </div>
 
-                    <div className="crm-form-grid-2">
                       <div className="crm-form-group">
                         <label className="crm-form-label">โควตาห้องประชุม (ชม./ด.) <span className="req">*</span></label>
                         <input
@@ -1349,14 +1354,26 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                           required
                         />
                       </div>
+
                       <div className="crm-form-group">
                         <label className="crm-form-label">หมายเลขสัญญา</label>
                         <input
                           type="text"
                           className="crm-form-input"
-                          placeholder="สร้างอัตโนมัติ"
+                          placeholder="สร้างอัตโนมัติหากเว้นว่าง"
                           value={customerForm.contract_number}
                           onChange={(e) => setCustomerForm({ ...customerForm, contract_number: e.target.value })}
+                        />
+                      </div>
+
+                      <div className="crm-form-group crm-col-span-full">
+                        <label className="crm-form-label">หมายเหตุสัญญา</label>
+                        <input
+                          type="text"
+                          className="crm-form-input"
+                          placeholder="เช่น สัญญาเช่ารายปี หรือบันทึกข้อตกลงเพิ่มเติม (ถ้ามี)"
+                          value={customerForm.notes}
+                          onChange={(e) => setCustomerForm({ ...customerForm, notes: e.target.value })}
                         />
                       </div>
                     </div>
@@ -1378,7 +1395,14 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                   className="crm-btn-primary"
                   disabled={isSubmitting}
                 >
-                  {isSubmitting ? 'กำลังบันทึก...' : (editingCustomer ? 'บันทึกข้อมูลลูกค้า' : 'สร้างข้อมูลลูกค้าและสัญญา')}
+                  {isSubmitting ? (
+                    <>
+                      <RefreshCw size={14} className="crm-spin" />
+                      <span>กำลังบันทึก...</span>
+                    </>
+                  ) : (
+                    editingCustomer ? 'บันทึกข้อมูลลูกค้า' : 'สร้างข้อมูลลูกค้าและสัญญา'
+                  )}
                 </button>
               </div>
             </form>
