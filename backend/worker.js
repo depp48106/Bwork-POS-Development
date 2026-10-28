@@ -4254,9 +4254,8 @@ export default {
             return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงข้อมูลลูกค้า' }), { status: 403, headers: corsHeaders });
           }
         }
-      }
 
-      // 1. GET /api/customers/contracts/alerts
+        // 1. GET /api/customers/contracts/alerts
       if (pathname === '/api/customers/contracts/alerts' && method === 'GET') {
         try {
           const today = url.searchParams.get('date') || getBangkokLocalISO(new Date()).slice(0, 10);
@@ -5032,6 +5031,9 @@ export default {
         } catch (err) {
           return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
         }
+      }
+
+        return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers: corsHeaders });
       }
 
       if (pathname === '/api/bookings' && method === 'GET') {
