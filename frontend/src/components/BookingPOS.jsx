@@ -5328,7 +5328,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         let isCurrentlyActive = false;
 
         if (currentNowTime > endTimeObj) {
-          usageStatusLabel = 'ใช้งานเสร็จสิ้นแล้ว';
+          usageStatusLabel = 'สิ้นสุดเวลาการจองแล้ว';
           usageStatusColor = 'var(--text-muted, #64748b)';
           usageStatusBg = 'var(--bg-subtle, #f1f5f9)';
         } else if (currentNowTime >= startTimeObj && currentNowTime <= endTimeObj) {
@@ -6221,7 +6221,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               const e = new Date(hoveredBooking.event.end_time);
               const now = new Date();
               if (now > e) {
-                return <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>ใช้งานเสร็จสิ้นแล้ว</span>;
+                return <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>สิ้นสุดเวลาการจองแล้ว</span>;
               }
               if (now >= s && now <= e) {
                 return <span style={{ color: '#ea580c', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}><span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#ea580c' }} />กำลังใช้งานขณะนี้</span>;

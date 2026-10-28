@@ -1487,10 +1487,11 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                         // 5. สถานะ
                         if (key === 'payment_status') {
                           const fin = normalizeBookingFinancials(b);
+                          const isPaid = fin ? fin.is_paid : (b.payment_status === 'paid' || b.payment_status === 'internal_free');
                           const isDep = fin ? fin.is_deposit : (b.payment_status === 'deposit');
                           const isRejected = fin ? fin.is_rejected : (b.payment_status === 'rejected' || b.slip_verify_status === 'rejected');
                           const isUnpaid = fin ? fin.is_pending : (b.payment_status === 'pending' || b.payment_status === 'unpaid');
-                          const isRev = fin ? fin.is_reviewing : (b.payment_status === 'reviewing');
+                          const isRev = !isPaid && !isCancelled && (fin ? fin.is_reviewing : (b.payment_status === 'reviewing'));
 
                           return (
                             <td key={key} style={{ textAlign: 'center', padding: '6px 8px', whiteSpace: 'nowrap', verticalAlign: 'middle', boxSizing: 'border-box' }}>

@@ -270,7 +270,21 @@ export function normalizeBookingFinancials(booking = {}) {
   const isFailed = status === 'failed';
   const isPaid = status === 'paid';
   const isDeposit = status === 'deposit';
-  const isReviewing = status === 'reviewing' || booking.slip_verify_status === 'pending_manual' || (!!booking.slip_image_url && !isPaid && !isCancelled && booking.slip_verify_status !== 'rejected' && booking.slip_verify_status !== 'approved_manual' && booking.slip_verify_status !== 'auto_approved' && booking.slip_verify_status !== 'approved');
+  const isApprovedSlip = [
+    'approved_manual',
+    'manual_approved',
+    'auto_approved',
+    'approved',
+    'verified'
+  ].includes(booking.slip_verify_status);
+  const isRejectedSlip = booking.slip_verify_status === 'rejected';
+
+  // Reviewing strictly requires that payment has NOT been fully settled and is not cancelled or failed
+  const isReviewing = !isPaid && !isCancelled && !isFailed && (
+    status === 'reviewing' ||
+    booking.slip_verify_status === 'pending_manual' ||
+    (Boolean(booking.slip_image_url) && !isRejectedSlip && !isApprovedSlip)
+  );
   const isRejected = status === 'rejected' || booking.slip_verify_status === 'rejected';
   const isPending = !isPaid && !isCancelled && !isDeposit && !isReviewing && !isRejected;
 
@@ -435,6 +449,77 @@ export function calculateRescheduleFinancials({
   };
 }
 
+export function getBookingUsageLifecycle(booking, now = new Date()) {
+  if (!booking) {
+    return { key: 'unknown', label: '-', is_active: false, is_completed: false, is_upcoming: false };
+  }
+
+  const items = Array.isArray(booking.items) && booking.items.length > 0
+    ? booking.items
+    : (booking.start_time && booking.end_time ? [booking] : []);
+
+  if (items.length === 0) {
+    return { key: 'unknown', label: '-', is_active: false, is_completed: false, is_upcoming: false };
+  }
+
+  let minStart = Infinity;
+  let maxEnd = -Infinity;
+
+  for (const it of items) {
+    if (it.start_time) {
+      const t = new Date(it.start_time).getTime();
+      if (!isNaN(t) && t < minStart) minStart = t;
+    }
+    if (it.end_time) {
+      const t = new Date(it.end_time).getTime();
+      if (!isNaN(t) && t > maxEnd) maxEnd = t;
+    }
+  }
+
+  if (!isFinite(minStart) || !isFinite(maxEnd)) {
+    return { key: 'unknown', label: '-', is_active: false, is_completed: false, is_upcoming: false };
+  }
+
+  const nowMs = (now instanceof Date ? now : new Date(now)).getTime();
+
+  if (nowMs > maxEnd) {
+    return {
+      key: 'completed',
+      label: 'สิ้นสุดเวลาการจองแล้ว',
+      color: 'var(--text-muted, #64748b)',
+      bg: 'var(--bg-subtle, #f1f5f9)',
+      badgeClass: 'pb-usage-completed',
+      is_active: false,
+      is_completed: true,
+      is_upcoming: false
+    };
+  }
+
+  if (nowMs >= minStart && nowMs <= maxEnd) {
+    return {
+      key: 'active',
+      label: 'กำลังใช้งานขณะนี้',
+      color: '#ea580c',
+      bg: 'rgba(234, 88, 12, 0.08)',
+      badgeClass: 'pb-usage-active',
+      is_active: true,
+      is_completed: false,
+      is_upcoming: false
+    };
+  }
+
+  return {
+    key: 'upcoming',
+    label: 'รอเริ่มการใช้งาน',
+    color: 'var(--primary-color, #2563eb)',
+    bg: 'rgba(37, 99, 235, 0.08)',
+    badgeClass: 'pb-usage-upcoming',
+    is_active: false,
+    is_completed: false,
+    is_upcoming: true
+  };
+}
+
 // Support CommonJS imports for Node.js test runners
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
@@ -443,6 +528,7 @@ if (typeof module !== 'undefined' && module.exports) {
     calculateDiscountPreview,
     calculatePaymentPreview,
     normalizeBookingFinancials,
+    getBookingUsageLifecycle,
     getPaymentMethodLabel,
     getTransactionTypeLabel,
     calculateRescheduleFinancials

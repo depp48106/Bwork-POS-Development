@@ -2122,6 +2122,9 @@ app.get('/api/bookings', async (req, res) => {
           b.rejection_reason = s.rejection_reason || null;
           b.rejection_time = s.rejection_time || null;
         }
+        if (b.payment_status === 'paid' && b.slip_verify_status === 'pending_manual') {
+          b.slip_verify_status = 'approved_manual';
+        }
         b.items = itemsByBookingId[b.id] || [];
         if (b.items.length > 0) {
           const first = b.items[0];
@@ -2310,6 +2313,10 @@ app.get('/api/bookings/:id', async (req, res) => {
       if (!booking.slip_verify_status) booking.slip_verify_status = slipVerification.verification_status;
       booking.rejection_reason = slipVerification.rejection_reason || null;
       booking.rejection_time = slipVerification.created_at || null;
+    }
+
+    if (booking.payment_status === 'paid' && booking.slip_verify_status === 'pending_manual') {
+      booking.slip_verify_status = 'approved_manual';
     }
 
     res.json({ ...booking, slip_verification: slipVerification || null, items });
@@ -3215,10 +3222,28 @@ app.patch('/api/bookings/:id/payment', async (req, res) => {
       }
     }
 
-    await dbQuery.run(
-      'UPDATE bookings SET payment_status = ?, payment_method = ? WHERE id = ?',
-      [payment_status, payment_method, req.params.id]
-    );
+    if (payment_status === 'paid') {
+      await dbQuery.run(
+        `UPDATE bookings
+         SET payment_status = ?,
+             payment_method = ?,
+             slip_verify_status = CASE WHEN slip_verify_status = 'pending_manual' THEN 'approved_manual' ELSE slip_verify_status END,
+             slip_verified_at = CASE WHEN slip_verify_status = 'pending_manual' THEN datetime('now') ELSE slip_verified_at END
+         WHERE id = ?`,
+        [payment_status, payment_method, req.params.id]
+      );
+      try {
+        await dbQuery.run(
+          "UPDATE slip_verifications SET verification_status = 'approved_manual' WHERE booking_id = ? AND verification_status = 'pending_manual'",
+          [req.params.id]
+        );
+      } catch (_) {}
+    } else {
+      await dbQuery.run(
+        'UPDATE bookings SET payment_status = ?, payment_method = ? WHERE id = ?',
+        [payment_status, payment_method, req.params.id]
+      );
+    }
 
     let lineData = null;
     if (payment_status === 'paid') {
