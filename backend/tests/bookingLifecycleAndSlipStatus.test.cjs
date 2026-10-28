@@ -121,6 +121,40 @@ describe('BWORK-POS Booking Lifecycle & Slip Status Separation Suite', () => {
       assert.equal(fin.is_reviewing, false);
       assert.equal(fin.is_rejected, true);
     });
+
+    test('State: ยกเลิกการจอง (Cancelled booking)', () => {
+      const b = {
+        id: 106,
+        total_amount: 500,
+        paid_amount: 0,
+        balance_amount: 500,
+        payment_status: 'cancelled',
+        slip_verify_status: 'pending_manual',
+        slip_image_url: 'https://r2/cancelled_slip.jpg'
+      };
+      const fin = normalizeBookingFinancials(b);
+      assert.equal(fin.is_cancelled, true);
+      assert.equal(fin.is_paid, false);
+      assert.equal(fin.is_reviewing, false);
+    });
+
+    test('State: ชำระยอดคงเหลือครบถ้วนแล้ว (Deposit followed by balance settled to paid)', () => {
+      const b = {
+        id: 107,
+        total_amount: 1000,
+        paid_amount: 1000,
+        balance_amount: 0,
+        payment_status: 'paid',
+        slip_verify_status: 'approved_manual',
+        slip_image_url: 'https://r2/balance_settled_slip.jpg'
+      };
+      const fin = normalizeBookingFinancials(b);
+      assert.equal(fin.is_paid, true);
+      assert.equal(fin.is_deposit, false);
+      assert.equal(fin.is_reviewing, false);
+      assert.equal(fin.balance_amount, 0);
+      assert.equal(fin.is_collectible, false);
+    });
   });
 
   describe('2. Service Usage Lifecycle Separation Tests', () => {
@@ -154,7 +188,7 @@ describe('BWORK-POS Booking Lifecycle & Slip Status Separation Suite', () => {
       assert.equal(usage.is_upcoming, false);
     });
 
-    test('State: ใช้งานเสร็จสิ้นแล้ว (Completed service usage)', () => {
+    test('State: สิ้นสุดเวลาการจองแล้ว (Completed schedule duration)', () => {
       const b = {
         id: 203,
         start_time: '2026-10-28T10:00:00.000Z',
@@ -162,7 +196,7 @@ describe('BWORK-POS Booking Lifecycle & Slip Status Separation Suite', () => {
       };
       const usage = getBookingUsageLifecycle(b, fixedNow);
       assert.equal(usage.key, 'completed');
-      assert.equal(usage.label, 'ใช้งานเสร็จสิ้นแล้ว');
+      assert.equal(usage.label, 'สิ้นสุดเวลาการจองแล้ว');
       assert.equal(usage.is_completed, true);
       assert.equal(usage.is_active, false);
       assert.equal(usage.is_upcoming, false);
@@ -186,7 +220,7 @@ describe('BWORK-POS Booking Lifecycle & Slip Status Separation Suite', () => {
   describe('3. Combined Lifecycle + Payment Matrix (Clean Separation)', () => {
     const fixedNow = new Date('2026-10-28T14:00:00.000Z');
 
-    test('Scenario: ตรวจสลิปแล้ว + ใช้งานเสร็จสิ้นแล้ว (Reported user issue)', () => {
+    test('Scenario: ตรวจสลิปแล้ว + สิ้นสุดเวลาการจองแล้ว (Reported user issue)', () => {
       const b = {
         id: 59,
         customer_name: 'Ploy',
@@ -208,7 +242,7 @@ describe('BWORK-POS Booking Lifecycle & Slip Status Separation Suite', () => {
 
       // Service usage invariant
       assert.equal(usage.is_completed, true);
-      assert.equal(usage.label, 'ใช้งานเสร็จสิ้นแล้ว');
+      assert.equal(usage.label, 'สิ้นสุดเวลาการจองแล้ว');
 
       // Primary Action Helper simulation
       const isPaid = fin.is_paid;

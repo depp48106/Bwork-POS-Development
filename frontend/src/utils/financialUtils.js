@@ -485,7 +485,7 @@ export function getBookingUsageLifecycle(booking, now = new Date()) {
   if (nowMs > maxEnd) {
     return {
       key: 'completed',
-      label: 'ใช้งานเสร็จสิ้นแล้ว',
+      label: 'สิ้นสุดเวลาการจองแล้ว',
       color: 'var(--text-muted, #64748b)',
       bg: 'var(--bg-subtle, #f1f5f9)',
       badgeClass: 'pb-usage-completed',
