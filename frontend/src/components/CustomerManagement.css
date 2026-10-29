@@ -357,6 +357,16 @@
   color: #b45309;
 }
 
+.crm-type-tag.ondemand {
+  background: #f3e8ff;
+  color: #7e22ce;
+}
+
+.crm-type-tag.virtual-office {
+  background: #ecfdf5;
+  color: #047857;
+}
+
 .crm-tax-hint {
   font-size: 0.72rem;
   color: var(--crm-text-sub);
@@ -784,8 +794,20 @@
 
 .crm-type-selector-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+@media (max-width: 860px) {
+  .crm-type-selector-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .crm-type-selector-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .crm-type-btn {

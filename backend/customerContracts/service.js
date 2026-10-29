@@ -143,14 +143,12 @@ async function calculateCustomerQuota(dbQuery, {
   const effectiveUnit = customer ? customer.basecamp_unit : basecampUnit;
 
   // Check quota allocation limits
-  if (effectiveType === 'shop') {
-    maxQuota = activeContract ? Number(activeContract.monthly_quota_hours || 4.0) : 4.0;
+  if (activeContract && activeContract.monthly_quota_hours !== undefined && activeContract.monthly_quota_hours !== null) {
+    maxQuota = Number(activeContract.monthly_quota_hours);
+  } else if (effectiveType === 'shop') {
+    maxQuota = 4.0;
   } else if (effectiveType === 'basecamp') {
-    if (activeContract && activeContract.monthly_quota_hours) {
-      maxQuota = Number(activeContract.monthly_quota_hours);
-    } else {
-      maxQuota = effectiveSubType === 'office' ? 4.0 : 2.0;
-    }
+    maxQuota = effectiveSubType === 'office' ? 4.0 : 2.0;
   } else {
     maxQuota = 0;
   }
@@ -164,8 +162,8 @@ async function calculateCustomerQuota(dbQuery, {
       contractEligible = false;
       ineligibilityReason = eligibility.reason;
     }
-  } else if (effectiveType === 'shop') {
-    // Shop requires contract
+  } else if (effectiveType !== 'basecamp') {
+    // Non-basecamp groups (shop, ondemand, virtual_office) require active contract for quota
     contractEligible = false;
     ineligibilityReason = 'NO_CONTRACT';
   }

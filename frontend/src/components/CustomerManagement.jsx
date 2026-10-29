@@ -27,7 +27,9 @@ import {
   CalendarDays,
   FileCheck,
   MoreVertical,
-  ExternalLink
+  ExternalLink,
+  Zap,
+  Globe
 } from 'lucide-react';
 import ThaiDatePicker from './ThaiDatePicker';
 import {
@@ -182,9 +184,9 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
   const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
   const canManageContracts = isAdmin || (user?.role === 'staff') || (user?.role === 'manager');
 
-  // Basecamp Units
-  const officeUnits = useMemo(() => Array.from({ length: 18 }, (_, i) => String(401 + i)), []);
-  const hotdeskUnits = useMemo(() => Array.from({ length: 16 }, (_, i) => String(419 + i)), []);
+  // Basecamp Units (Office 401-414, Hotdesk 419-422 and 427-430)
+  const officeUnits = useMemo(() => ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'], []);
+  const hotdeskUnits = useMemo(() => ['419', '420', '421', '422', '427', '428', '429', '430'], []);
 
   // Fetch Customers with authoritative quota calculation
   const fetchCustomers = async () => {
@@ -252,7 +254,8 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       customerForm.address !== init.address ||
       customerForm.basecamp_unit !== init.basecamp_unit ||
       customerForm.basecamp_sub_type !== init.basecamp_sub_type ||
-      customerForm.customer_type !== init.customer_type
+      customerForm.customer_type !== init.customer_type ||
+      String(customerForm.monthly_quota_hours ?? '') !== String(init.monthly_quota_hours ?? '')
     );
   };
 
@@ -341,11 +344,17 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     setShowAddEditModal(true);
   };
 
-  // Open Edit Customer Info Modal (Clean & Focused)
+  // Open Edit Customer Info Modal (Clean & Focused with Quota Editing)
   const handleOpenEdit = (c) => {
     setEditingCustomer(c);
+    const currentQuota = c.active_contract?.monthly_quota_hours !== undefined
+      ? c.active_contract.monthly_quota_hours
+      : (c.contracts?.[0]?.monthly_quota_hours !== undefined
+          ? c.contracts[0].monthly_quota_hours
+          : (c.quota?.max_quota !== undefined ? c.quota.max_quota : 0));
+
     const initialData = {
-      customer_type: c.customer_type,
+      customer_type: c.customer_type || 'basecamp',
       name: c.name || '',
       contact_name: c.contact_name || '',
       phone: c.phone || '',
@@ -354,10 +363,10 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       address: c.address || '',
       basecamp_sub_type: c.basecamp_sub_type || 'office',
       basecamp_unit: c.basecamp_unit || '401',
-      start_date: '',
-      end_date: '',
-      monthly_quota_hours: 4.0,
-      contract_number: '',
+      start_date: c.active_contract?.start_date || '',
+      end_date: c.active_contract?.end_date || '',
+      monthly_quota_hours: currentQuota,
+      contract_number: c.active_contract?.contract_number || '',
       notes: ''
     };
     initialCustomerFormRef.current = initialData;
@@ -370,6 +379,11 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
     e.preventDefault();
     if (!customerForm.name.trim()) {
       if (sysAlert) sysAlert('กรุณาระบุชื่อลูกค้าหรือชื่อร้านค้า', 'warning');
+      return;
+    }
+
+    if (customerForm.monthly_quota_hours !== '' && (isNaN(Number(customerForm.monthly_quota_hours)) || Number(customerForm.monthly_quota_hours) < 0)) {
+      if (sysAlert) sysAlert('กรุณาระบุโควตาห้องประชุมเป็นตัวเลขที่ถูกต้อง (0 ขึ้นไป)', 'warning');
       return;
     }
 
@@ -779,12 +793,13 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
       if (filterStatus !== 'all' && c.status !== filterStatus) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
+        const matchId = String(c.id).includes(q);
         const matchName = c.name?.toLowerCase().includes(q);
         const matchUnit = c.basecamp_unit?.toLowerCase().includes(q);
         const matchContact = c.contact_name?.toLowerCase().includes(q);
         const matchPhone = c.phone?.toLowerCase().includes(q);
         const matchTax = c.tax_id?.toLowerCase().includes(q);
-        if (!matchName && !matchUnit && !matchContact && !matchPhone && !matchTax) return false;
+        if (!matchId && !matchName && !matchUnit && !matchContact && !matchPhone && !matchTax) return false;
       }
       return true;
     });
@@ -839,8 +854,16 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
           <span className="val">{customers.filter(c => c.customer_type === 'basecamp').length}</span>
         </div>
         <div className="crm-metric-pill">
-          <span className="lbl">Partner Shop</span>
+          <span className="lbl">Shop</span>
           <span className="val">{customers.filter(c => c.customer_type === 'shop').length}</span>
+        </div>
+        <div className="crm-metric-pill">
+          <span className="lbl">OnDemand</span>
+          <span className="val">{customers.filter(c => c.customer_type === 'ondemand').length}</span>
+        </div>
+        <div className="crm-metric-pill">
+          <span className="lbl">Virtual Office</span>
+          <span className="val">{customers.filter(c => c.customer_type === 'virtual_office').length}</span>
         </div>
       </div>
 
@@ -888,7 +911,21 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
               className={`crm-segment-btn ${filterType === 'shop' ? 'active' : ''}`}
               onClick={() => setFilterType('shop')}
             >
-              Partner Shop
+              Shop
+            </button>
+            <button
+              type="button"
+              className={`crm-segment-btn ${filterType === 'ondemand' ? 'active' : ''}`}
+              onClick={() => setFilterType('ondemand')}
+            >
+              OnDemand
+            </button>
+            <button
+              type="button"
+              className={`crm-segment-btn ${filterType === 'virtual_office' ? 'active' : ''}`}
+              onClick={() => setFilterType('virtual_office')}
+            >
+              Virtual Office
             </button>
           </div>
 
@@ -981,8 +1018,14 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                               <span className="crm-type-tag basecamp">
                                 {c.basecamp_sub_type === 'hotdesk' ? 'Hotdesk' : 'Office'} {c.basecamp_unit}
                               </span>
+                            ) : c.customer_type === 'shop' ? (
+                              <span className="crm-type-tag shop">Shop</span>
+                            ) : c.customer_type === 'ondemand' ? (
+                              <span className="crm-type-tag ondemand">OnDemand</span>
+                            ) : c.customer_type === 'virtual_office' ? (
+                              <span className="crm-type-tag virtual-office">Virtual Office</span>
                             ) : (
-                              <span className="crm-type-tag shop">Partner Shop</span>
+                              <span className="crm-type-tag other">{c.customer_type}</span>
                             )}
                             {c.tax_id && <span className="crm-tax-hint">Tax: {c.tax_id}</span>}
                           </div>
@@ -1149,50 +1192,82 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                   <div className="crm-form-section">
                     <div className="crm-form-section-title">
                       <Building2 size={16} />
-                      <span>{customerForm.customer_type === 'shop' ? 'ข้อมูลร้านค้าพันธมิตร' : 'ข้อมูลผู้เช่า / นิติบุคคล'}</span>
+                      <span>ข้อมูลผู้เช่า / ลูกค้า</span>
                     </div>
 
-                    {!editingCustomer && (
-                      <div className="crm-form-group">
-                        <label className="crm-form-label">ประเภทลูกค้า <span className="req">*</span></label>
-                        <div className="crm-type-selector-grid">
-                          <button
-                            type="button"
-                            className={`crm-type-btn ${customerForm.customer_type === 'basecamp' ? 'active' : ''}`}
-                            onClick={() => {
-                              setCustomerForm({
-                                ...customerForm,
-                                customer_type: 'basecamp',
-                                monthly_quota_hours: customerForm.basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0
-                              });
-                            }}
-                          >
-                            <Building2 size={16} />
-                            <div>
-                              <strong>Basecamp</strong>
-                              <span>ผู้เช่าออฟฟิศ/ฮอทเดสก์ ชั้น 4</span>
-                            </div>
-                          </button>
-                          <button
-                            type="button"
-                            className={`crm-type-btn ${customerForm.customer_type === 'shop' ? 'active' : ''}`}
-                            onClick={() => {
-                              setCustomerForm({
-                                ...customerForm,
-                                customer_type: 'shop',
-                                monthly_quota_hours: 4.0
-                              });
-                            }}
-                          >
-                            <Store size={16} />
-                            <div>
-                              <strong>Partner Shop</strong>
-                              <span>ร้านค้าพันธมิตรในอาคาร</span>
-                            </div>
-                          </button>
-                        </div>
+                    <div className="crm-form-group">
+                      <label className="crm-form-label">กลุ่มลูกค้า <span className="req">*</span></label>
+                      <div className="crm-type-selector-grid">
+                        <button
+                          type="button"
+                          className={`crm-type-btn ${customerForm.customer_type === 'basecamp' ? 'active' : ''}`}
+                          onClick={() => {
+                            setCustomerForm(prev => ({
+                              ...prev,
+                              customer_type: 'basecamp',
+                              basecamp_sub_type: prev.basecamp_sub_type || 'office',
+                              basecamp_unit: prev.basecamp_unit || '401'
+                            }));
+                          }}
+                        >
+                          <Building2 size={16} />
+                          <div>
+                            <strong>Basecamp</strong>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          className={`crm-type-btn ${customerForm.customer_type === 'shop' ? 'active' : ''}`}
+                          onClick={() => {
+                            setCustomerForm(prev => ({
+                              ...prev,
+                              customer_type: 'shop',
+                              basecamp_sub_type: null,
+                              basecamp_unit: null
+                            }));
+                          }}
+                        >
+                          <Store size={16} />
+                          <div>
+                            <strong>Shop</strong>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          className={`crm-type-btn ${customerForm.customer_type === 'ondemand' ? 'active' : ''}`}
+                          onClick={() => {
+                            setCustomerForm(prev => ({
+                              ...prev,
+                              customer_type: 'ondemand',
+                              basecamp_sub_type: null,
+                              basecamp_unit: null
+                            }));
+                          }}
+                        >
+                          <Zap size={16} />
+                          <div>
+                            <strong>OnDemand</strong>
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          className={`crm-type-btn ${customerForm.customer_type === 'virtual_office' ? 'active' : ''}`}
+                          onClick={() => {
+                            setCustomerForm(prev => ({
+                              ...prev,
+                              customer_type: 'virtual_office',
+                              basecamp_sub_type: null,
+                              basecamp_unit: null
+                            }));
+                          }}
+                        >
+                          <Globe size={16} />
+                          <div>
+                            <strong>Virtual Office</strong>
+                          </div>
+                        </button>
                       </div>
-                    )}
+                    </div>
 
                     {customerForm.customer_type === 'basecamp' && (
                       <div className="crm-form-grid-2">
@@ -1200,19 +1275,18 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                           <label className="crm-form-label">ประเภทยูนิต</label>
                           <select
                             className="crm-form-select"
-                            value={customerForm.basecamp_sub_type}
+                            value={customerForm.basecamp_sub_type || 'office'}
                             onChange={(e) => {
                               const sub = e.target.value;
-                              setCustomerForm({
-                                ...customerForm,
+                              setCustomerForm(prev => ({
+                                ...prev,
                                 basecamp_sub_type: sub,
-                                basecamp_unit: sub === 'office' ? '401' : '419',
-                                monthly_quota_hours: sub === 'office' ? 4.0 : 2.0
-                              });
+                                basecamp_unit: sub === 'office' ? '401' : '419'
+                              }));
                             }}
                           >
-                            <option value="office">Office (โควตา 4 ชม./ด.)</option>
-                            <option value="hotdesk">Hotdesk (โควตา 2 ชม./ด.)</option>
+                            <option value="office">Office</option>
+                            <option value="hotdesk">Hotdesk</option>
                           </select>
                         </div>
 
@@ -1220,8 +1294,8 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                           <label className="crm-form-label">เลขยูนิตชั้น 4</label>
                           <select
                             className="crm-form-select"
-                            value={customerForm.basecamp_unit}
-                            onChange={(e) => setCustomerForm({ ...customerForm, basecamp_unit: e.target.value })}
+                            value={customerForm.basecamp_unit || (customerForm.basecamp_sub_type === 'hotdesk' ? '419' : '401')}
+                            onChange={(e) => setCustomerForm(prev => ({ ...prev, basecamp_unit: e.target.value }))}
                           >
                             {customerForm.basecamp_sub_type === 'office'
                               ? officeUnits.map(u => <option key={u} value={u}>Office {u}</option>)
@@ -1234,7 +1308,7 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
 
                     <div className="crm-form-group">
                       <label className="crm-form-label">
-                        {customerForm.customer_type === 'shop' ? 'ชื่อร้านค้าพันธมิตร' : 'ชื่อบริษัท / ผู้เช่า'}
+                        {customerForm.customer_type === 'basecamp' ? 'ชื่อบริษัท / ผู้เช่า' : 'ชื่อบริษัท / ลูกค้า'}
                         <span className="req">*</span>
                       </label>
                       <input
@@ -1242,20 +1316,43 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                         className="crm-form-input"
                         placeholder="เช่น บจก. เทคโนโลยีอนาคต หรือ Koo.Koo Cafe"
                         value={customerForm.name}
-                        onChange={(e) => setCustomerForm({ ...customerForm, name: e.target.value })}
+                        onChange={(e) => setCustomerForm(prev => ({ ...prev, name: e.target.value }))}
                         required
                       />
                     </div>
 
-                    <div className="crm-form-group">
-                      <label className="crm-form-label">เลขประจำตัวผู้เสียภาษี (Tax ID)</label>
-                      <input
-                        type="text"
-                        className="crm-form-input"
-                        placeholder="13 หลัก (ถ้ามี)"
-                        value={customerForm.tax_id}
-                        onChange={(e) => setCustomerForm({ ...customerForm, tax_id: e.target.value })}
-                      />
+                    <div className="crm-form-grid-2">
+                      <div className="crm-form-group">
+                        <label className="crm-form-label">เลขประจำตัวผู้เสียภาษี (Tax ID)</label>
+                        <input
+                          type="text"
+                          className="crm-form-input"
+                          placeholder="13 หลัก (ถ้ามี)"
+                          value={customerForm.tax_id}
+                          onChange={(e) => setCustomerForm(prev => ({ ...prev, tax_id: e.target.value }))}
+                        />
+                      </div>
+
+                      {editingCustomer && (
+                        <div className="crm-form-group">
+                          <label className="crm-form-label">
+                            โควตาห้องประชุม (ชม./ด.) <span className="req">*</span>
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.5"
+                            className="crm-form-input"
+                            placeholder="0"
+                            value={customerForm.monthly_quota_hours === '' ? '' : customerForm.monthly_quota_hours}
+                            onChange={(e) => {
+                              const val = e.target.value === '' ? '' : Math.max(0, parseFloat(e.target.value) || 0);
+                              setCustomerForm(prev => ({ ...prev, monthly_quota_hours: val }));
+                            }}
+                            required
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1347,12 +1444,20 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                         <label className="crm-form-label">โควตาห้องประชุม (ชม./ด.) <span className="req">*</span></label>
                         <input
                           type="number"
+                          min="0"
                           step="0.5"
                           className="crm-form-input"
-                          value={customerForm.monthly_quota_hours}
-                          onChange={(e) => setCustomerForm({ ...customerForm, monthly_quota_hours: parseFloat(e.target.value) || 0 })}
+                          placeholder="0"
+                          value={customerForm.monthly_quota_hours === '' ? '' : customerForm.monthly_quota_hours}
+                          onChange={(e) => {
+                            const val = e.target.value === '' ? '' : Math.max(0, parseFloat(e.target.value) || 0);
+                            setCustomerForm(prev => ({ ...prev, monthly_quota_hours: val }));
+                          }}
                           required
                         />
+                        <span className="crm-form-hint" style={{ fontSize: '0.72rem', color: 'var(--crm-text-sub)', marginTop: '2px', display: 'block' }}>
+                          กรอกโควต้าเองได้ (ระบุ 0 ชม. ได้)
+                        </span>
                       </div>
 
                       <div className="crm-form-group">
@@ -1428,7 +1533,13 @@ export default function CustomerManagement({ user, sysAlert, sysConfirm }) {
                     <span className={`crm-type-tag ${contractCustomer.customer_type}`}>
                       {contractCustomer.customer_type === 'basecamp'
                         ? `Basecamp ${contractCustomer.basecamp_unit || ''}`
-                        : 'Partner Shop'}
+                        : contractCustomer.customer_type === 'shop'
+                        ? 'Shop'
+                        : contractCustomer.customer_type === 'ondemand'
+                        ? 'OnDemand'
+                        : contractCustomer.customer_type === 'virtual_office'
+                        ? 'Virtual Office'
+                        : contractCustomer.customer_type}
                     </span>
                   </div>
                   <span className="crm-cmh-cust-name">{contractCustomer.name}</span>
