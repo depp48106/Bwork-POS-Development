@@ -1872,33 +1872,248 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
   };
 }
 
-async function sendLineBookingConfirmation(env, bookingId) {
+function maskLineUserId(userId) {
+  if (!userId || typeof userId !== 'string') return '-';
+  const str = userId.trim();
+  if (str.length <= 8) return str.slice(0, 2) + '***';
+  return str.slice(0, 4) + '...' + str.slice(-4);
+}
+
+function logSafeNotificationDiagnostic(event, payload) {
+  const safePayload = {
+    event,
+    booking_id: payload.booking_id,
+    eligible: payload.eligible,
+    attempted: payload.attempted,
+    status: payload.status,
+    reason: payload.reason || null,
+    http_status: payload.http_status || null,
+    masked_line_user_id: maskLineUserId(payload.line_user_id),
+    timestamp: payload.timestamp || new Date().toISOString()
+  };
+  console.log(`[LINE-Notification-Audit] ${JSON.stringify(safePayload)}`);
+}
+
+/**
+ * Authoritative, Idempotent LINE Booking Confirmation Trigger
+ * Validates full payment, approved slip, balance, line_user_id, and access token.
+ * Prevents duplicate pushes and guarantees safe diagnostic audit trail in booking_history.
+ */
+async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
+  const nowIso = new Date().toISOString();
   try {
     const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
-    if (!booking || !booking.line_user_id) return null;
+    if (!booking) {
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: false,
+        attempted: false,
+        status: 'failed',
+        reason: 'booking_not_found'
+      });
+      return { success: false, sent: false, mocked: false, status: 'failed', reason: 'booking_not_found', http_status: null };
+    }
 
+    // 1. Eligibility Check: Must be paid
+    if (booking.payment_status !== 'paid') {
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: false,
+        attempted: false,
+        status: 'skipped',
+        reason: 'payment_status_not_paid',
+        line_user_id: booking.line_user_id
+      });
+      return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'payment_status_not_paid', payment_status: booking.payment_status, http_status: null };
+    }
+
+    // 2. Eligibility Check: No outstanding balance
+    const netTotal = roundMoney(Math.max(0, Number(booking.total_amount) || 0));
+    const paidAmount = roundMoney(Math.max(0, Number(booking.paid_amount !== null && booking.paid_amount !== undefined ? booking.paid_amount : booking.total_amount) || 0));
+    const balanceAmount = roundMoney(Math.max(0, Number(booking.balance_amount || 0)));
+
+    if (balanceAmount > 0 || (netTotal > 0 && paidAmount < netTotal)) {
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: false,
+        attempted: false,
+        status: 'skipped',
+        reason: 'balance_remaining',
+        line_user_id: booking.line_user_id
+      });
+      return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'balance_remaining', balance_amount: balanceAmount, http_status: null };
+    }
+
+    // 3. Eligibility Check: Slip verification status (if slip was uploaded, must not be rejected or pending)
+    const hasSlip = Boolean(booking.slip_image_url && booking.slip_image_url !== 'uploaded');
+    if (hasSlip) {
+      const slipStatus = String(booking.slip_verify_status || '').toLowerCase();
+      if (slipStatus === 'rejected') {
+        logSafeNotificationDiagnostic('booking_confirmation', {
+          booking_id: bookingId,
+          eligible: false,
+          attempted: false,
+          status: 'skipped',
+          reason: 'slip_rejected',
+          line_user_id: booking.line_user_id
+        });
+        return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'slip_rejected', http_status: null };
+      }
+      if (slipStatus === 'pending_manual' || slipStatus === 'pending') {
+        logSafeNotificationDiagnostic('booking_confirmation', {
+          booking_id: bookingId,
+          eligible: false,
+          attempted: false,
+          status: 'skipped',
+          reason: 'slip_pending_approval',
+          line_user_id: booking.line_user_id
+        });
+        return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'slip_pending_approval', http_status: null };
+      }
+    }
+
+    // 4. Idempotency Check: Prevent duplicate sends from concurrent requests or double-clicks
+    const alreadyNotified = await env.DB.prepare(
+      "SELECT id FROM booking_history WHERE booking_id = ? AND action = 'line_confirmation_notified' LIMIT 1"
+    ).bind(bookingId).first();
+
+    if (alreadyNotified) {
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: false,
+        status: 'skipped',
+        reason: 'already_notified',
+        line_user_id: booking.line_user_id
+      });
+      return { success: true, sent: false, mocked: false, status: 'skipped', reason: 'already_notified', http_status: null };
+    }
+
+    // 5. Line User ID Check
+    if (!booking.line_user_id || !String(booking.line_user_id).trim()) {
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_skipped', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify({ reason: 'no_line_user_id', timestamp: nowIso }), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: false,
+        status: 'skipped',
+        reason: 'no_line_user_id'
+      });
+      return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'no_line_user_id', http_status: null };
+    }
+
+    // 6. Token Check
+    const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
+    const channelAccessToken = tokenSetting?.value || env.LINE_CHANNEL_ACCESS_TOKEN;
+
+    if (!channelAccessToken || !String(channelAccessToken).trim()) {
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_failed', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify({ reason: 'no_channel_access_token', timestamp: nowIso }), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: true,
+        status: 'failed',
+        reason: 'no_channel_access_token',
+        http_status: 401,
+        line_user_id: booking.line_user_id
+      });
+      return { success: false, sent: false, mocked: false, status: 'failed', reason: 'no_channel_access_token', http_status: 401 };
+    }
+
+    // 7. Build Flex message preserving exact structure, PIN, and room details
     const item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
     const room = item?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first() : null;
 
-    const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
-    const channelAccessToken = tokenSetting?.value;
-
     const flexCard = buildLineBookingConfirmationFlex(booking, item, room);
 
+    // 8. Dispatch LINE Push
     const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
       to: booking.line_user_id,
       messages: [flexCard]
     });
 
     if (dispatch.mocked) {
-      return { success: true, sent: false, mocked: true, status: 200 };
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify({ status: 'sent', mocked: true, http_status: 200, timestamp: nowIso }), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: true,
+        status: 'sent',
+        reason: 'staging_environment_mock',
+        http_status: 200,
+        line_user_id: booking.line_user_id
+      });
+      return { success: true, sent: false, mocked: true, status: 'sent', http_status: 200 };
     }
-    if (!dispatch.ok) return null;
-    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
+
+    if (dispatch.ok) {
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify({ status: 'sent', http_status: dispatch.status, timestamp: nowIso }), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: true,
+        status: 'sent',
+        http_status: dispatch.status,
+        line_user_id: booking.line_user_id
+      });
+      return { success: true, sent: true, mocked: false, status: 'sent', http_status: dispatch.status };
+    } else {
+      const errorDetail = {
+        status: 'failed',
+        reason: 'line_api_error',
+        http_status: dispatch.status,
+        timestamp: nowIso
+      };
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_failed', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify(errorDetail), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: true,
+        status: 'failed',
+        reason: 'line_api_error',
+        http_status: dispatch.status,
+        line_user_id: booking.line_user_id
+      });
+      return { success: false, sent: false, mocked: false, status: 'failed', reason: 'line_api_error', http_status: dispatch.status };
+    }
   } catch (err) {
-    console.error('Error sending confirmation message:', err);
-    return null;
+    console.error('[LINE-Confirmation] Unexpected error in worker:', err?.message || err);
+    return { success: false, sent: false, mocked: false, status: 'failed', reason: 'internal_error', error: err?.message || String(err) };
   }
+}
+
+async function sendLineBookingConfirmation(env, bookingId) {
+  return await triggerLineBookingConfirmation(env, bookingId);
 }
 
 async function sendLineDoorPin(env, bookingId) {
@@ -6388,10 +6603,10 @@ export default {
           } catch (svErr) {}
 
           let lineData = null;
-          if (booking.line_user_id) {
-            try {
-              lineData = await sendLineBookingConfirmation(env, bookingId);
-            } catch (lineErr) {}
+          try {
+            lineData = await triggerLineBookingConfirmation(env, bookingId);
+          } catch (lineErr) {
+            console.warn('[Payment] LINE confirmation execution warning in worker:', lineErr.message);
           }
 
           return new Response(JSON.stringify({
@@ -6399,6 +6614,7 @@ export default {
             message: 'อนุมัติการชำระเงินสำเร็จ' + (lineData?.success ? ' และส่งการแจ้งเตือนยืนยันการจองผ่าน LINE OA แล้ว' : ''),
             receiptNumber,
             pinCode,
+            line_notification: lineData,
             line_notification_sent: lineData?.success || false
           }), { headers: corsHeaders });
         } else if (paymentStatus === 'rejected') {
@@ -6666,15 +6882,26 @@ export default {
           console.warn('[Pay-Balance] Error logging booking_history in worker:', hErr);
         }
 
+        let lineData = null;
+        if (newStatus === 'paid') {
+          try {
+            lineData = await triggerLineBookingConfirmation(env, booking.id);
+          } catch (lineErr) {
+            console.warn('[Pay-Balance] LINE confirmation execution warning in worker:', lineErr.message);
+          }
+        }
+
         const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         return new Response(JSON.stringify({
           success: true,
-          message: newStatus === 'paid' ? 'ชำระเงินครบถ้วนเรียบร้อยแล้ว' : 'บันทึกการชำระเงินคงเหลือสำเร็จ',
+          message: newStatus === 'paid' ? 'ชำระเงินครบถ้วนเรียบร้อยแล้ว' + (lineData?.success ? ' และส่งการแจ้งเตือนยืนยันการจองผ่าน LINE OA แล้ว' : '') : 'บันทึกการชำระเงินคงเหลือสำเร็จ',
           paid_amount: newPaid,
           balance_amount: newBalance,
           payment_status: newStatus,
           payment_method: method,
           slip_url: slipUrl,
+          line_notification: lineData,
+          line_notification_sent: lineData?.success || false,
           booking: updatedBooking
         }), { headers: corsHeaders });
       }
