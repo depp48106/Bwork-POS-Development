@@ -1830,8 +1830,200 @@ function buildLineDoorPinFlex(booking, item, room) {
  * Returns { sent: false, mocked: true, status: 200, success: true, ok: true }.
  * Never logs tokens or customer PII.
  */
-async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }) {
-  if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
+let workerClaimsTableEnsured = false;
+async function ensureLineNotificationClaimsTable(db) {
+  if (workerClaimsTableEnsured || !db) return;
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS line_notification_claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+        notification_type TEXT NOT NULL DEFAULT 'booking_confirmation',
+        status TEXT NOT NULL DEFAULT 'processing',
+        claim_token TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        http_status INTEGER,
+        error_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(booking_id, notification_type)
+      )
+    `).run();
+    await db.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_line_claims_booking_status 
+      ON line_notification_claims (booking_id, notification_type, status)
+    `).run();
+    workerClaimsTableEnsured = true;
+  } catch (err) {
+    console.warn('[LINE-Idempotency] Table initialization note:', err?.message || err);
+  }
+}
+
+const LINE_CLAIM_TIMEOUT_MS = 30000; // 30 seconds expiration for crashed worker
+
+async function acquireNotificationClaim(db, bookingId, notificationType = 'booking_confirmation') {
+  await ensureLineNotificationClaimsTable(db);
+  const claimToken = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : 'claim_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  const nowIso = new Date().toISOString();
+
+  // 1. Check existing booking_history for backward compatibility
+  const alreadyNotified = await db.prepare(
+    "SELECT id FROM booking_history WHERE booking_id = ? AND action = 'line_confirmation_notified' LIMIT 1"
+  ).bind(bookingId).first();
+
+  if (alreadyNotified) {
+    return {
+      acquired: false,
+      status: 'skipped',
+      reason: 'already_notified',
+      claimToken: null,
+      http_status: 200
+    };
+  }
+
+  // 2. Attempt atomic insert
+  try {
+    const insertRes = await db.prepare(`
+      INSERT OR IGNORE INTO line_notification_claims 
+      (booking_id, notification_type, status, claim_token, claimed_at, updated_at)
+      VALUES (?, ?, 'processing', ?, ?, ?)
+    `).bind(bookingId, notificationType, claimToken, nowIso, nowIso).run();
+
+    const changes = insertRes?.meta?.changes ?? insertRes?.changes ?? 0;
+    if (changes > 0) {
+      return {
+        acquired: true,
+        status: 'processing',
+        claimToken,
+        claimedAt: nowIso
+      };
+    }
+  } catch (insertErr) {
+    console.warn('[LINE-Idempotency] Error in atomic insert claim:', insertErr?.message || insertErr);
+  }
+
+  // 3. Row already exists! Check status
+  const existingClaim = await db.prepare(`
+    SELECT status, claim_token, claimed_at, http_status, error_message
+    FROM line_notification_claims
+    WHERE booking_id = ? AND notification_type = ?
+  `).bind(bookingId, notificationType).first();
+
+  if (!existingClaim) {
+    return { acquired: false, status: 'already_processing', reason: 'in_flight', claimToken: null };
+  }
+
+  if (existingClaim.status === 'sent') {
+    return {
+      acquired: false,
+      status: 'skipped',
+      reason: 'already_notified',
+      claimToken: null,
+      http_status: existingClaim.http_status || 200
+    };
+  }
+
+  if (existingClaim.status === 'delivery_unknown') {
+    return {
+      acquired: false,
+      status: 'delivery_unknown',
+      reason: 'previous_delivery_unconfirmed',
+      claimToken: null
+    };
+  }
+
+  if (existingClaim.status === 'processing') {
+    const elapsed = Date.now() - new Date(existingClaim.claimed_at).getTime();
+    if (elapsed < LINE_CLAIM_TIMEOUT_MS) {
+      return {
+        acquired: false,
+        status: 'already_processing',
+        reason: 'in_flight',
+        claimToken: null
+      };
+    }
+
+    // Previous worker timed out or crashed; attempt recovery takeover
+    try {
+      const takeoverRes = await db.prepare(`
+        UPDATE line_notification_claims
+        SET status = 'processing', claim_token = ?, claimed_at = ?, updated_at = ?
+        WHERE booking_id = ? AND notification_type = ? AND status = 'processing' AND claimed_at = ?
+      `).bind(claimToken, nowIso, nowIso, bookingId, notificationType, existingClaim.claimed_at).run();
+
+      const takeoverChanges = takeoverRes?.meta?.changes ?? takeoverRes?.changes ?? 0;
+      if (takeoverChanges > 0) {
+        return {
+          acquired: true,
+          status: 'processing',
+          claimToken,
+          claimedAt: nowIso,
+          recovered: true
+        };
+      }
+    } catch (_) {}
+
+    return {
+      acquired: false,
+      status: 'already_processing',
+      reason: 'in_flight',
+      claimToken: null
+    };
+  }
+
+  if (existingClaim.status === 'failed') {
+    try {
+      const retryRes = await db.prepare(`
+        UPDATE line_notification_claims
+        SET status = 'processing', claim_token = ?, claimed_at = ?, updated_at = ?
+        WHERE booking_id = ? AND notification_type = ? AND status = 'failed'
+      `).bind(claimToken, nowIso, nowIso, bookingId, notificationType).run();
+
+      const retryChanges = retryRes?.meta?.changes ?? retryRes?.changes ?? 0;
+      if (retryChanges > 0) {
+        return {
+          acquired: true,
+          status: 'processing',
+          claimToken,
+          claimedAt: nowIso,
+          retrying: true
+        };
+      }
+    } catch (_) {}
+
+    return {
+      acquired: false,
+      status: 'already_processing',
+      reason: 'in_flight',
+      claimToken: null
+    };
+  }
+
+  return {
+    acquired: false,
+    status: 'already_processing',
+    reason: 'in_flight',
+    claimToken: null
+  };
+}
+
+async function finalizeNotificationClaim(db, bookingId, notificationType, claimToken, { status, httpStatus, errorMessage }) {
+  const nowIso = new Date().toISOString();
+  try {
+    await db.prepare(`
+      UPDATE line_notification_claims
+      SET status = ?, http_status = ?, error_message = ?, updated_at = ?
+      WHERE booking_id = ? AND notification_type = ? AND claim_token = ?
+    `).bind(status, httpStatus || null, errorMessage || null, nowIso, bookingId, notificationType, claimToken).run();
+  } catch (err) {
+    console.warn('[LINE-Idempotency] Warning updating claim final status:', err?.message || err);
+  }
+}
+
+async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }, options = {}) {
+  if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true' || env.STAGING_MOCK_LINE_API === 'true')) {
     return {
       sent: false,
       mocked: true,
@@ -1853,23 +2045,57 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
     };
   }
 
-  const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${channelAccessToken}`
-    },
-    body: JSON.stringify({ to, messages })
-  });
+  const timeoutMs = options.timeoutMs || 10000;
+  let timeoutId = null;
+  let isTimedOut = false;
 
-  return {
-    sent: lineRes.ok,
-    mocked: false,
-    status: lineRes.status,
-    ok: lineRes.ok,
-    success: lineRes.ok,
-    response: lineRes
-  };
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  if (controller) {
+    timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      try { controller.abort(); } catch (_) {}
+    }, timeoutMs);
+  }
+
+  try {
+    const fetchOptions = {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${channelAccessToken}`
+      },
+      body: JSON.stringify({ to, messages })
+    };
+    if (controller) {
+      fetchOptions.signal = controller.signal;
+    }
+
+    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', fetchOptions);
+    if (timeoutId) clearTimeout(timeoutId);
+
+    return {
+      sent: lineRes.ok,
+      mocked: false,
+      status: lineRes.status,
+      ok: lineRes.ok,
+      success: lineRes.ok,
+      response: lineRes
+    };
+  } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
+    const isAbort = isTimedOut || err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('abort') || String(err?.message || '').toLowerCase().includes('timeout');
+    return {
+      sent: false,
+      mocked: false,
+      status: null,
+      ok: false,
+      success: false,
+      network_error: true,
+      is_timeout: isAbort,
+      reason: isAbort ? 'timeout' : 'network_error',
+      error: err?.message || String(err)
+    };
+  }
 }
 
 function maskLineUserId(userId) {
@@ -1972,24 +2198,7 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       }
     }
 
-    // 4. Idempotency Check: Prevent duplicate sends from concurrent requests or double-clicks
-    const alreadyNotified = await env.DB.prepare(
-      "SELECT id FROM booking_history WHERE booking_id = ? AND action = 'line_confirmation_notified' LIMIT 1"
-    ).bind(bookingId).first();
-
-    if (alreadyNotified) {
-      logSafeNotificationDiagnostic('booking_confirmation', {
-        booking_id: bookingId,
-        eligible: true,
-        attempted: false,
-        status: 'skipped',
-        reason: 'already_notified',
-        line_user_id: booking.line_user_id
-      });
-      return { success: true, sent: false, mocked: false, status: 'skipped', reason: 'already_notified', http_status: null };
-    }
-
-    // 5. Line User ID Check
+    // 4. Line User ID Check
     if (!booking.line_user_id || !String(booking.line_user_id).trim()) {
       try {
         await env.DB.prepare(
@@ -2008,11 +2217,41 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'no_line_user_id', http_status: null };
     }
 
+    // 5. ATOMIC CLAIM CHECK: Prevents TOCTOU race conditions and duplicate pushes
+    const claim = await acquireNotificationClaim(env.DB, bookingId, 'booking_confirmation');
+
+    if (!claim.acquired) {
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: false,
+        status: claim.status,
+        reason: claim.reason || null,
+        http_status: claim.http_status || null,
+        line_user_id: booking.line_user_id
+      });
+
+      return {
+        success: claim.status === 'skipped' && claim.reason === 'already_notified',
+        sent: false,
+        mocked: false,
+        status: claim.status,
+        reason: claim.reason,
+        http_status: claim.http_status || null
+      };
+    }
+
     // 6. Token Check
     const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
     const channelAccessToken = tokenSetting?.value || env.LINE_CHANNEL_ACCESS_TOKEN;
 
     if (!channelAccessToken || !String(channelAccessToken).trim()) {
+      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+        status: 'failed',
+        httpStatus: 401,
+        errorMessage: 'no_channel_access_token'
+      });
+
       try {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
@@ -2042,9 +2281,15 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
     const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
       to: booking.line_user_id,
       messages: [flexCard]
-    });
+    }, { timeoutMs: options.timeoutMs || 10000 });
 
     if (dispatch.mocked) {
+      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+        status: 'sent',
+        httpStatus: 200,
+        errorMessage: null
+      });
+
       try {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
@@ -2065,6 +2310,12 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
     }
 
     if (dispatch.ok) {
+      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+        status: 'sent',
+        httpStatus: dispatch.status,
+        errorMessage: null
+      });
+
       try {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
@@ -2081,31 +2332,67 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         line_user_id: booking.line_user_id
       });
       return { success: true, sent: true, mocked: false, status: 'sent', http_status: dispatch.status };
-    } else {
-      const errorDetail = {
-        status: 'failed',
-        reason: 'line_api_error',
-        http_status: dispatch.status,
-        timestamp: nowIso
-      };
+    }
+
+    if (dispatch.network_error) {
+      // Network timeout or socket drop - Delivery state is unknown!
+      // Do not allow blind retries to prevent customer duplicate messages.
+      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+        status: 'delivery_unknown',
+        httpStatus: null,
+        errorMessage: dispatch.reason || 'network_timeout_or_drop'
+      });
+
       try {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
            VALUES (?, 'line_confirmation_failed', ?, 'system', ?)`
-        ).bind(bookingId, JSON.stringify(errorDetail), nowIso).run();
+        ).bind(bookingId, JSON.stringify({ status: 'delivery_unknown', reason: dispatch.reason, timestamp: nowIso }), nowIso).run();
       } catch (_) {}
 
       logSafeNotificationDiagnostic('booking_confirmation', {
         booking_id: bookingId,
         eligible: true,
         attempted: true,
-        status: 'failed',
-        reason: 'line_api_error',
-        http_status: dispatch.status,
+        status: 'delivery_unknown',
+        reason: dispatch.reason,
+        http_status: null,
         line_user_id: booking.line_user_id
       });
-      return { success: false, sent: false, mocked: false, status: 'failed', reason: 'line_api_error', http_status: dispatch.status };
+      return { success: false, sent: false, mocked: false, status: 'delivery_unknown', reason: dispatch.reason, http_status: null };
     }
+
+    // Explicit HTTP 4xx/5xx rejection from LINE API
+    const errorDetail = {
+      status: 'failed',
+      reason: 'line_api_error',
+      http_status: dispatch.status,
+      timestamp: nowIso
+    };
+
+    await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+      status: 'failed',
+      httpStatus: dispatch.status,
+      errorMessage: 'line_api_error'
+    });
+
+    try {
+      await env.DB.prepare(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, 'line_confirmation_failed', ?, 'system', ?)`
+      ).bind(bookingId, JSON.stringify(errorDetail), nowIso).run();
+    } catch (_) {}
+
+    logSafeNotificationDiagnostic('booking_confirmation', {
+      booking_id: bookingId,
+      eligible: true,
+      attempted: true,
+      status: 'failed',
+      reason: 'line_api_error',
+      http_status: dispatch.status,
+      line_user_id: booking.line_user_id
+    });
+    return { success: false, sent: false, mocked: false, status: 'failed', reason: 'line_api_error', http_status: dispatch.status };
   } catch (err) {
     console.error('[LINE-Confirmation] Unexpected error in worker:', err?.message || err);
     return { success: false, sent: false, mocked: false, status: 'failed', reason: 'internal_error', error: err?.message || String(err) };

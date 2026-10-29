@@ -468,4 +468,149 @@ test('Automatic LINE Booking Confirmation Verification Suite', async (t) => {
     assert.strictEqual(res.reason, 'booking_not_found');
     assert.strictEqual(linePushCalls.length, 0, 'Push calls must be strictly 0');
   });
+
+  await t.test('15. Concurrent Double-Click (2 simultaneous requests) -> Strictly 1 LINE push', async () => {
+    linePushCalls = [];
+    lineApiResponseStatus = 200;
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (120, 'Khun ConcurrentDouble', 'Uline_user_120', 500, 500, 0, 'paid', 'https://r2/slip120.jpg', 'approved_manual');
+    `);
+
+    // Fire 2 requests simultaneously using Promise.all
+    const [res1, res2] = await Promise.all([
+      worker.triggerLineBookingConfirmation(env, 120),
+      worker.triggerLineBookingConfirmation(env, 120)
+    ]);
+
+    assert.strictEqual(linePushCalls.length, 1, 'Only exactly 1 LINE push call must be dispatched');
+    const successful = [res1, res2].filter(r => r.status === 'sent');
+    const blocked = [res1, res2].filter(r => r.status === 'already_processing' || r.status === 'skipped');
+    assert.strictEqual(successful.length, 1, 'Exactly one request must acquire claim and send');
+    assert.strictEqual(blocked.length, 1, 'The other request must be blocked');
+  });
+
+  await t.test('16. High Concurrency (15 simultaneous requests) -> Strictly 1 LINE push, 14 blocked', async () => {
+    linePushCalls = [];
+    lineApiResponseStatus = 200;
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (121, 'Khun HighConcurrency', 'Uline_user_121', 500, 500, 0, 'paid', 'https://r2/slip121.jpg', 'approved_manual');
+    `);
+
+    const results = await Promise.all(
+      Array.from({ length: 15 }, () => worker.triggerLineBookingConfirmation(env, 121))
+    );
+
+    assert.strictEqual(linePushCalls.length, 1, 'Push count must be strictly 1 across 15 concurrent requests');
+    const successful = results.filter(r => r.status === 'sent');
+    const blocked = results.filter(r => r.status === 'already_processing' || r.status === 'skipped');
+    assert.strictEqual(successful.length, 1, 'Exactly 1 request must succeed');
+    assert.strictEqual(blocked.length, 14, '14 requests must be blocked with already_processing or skipped');
+  });
+
+  await t.test('17. LINE API Timeout / Network Drop -> Marked delivery_unknown, no blind retry', async () => {
+    linePushCalls = [];
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (122, 'Khun TimeoutTest', 'Uline_user_122', 500, 500, 0, 'paid', 'https://r2/slip122.jpg', 'approved_manual');
+    `);
+
+    const timeoutFetch = async (url, opts) => {
+      if (String(url).includes('api.line.me')) {
+        const err = new Error('Network timeout after 10000ms');
+        err.name = 'AbortError';
+        throw err;
+      }
+      return originalFetch(url, opts);
+    };
+
+    const timeoutWorkerFn = new Function('URL', 'Response', 'Request', 'Headers', 'TextEncoder', 'Uint8Array', 'crypto', 'console', 'isNaN', 'Number', 'parseInt', 'Date', 'btoa', 'atob', 'fetch', wrapped);
+    const timeoutWorker = timeoutWorkerFn(URL, Response, Request, Headers, TextEncoder, Uint8Array, globalThis.crypto, console, isNaN, Number, parseInt, Date, btoa, atob, timeoutFetch);
+
+    const res = await timeoutWorker.triggerLineBookingConfirmation(env, 122);
+    assert.strictEqual(res.success, false);
+    assert.strictEqual(res.status, 'delivery_unknown');
+    assert.strictEqual(res.reason, 'timeout');
+
+    // Verify claim row in DB is marked delivery_unknown
+    const claim = db.prepare("SELECT * FROM line_notification_claims WHERE booking_id = 122").get();
+    assert.ok(claim, 'Claim row must exist');
+    assert.strictEqual(claim.status, 'delivery_unknown');
+
+    // Next request must NOT blindly retry
+    const resRetry = await timeoutWorker.triggerLineBookingConfirmation(env, 122);
+    assert.strictEqual(resRetry.success, false);
+    assert.strictEqual(resRetry.status, 'delivery_unknown');
+    assert.strictEqual(resRetry.reason, 'previous_delivery_unconfirmed');
+  });
+
+  await t.test('18. Worker Crash Recovery -> Stale claim (>30s) is recovered and sent', async () => {
+    linePushCalls = [];
+    lineApiResponseStatus = 200;
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (123, 'Khun CrashRecovery', 'Uline_user_123', 500, 500, 0, 'paid', 'https://r2/slip123.jpg', 'approved_manual');
+    `);
+
+    // Simulate stale processing claim from crashed worker (claimed 45 seconds ago)
+    const staleTime = new Date(Date.now() - 45000).toISOString();
+    db.exec(`
+      INSERT OR REPLACE INTO line_notification_claims 
+      (booking_id, notification_type, status, claim_token, claimed_at, updated_at)
+      VALUES (123, 'booking_confirmation', 'processing', 'crashed_token_999', '${staleTime}', '${staleTime}');
+    `);
+
+    // New worker executes triggerLineBookingConfirmation
+    const res = await worker.triggerLineBookingConfirmation(env, 123);
+    assert.strictEqual(res.success, true);
+    assert.strictEqual(res.status, 'sent');
+    assert.strictEqual(linePushCalls.length, 1, 'Recovered claim successfully dispatched push');
+
+    const updatedClaim = db.prepare("SELECT * FROM line_notification_claims WHERE booking_id = 123").get();
+    assert.strictEqual(updatedClaim.status, 'sent');
+  });
+
+  await t.test('19. Existing booking_history Compatibility -> Past notified bookings immediately skipped', async () => {
+    linePushCalls = [];
+
+    // Simulate booking notified in previous release before line_notification_claims existed
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (124, 'Khun LegacyBooking', 'Uline_user_124', 500, 500, 0, 'paid', 'https://r2/slip124.jpg', 'approved_manual');
+      INSERT OR REPLACE INTO booking_history (booking_id, action, details, performed_by, created_at)
+      VALUES (124, 'line_confirmation_notified', '{"status":"sent","http_status":200}', 'system', '2026-10-20T10:00:00Z');
+    `);
+
+    const res = await worker.triggerLineBookingConfirmation(env, 124);
+    assert.strictEqual(res.success, true);
+    assert.strictEqual(res.status, 'skipped');
+    assert.strictEqual(res.reason, 'already_notified');
+    assert.strictEqual(linePushCalls.length, 0, 'Must NOT push for legacy notified booking');
+  });
+
+  await t.test('20. Staging Hard Block -> Zero live push calls, returns mocked: true', async () => {
+    linePushCalls = [];
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (125, 'Khun StagingBlock', 'Uline_user_125', 500, 500, 0, 'paid', 'https://r2/slip125.jpg', 'approved_manual');
+    `);
+
+    const stagingEnv = {
+      ...env,
+      ENVIRONMENT: 'staging'
+    };
+
+    const res = await worker.triggerLineBookingConfirmation(stagingEnv, 125);
+    assert.strictEqual(res.success, true);
+    assert.strictEqual(res.sent, false);
+    assert.strictEqual(res.mocked, true);
+    assert.strictEqual(res.status, 'sent');
+    assert.strictEqual(linePushCalls.length, 0, 'Staging must hard-block and never call LINE API');
+  });
 });
