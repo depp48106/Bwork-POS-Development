@@ -117,12 +117,23 @@ export default function ThaiDatePicker({
         if (inputRef.current) {
           const rect = inputRef.current.getBoundingClientRect();
           const popoverWidth = 320;
-          const popoverHeight = 350;
+          // Accurately read popover height if already rendered in DOM, else fallback to 355px
+          const popoverHeight = popoverRef.current ? popoverRef.current.offsetHeight : 355;
 
-          // Vertical collision: if space below in viewport < popoverHeight and space above > popoverHeight, open upward
-          const spaceBelow = windowHeight - rect.bottom;
-          const spaceAbove = rect.top;
-          const shouldOpenUpward = spaceBelow < popoverHeight && spaceAbove > popoverHeight;
+          // Space calculation relative to visible viewport boundaries
+          const spaceBelow = windowHeight - rect.bottom - 8;
+          const spaceAbove = rect.top - 8;
+
+          // Decide upward vs downward placement
+          let shouldOpenUpward = false;
+          if (spaceBelow >= popoverHeight) {
+            shouldOpenUpward = false;
+          } else if (spaceAbove >= popoverHeight) {
+            shouldOpenUpward = true;
+          } else {
+            // Neither side has full clearance: choose the side with greater space
+            shouldOpenUpward = spaceAbove > spaceBelow;
+          }
           setOpenUpward(shouldOpenUpward);
 
           // Horizontal alignment
@@ -146,25 +157,36 @@ export default function ThaiDatePicker({
           }
           setAlignRight(isRight);
 
-          let left = isRight ? Math.max(12, rect.right - popoverWidth) : Math.min(rect.left, windowWidth - popoverWidth - 12);
-          let top = shouldOpenUpward
-            ? Math.max(12, rect.top - popoverHeight - 6)
-            : Math.min(windowHeight - popoverHeight - 12, rect.bottom + 6);
+          // Target horizontal position with strict viewport boundary clamping
+          let targetLeft = isRight ? (rect.right - popoverWidth) : rect.left;
+          let left = Math.max(12, Math.min(targetLeft, windowWidth - popoverWidth - 12));
+
+          // Target vertical position with strict viewport boundary clamping
+          let top;
+          if (shouldOpenUpward) {
+            top = Math.max(12, rect.top - popoverHeight - 6);
+          } else {
+            top = Math.min(windowHeight - popoverHeight - 12, rect.bottom + 6);
+          }
 
           setPopoverStyle({
             position: 'fixed',
             top: `${Math.round(top)}px`,
             left: `${Math.round(left)}px`,
+            bottom: 'auto',
+            right: 'auto',
             width: `${popoverWidth}px`,
-            zIndex: 99999
+            zIndex: 1100
           });
         }
       };
 
       checkPlacement();
+      const rafId = requestAnimationFrame(checkPlacement);
       window.addEventListener('resize', checkPlacement);
       window.addEventListener('scroll', checkPlacement, true);
       return () => {
+        cancelAnimationFrame(rafId);
         window.removeEventListener('resize', checkPlacement);
         window.removeEventListener('scroll', checkPlacement, true);
       };
