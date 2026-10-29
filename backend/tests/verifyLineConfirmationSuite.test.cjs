@@ -561,8 +561,8 @@ test('Automatic LINE Booking Confirmation Verification Suite', async (t) => {
     const staleTime = new Date(Date.now() - 45000).toISOString();
     db.exec(`
       INSERT OR REPLACE INTO line_notification_claims 
-      (booking_id, notification_type, status, claim_token, claimed_at, updated_at)
-      VALUES (123, 'booking_confirmation', 'processing', 'crashed_token_999', '${staleTime}', '${staleTime}');
+      (booking_id, notification_type, status, claim_token, retry_key, claimed_at, updated_at)
+      VALUES (123, 'booking_confirmation', 'processing', 'crashed_token_999', 'crashed_retry_key_123', '${staleTime}', '${staleTime}');
     `);
 
     // New worker executes triggerLineBookingConfirmation
@@ -612,5 +612,168 @@ test('Automatic LINE Booking Confirmation Verification Suite', async (t) => {
     assert.strictEqual(res.mocked, true);
     assert.strictEqual(res.status, 'sent');
     assert.strictEqual(linePushCalls.length, 0, 'Staging must hard-block and never call LINE API');
+  });
+
+  await t.test('21. Stable X-Line-Retry-Key Header Verification', async () => {
+    linePushCalls = [];
+    lineApiResponseStatus = 200;
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (126, 'Khun StableKey', 'Uline_user_126', 500, 500, 0, 'paid', 'https://r2/slip126.jpg', 'approved_manual');
+    `);
+
+    const res = await worker.triggerLineBookingConfirmation(env, 126);
+    assert.strictEqual(res.success, true);
+    assert.strictEqual(linePushCalls.length, 1);
+
+    const callHeaders = linePushCalls[0].headers;
+    const retryKeyHeader = callHeaders['X-Line-Retry-Key'] || callHeaders['x-line-retry-key'];
+    assert.ok(retryKeyHeader, 'Request headers must include X-Line-Retry-Key');
+    // Verify standard UUID format
+    assert.match(retryKeyHeader, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'Retry Key must be a valid UUID');
+
+    const claim = db.prepare("SELECT * FROM line_notification_claims WHERE booking_id = 126").get();
+    assert.strictEqual(claim.retry_key, retryKeyHeader, 'Persisted claim retry_key must match dispatched header');
+  });
+
+  await t.test('22. LINE-specific HTTP 409 Conflict -> Treated as Successful Deduplication', async () => {
+    linePushCalls = [];
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (127, 'Khun Deduplicated409', 'Uline_user_127', 500, 500, 0, 'paid', 'https://r2/slip127.jpg', 'approved_manual');
+    `);
+
+    const mock409Fetch = async (url, opts) => {
+      if (String(url).includes('api.line.me')) {
+        return {
+          ok: false,
+          status: 409,
+          headers: new Headers({
+            'Content-Type': 'application/json',
+            'x-line-accepted-request-id': 'orig_req_abc_123'
+          }),
+          text: async () => JSON.stringify({ message: 'The retry key is already accepted' })
+        };
+      }
+      return originalFetch(url, opts);
+    };
+
+    const worker409Fn = new Function('URL', 'Response', 'Request', 'Headers', 'TextEncoder', 'Uint8Array', 'crypto', 'console', 'isNaN', 'Number', 'parseInt', 'Date', 'btoa', 'atob', 'fetch', wrapped);
+    const worker409 = worker409Fn(URL, Response, Request, Headers, TextEncoder, Uint8Array, globalThis.crypto, console, isNaN, Number, parseInt, Date, btoa, atob, mock409Fetch);
+
+    const res = await worker409.triggerLineBookingConfirmation(env, 127);
+    assert.strictEqual(res.success, true, 'Official LINE 409 already accepted must be treated as success');
+    assert.strictEqual(res.status, 'sent');
+    assert.strictEqual(res.deduplicated, true);
+    assert.strictEqual(res.accepted_request_id, 'orig_req_abc_123');
+
+    const claim = db.prepare("SELECT * FROM line_notification_claims WHERE booking_id = 127").get();
+    assert.strictEqual(claim.status, 'sent');
+    assert.strictEqual(claim.accepted_request_id, 'orig_req_abc_123');
+
+    const hist = db.prepare("SELECT * FROM booking_history WHERE booking_id = 127 AND action = 'line_confirmation_notified'").get();
+    assert.ok(hist, 'booking_history must record line_confirmation_notified on 409 deduplication');
+  });
+
+  await t.test('23. Unexpected HTTP 409 Conflict -> Treated as Failure (Strict Safe Check)', async () => {
+    linePushCalls = [];
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (128, 'Khun Unrelated409', 'Uline_user_128', 500, 500, 0, 'paid', 'https://r2/slip128.jpg', 'approved_manual');
+    `);
+
+    const mockUnrelated409Fetch = async (url, opts) => {
+      if (String(url).includes('api.line.me')) {
+        return {
+          ok: false,
+          status: 409,
+          headers: new Headers({ 'Content-Type': 'application/json' }),
+          text: async () => JSON.stringify({ message: 'Conflicting account state or quota limitation' })
+        };
+      }
+      return originalFetch(url, opts);
+    };
+
+    const workerUnrelated409Fn = new Function('URL', 'Response', 'Request', 'Headers', 'TextEncoder', 'Uint8Array', 'crypto', 'console', 'isNaN', 'Number', 'parseInt', 'Date', 'btoa', 'atob', 'fetch', wrapped);
+    const workerUnrelated409 = workerUnrelated409Fn(URL, Response, Request, Headers, TextEncoder, Uint8Array, globalThis.crypto, console, isNaN, Number, parseInt, Date, btoa, atob, mockUnrelated409Fetch);
+
+    const res = await workerUnrelated409.triggerLineBookingConfirmation(env, 128);
+    assert.strictEqual(res.success, false, 'Non-LINE accepted 409 must NOT be treated as success');
+    assert.strictEqual(res.status, 'failed');
+    assert.strictEqual(res.reason, 'unexpected_409_conflict');
+
+    const claim = db.prepare("SELECT * FROM line_notification_claims WHERE booking_id = 128").get();
+    assert.strictEqual(claim.status, 'failed');
+  });
+
+  await t.test('24. Worker Crash after LINE Accept -> Recovery reuses key and resolves via 409', async () => {
+    linePushCalls = [];
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (129, 'Khun CrashAfterAccept', 'Uline_user_129', 500, 500, 0, 'paid', 'https://r2/slip129.jpg', 'approved_manual');
+    `);
+
+    // Simulate Worker 1 crashed after LINE accepted (claim is in 'processing', 35 seconds ago)
+    const staleTime = new Date(Date.now() - 35000).toISOString();
+    const origRetryKey = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    db.exec(`
+      INSERT OR REPLACE INTO line_notification_claims 
+      (booking_id, notification_type, status, claim_token, retry_key, claimed_at, updated_at)
+      VALUES (129, 'booking_confirmation', 'processing', 'crashed_token_1', '${origRetryKey}', '${staleTime}', '${staleTime}');
+    `);
+
+    // When Worker 2 retries with the same key, LINE recognizes the key and responds with 409
+    const crashRecoveryFetch = async (url, opts) => {
+      if (String(url).includes('api.line.me')) {
+        linePushCalls.push(opts);
+        const usedKey = opts.headers['X-Line-Retry-Key'];
+        if (usedKey === origRetryKey) {
+          return {
+            ok: false,
+            status: 409,
+            headers: new Headers({ 'x-line-accepted-request-id': 'req_crash_recovery_129' }),
+            text: async () => JSON.stringify({ message: 'The retry key is already accepted' })
+          };
+        }
+      }
+      return originalFetch(url, opts);
+    };
+
+    const workerCrashRecoveryFn = new Function('URL', 'Response', 'Request', 'Headers', 'TextEncoder', 'Uint8Array', 'crypto', 'console', 'isNaN', 'Number', 'parseInt', 'Date', 'btoa', 'atob', 'fetch', wrapped);
+    const workerCrashRecovery = workerCrashRecoveryFn(URL, Response, Request, Headers, TextEncoder, Uint8Array, globalThis.crypto, console, isNaN, Number, parseInt, Date, btoa, atob, crashRecoveryFetch);
+
+    const res = await workerCrashRecovery.triggerLineBookingConfirmation(env, 129);
+    assert.strictEqual(res.success, true);
+    assert.strictEqual(res.status, 'sent');
+    assert.strictEqual(res.deduplicated, true);
+    assert.strictEqual(linePushCalls.length, 1);
+    assert.strictEqual(linePushCalls[0].headers['X-Line-Retry-Key'], origRetryKey, 'Must use identical stable retry key');
+  });
+
+  await t.test('25. 24-Hour Expiration Protection -> Replay after 24h is blocked without live push', async () => {
+    linePushCalls = [];
+
+    db.exec(`
+      INSERT OR REPLACE INTO bookings (id, customer_name, line_user_id, total_amount, paid_amount, balance_amount, payment_status, slip_image_url, slip_verify_status)
+      VALUES (130, 'Khun Expired24h', 'Uline_user_130', 500, 500, 0, 'paid', 'https://r2/slip130.jpg', 'approved_manual');
+    `);
+
+    // Claim created 25 hours ago with status 'delivery_unknown'
+    const expiredTime = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+    db.exec(`
+      INSERT OR REPLACE INTO line_notification_claims 
+      (booking_id, notification_type, status, claim_token, retry_key, claimed_at, updated_at, created_at)
+      VALUES (130, 'booking_confirmation', 'delivery_unknown', 'expired_token', 'expired_key_24h', '${expiredTime}', '${expiredTime}', '${expiredTime}');
+    `);
+
+    const res = await worker.triggerLineBookingConfirmation(env, 130);
+    assert.strictEqual(res.success, false);
+    assert.strictEqual(res.status, 'delivery_unknown');
+    assert.strictEqual(res.reason, 'retry_window_exceeded_24h');
+    assert.strictEqual(linePushCalls.length, 0, 'Zero push requests must be dispatched after 24h');
   });
 });

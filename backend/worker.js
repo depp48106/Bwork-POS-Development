@@ -1841,10 +1841,12 @@ async function ensureLineNotificationClaimsTable(db) {
         notification_type TEXT NOT NULL DEFAULT 'booking_confirmation',
         status TEXT NOT NULL DEFAULT 'processing',
         claim_token TEXT NOT NULL,
+        retry_key TEXT NOT NULL,
         claimed_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         http_status INTEGER,
         error_message TEXT,
+        accepted_request_id TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(booking_id, notification_type)
       )
@@ -1853,6 +1855,10 @@ async function ensureLineNotificationClaimsTable(db) {
       CREATE INDEX IF NOT EXISTS idx_line_claims_booking_status 
       ON line_notification_claims (booking_id, notification_type, status)
     `).run();
+    await db.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_line_claims_retry_key 
+      ON line_notification_claims (retry_key)
+    `).run();
     workerClaimsTableEnsured = true;
   } catch (err) {
     console.warn('[LINE-Idempotency] Table initialization note:', err?.message || err);
@@ -1860,12 +1866,21 @@ async function ensureLineNotificationClaimsTable(db) {
 }
 
 const LINE_CLAIM_TIMEOUT_MS = 30000; // 30 seconds expiration for crashed worker
+const LINE_RETRY_KEY_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours LINE platform idempotency window
+
+function generateLineRetryKey() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return '00000000-0000-4000-8000-' + Math.random().toString(16).slice(2, 14).padEnd(12, '0');
+}
 
 async function acquireNotificationClaim(db, bookingId, notificationType = 'booking_confirmation') {
   await ensureLineNotificationClaimsTable(db);
   const claimToken = typeof crypto !== 'undefined' && crypto.randomUUID
     ? crypto.randomUUID()
     : 'claim_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  const freshRetryKey = generateLineRetryKey();
   const nowIso = new Date().toISOString();
 
   // 1. Check existing booking_history for backward compatibility
@@ -1879,17 +1894,18 @@ async function acquireNotificationClaim(db, bookingId, notificationType = 'booki
       status: 'skipped',
       reason: 'already_notified',
       claimToken: null,
+      retryKey: null,
       http_status: 200
     };
   }
 
-  // 2. Attempt atomic insert
+  // 2. Attempt atomic insert with unique constraint
   try {
     const insertRes = await db.prepare(`
       INSERT OR IGNORE INTO line_notification_claims 
-      (booking_id, notification_type, status, claim_token, claimed_at, updated_at)
-      VALUES (?, ?, 'processing', ?, ?, ?)
-    `).bind(bookingId, notificationType, claimToken, nowIso, nowIso).run();
+      (booking_id, notification_type, status, claim_token, retry_key, claimed_at, updated_at)
+      VALUES (?, ?, 'processing', ?, ?, ?, ?)
+    `).bind(bookingId, notificationType, claimToken, freshRetryKey, nowIso, nowIso).run();
 
     const changes = insertRes?.meta?.changes ?? insertRes?.changes ?? 0;
     if (changes > 0) {
@@ -1897,6 +1913,7 @@ async function acquireNotificationClaim(db, bookingId, notificationType = 'booki
         acquired: true,
         status: 'processing',
         claimToken,
+        retryKey: freshRetryKey,
         claimedAt: nowIso
       };
     }
@@ -1904,16 +1921,19 @@ async function acquireNotificationClaim(db, bookingId, notificationType = 'booki
     console.warn('[LINE-Idempotency] Error in atomic insert claim:', insertErr?.message || insertErr);
   }
 
-  // 3. Row already exists! Check status
+  // 3. Row already exists! Check status and 24-hour TTL
   const existingClaim = await db.prepare(`
-    SELECT status, claim_token, claimed_at, http_status, error_message
+    SELECT status, claim_token, retry_key, claimed_at, updated_at, created_at, http_status, error_message, accepted_request_id
     FROM line_notification_claims
     WHERE booking_id = ? AND notification_type = ?
   `).bind(bookingId, notificationType).first();
 
   if (!existingClaim) {
-    return { acquired: false, status: 'already_processing', reason: 'in_flight', claimToken: null };
+    return { acquired: false, status: 'already_processing', reason: 'in_flight', claimToken: null, retryKey: null };
   }
+
+  const ageMs = Date.now() - new Date(existingClaim.created_at || existingClaim.claimed_at).getTime();
+  const isExpired24h = ageMs > LINE_RETRY_KEY_TTL_MS;
 
   if (existingClaim.status === 'sent') {
     return {
@@ -1921,16 +1941,31 @@ async function acquireNotificationClaim(db, bookingId, notificationType = 'booki
       status: 'skipped',
       reason: 'already_notified',
       claimToken: null,
+      retryKey: existingClaim.retry_key,
       http_status: existingClaim.http_status || 200
     };
   }
 
   if (existingClaim.status === 'delivery_unknown') {
+    // If over 24h, LINE has purged retry key from memory; blind retry risks duplicate delivery
+    if (isExpired24h) {
+      return {
+        acquired: false,
+        status: 'delivery_unknown',
+        reason: 'retry_window_exceeded_24h',
+        claimToken: null,
+        retryKey: existingClaim.retry_key
+      };
+    }
+
+    // Within 24h, delivery is still unconfirmed. Blind automatic retry is blocked to prevent duplication.
     return {
       acquired: false,
       status: 'delivery_unknown',
       reason: 'previous_delivery_unconfirmed',
-      claimToken: null
+      claimToken: null,
+      retryKey: existingClaim.retry_key,
+      http_status: existingClaim.http_status || null
     };
   }
 
@@ -1941,11 +1976,22 @@ async function acquireNotificationClaim(db, bookingId, notificationType = 'booki
         acquired: false,
         status: 'already_processing',
         reason: 'in_flight',
-        claimToken: null
+        claimToken: null,
+        retryKey: existingClaim.retry_key
       };
     }
 
-    // Previous worker timed out or crashed; attempt recovery takeover
+    if (isExpired24h) {
+      return {
+        acquired: false,
+        status: 'delivery_unknown',
+        reason: 'retry_window_exceeded_24h',
+        claimToken: null,
+        retryKey: existingClaim.retry_key
+      };
+    }
+
+    // Previous worker timed out or crashed; attempt takeover with the SAME retry_key
     try {
       const takeoverRes = await db.prepare(`
         UPDATE line_notification_claims
@@ -1959,6 +2005,7 @@ async function acquireNotificationClaim(db, bookingId, notificationType = 'booki
           acquired: true,
           status: 'processing',
           claimToken,
+          retryKey: existingClaim.retry_key, // Reuses identical stable retry_key!
           claimedAt: nowIso,
           recovered: true
         };
@@ -1969,35 +2016,61 @@ async function acquireNotificationClaim(db, bookingId, notificationType = 'booki
       acquired: false,
       status: 'already_processing',
       reason: 'in_flight',
-      claimToken: null
+      claimToken: null,
+      retryKey: existingClaim.retry_key
     };
   }
 
   if (existingClaim.status === 'failed') {
-    try {
-      const retryRes = await db.prepare(`
-        UPDATE line_notification_claims
-        SET status = 'processing', claim_token = ?, claimed_at = ?, updated_at = ?
-        WHERE booking_id = ? AND notification_type = ? AND status = 'failed'
-      `).bind(claimToken, nowIso, nowIso, bookingId, notificationType).run();
+    if (isExpired24h) {
+      const freshKey = generateLineRetryKey();
+      try {
+        const retryRes = await db.prepare(`
+          UPDATE line_notification_claims
+          SET status = 'processing', claim_token = ?, retry_key = ?, claimed_at = ?, updated_at = ?, created_at = ?
+          WHERE booking_id = ? AND notification_type = ? AND status = 'failed'
+        `).bind(claimToken, freshKey, nowIso, nowIso, nowIso, bookingId, notificationType).run();
 
-      const retryChanges = retryRes?.meta?.changes ?? retryRes?.changes ?? 0;
-      if (retryChanges > 0) {
-        return {
-          acquired: true,
-          status: 'processing',
-          claimToken,
-          claimedAt: nowIso,
-          retrying: true
-        };
-      }
-    } catch (_) {}
+        const retryChanges = retryRes?.meta?.changes ?? retryRes?.changes ?? 0;
+        if (retryChanges > 0) {
+          return {
+            acquired: true,
+            status: 'processing',
+            claimToken,
+            retryKey: freshKey,
+            claimedAt: nowIso,
+            retrying: true
+          };
+        }
+      } catch (_) {}
+    } else {
+      try {
+        const retryRes = await db.prepare(`
+          UPDATE line_notification_claims
+          SET status = 'processing', claim_token = ?, claimed_at = ?, updated_at = ?
+          WHERE booking_id = ? AND notification_type = ? AND status = 'failed'
+        `).bind(claimToken, nowIso, nowIso, bookingId, notificationType).run();
+
+        const retryChanges = retryRes?.meta?.changes ?? retryRes?.changes ?? 0;
+        if (retryChanges > 0) {
+          return {
+            acquired: true,
+            status: 'processing',
+            claimToken,
+            retryKey: existingClaim.retry_key,
+            claimedAt: nowIso,
+            retrying: true
+          };
+        }
+      } catch (_) {}
+    }
 
     return {
       acquired: false,
       status: 'already_processing',
       reason: 'in_flight',
-      claimToken: null
+      claimToken: null,
+      retryKey: existingClaim.retry_key
     };
   }
 
@@ -2005,18 +2078,19 @@ async function acquireNotificationClaim(db, bookingId, notificationType = 'booki
     acquired: false,
     status: 'already_processing',
     reason: 'in_flight',
-    claimToken: null
+    claimToken: null,
+    retryKey: existingClaim.retry_key
   };
 }
 
-async function finalizeNotificationClaim(db, bookingId, notificationType, claimToken, { status, httpStatus, errorMessage }) {
+async function finalizeNotificationClaim(db, bookingId, notificationType, claimToken, { status, httpStatus, errorMessage, acceptedRequestId }) {
   const nowIso = new Date().toISOString();
   try {
     await db.prepare(`
       UPDATE line_notification_claims
-      SET status = ?, http_status = ?, error_message = ?, updated_at = ?
+      SET status = ?, http_status = ?, error_message = ?, accepted_request_id = ?, updated_at = ?
       WHERE booking_id = ? AND notification_type = ? AND claim_token = ?
-    `).bind(status, httpStatus || null, errorMessage || null, nowIso, bookingId, notificationType, claimToken).run();
+    `).bind(status, httpStatus || null, errorMessage || null, acceptedRequestId || null, nowIso, bookingId, notificationType, claimToken).run();
   } catch (err) {
     console.warn('[LINE-Idempotency] Warning updating claim final status:', err?.message || err);
   }
@@ -2026,6 +2100,7 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
   if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true' || env.STAGING_MOCK_LINE_API === 'true')) {
     return {
       sent: false,
+      deduplicated: false,
       mocked: true,
       status: 200,
       ok: true,
@@ -2037,6 +2112,7 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
   if (!channelAccessToken) {
     return {
       sent: false,
+      deduplicated: false,
       mocked: false,
       status: 401,
       ok: false,
@@ -2046,6 +2122,7 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
   }
 
   const timeoutMs = options.timeoutMs || 10000;
+  const retryKey = options.retryKey || null;
   let timeoutId = null;
   let isTimedOut = false;
 
@@ -2058,12 +2135,17 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
   }
 
   try {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${channelAccessToken}`
+    };
+    if (retryKey) {
+      headers['X-Line-Retry-Key'] = retryKey;
+    }
+
     const fetchOptions = {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${channelAccessToken}`
-      },
+      headers,
       body: JSON.stringify({ to, messages })
     };
     if (controller) {
@@ -2073,12 +2155,47 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
     const lineRes = await fetch('https://api.line.me/v2/bot/message/push', fetchOptions);
     if (timeoutId) clearTimeout(timeoutId);
 
+    const acceptedRequestId = lineRes.headers?.get ? lineRes.headers.get('x-line-accepted-request-id') : null;
+
+    let bodyJson = null;
+    let bodyText = '';
+    try {
+      bodyText = await lineRes.text();
+      bodyJson = JSON.parse(bodyText);
+    } catch (_) {}
+
+    // Official LINE Messaging API Idempotency Specification:
+    // When a request with an existing X-Line-Retry-Key is retried and was already accepted,
+    // LINE Platform responds with HTTP 409 Conflict: {"message": "The retry key is already accepted"}
+    // and returns the header x-line-accepted-request-id.
+    const isLineAccepted409 = lineRes.status === 409 && (
+      (bodyJson && typeof bodyJson.message === 'string' && bodyJson.message.toLowerCase().includes('already accepted')) ||
+      Boolean(acceptedRequestId)
+    );
+
+    if (lineRes.ok || isLineAccepted409) {
+      return {
+        sent: lineRes.ok,
+        deduplicated: isLineAccepted409,
+        mocked: false,
+        status: isLineAccepted409 ? 200 : lineRes.status,
+        raw_status: lineRes.status,
+        ok: true,
+        success: true,
+        accepted_request_id: acceptedRequestId,
+        response: lineRes
+      };
+    }
+
     return {
-      sent: lineRes.ok,
+      sent: false,
+      deduplicated: false,
       mocked: false,
       status: lineRes.status,
-      ok: lineRes.ok,
-      success: lineRes.ok,
+      raw_status: lineRes.status,
+      ok: false,
+      success: false,
+      reason: lineRes.status === 409 ? 'unexpected_409_conflict' : 'line_api_error',
       response: lineRes
     };
   } catch (err) {
@@ -2086,6 +2203,7 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
     const isAbort = isTimedOut || err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('abort') || String(err?.message || '').toLowerCase().includes('timeout');
     return {
       sent: false,
+      deduplicated: false,
       mocked: false,
       status: null,
       ok: false,
@@ -2217,7 +2335,7 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'no_line_user_id', http_status: null };
     }
 
-    // 5. ATOMIC CLAIM CHECK: Prevents TOCTOU race conditions and duplicate pushes
+    // 5. ATOMIC CLAIM CHECK: Prevents TOCTOU race conditions, double-clicks, and preserves stable retry_key
     const claim = await acquireNotificationClaim(env.DB, bookingId, 'booking_confirmation');
 
     if (!claim.acquired) {
@@ -2237,7 +2355,8 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         mocked: false,
         status: claim.status,
         reason: claim.reason,
-        http_status: claim.http_status || null
+        http_status: claim.http_status || null,
+        retry_key: claim.retryKey || null
       };
     }
 
@@ -2268,7 +2387,7 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         http_status: 401,
         line_user_id: booking.line_user_id
       });
-      return { success: false, sent: false, mocked: false, status: 'failed', reason: 'no_channel_access_token', http_status: 401 };
+      return { success: false, sent: false, mocked: false, status: 'failed', reason: 'no_channel_access_token', http_status: 401, retry_key: claim.retryKey };
     }
 
     // 7. Build Flex message preserving exact structure, PIN, and room details
@@ -2277,17 +2396,18 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
 
     const flexCard = buildLineBookingConfirmationFlex(booking, item, room);
 
-    // 8. Dispatch LINE Push
+    // 8. Dispatch LINE Push with stable X-Line-Retry-Key
     const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
       to: booking.line_user_id,
       messages: [flexCard]
-    }, { timeoutMs: options.timeoutMs || 10000 });
+    }, { timeoutMs: options.timeoutMs || 10000, retryKey: claim.retryKey });
 
     if (dispatch.mocked) {
       await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
         status: 'sent',
         httpStatus: 200,
-        errorMessage: null
+        errorMessage: null,
+        acceptedRequestId: null
       });
 
       try {
@@ -2306,21 +2426,28 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         http_status: 200,
         line_user_id: booking.line_user_id
       });
-      return { success: true, sent: false, mocked: true, status: 'sent', http_status: 200 };
+      return { success: true, sent: false, mocked: true, status: 'sent', http_status: 200, retry_key: claim.retryKey };
     }
 
     if (dispatch.ok) {
       await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
         status: 'sent',
         httpStatus: dispatch.status,
-        errorMessage: null
+        errorMessage: null,
+        acceptedRequestId: dispatch.accepted_request_id || null
       });
 
       try {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
            VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
-        ).bind(bookingId, JSON.stringify({ status: 'sent', http_status: dispatch.status, timestamp: nowIso }), nowIso).run();
+        ).bind(bookingId, JSON.stringify({ 
+          status: 'sent', 
+          http_status: dispatch.status, 
+          deduplicated: dispatch.deduplicated || false,
+          accepted_request_id: dispatch.accepted_request_id || null,
+          timestamp: nowIso 
+        }), nowIso).run();
       } catch (_) {}
 
       logSafeNotificationDiagnostic('booking_confirmation', {
@@ -2331,7 +2458,16 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         http_status: dispatch.status,
         line_user_id: booking.line_user_id
       });
-      return { success: true, sent: true, mocked: false, status: 'sent', http_status: dispatch.status };
+      return { 
+        success: true, 
+        sent: dispatch.sent, 
+        deduplicated: dispatch.deduplicated || false,
+        mocked: false, 
+        status: 'sent', 
+        http_status: dispatch.status,
+        accepted_request_id: dispatch.accepted_request_id || null,
+        retry_key: claim.retryKey
+      };
     }
 
     if (dispatch.network_error) {
@@ -2340,7 +2476,8 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
         status: 'delivery_unknown',
         httpStatus: null,
-        errorMessage: dispatch.reason || 'network_timeout_or_drop'
+        errorMessage: dispatch.reason || 'network_timeout_or_drop',
+        acceptedRequestId: null
       });
 
       try {
@@ -2359,21 +2496,22 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         http_status: null,
         line_user_id: booking.line_user_id
       });
-      return { success: false, sent: false, mocked: false, status: 'delivery_unknown', reason: dispatch.reason, http_status: null };
+      return { success: false, sent: false, mocked: false, status: 'delivery_unknown', reason: dispatch.reason, http_status: null, retry_key: claim.retryKey };
     }
 
     // Explicit HTTP 4xx/5xx rejection from LINE API
     const errorDetail = {
       status: 'failed',
-      reason: 'line_api_error',
-      http_status: dispatch.status,
+      reason: dispatch.reason || 'line_api_error',
+      http_status: dispatch.raw_status || dispatch.status,
       timestamp: nowIso
     };
 
     await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
       status: 'failed',
-      httpStatus: dispatch.status,
-      errorMessage: 'line_api_error'
+      httpStatus: dispatch.raw_status || dispatch.status,
+      errorMessage: dispatch.reason || 'line_api_error',
+      acceptedRequestId: null
     });
 
     try {
@@ -2388,11 +2526,11 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       eligible: true,
       attempted: true,
       status: 'failed',
-      reason: 'line_api_error',
-      http_status: dispatch.status,
+      reason: dispatch.reason || 'line_api_error',
+      http_status: dispatch.raw_status || dispatch.status,
       line_user_id: booking.line_user_id
     });
-    return { success: false, sent: false, mocked: false, status: 'failed', reason: 'line_api_error', http_status: dispatch.status };
+    return { success: false, sent: false, mocked: false, status: 'failed', reason: dispatch.reason || 'line_api_error', http_status: dispatch.raw_status || dispatch.status, retry_key: claim.retryKey };
   } catch (err) {
     console.error('[LINE-Confirmation] Unexpected error in worker:', err?.message || err);
     return { success: false, sent: false, mocked: false, status: 'failed', reason: 'internal_error', error: err?.message || String(err) };

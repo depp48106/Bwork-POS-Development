@@ -242,16 +242,21 @@ CREATE TABLE IF NOT EXISTS line_notification_claims (
   notification_type TEXT NOT NULL DEFAULT 'booking_confirmation',
   status TEXT NOT NULL DEFAULT 'processing',
   claim_token TEXT NOT NULL,
+  retry_key TEXT NOT NULL,
   claimed_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   http_status INTEGER,
   error_message TEXT,
+  accepted_request_id TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(booking_id, notification_type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_line_claims_booking_status 
 ON line_notification_claims (booking_id, notification_type, status);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_line_claims_retry_key 
+ON line_notification_claims (retry_key);
 
 CREATE TABLE IF NOT EXISTS cash_shifts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
