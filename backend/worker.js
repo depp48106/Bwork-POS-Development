@@ -1830,10 +1830,277 @@ function buildLineDoorPinFlex(booking, item, room) {
  * Returns { sent: false, mocked: true, status: 200, success: true, ok: true }.
  * Never logs tokens or customer PII.
  */
-async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }) {
-  if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
+let workerClaimsTableEnsured = false;
+async function ensureLineNotificationClaimsTable(db) {
+  if (workerClaimsTableEnsured || !db) return;
+  try {
+    await db.prepare(`
+      CREATE TABLE IF NOT EXISTS line_notification_claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+        notification_type TEXT NOT NULL DEFAULT 'booking_confirmation',
+        status TEXT NOT NULL DEFAULT 'processing',
+        claim_token TEXT NOT NULL,
+        retry_key TEXT NOT NULL,
+        claimed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        http_status INTEGER,
+        error_message TEXT,
+        accepted_request_id TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(booking_id, notification_type)
+      )
+    `).run();
+    await db.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_line_claims_booking_status 
+      ON line_notification_claims (booking_id, notification_type, status)
+    `).run();
+    await db.prepare(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_line_claims_retry_key 
+      ON line_notification_claims (retry_key)
+    `).run();
+    workerClaimsTableEnsured = true;
+  } catch (err) {
+    console.warn('[LINE-Idempotency] Table initialization note:', err?.message || err);
+  }
+}
+
+const LINE_CLAIM_TIMEOUT_MS = 30000; // 30 seconds expiration for crashed worker
+const LINE_RETRY_KEY_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours LINE platform idempotency window
+
+function generateLineRetryKey() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return '00000000-0000-4000-8000-' + Math.random().toString(16).slice(2, 14).padEnd(12, '0');
+}
+
+async function acquireNotificationClaim(db, bookingId, notificationType = 'booking_confirmation') {
+  await ensureLineNotificationClaimsTable(db);
+  const claimToken = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : 'claim_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  const freshRetryKey = generateLineRetryKey();
+  const nowIso = new Date().toISOString();
+
+  // 1. Check existing booking_history for backward compatibility
+  const alreadyNotified = await db.prepare(
+    "SELECT id FROM booking_history WHERE booking_id = ? AND action = 'line_confirmation_notified' LIMIT 1"
+  ).bind(bookingId).first();
+
+  if (alreadyNotified) {
+    return {
+      acquired: false,
+      status: 'skipped',
+      reason: 'already_notified',
+      claimToken: null,
+      retryKey: null,
+      http_status: 200
+    };
+  }
+
+  // 2. Attempt atomic insert with unique constraint
+  try {
+    const insertRes = await db.prepare(`
+      INSERT OR IGNORE INTO line_notification_claims 
+      (booking_id, notification_type, status, claim_token, retry_key, claimed_at, updated_at)
+      VALUES (?, ?, 'processing', ?, ?, ?, ?)
+    `).bind(bookingId, notificationType, claimToken, freshRetryKey, nowIso, nowIso).run();
+
+    const changes = insertRes?.meta?.changes ?? insertRes?.changes ?? 0;
+    if (changes > 0) {
+      return {
+        acquired: true,
+        status: 'processing',
+        claimToken,
+        retryKey: freshRetryKey,
+        claimedAt: nowIso
+      };
+    }
+  } catch (insertErr) {
+    console.warn('[LINE-Idempotency] Error in atomic insert claim:', insertErr?.message || insertErr);
+  }
+
+  // 3. Row already exists! Check status and 24-hour TTL
+  const existingClaim = await db.prepare(`
+    SELECT status, claim_token, retry_key, claimed_at, updated_at, created_at, http_status, error_message, accepted_request_id
+    FROM line_notification_claims
+    WHERE booking_id = ? AND notification_type = ?
+  `).bind(bookingId, notificationType).first();
+
+  if (!existingClaim) {
+    return { acquired: false, status: 'already_processing', reason: 'in_flight', claimToken: null, retryKey: null };
+  }
+
+  const ageMs = Date.now() - new Date(existingClaim.created_at || existingClaim.claimed_at).getTime();
+  const isExpired24h = ageMs > LINE_RETRY_KEY_TTL_MS;
+
+  if (existingClaim.status === 'sent') {
+    return {
+      acquired: false,
+      status: 'skipped',
+      reason: 'already_notified',
+      claimToken: null,
+      retryKey: existingClaim.retry_key,
+      http_status: existingClaim.http_status || 200
+    };
+  }
+
+  if (existingClaim.status === 'delivery_unknown') {
+    // If over 24h, LINE has purged retry key from memory; blind retry risks duplicate delivery
+    if (isExpired24h) {
+      return {
+        acquired: false,
+        status: 'delivery_unknown',
+        reason: 'retry_window_exceeded_24h',
+        claimToken: null,
+        retryKey: existingClaim.retry_key
+      };
+    }
+
+    // Within 24h, delivery is still unconfirmed. Blind automatic retry is blocked to prevent duplication.
+    return {
+      acquired: false,
+      status: 'delivery_unknown',
+      reason: 'previous_delivery_unconfirmed',
+      claimToken: null,
+      retryKey: existingClaim.retry_key,
+      http_status: existingClaim.http_status || null
+    };
+  }
+
+  if (existingClaim.status === 'processing') {
+    const elapsed = Date.now() - new Date(existingClaim.claimed_at).getTime();
+    if (elapsed < LINE_CLAIM_TIMEOUT_MS) {
+      return {
+        acquired: false,
+        status: 'already_processing',
+        reason: 'in_flight',
+        claimToken: null,
+        retryKey: existingClaim.retry_key
+      };
+    }
+
+    if (isExpired24h) {
+      return {
+        acquired: false,
+        status: 'delivery_unknown',
+        reason: 'retry_window_exceeded_24h',
+        claimToken: null,
+        retryKey: existingClaim.retry_key
+      };
+    }
+
+    // Previous worker timed out or crashed; attempt takeover with the SAME retry_key
+    try {
+      const takeoverRes = await db.prepare(`
+        UPDATE line_notification_claims
+        SET status = 'processing', claim_token = ?, claimed_at = ?, updated_at = ?
+        WHERE booking_id = ? AND notification_type = ? AND status = 'processing' AND claimed_at = ?
+      `).bind(claimToken, nowIso, nowIso, bookingId, notificationType, existingClaim.claimed_at).run();
+
+      const takeoverChanges = takeoverRes?.meta?.changes ?? takeoverRes?.changes ?? 0;
+      if (takeoverChanges > 0) {
+        return {
+          acquired: true,
+          status: 'processing',
+          claimToken,
+          retryKey: existingClaim.retry_key, // Reuses identical stable retry_key!
+          claimedAt: nowIso,
+          recovered: true
+        };
+      }
+    } catch (_) {}
+
+    return {
+      acquired: false,
+      status: 'already_processing',
+      reason: 'in_flight',
+      claimToken: null,
+      retryKey: existingClaim.retry_key
+    };
+  }
+
+  if (existingClaim.status === 'failed') {
+    if (isExpired24h) {
+      const freshKey = generateLineRetryKey();
+      try {
+        const retryRes = await db.prepare(`
+          UPDATE line_notification_claims
+          SET status = 'processing', claim_token = ?, retry_key = ?, claimed_at = ?, updated_at = ?, created_at = ?
+          WHERE booking_id = ? AND notification_type = ? AND status = 'failed'
+        `).bind(claimToken, freshKey, nowIso, nowIso, nowIso, bookingId, notificationType).run();
+
+        const retryChanges = retryRes?.meta?.changes ?? retryRes?.changes ?? 0;
+        if (retryChanges > 0) {
+          return {
+            acquired: true,
+            status: 'processing',
+            claimToken,
+            retryKey: freshKey,
+            claimedAt: nowIso,
+            retrying: true
+          };
+        }
+      } catch (_) {}
+    } else {
+      try {
+        const retryRes = await db.prepare(`
+          UPDATE line_notification_claims
+          SET status = 'processing', claim_token = ?, claimed_at = ?, updated_at = ?
+          WHERE booking_id = ? AND notification_type = ? AND status = 'failed'
+        `).bind(claimToken, nowIso, nowIso, bookingId, notificationType).run();
+
+        const retryChanges = retryRes?.meta?.changes ?? retryRes?.changes ?? 0;
+        if (retryChanges > 0) {
+          return {
+            acquired: true,
+            status: 'processing',
+            claimToken,
+            retryKey: existingClaim.retry_key,
+            claimedAt: nowIso,
+            retrying: true
+          };
+        }
+      } catch (_) {}
+    }
+
+    return {
+      acquired: false,
+      status: 'already_processing',
+      reason: 'in_flight',
+      claimToken: null,
+      retryKey: existingClaim.retry_key
+    };
+  }
+
+  return {
+    acquired: false,
+    status: 'already_processing',
+    reason: 'in_flight',
+    claimToken: null,
+    retryKey: existingClaim.retry_key
+  };
+}
+
+async function finalizeNotificationClaim(db, bookingId, notificationType, claimToken, { status, httpStatus, errorMessage, acceptedRequestId }) {
+  const nowIso = new Date().toISOString();
+  try {
+    await db.prepare(`
+      UPDATE line_notification_claims
+      SET status = ?, http_status = ?, error_message = ?, accepted_request_id = ?, updated_at = ?
+      WHERE booking_id = ? AND notification_type = ? AND claim_token = ?
+    `).bind(status, httpStatus || null, errorMessage || null, acceptedRequestId || null, nowIso, bookingId, notificationType, claimToken).run();
+  } catch (err) {
+    console.warn('[LINE-Idempotency] Warning updating claim final status:', err?.message || err);
+  }
+}
+
+async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }, options = {}) {
+  if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true' || env.STAGING_MOCK_LINE_API === 'true')) {
     return {
       sent: false,
+      deduplicated: false,
       mocked: true,
       status: 200,
       ok: true,
@@ -1845,6 +2112,7 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
   if (!channelAccessToken) {
     return {
       sent: false,
+      deduplicated: false,
       mocked: false,
       status: 401,
       ok: false,
@@ -1853,52 +2121,424 @@ async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }
     };
   }
 
-  const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
-    method: 'POST',
-    headers: {
+  const timeoutMs = options.timeoutMs || 10000;
+  const retryKey = options.retryKey || null;
+  let timeoutId = null;
+  let isTimedOut = false;
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  if (controller) {
+    timeoutId = setTimeout(() => {
+      isTimedOut = true;
+      try { controller.abort(); } catch (_) {}
+    }, timeoutMs);
+  }
+
+  try {
+    const headers = {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${channelAccessToken}`
-    },
-    body: JSON.stringify({ to, messages })
-  });
+    };
+    if (retryKey) {
+      headers['X-Line-Retry-Key'] = retryKey;
+    }
 
-  return {
-    sent: lineRes.ok,
-    mocked: false,
-    status: lineRes.status,
-    ok: lineRes.ok,
-    success: lineRes.ok,
-    response: lineRes
-  };
+    const fetchOptions = {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ to, messages })
+    };
+    if (controller) {
+      fetchOptions.signal = controller.signal;
+    }
+
+    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', fetchOptions);
+    if (timeoutId) clearTimeout(timeoutId);
+
+    const acceptedRequestId = lineRes.headers?.get ? lineRes.headers.get('x-line-accepted-request-id') : null;
+
+    let bodyJson = null;
+    let bodyText = '';
+    try {
+      bodyText = await lineRes.text();
+      bodyJson = JSON.parse(bodyText);
+    } catch (_) {}
+
+    // Official LINE Messaging API Idempotency Specification:
+    // When a request with an existing X-Line-Retry-Key is retried and was already accepted,
+    // LINE Platform responds with HTTP 409 Conflict: {"message": "The retry key is already accepted"}
+    // and returns the header x-line-accepted-request-id.
+    const isLineAccepted409 = lineRes.status === 409 && (
+      (bodyJson && typeof bodyJson.message === 'string' && bodyJson.message.toLowerCase().includes('already accepted')) ||
+      Boolean(acceptedRequestId)
+    );
+
+    if (lineRes.ok || isLineAccepted409) {
+      return {
+        sent: lineRes.ok,
+        deduplicated: isLineAccepted409,
+        mocked: false,
+        status: isLineAccepted409 ? 200 : lineRes.status,
+        raw_status: lineRes.status,
+        ok: true,
+        success: true,
+        accepted_request_id: acceptedRequestId,
+        response: lineRes
+      };
+    }
+
+    return {
+      sent: false,
+      deduplicated: false,
+      mocked: false,
+      status: lineRes.status,
+      raw_status: lineRes.status,
+      ok: false,
+      success: false,
+      reason: lineRes.status === 409 ? 'unexpected_409_conflict' : 'line_api_error',
+      response: lineRes
+    };
+  } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
+    const isAbort = isTimedOut || err?.name === 'AbortError' || String(err?.message || '').toLowerCase().includes('abort') || String(err?.message || '').toLowerCase().includes('timeout');
+    return {
+      sent: false,
+      deduplicated: false,
+      mocked: false,
+      status: null,
+      ok: false,
+      success: false,
+      network_error: true,
+      is_timeout: isAbort,
+      reason: isAbort ? 'timeout' : 'network_error',
+      error: err?.message || String(err)
+    };
+  }
 }
 
-async function sendLineBookingConfirmation(env, bookingId) {
+function maskLineUserId(userId) {
+  if (!userId || typeof userId !== 'string') return '-';
+  const str = userId.trim();
+  if (str.length <= 8) return str.slice(0, 2) + '***';
+  return str.slice(0, 4) + '...' + str.slice(-4);
+}
+
+function logSafeNotificationDiagnostic(event, payload) {
+  const safePayload = {
+    event,
+    booking_id: payload.booking_id,
+    eligible: payload.eligible,
+    attempted: payload.attempted,
+    status: payload.status,
+    reason: payload.reason || null,
+    http_status: payload.http_status || null,
+    masked_line_user_id: maskLineUserId(payload.line_user_id),
+    timestamp: payload.timestamp || new Date().toISOString()
+  };
+  console.log(`[LINE-Notification-Audit] ${JSON.stringify(safePayload)}`);
+}
+
+/**
+ * Authoritative, Idempotent LINE Booking Confirmation Trigger
+ * Validates full payment, approved slip, balance, line_user_id, and access token.
+ * Prevents duplicate pushes and guarantees safe diagnostic audit trail in booking_history.
+ */
+async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
+  const nowIso = new Date().toISOString();
   try {
     const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
-    if (!booking || !booking.line_user_id) return null;
+    if (!booking) {
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: false,
+        attempted: false,
+        status: 'failed',
+        reason: 'booking_not_found'
+      });
+      return { success: false, sent: false, mocked: false, status: 'failed', reason: 'booking_not_found', http_status: null };
+    }
 
+    // 1. Eligibility Check: Must be paid
+    if (booking.payment_status !== 'paid') {
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: false,
+        attempted: false,
+        status: 'skipped',
+        reason: 'payment_status_not_paid',
+        line_user_id: booking.line_user_id
+      });
+      return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'payment_status_not_paid', payment_status: booking.payment_status, http_status: null };
+    }
+
+    // 2. Eligibility Check: No outstanding balance
+    const netTotal = roundMoney(Math.max(0, Number(booking.total_amount) || 0));
+    const paidAmount = roundMoney(Math.max(0, Number(booking.paid_amount !== null && booking.paid_amount !== undefined ? booking.paid_amount : booking.total_amount) || 0));
+    const balanceAmount = roundMoney(Math.max(0, Number(booking.balance_amount || 0)));
+
+    if (balanceAmount > 0 || (netTotal > 0 && paidAmount < netTotal)) {
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: false,
+        attempted: false,
+        status: 'skipped',
+        reason: 'balance_remaining',
+        line_user_id: booking.line_user_id
+      });
+      return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'balance_remaining', balance_amount: balanceAmount, http_status: null };
+    }
+
+    // 3. Eligibility Check: Slip verification status (if slip was uploaded, must not be rejected or pending)
+    const hasSlip = Boolean(booking.slip_image_url && booking.slip_image_url !== 'uploaded');
+    if (hasSlip) {
+      const slipStatus = String(booking.slip_verify_status || '').toLowerCase();
+      if (slipStatus === 'rejected') {
+        logSafeNotificationDiagnostic('booking_confirmation', {
+          booking_id: bookingId,
+          eligible: false,
+          attempted: false,
+          status: 'skipped',
+          reason: 'slip_rejected',
+          line_user_id: booking.line_user_id
+        });
+        return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'slip_rejected', http_status: null };
+      }
+      if (slipStatus === 'pending_manual' || slipStatus === 'pending') {
+        logSafeNotificationDiagnostic('booking_confirmation', {
+          booking_id: bookingId,
+          eligible: false,
+          attempted: false,
+          status: 'skipped',
+          reason: 'slip_pending_approval',
+          line_user_id: booking.line_user_id
+        });
+        return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'slip_pending_approval', http_status: null };
+      }
+    }
+
+    // 4. Line User ID Check
+    if (!booking.line_user_id || !String(booking.line_user_id).trim()) {
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_skipped', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify({ reason: 'no_line_user_id', timestamp: nowIso }), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: false,
+        status: 'skipped',
+        reason: 'no_line_user_id'
+      });
+      return { success: false, sent: false, mocked: false, status: 'skipped', reason: 'no_line_user_id', http_status: null };
+    }
+
+    // 5. ATOMIC CLAIM CHECK: Prevents TOCTOU race conditions, double-clicks, and preserves stable retry_key
+    const claim = await acquireNotificationClaim(env.DB, bookingId, 'booking_confirmation');
+
+    if (!claim.acquired) {
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: false,
+        status: claim.status,
+        reason: claim.reason || null,
+        http_status: claim.http_status || null,
+        line_user_id: booking.line_user_id
+      });
+
+      return {
+        success: claim.status === 'skipped' && claim.reason === 'already_notified',
+        sent: false,
+        mocked: false,
+        status: claim.status,
+        reason: claim.reason,
+        http_status: claim.http_status || null,
+        retry_key: claim.retryKey || null
+      };
+    }
+
+    // 6. Token Check
+    const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
+    const channelAccessToken = tokenSetting?.value || env.LINE_CHANNEL_ACCESS_TOKEN;
+
+    if (!channelAccessToken || !String(channelAccessToken).trim()) {
+      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+        status: 'failed',
+        httpStatus: 401,
+        errorMessage: 'no_channel_access_token'
+      });
+
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_failed', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify({ reason: 'no_channel_access_token', timestamp: nowIso }), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: true,
+        status: 'failed',
+        reason: 'no_channel_access_token',
+        http_status: 401,
+        line_user_id: booking.line_user_id
+      });
+      return { success: false, sent: false, mocked: false, status: 'failed', reason: 'no_channel_access_token', http_status: 401, retry_key: claim.retryKey };
+    }
+
+    // 7. Build Flex message preserving exact structure, PIN, and room details
     const item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
     const room = item?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first() : null;
 
-    const tokenSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
-    const channelAccessToken = tokenSetting?.value;
-
     const flexCard = buildLineBookingConfirmationFlex(booking, item, room);
 
+    // 8. Dispatch LINE Push with stable X-Line-Retry-Key
     const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
       to: booking.line_user_id,
       messages: [flexCard]
-    });
+    }, { timeoutMs: options.timeoutMs || 10000, retryKey: claim.retryKey });
 
     if (dispatch.mocked) {
-      return { success: true, sent: false, mocked: true, status: 200 };
+      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+        status: 'sent',
+        httpStatus: 200,
+        errorMessage: null,
+        acceptedRequestId: null
+      });
+
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify({ status: 'sent', mocked: true, http_status: 200, timestamp: nowIso }), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: true,
+        status: 'sent',
+        reason: 'staging_environment_mock',
+        http_status: 200,
+        line_user_id: booking.line_user_id
+      });
+      return { success: true, sent: false, mocked: true, status: 'sent', http_status: 200, retry_key: claim.retryKey };
     }
-    if (!dispatch.ok) return null;
-    return { success: dispatch.ok, status: dispatch.status, sent: dispatch.sent };
+
+    if (dispatch.ok) {
+      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+        status: 'sent',
+        httpStatus: dispatch.status,
+        errorMessage: null,
+        acceptedRequestId: dispatch.accepted_request_id || null
+      });
+
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify({ 
+          status: 'sent', 
+          http_status: dispatch.status, 
+          deduplicated: dispatch.deduplicated || false,
+          accepted_request_id: dispatch.accepted_request_id || null,
+          timestamp: nowIso 
+        }), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: true,
+        status: 'sent',
+        http_status: dispatch.status,
+        line_user_id: booking.line_user_id
+      });
+      return { 
+        success: true, 
+        sent: dispatch.sent, 
+        deduplicated: dispatch.deduplicated || false,
+        mocked: false, 
+        status: 'sent', 
+        http_status: dispatch.status,
+        accepted_request_id: dispatch.accepted_request_id || null,
+        retry_key: claim.retryKey
+      };
+    }
+
+    if (dispatch.network_error) {
+      // Network timeout or socket drop - Delivery state is unknown!
+      // Do not allow blind retries to prevent customer duplicate messages.
+      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+        status: 'delivery_unknown',
+        httpStatus: null,
+        errorMessage: dispatch.reason || 'network_timeout_or_drop',
+        acceptedRequestId: null
+      });
+
+      try {
+        await env.DB.prepare(
+          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+           VALUES (?, 'line_confirmation_failed', ?, 'system', ?)`
+        ).bind(bookingId, JSON.stringify({ status: 'delivery_unknown', reason: dispatch.reason, timestamp: nowIso }), nowIso).run();
+      } catch (_) {}
+
+      logSafeNotificationDiagnostic('booking_confirmation', {
+        booking_id: bookingId,
+        eligible: true,
+        attempted: true,
+        status: 'delivery_unknown',
+        reason: dispatch.reason,
+        http_status: null,
+        line_user_id: booking.line_user_id
+      });
+      return { success: false, sent: false, mocked: false, status: 'delivery_unknown', reason: dispatch.reason, http_status: null, retry_key: claim.retryKey };
+    }
+
+    // Explicit HTTP 4xx/5xx rejection from LINE API
+    const errorDetail = {
+      status: 'failed',
+      reason: dispatch.reason || 'line_api_error',
+      http_status: dispatch.raw_status || dispatch.status,
+      timestamp: nowIso
+    };
+
+    await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
+      status: 'failed',
+      httpStatus: dispatch.raw_status || dispatch.status,
+      errorMessage: dispatch.reason || 'line_api_error',
+      acceptedRequestId: null
+    });
+
+    try {
+      await env.DB.prepare(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, 'line_confirmation_failed', ?, 'system', ?)`
+      ).bind(bookingId, JSON.stringify(errorDetail), nowIso).run();
+    } catch (_) {}
+
+    logSafeNotificationDiagnostic('booking_confirmation', {
+      booking_id: bookingId,
+      eligible: true,
+      attempted: true,
+      status: 'failed',
+      reason: dispatch.reason || 'line_api_error',
+      http_status: dispatch.raw_status || dispatch.status,
+      line_user_id: booking.line_user_id
+    });
+    return { success: false, sent: false, mocked: false, status: 'failed', reason: dispatch.reason || 'line_api_error', http_status: dispatch.raw_status || dispatch.status, retry_key: claim.retryKey };
   } catch (err) {
-    console.error('Error sending confirmation message:', err);
-    return null;
+    console.error('[LINE-Confirmation] Unexpected error in worker:', err?.message || err);
+    return { success: false, sent: false, mocked: false, status: 'failed', reason: 'internal_error', error: err?.message || String(err) };
   }
+}
+
+async function sendLineBookingConfirmation(env, bookingId) {
+  return await triggerLineBookingConfirmation(env, bookingId);
 }
 
 async function sendLineDoorPin(env, bookingId) {
@@ -4160,14 +4800,12 @@ export default {
         const effectiveSubType = customer ? customer.basecamp_sub_type : basecampSubType;
         const effectiveUnit = customer ? customer.basecamp_unit : basecampUnit;
 
-        if (effectiveType === 'shop') {
-          maxQuota = activeContract ? Number(activeContract.monthly_quota_hours || 4.0) : 4.0;
+        if (activeContract && activeContract.monthly_quota_hours !== undefined && activeContract.monthly_quota_hours !== null) {
+          maxQuota = Number(activeContract.monthly_quota_hours);
+        } else if (effectiveType === 'shop') {
+          maxQuota = 4.0;
         } else if (effectiveType === 'basecamp') {
-          if (activeContract && activeContract.monthly_quota_hours) {
-            maxQuota = Number(activeContract.monthly_quota_hours);
-          } else {
-            maxQuota = effectiveSubType === 'office' ? 4.0 : 2.0;
-          }
+          maxQuota = effectiveSubType === 'office' ? 4.0 : 2.0;
         } else {
           maxQuota = 0;
         }
@@ -4180,7 +4818,7 @@ export default {
             contractEligible = false;
             ineligibilityReason = eligibility.reason;
           }
-        } else if (effectiveType === 'shop') {
+        } else if (effectiveType !== 'basecamp') {
           contractEligible = false;
           ineligibilityReason = 'NO_CONTRACT';
         }
@@ -4336,7 +4974,7 @@ export default {
             const term = `%${q.trim()}%`;
             params.push(term, term, term, term);
           }
-          sql += ' ORDER BY CASE customer_type WHEN \'basecamp\' THEN 0 ELSE 1 END, basecamp_unit ASC, name ASC';
+          sql += ' ORDER BY CASE customer_type WHEN \'basecamp\' THEN 0 WHEN \'shop\' THEN 1 WHEN \'ondemand\' THEN 2 WHEN \'virtual_office\' THEN 3 ELSE 4 END, basecamp_unit ASC, name ASC';
 
           const { results: customers } = await env.DB.prepare(sql).bind(...params).all();
 
@@ -4402,7 +5040,14 @@ export default {
           if (start_date && end_date && start_date > end_date) {
             return new Response(JSON.stringify({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' }), { status: 400, headers: corsHeaders });
           }
-          const cleanType = customer_type === 'shop' ? 'shop' : 'basecamp';
+          const validTypes = ['basecamp', 'shop', 'ondemand', 'virtual_office'];
+          let cleanType = String(customer_type || '').toLowerCase().trim();
+          if (cleanType === 'virtual' || cleanType === 'virtual office' || cleanType === 'virtual-office') {
+            cleanType = 'virtual_office';
+          }
+          if (!validTypes.includes(cleanType)) {
+            cleanType = 'basecamp';
+          }
 
           if (cleanType === 'basecamp' && basecamp_unit) {
             const existingActive = await env.DB.prepare(
@@ -4437,13 +5082,23 @@ export default {
           let effectiveContractNumber = null;
 
           if (start_date && end_date) {
-            const defaultQuota = cleanType === 'shop' ? 4.0 : (basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
-            const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
+            let defaultQuota = 0;
+            if (cleanType === 'basecamp') {
+              defaultQuota = basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0;
+            } else if (cleanType === 'shop') {
+              defaultQuota = 4.0;
+            } else {
+              defaultQuota = 0.0;
+            }
+            const quotaVal = monthly_quota_hours !== undefined && monthly_quota_hours !== null && monthly_quota_hours !== ''
+              ? Math.max(0, Number(monthly_quota_hours) || 0)
+              : defaultQuota;
+            const prefix = cleanType === 'basecamp' ? 'BC' : cleanType.toUpperCase();
             const baseCtr = contract_number && contract_number.trim()
               ? contract_number.trim()
               : (cleanType === 'basecamp'
                   ? `CTR-BC-${basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
-                  : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
+                  : `CTR-${prefix}-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
 
             let ctrRes = null;
             for (let attempt = 0; attempt < 5; attempt++) {
@@ -4988,9 +5643,20 @@ export default {
         const customerId = parseInt(customerDetailMatch[1], 10);
         try {
           const body = await request.json();
-          const { name, contact_name, phone, email, tax_id, address, basecamp_sub_type, basecamp_unit } = body;
+          const {
+            name,
+            contact_name,
+            phone,
+            email,
+            tax_id,
+            address,
+            customer_type,
+            basecamp_sub_type,
+            basecamp_unit,
+            monthly_quota_hours
+          } = body;
           if (!name || !name.trim()) {
-            return new Response(JSON.stringify({ error: 'ชื่อลูกค้าหรือร้านค้าจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+            return new Response(JSON.stringify({ error: 'ชื่อลูกค้าหรือชื่อร้านค้าจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
           }
 
           const existing = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(customerId).first();
@@ -4998,22 +5664,80 @@ export default {
             return new Response(JSON.stringify({ error: 'Customer not found' }), { status: 404, headers: corsHeaders });
           }
 
+          let targetType = existing.customer_type;
+          if (customer_type) {
+            const validTypes = ['basecamp', 'shop', 'ondemand', 'virtual_office'];
+            let cleanType = String(customer_type).toLowerCase().trim();
+            if (cleanType === 'virtual' || cleanType === 'virtual office' || cleanType === 'virtual-office') {
+              cleanType = 'virtual_office';
+            }
+            if (validTypes.includes(cleanType)) {
+              targetType = cleanType;
+            }
+          }
+
+          const targetUnit = targetType === 'basecamp' ? (basecamp_unit || existing.basecamp_unit) : null;
+          const targetSubType = targetType === 'basecamp' ? (basecamp_sub_type || existing.basecamp_sub_type || 'office') : null;
+
+          if (targetType === 'basecamp' && targetUnit) {
+            const conflict = await env.DB.prepare(
+              `SELECT id, name FROM customers
+               WHERE customer_type = 'basecamp' AND basecamp_unit = ? AND status = 'active' AND id != ?`
+            ).bind(targetUnit, customerId).first();
+            if (conflict) {
+              return new Response(JSON.stringify({
+                error: `ยูนิต ${targetUnit} มีผู้เช่าที่ใช้งานอยู่แล้ว (${conflict.name}) กรุณาใช้ฟังก์ชันเปลี่ยนผู้เช่าหรือปิดสถานะผู้เช่าเดิมก่อน`
+              }), { status: 400, headers: corsHeaders });
+            }
+          }
+
           await env.DB.prepare(
             `UPDATE customers
-             SET name = ?, contact_name = ?, phone = ?, email = ?, tax_id = ?, address = ?,
+             SET customer_type = ?, name = ?, contact_name = ?, phone = ?, email = ?, tax_id = ?, address = ?,
                  basecamp_sub_type = ?, basecamp_unit = ?, updated_at = CURRENT_TIMESTAMP
              WHERE id = ?`
           ).bind(
+            targetType,
             name.trim(),
-            contact_name !== undefined ? contact_name : existing.contact_name,
-            phone !== undefined ? phone : existing.phone,
-            email !== undefined ? email : existing.email,
-            tax_id !== undefined ? tax_id : existing.tax_id,
-            address !== undefined ? address : existing.address,
-            existing.customer_type === 'basecamp' ? (basecamp_sub_type || existing.basecamp_sub_type) : null,
-            existing.customer_type === 'basecamp' ? (basecamp_unit || existing.basecamp_unit) : null,
+            contact_name !== undefined ? (contact_name ? contact_name.trim() : null) : existing.contact_name,
+            phone !== undefined ? (phone ? phone.trim() : null) : existing.phone,
+            email !== undefined ? (email ? email.trim() : null) : existing.email,
+            tax_id !== undefined ? (tax_id ? tax_id.trim() : null) : existing.tax_id,
+            address !== undefined ? (address ? address.trim() : null) : existing.address,
+            targetSubType,
+            targetUnit,
             customerId
           ).run();
+
+          // Update quota in active contract if provided
+          if (monthly_quota_hours !== undefined && monthly_quota_hours !== null && monthly_quota_hours !== '') {
+            const newQuota = Math.max(0, Number(monthly_quota_hours) || 0);
+            const activeContract = await env.DB.prepare(
+              `SELECT id, monthly_quota_hours FROM customer_contracts
+               WHERE customer_id = ? AND status IN ('ACTIVE', 'EXPIRING')
+               ORDER BY end_date DESC, id DESC LIMIT 1`
+            ).bind(customerId).first();
+
+            if (activeContract) {
+              await env.DB.prepare(
+                `UPDATE customer_contracts
+                 SET monthly_quota_hours = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?`
+              ).bind(newQuota, activeContract.id).run();
+            } else {
+              const today = new Date().toISOString().slice(0, 10);
+              const nextYear = new Date();
+              nextYear.setFullYear(nextYear.getFullYear() + 1);
+              const endStr = nextYear.toISOString().slice(0, 10);
+              const baseCtr = `CTR-${targetType.toUpperCase()}-${customerId}-${today.slice(0, 7).replace('-', '')}`;
+              const ctrNum = await generateWorkerUniqueContractNumber(env, baseCtr);
+              await env.DB.prepare(
+                `INSERT INTO customer_contracts
+                 (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, 'ACTIVE', 'Initial quota allocated', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+              ).bind(customerId, ctrNum, today, endStr, newQuota).run();
+            }
+          }
 
           const auth = await authenticateUser(request, env);
           const performedBy = auth.user?.username || 'staff';
@@ -5021,8 +5745,19 @@ export default {
             customerId,
             action: 'UPDATE_CUSTOMER',
             details: {
-              previous: { name: existing.name, contact_name: existing.contact_name, phone: existing.phone },
-              updated: { name, contact_name, phone }
+              previous: {
+                name: existing.name,
+                customer_type: existing.customer_type,
+                contact_name: existing.contact_name,
+                phone: existing.phone
+              },
+              updated: {
+                name,
+                customer_type: targetType,
+                contact_name,
+                phone,
+                monthly_quota_hours: monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : undefined
+              }
             },
             performedBy
           });
@@ -6293,10 +7028,10 @@ export default {
           } catch (svErr) {}
 
           let lineData = null;
-          if (booking.line_user_id) {
-            try {
-              lineData = await sendLineBookingConfirmation(env, bookingId);
-            } catch (lineErr) {}
+          try {
+            lineData = await triggerLineBookingConfirmation(env, bookingId);
+          } catch (lineErr) {
+            console.warn('[Payment] LINE confirmation execution warning in worker:', lineErr.message);
           }
 
           return new Response(JSON.stringify({
@@ -6304,6 +7039,7 @@ export default {
             message: 'อนุมัติการชำระเงินสำเร็จ' + (lineData?.success ? ' และส่งการแจ้งเตือนยืนยันการจองผ่าน LINE OA แล้ว' : ''),
             receiptNumber,
             pinCode,
+            line_notification: lineData,
             line_notification_sent: lineData?.success || false
           }), { headers: corsHeaders });
         } else if (paymentStatus === 'rejected') {
@@ -6571,15 +7307,26 @@ export default {
           console.warn('[Pay-Balance] Error logging booking_history in worker:', hErr);
         }
 
+        let lineData = null;
+        if (newStatus === 'paid') {
+          try {
+            lineData = await triggerLineBookingConfirmation(env, booking.id);
+          } catch (lineErr) {
+            console.warn('[Pay-Balance] LINE confirmation execution warning in worker:', lineErr.message);
+          }
+        }
+
         const updatedBooking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
         return new Response(JSON.stringify({
           success: true,
-          message: newStatus === 'paid' ? 'ชำระเงินครบถ้วนเรียบร้อยแล้ว' : 'บันทึกการชำระเงินคงเหลือสำเร็จ',
+          message: newStatus === 'paid' ? 'ชำระเงินครบถ้วนเรียบร้อยแล้ว' + (lineData?.success ? ' และส่งการแจ้งเตือนยืนยันการจองผ่าน LINE OA แล้ว' : '') : 'บันทึกการชำระเงินคงเหลือสำเร็จ',
           paid_amount: newPaid,
           balance_amount: newBalance,
           payment_status: newStatus,
           payment_method: method,
           slip_url: slipUrl,
+          line_notification: lineData,
+          line_notification_sent: lineData?.success || false,
           booking: updatedBooking
         }), { headers: corsHeaders });
       }

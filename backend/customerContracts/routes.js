@@ -79,7 +79,7 @@ function createCustomerRouter(dbQuery) {
         params.push(queryTerm, queryTerm, queryTerm, queryTerm);
       }
 
-      sql += ' ORDER BY CASE customer_type WHEN \'basecamp\' THEN 0 ELSE 1 END, basecamp_unit ASC, name ASC';
+      sql += ' ORDER BY CASE customer_type WHEN \'basecamp\' THEN 0 WHEN \'shop\' THEN 1 WHEN \'ondemand\' THEN 2 WHEN \'virtual_office\' THEN 3 ELSE 4 END, basecamp_unit ASC, name ASC';
       const customers = await dbQuery.all(sql, params);
 
       // Fetch active contracts and quota for each customer
@@ -247,7 +247,14 @@ function createCustomerRouter(dbQuery) {
     if (start_date && end_date && start_date > end_date) {
       return res.status(400).json({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' });
     }
-    const cleanType = customer_type === 'shop' ? 'shop' : 'basecamp';
+    const validTypes = ['basecamp', 'shop', 'ondemand', 'virtual_office'];
+    let cleanType = String(customer_type || '').toLowerCase().trim();
+    if (cleanType === 'virtual' || cleanType === 'virtual office' || cleanType === 'virtual-office') {
+      cleanType = 'virtual_office';
+    }
+    if (!validTypes.includes(cleanType)) {
+      cleanType = 'basecamp';
+    }
 
     try {
       // Check unit uniqueness for active basecamp customer
@@ -287,13 +294,23 @@ function createCustomerRouter(dbQuery) {
 
       // Create initial contract if start_date and end_date provided
       if (start_date && end_date) {
-        const defaultQuota = cleanType === 'shop' ? 4.0 : (basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0);
-        const quotaVal = monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : defaultQuota;
+        let defaultQuota = 0;
+        if (cleanType === 'basecamp') {
+          defaultQuota = basecamp_sub_type === 'hotdesk' ? 2.0 : 4.0;
+        } else if (cleanType === 'shop') {
+          defaultQuota = 4.0;
+        } else {
+          defaultQuota = 0.0;
+        }
+        const quotaVal = monthly_quota_hours !== undefined && monthly_quota_hours !== null && monthly_quota_hours !== ''
+          ? Math.max(0, Number(monthly_quota_hours) || 0)
+          : defaultQuota;
+        const prefix = cleanType === 'basecamp' ? 'BC' : cleanType.toUpperCase();
         const baseCtr = contract_number && contract_number.trim()
           ? contract_number.trim()
           : (cleanType === 'basecamp'
               ? `CTR-BC-${basecamp_unit || 'UNIT'}-${start_date.slice(0, 7).replace('-', '')}`
-              : `CTR-SHOP-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
+              : `CTR-${prefix}-${customerId}-${start_date.slice(0, 7).replace('-', '')}`);
 
         let ctrRes = null;
         for (let attempt = 0; attempt < 5; attempt++) {
@@ -363,12 +380,14 @@ function createCustomerRouter(dbQuery) {
       email,
       tax_id,
       address,
+      customer_type,
       basecamp_sub_type,
-      basecamp_unit
+      basecamp_unit,
+      monthly_quota_hours
     } = req.body;
 
     if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'ชื่อลูกค้าหรือร้านค้าจำเป็นต้องระบุ' });
+      return res.status(400).json({ error: 'ชื่อลูกค้าหรือชื่อร้านค้าจำเป็นต้องระบุ' });
     }
 
     try {
@@ -377,9 +396,40 @@ function createCustomerRouter(dbQuery) {
         return res.status(404).json({ error: 'Customer not found' });
       }
 
+      // Handle customer_type update if provided
+      let targetType = existing.customer_type;
+      if (customer_type) {
+        const validTypes = ['basecamp', 'shop', 'ondemand', 'virtual_office'];
+        let cleanType = String(customer_type).toLowerCase().trim();
+        if (cleanType === 'virtual' || cleanType === 'virtual office' || cleanType === 'virtual-office') {
+          cleanType = 'virtual_office';
+        }
+        if (validTypes.includes(cleanType)) {
+          targetType = cleanType;
+        }
+      }
+
+      const targetUnit = targetType === 'basecamp' ? (basecamp_unit || existing.basecamp_unit) : null;
+      const targetSubType = targetType === 'basecamp' ? (basecamp_sub_type || existing.basecamp_sub_type || 'office') : null;
+
+      // Unit uniqueness check if basecamp
+      if (targetType === 'basecamp' && targetUnit) {
+        const conflict = await dbQuery.get(
+          `SELECT id, name FROM customers
+           WHERE customer_type = 'basecamp' AND basecamp_unit = ? AND status = 'active' AND id != ?`,
+          [targetUnit, customerId]
+        );
+        if (conflict) {
+          return res.status(400).json({
+            error: `ยูนิต ${targetUnit} มีผู้เช่าที่ใช้งานอยู่แล้ว (${conflict.name}) กรุณาใช้ฟังก์ชันเปลี่ยนผู้เช่าหรือปิดสถานะผู้เช่าเดิมก่อน`
+          });
+        }
+      }
+
       await dbQuery.run(
         `UPDATE customers
-         SET name = ?,
+         SET customer_type = ?,
+             name = ?,
              contact_name = ?,
              phone = ?,
              email = ?,
@@ -390,25 +440,70 @@ function createCustomerRouter(dbQuery) {
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         [
+          targetType,
           name.trim(),
-          contact_name !== undefined ? contact_name : existing.contact_name,
-          phone !== undefined ? phone : existing.phone,
-          email !== undefined ? email : existing.email,
-          tax_id !== undefined ? tax_id : existing.tax_id,
-          address !== undefined ? address : existing.address,
-          existing.customer_type === 'basecamp' ? (basecamp_sub_type || existing.basecamp_sub_type) : null,
-          existing.customer_type === 'basecamp' ? (basecamp_unit || existing.basecamp_unit) : null,
+          contact_name !== undefined ? (contact_name ? contact_name.trim() : null) : existing.contact_name,
+          phone !== undefined ? (phone ? phone.trim() : null) : existing.phone,
+          email !== undefined ? (email ? email.trim() : null) : existing.email,
+          tax_id !== undefined ? (tax_id ? tax_id.trim() : null) : existing.tax_id,
+          address !== undefined ? (address ? address.trim() : null) : existing.address,
+          targetSubType,
+          targetUnit,
           customerId
         ]
       );
+
+      // Update quota in active contract if provided
+      if (monthly_quota_hours !== undefined && monthly_quota_hours !== null && monthly_quota_hours !== '') {
+        const newQuota = Math.max(0, Number(monthly_quota_hours) || 0);
+        const activeContract = await dbQuery.get(
+          `SELECT id, monthly_quota_hours FROM customer_contracts
+           WHERE customer_id = ? AND status IN ('ACTIVE', 'EXPIRING')
+           ORDER BY end_date DESC, id DESC LIMIT 1`,
+          [customerId]
+        );
+
+        if (activeContract) {
+          await dbQuery.run(
+            `UPDATE customer_contracts
+             SET monthly_quota_hours = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`,
+            [newQuota, activeContract.id]
+          );
+        } else {
+          const today = new Date().toISOString().slice(0, 10);
+          const nextYear = new Date();
+          nextYear.setFullYear(nextYear.getFullYear() + 1);
+          const endStr = nextYear.toISOString().slice(0, 10);
+          const baseCtr = `CTR-${targetType.toUpperCase()}-${customerId}-${today.slice(0, 7).replace('-', '')}`;
+          const ctrNum = await generateUniqueContractNumber(baseCtr);
+          await dbQuery.run(
+            `INSERT INTO customer_contracts
+             (customer_id, contract_number, start_date, end_date, monthly_quota_hours, status, notes, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'ACTIVE', 'Initial quota allocated', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            [customerId, ctrNum, today, endStr, newQuota]
+          );
+        }
+      }
 
       const performedBy = req.user?.username || 'staff';
       await recordAuditLog({
         customerId,
         action: 'UPDATE_CUSTOMER',
         details: {
-          previous: { name: existing.name, contact_name: existing.contact_name, phone: existing.phone },
-          updated: { name, contact_name, phone }
+          previous: {
+            name: existing.name,
+            customer_type: existing.customer_type,
+            contact_name: existing.contact_name,
+            phone: existing.phone
+          },
+          updated: {
+            name,
+            customer_type: targetType,
+            contact_name,
+            phone,
+            monthly_quota_hours: monthly_quota_hours !== undefined ? Number(monthly_quota_hours) : undefined
+          }
         },
         performedBy
       });

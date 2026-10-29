@@ -100,40 +100,37 @@
 
 /* ===================================================
    POPOVER CALENDAR (ADAPTIVE PLACEMENT & 320PX WIDTH)
+   Fixed portal positioning to document.body
    =================================================== */
 .thai-datepicker-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  z-index: 10000;
+  position: fixed;
+  z-index: 1100;
   width: 320px;
   min-width: 310px;
   max-width: calc(100vw - 24px);
-  background: #ffffff;
+  background-color: #ffffff !important;
+  background: #ffffff !important;
+  opacity: 1 !important;
   border: 1px solid #cbd5e1;
   border-radius: 12px;
-  box-shadow: 0 14px 30px -4px rgba(15, 23, 42, 0.16), 0 4px 10px -2px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 14px 30px -4px rgba(15, 23, 42, 0.18), 0 4px 12px -2px rgba(15, 23, 42, 0.1);
   padding: 12px 14px;
   box-sizing: border-box;
   animation: thaiPickerFadeIn 0.15s ease-out;
 }
 
-/* Open upward when space below is tight */
+/* Open upward animation (no conflicting bottom coordinate) */
 .thai-datepicker-popover.open-upward {
-  top: auto;
-  bottom: calc(100% + 4px);
   animation: thaiPickerFadeInUp 0.15s ease-out;
 }
 
-/* Align Left by default */
+/* Align Left / Right semantic classes (portal coordinates handle exact placement) */
 .thai-datepicker-popover.align-left {
-  left: 0;
-  right: auto;
+  /* Coordinates controlled dynamically via inline style */
 }
 
-/* Align Right when close to right container/screen edge */
 .thai-datepicker-popover.align-right {
-  right: 0;
-  left: auto;
+  /* Coordinates controlled dynamically via inline style */
 }
 
 @keyframes thaiPickerFadeIn {
