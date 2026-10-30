@@ -534,13 +534,17 @@ Write-Host "[PASS] Worker Health Check PASSED. Rooms active: $roomsCount" -Foreg
 Write-StepHeader "STEP 6: DEPLOY CLOUDFLARE POS PAGES (bwork-pos)"
 
 Write-Host "Current confirmed baseline POS Pages deployment: $BaselinePagesDeployment"
-Confirm-OperatorGate "Deploy POS Frontend Pages from $ReleaseDir\frontend\dist?"
+$pagesDir = if (Test-Path (Join-Path $ReleaseDir "frontend\dist")) {
+    Join-Path $ReleaseDir "frontend\dist"
+} else {
+    Join-Path $ReleaseDir "backend\public"
+}
+Confirm-OperatorGate "Deploy POS Frontend Pages from $pagesDir?"
 
 if ($DryRun) {
     Write-Host "[DRY-RUN OFFLINE MOCK] Simulating POS Pages deployment..." -ForegroundColor Yellow
 } else {
-    Set-Location (Join-Path $ReleaseDir "frontend")
-    npx.cmd wrangler pages deploy dist --project-name=bwork-pos --commit-dirty=true
+    npx.cmd wrangler pages deploy $pagesDir --project-name=bwork-pos --commit-dirty=true
     if ($LASTEXITCODE -ne 0) {
         throw "STOP GATE 6: POS Pages deploy failed with exit code $LASTEXITCODE. Rollback target: $BaselinePagesDeployment."
     }
