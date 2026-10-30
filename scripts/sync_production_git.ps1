@@ -415,17 +415,17 @@ if ($DryRun) {
         Write-Host "  Local HEAD:     $failedLocalHead (Fast-forwarded to Target RC)" -ForegroundColor Yellow
         Write-Host "  Remote HEAD:    $failedRemoteHead (Still at Baseline on GitHub)" -ForegroundColor Yellow
         Write-Host "  Push Error:     $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "`n  SAFE NON-DESTRUCTIVE RECOVERY INSTRUCTIONS:" -ForegroundColor Cyan
-        Write-Host "    1. Do NOT force push (`--force` or `--force-with-lease`)." -ForegroundColor White
-        Write-Host "    2. To retry pushing without re-merging:" -ForegroundColor White
-        Write-Host "         cd '$ProductionDir'" -ForegroundColor Gray
-        Write-Host "         git push origin main" -ForegroundColor Gray
-        Write-Host "    3. Or to non-destructively rewind local branch pointer to baseline without losing working tree:" -ForegroundColor White
-        Write-Host "         cd '$ProductionDir'" -ForegroundColor Gray
-        Write-Host "         git update-ref refs/heads/main $ExpectedBaseline" -ForegroundColor Gray
+        Write-Host "`n  INCIDENT REPORT & MANUAL INVESTIGATION REQUIRED:" -ForegroundColor Cyan
+        Write-Host "    - Local Branch HEAD:   $failedLocalHead" -ForegroundColor White
+        Write-Host "    - Remote origin/main:  $failedRemoteHead" -ForegroundColor White
+        Write-Host "    - Push Failure Detail: $($_.Exception.Message)" -ForegroundColor White
+        Write-Host "`n  OPERATIONAL DIRECTIVE:" -ForegroundColor Yellow
+        Write-Host "    1. STOP immediately. Do NOT run git reset, git update-ref, or force push." -ForegroundColor Yellow
+        Write-Host "    2. Collect Git status, network telemetry, and GitHub permission logs." -ForegroundColor Yellow
+        Write-Host "    3. Escalate for manual investigation and senior authorization before any retry." -ForegroundColor Yellow
         Write-Host "`n  STATUS: PRODUCTION GIT SYNC HAS NOT COMPLETED. REMOTE MAIN UNMODIFIED." -ForegroundColor Red
         Write-Host "********************************************************************************`n" -ForegroundColor Red
-        throw "STOP GATE 9: Production push failed. Remote remains at $failedRemoteHead. Follow non-destructive recovery instructions above."
+        throw "STOP GATE 9: Production push failed. Remote remains at $failedRemoteHead. STOPPING. Manual investigation required."
     }
 
     $finalRemoteCheck = & git ls-remote origin refs/heads/main
