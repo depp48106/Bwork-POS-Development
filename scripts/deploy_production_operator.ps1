@@ -13,14 +13,14 @@
     STRICTLY PROHIBITED and rejected in Production mode.
 .PARAMETER MockFailureAt
     Simulates a failure at a specified gate for DryRun testing:
-    'Backup', 'Migration', 'MigrationHistory', 'WorkerDeploy', 'HealthCheck', 'PagesAsset', 'RollbackFail'
+    'Backup', 'Migration', 'MigrationSchema', 'IndexCheck', 'MigrationHistory', 'WorkerDeploy', 'HealthCheck', 'PagesAsset', 'RollbackFail', 'RollbackTrafficFail'
 #>
 
 [CmdletBinding()]
 param(
     [switch]$DryRun,
     [switch]$DryRunSimulateYes,
-    [ValidateSet('', 'Backup', 'Migration', 'MigrationHistory', 'WorkerDeploy', 'HealthCheck', 'PagesAsset', 'RollbackFail')]
+    [ValidateSet('', 'Backup', 'Migration', 'MigrationSchema', 'IndexCheck', 'MigrationHistory', 'WorkerDeploy', 'HealthCheck', 'PagesAsset', 'RollbackFail', 'RollbackTrafficFail')]
     [string]$MockFailureAt = '',
     [string]$BackupDir = "D:\Project BL\ProductionBackups\D1",
     [string]$ReleaseDir = "D:\Project BL\Bwork-POS-Release",
@@ -121,22 +121,19 @@ if (-not (Test-Path $jsPath) -or -not (Test-Path $cssPath)) {
 Write-Host "   -> Frontend assets verified: $ExpectedBundleJs, $ExpectedBundleCss" -ForegroundColor Green
 
 Write-Host "5. Checking external backup directory..."
-if (-not (Test-Path $BackupDir)) {
-    try {
+if (-not $DryRun) {
+    if (-not (Test-Path $BackupDir)) {
         New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
-    } catch {
-        if (-not $DryRun) { throw }
-        Write-Warning "Could not create backup directory in dry-run mode: $_"
     }
-}
-$resolvedBackup = (Resolve-Path $BackupDir -ErrorAction SilentlyContinue)
-if ($resolvedBackup) {
+    $resolvedBackup = (Resolve-Path $BackupDir).Path
     $resolvedRelease = (Resolve-Path $ReleaseDir).Path
-    if ($resolvedBackup.Path.StartsWith($resolvedRelease, [StringComparison]::OrdinalIgnoreCase)) {
+    if ($resolvedBackup.StartsWith($resolvedRelease, [StringComparison]::OrdinalIgnoreCase)) {
         throw "SECURITY ALERT: Backup directory is inside Git worktree!"
     }
+    Write-Host "   -> External backup path is safe and outside Git: $BackupDir" -ForegroundColor Green
+} else {
+    Write-Host "   -> [DRY-RUN] Target production backup path configured: $BackupDir (Untouched during DryRun)" -ForegroundColor Yellow
 }
-Write-Host "   -> External backup path is safe and outside Git: $BackupDir" -ForegroundColor Green
 
 Write-Host "`n[STATUS] Step 0 Preflight Checks PASSED 100%." -ForegroundColor Green
 
@@ -146,16 +143,21 @@ Write-Host "`n[STATUS] Step 0 Preflight Checks PASSED 100%." -ForegroundColor Gr
 Write-StepHeader "STEP 1: FRESH D1 BACKUP & INTEGRITY VERIFICATION"
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$backupFile = if ($DryRun) {
-    Join-Path $BackupDir "dryrun_mock_backup_$timestamp.sql"
+$tempMockDir = $null
+$mockCreated = $false
+
+if ($DryRun) {
+    # Strictly use isolated temporary directory for all mock artifacts during DryRun
+    $tempMockDir = Join-Path ([System.IO.Path]::GetTempPath()) "bwork_pos_dryrun_mock_$timestamp"
+    New-Item -ItemType Directory -Path $tempMockDir -Force | Out-Null
+    $backupFile = Join-Path $tempMockDir "dryrun_mock_backup_$timestamp.sql"
 } else {
-    Join-Path $BackupDir "bworkpos_db_production_backup_$timestamp.sql"
+    $backupFile = Join-Path $BackupDir "bworkpos_db_production_backup_$timestamp.sql"
 }
 Write-Host "Target backup file: $backupFile"
 
 Confirm-OperatorGate "Execute D1 Export of production database 'bworkpos_db'?"
 
-$mockCreated = $false
 try {
     if ($DryRun) {
         Write-Host "[DRY-RUN OFFLINE MOCK] Simulating D1 export to $backupFile..." -ForegroundColor Yellow
@@ -170,14 +172,8 @@ try {
                    "CREATE TABLE rooms (id INTEGER PRIMARY KEY);`n" +
                    "CREATE TABLE settings (key TEXT, value TEXT);`n" +
                    "INSERT INTO bookings VALUES (1, 1000);"
-        try {
-            Set-Content -Path $backupFile -Value $mockSql -Encoding UTF8
-            $mockCreated = $true
-        } catch [System.UnauthorizedAccessException] {
-            $backupFile = Join-Path ([System.IO.Path]::GetTempPath()) "dryrun_mock_backup_$timestamp.sql"
-            Set-Content -Path $backupFile -Value $mockSql -Encoding UTF8
-            $mockCreated = $true
-        }
+        Set-Content -Path $backupFile -Value $mockSql -Encoding UTF8
+        $mockCreated = $true
     } else {
         Set-Location (Join-Path $ReleaseDir "backend")
         npx.cmd wrangler d1 export bworkpos_db --remote --output=$backupFile -y
@@ -195,7 +191,11 @@ try {
     Write-Host "[PASS] Backup file exported ($([math]::Round($backupItem.Length / 1MB, 2)) MB)" -ForegroundColor Green
 
     # Gate 1.2: Integrity Check in temporary SQLite
-    $tempDb = Join-Path ([System.IO.Path]::GetDirectoryName($backupFile)) "temp_verify_$timestamp.sqlite"
+    $tempDb = if ($DryRun) {
+        Join-Path $tempMockDir "temp_verify_$timestamp.sqlite"
+    } else {
+        Join-Path $BackupDir "temp_verify_$timestamp.sqlite"
+    }
     try {
         Write-Host "Verifying backup content and PRAGMA integrity_check..."
         $helperScript = Join-Path $PSScriptRoot "verify_backup_helper.cjs"
@@ -208,9 +208,9 @@ try {
         if (Test-Path $tempDb) { Remove-Item -Force $tempDb }
     }
 } finally {
-    if ($DryRun -and $mockCreated -and (Test-Path $backupFile)) {
-        Remove-Item -Force $backupFile
-        Write-Host "[DRY-RUN] Cleaned up temporary mock backup file." -ForegroundColor DarkYellow
+    if ($DryRun -and $mockCreated -and $tempMockDir -and (Test-Path $tempMockDir)) {
+        Remove-Item -Recurse -Force $tempMockDir
+        Write-Host "[DRY-RUN] Cleaned up temporary mock artifacts directory ($tempMockDir)." -ForegroundColor DarkYellow
     }
 }
 
@@ -229,9 +229,19 @@ if ($DryRun) {
     Set-Location (Join-Path $ReleaseDir "backend")
     $tableCheckJson = npx.cmd wrangler d1 execute bworkpos_db --remote --json --command="SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='line_notification_claims';"
     if ($LASTEXITCODE -ne 0) {
-        throw "STOP GATE 2: Failed to query sqlite_master for table existence check."
+        throw "STOP GATE 2: Failed to query sqlite_master for table existence check (Exit code $LASTEXITCODE)."
     }
-    $parsedCheck = $tableCheckJson | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($tableCheckJson)) {
+        throw "STOP GATE 2: Empty JSON response for table existence check from D1."
+    }
+    try {
+        $parsedCheck = $tableCheckJson | ConvertFrom-Json
+    } catch {
+        throw "STOP GATE 2: Invalid JSON received for table existence check: $_"
+    }
+    if (-not $parsedCheck -or -not $parsedCheck[0].results) {
+        throw "STOP GATE 2: Malformed JSON structure for table existence check."
+    }
     $tableAlreadyExists = ($parsedCheck[0].results[0].count -eq 1)
 }
 
@@ -262,31 +272,81 @@ Write-StepHeader "STEP 3: MIGRATION SCHEMA VERIFICATION & HISTORY RECORDING"
 Write-Host "Verifying table columns and indexes in production D1..."
 if ($DryRun) {
     Write-Host "[DRY-RUN OFFLINE MOCK] Simulating schema inspection: 12 columns, UNIQUE constraints, and indexes verified." -ForegroundColor Yellow
+    if ($MockFailureAt -eq 'MigrationSchema') {
+        throw "MOCK FAILURE at Step 3: Migration schema verification failed (missing required column or count mismatch)."
+    }
 } else {
     Set-Location (Join-Path $ReleaseDir "backend")
     $colJson = npx.cmd wrangler d1 execute bworkpos_db --remote --json --command="PRAGMA table_info(line_notification_claims);"
     if ($LASTEXITCODE -ne 0) {
-        throw "STOP GATE 3: Failed to query PRAGMA table_info for line_notification_claims."
+        throw "STOP GATE 3: Failed to query PRAGMA table_info for line_notification_claims (Exit code $LASTEXITCODE)."
     }
-    $colParsed = $colJson | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($colJson)) {
+        throw "STOP GATE 3: Empty JSON response from PRAGMA table_info."
+    }
+    try {
+        $colParsed = $colJson | ConvertFrom-Json
+    } catch {
+        throw "STOP GATE 3: Invalid JSON received from PRAGMA table_info: $_"
+    }
+    if (-not $colParsed -or -not $colParsed[0].results) {
+        throw "STOP GATE 3: Malformed JSON structure from PRAGMA table_info."
+    }
     $cols = $colParsed[0].results
     if ($cols.Count -ne 12) {
         throw "STOP GATE 3: Column count mismatch! Expected 12 columns, found $($cols.Count)."
     }
     $colNames = $cols | ForEach-Object { $_.name }
-    $requiredCols = @('id', 'booking_id', 'notification_type', 'status', 'claim_token', 'retry_key', 'claimed_at', 'updated_at', 'http_status', 'error_message', 'accepted_request_id', 'created_at')
+    $requiredCols = @(
+        'id',
+        'booking_id',
+        'notification_type',
+        'status',
+        'claim_token',
+        'retry_key',
+        'claimed_at',
+        'updated_at',
+        'http_status',
+        'error_message',
+        'accepted_request_id',
+        'created_at'
+    )
     foreach ($rc in $requiredCols) {
         if ($colNames -notcontains $rc) {
             throw "STOP GATE 3: Required column '$rc' missing from line_notification_claims!"
         }
     }
+}
 
-    # Verify Indexes
+# Verify Indexes
+if ($DryRun) {
+    Write-Host "[DRY-RUN OFFLINE MOCK] Simulating index verification: idx_line_claims_booking_status, idx_line_claims_retry_key verified." -ForegroundColor Yellow
+    if ($MockFailureAt -eq 'IndexCheck') {
+        throw "MOCK FAILURE at Step 3: Index verification failed (missing required index idx_line_claims_booking_status or idx_line_claims_retry_key)."
+    }
+} else {
+    Set-Location (Join-Path $ReleaseDir "backend")
     $indexJson = npx.cmd wrangler d1 execute bworkpos_db --remote --json --command="SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='line_notification_claims';"
-    $indexParsed = $indexJson | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) {
+        throw "STOP GATE 3: Failed to query sqlite_master for index verification (Exit code $LASTEXITCODE)."
+    }
+    if ([string]::IsNullOrWhiteSpace($indexJson)) {
+        throw "STOP GATE 3: Empty JSON response from index verification."
+    }
+    try {
+        $indexParsed = $indexJson | ConvertFrom-Json
+    } catch {
+        throw "STOP GATE 3: Invalid JSON received for index verification: $_"
+    }
+    if (-not $indexParsed -or -not $indexParsed[0].results) {
+        throw "STOP GATE 3: Malformed JSON structure for index verification."
+    }
     $indexes = ($indexParsed[0].results | ForEach-Object { $_.name })
-    if ($indexes -notcontains 'idx_line_claims_booking_status' -or $indexes -notcontains 'idx_line_claims_retry_key') {
-        throw "STOP GATE 3: Required indexes missing on line_notification_claims!"
+    $requiredIndexes = @('idx_line_claims_booking_status', 'idx_line_claims_retry_key')
+    foreach ($reqIdx in $requiredIndexes) {
+        if ($indexes -notcontains $reqIdx) {
+            throw "STOP GATE 3: Required index '$reqIdx' missing on line_notification_claims!"
+        }
     }
 }
 Write-Host "[PASS] Table line_notification_claims schema (12 columns, constraints, indexes) verified." -ForegroundColor Green
@@ -295,7 +355,7 @@ Confirm-OperatorGate "Record Migration 015 in d1_migrations history table?"
 if ($DryRun) {
     Write-Host "[DRY-RUN OFFLINE MOCK] Simulating history recording..." -ForegroundColor Yellow
     if ($MockFailureAt -eq 'MigrationHistory') {
-        throw "MOCK FAILURE at Step 3: Migration history recording failed."
+        throw "MOCK FAILURE at Step 3: Migration history recording or verification failed."
     }
 } else {
     $recordSql = "INSERT INTO d1_migrations (name, applied_at) SELECT '015_add_line_notification_claims.sql', datetime('now', '+7 hours') WHERE NOT EXISTS (SELECT 1 FROM d1_migrations WHERE name = '015_add_line_notification_claims.sql');"
@@ -307,8 +367,18 @@ if ($DryRun) {
 
     # Confirm history record exists
     $histCheck = npx.cmd wrangler d1 execute bworkpos_db --remote --json --command="SELECT COUNT(*) as cnt FROM d1_migrations WHERE name = '015_add_line_notification_claims.sql';"
-    $histParsed = $histCheck | ConvertFrom-Json
-    if ($histParsed[0].results[0].cnt -ne 1) {
+    if ($LASTEXITCODE -ne 0) {
+        throw "STOP GATE 3: Failed to query migration history table (Exit code $LASTEXITCODE)."
+    }
+    if ([string]::IsNullOrWhiteSpace($histCheck)) {
+        throw "STOP GATE 3: Empty JSON response from migration history query."
+    }
+    try {
+        $histParsed = $histCheck | ConvertFrom-Json
+    } catch {
+        throw "STOP GATE 3: Invalid JSON received for migration history check: $_"
+    }
+    if (-not $histParsed -or -not $histParsed[0].results -or $histParsed[0].results[0].cnt -ne 1) {
         throw "STOP GATE 3: Migration history verification failed (count != 1)."
     }
 }
@@ -350,7 +420,7 @@ $roomsCount = 0
 
 if ($DryRun) {
     Write-Host "[DRY-RUN OFFLINE MOCK] Simulating Worker health check..." -ForegroundColor Yellow
-    if ($MockFailureAt -in @('HealthCheck', 'RollbackFail')) {
+    if ($MockFailureAt -in @('HealthCheck', 'RollbackFail', 'RollbackTrafficFail')) {
         $healthOk = $false
         $roomsCount = 0
     } else {
@@ -378,13 +448,24 @@ if (-not $healthOk) {
     Write-Host "- Result: Null, empty response, or HTTP error"
     Write-Host "- Baseline rollback target: $BaselineWorkerVersion"
 
-    # Query Active Version before rollback
+    if ([string]::IsNullOrWhiteSpace($BaselineWorkerVersion)) {
+        throw "CRITICAL CONFIG ERROR: BaselineWorkerVersion is not specified! Cannot perform rollback safely."
+    }
+
+    # Query Active Deployments Status before rollback
     if ($DryRun) {
-        Write-Host "[DRY-RUN OFFLINE MOCK] Querying active Worker version: mock-deployed-version" -ForegroundColor Yellow
+        Write-Host "[DRY-RUN OFFLINE MOCK] Querying active Worker status before rollback: mock-active-version" -ForegroundColor Yellow
     } else {
         Set-Location (Join-Path $ReleaseDir "backend")
-        Write-Host "Active Deployments Status from Cloudflare:"
-        npx.cmd wrangler deployments list
+        Write-Host "Active Worker Status from Cloudflare:"
+        npx.cmd wrangler deployments status
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Failed to query 'wrangler deployments status' (Exit code $LASTEXITCODE). Attempting 'wrangler deployments list'..."
+            npx.cmd wrangler deployments list
+            if ($LASTEXITCODE -ne 0) {
+                throw "STOP GATE 5: Failed to query active deployments from Cloudflare (Exit code $LASTEXITCODE)."
+            }
+        }
     }
 
     Confirm-OperatorGate "CRITICAL RECOVERY: Execute Worker rollback to baseline version $BaselineWorkerVersion?"
@@ -392,19 +473,56 @@ if (-not $healthOk) {
     if ($DryRun) {
         Write-Host "[DRY-RUN OFFLINE MOCK] Simulating Worker rollback to $BaselineWorkerVersion..." -ForegroundColor Yellow
         if ($MockFailureAt -eq 'RollbackFail') {
-            throw "MOCK FAILURE at Step 5: Rollback command failed to revert version."
+            throw "MOCK FAILURE at Step 5: Rollback command failed with non-zero exit code."
         }
+        if ($MockFailureAt -eq 'RollbackTrafficFail') {
+            throw "CRITICAL ALERT: Worker version $BaselineWorkerVersion could not be confirmed as active and receiving production traffic after rollback! Immediate manual intervention required."
+        }
+        Write-Host "[DRY-RUN OFFLINE MOCK] Verifying rollback traffic allocation: Version $BaselineWorkerVersion is active and receiving 100% production traffic." -ForegroundColor Yellow
+        Write-Host "[PASS] Worker successfully rolled back and verified receiving 100% traffic at baseline version $BaselineWorkerVersion." -ForegroundColor Green
     } else {
         Set-Location (Join-Path $ReleaseDir "backend")
         npx.cmd wrangler rollback $BaselineWorkerVersion -y -m "Automated rollback after Health Check failure"
         if ($LASTEXITCODE -ne 0) {
             throw "CRITICAL ALERT: Wrangler rollback command failed with exit code $LASTEXITCODE! Active version may still be broken. Immediate manual intervention required."
         }
-        $verifyRollback = npx.cmd wrangler deployments list
-        if ($verifyRollback -notlike "*$BaselineWorkerVersion*") {
-            throw "CRITICAL ALERT: Active version did not show baseline $BaselineWorkerVersion after rollback! Immediate manual intervention required."
+
+        # TASK 3: Strict Traffic Verification after Rollback
+        Write-Host "Verifying that baseline version $BaselineWorkerVersion is active and receiving production traffic..."
+        $statusJson = npx.cmd wrangler deployments status --json
+        $verifiedActiveTraffic = $false
+
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($statusJson)) {
+            try {
+                $statusParsed = $statusJson | ConvertFrom-Json
+                if ($statusParsed.versions) {
+                    foreach ($v in $statusParsed.versions) {
+                        if ($v.version_id -eq $BaselineWorkerVersion -and $v.percentage -eq 100) {
+                            $verifiedActiveTraffic = $true
+                            break
+                        }
+                    }
+                }
+            } catch {
+                Write-Warning "Could not parse JSON from 'wrangler deployments status': $_"
+            }
         }
-        Write-Host "[PASS] Worker successfully rolled back and verified at baseline version $BaselineWorkerVersion." -ForegroundColor Green
+
+        # Fallback to text status check if JSON was unavailable
+        if (-not $verifiedActiveTraffic) {
+            $statusText = npx.cmd wrangler deployments status
+            if ($LASTEXITCODE -eq 0 -and $statusText) {
+                if ($statusText -match "100%.*$([regex]::Escape($BaselineWorkerVersion))" -or $statusText -match "$([regex]::Escape($BaselineWorkerVersion)).*100%") {
+                    $verifiedActiveTraffic = $true
+                }
+            }
+        }
+
+        if (-not $verifiedActiveTraffic) {
+            throw "CRITICAL ALERT: Worker version $BaselineWorkerVersion could not be confirmed as active and receiving production traffic after rollback! Do NOT assume rollback succeeded merely because the version ID appears in history. Immediate manual intervention required by operator."
+        }
+
+        Write-Host "[PASS] Worker successfully rolled back and verified receiving 100% traffic at baseline version $BaselineWorkerVersion." -ForegroundColor Green
     }
     throw "Worker API unhealthy. Rollback executed and confirmed to $BaselineWorkerVersion. STOPPING DEPLOYMENT."
 }
