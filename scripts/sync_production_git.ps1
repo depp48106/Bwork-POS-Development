@@ -90,19 +90,69 @@ function Test-CloudflareAutoDeployProtection {
 
         # Mock behavior injection for unit testing (DryRun only)
         if ($MockFailure -in @('ApprovalRejection', 'RemoteHeadMismatch', 'RcShaMismatch', 'PushFailure', 'MockCloudflarePassed')) {
-            $proj.result.source.config.production_deployments_enabled = $false
+            if ($null -eq $proj.result.PSObject.Properties['source'] -or $null -eq $proj.result.source) {
+                $proj.result | Add-Member -NotePropertyName 'source' -NotePropertyValue ([PSCustomObject]@{
+                    type   = 'github'
+                    config = [PSCustomObject]@{
+                        owner                          = 'depp48106'
+                        repo_name                      = 'Bwork-POS'
+                        production_branch              = 'main'
+                        production_deployments_enabled = $false
+                        deployments_enabled            = $false
+                    }
+                }) -Force
+            } else {
+                $proj.result.source.config.production_deployments_enabled = $false
+            }
         }
         if ($MockFailure -eq 'CloudflareMissingFields' -and $projName -eq 'bwork-pos') {
-            $proj.result.source.config.production_deployments_enabled = $null
+            $proj.result | Add-Member -NotePropertyName 'source' -NotePropertyValue ([PSCustomObject]@{
+                type   = 'github'
+                config = [PSCustomObject]@{
+                    owner                          = 'depp48106'
+                    repo_name                      = 'Bwork-POS'
+                    production_branch              = 'main'
+                    production_deployments_enabled = $null
+                    deployments_enabled            = $false
+                }
+            }) -Force
         }
         if ($MockFailure -eq 'CloudflareWrongRepo' -and $projName -eq 'bwork-pos') {
-            $proj.result.source.config.repo_name = 'Wrong-Repo'
+            $proj.result | Add-Member -NotePropertyName 'source' -NotePropertyValue ([PSCustomObject]@{
+                type   = 'github'
+                config = [PSCustomObject]@{
+                    owner                          = 'depp48106'
+                    repo_name                      = 'Wrong-Repo'
+                    production_branch              = 'main'
+                    production_deployments_enabled = $false
+                    deployments_enabled            = $false
+                }
+            }) -Force
         }
         if ($MockFailure -eq 'CloudflareWrongBranch' -and $projName -eq 'bwork-pos') {
             $proj.result.production_branch = 'develop'
+            $proj.result | Add-Member -NotePropertyName 'source' -NotePropertyValue ([PSCustomObject]@{
+                type   = 'github'
+                config = [PSCustomObject]@{
+                    owner                          = 'depp48106'
+                    repo_name                      = 'Bwork-POS'
+                    production_branch              = 'develop'
+                    production_deployments_enabled = $false
+                    deployments_enabled            = $false
+                }
+            }) -Force
         }
         if ($MockFailure -eq 'CloudflareBookingEnabled' -and $projName -eq 'bwork-booking') {
-            $proj.result.source.config.production_deployments_enabled = $true
+            $proj.result | Add-Member -NotePropertyName 'source' -NotePropertyValue ([PSCustomObject]@{
+                type   = 'github'
+                config = [PSCustomObject]@{
+                    owner                          = 'depp48106'
+                    repo_name                      = 'Bwork-POS'
+                    production_branch              = 'main'
+                    production_deployments_enabled = $true
+                    deployments_enabled            = $true
+                }
+            }) -Force
         }
 
         # 1. Project name check
@@ -110,9 +160,19 @@ function Test-CloudflareAutoDeployProtection {
             throw "STOP GATE 0: Project name mismatch. Expected '$projName' but got '$($proj.result.name)'."
         }
 
+        # Check if Git integration is connected
+        $hasSource = ($proj.result.PSObject.Properties['source'] -ne $null -and $null -ne $proj.result.source)
+        if (-not $hasSource) {
+            Write-Host "  Project '$projName':" -ForegroundColor Cyan
+            Write-Host "    production_branch:              $($proj.result.production_branch)"
+            Write-Host "    git_provider:                   None / Disconnected (Direct Upload mode)"
+            Write-Host "    auto_deploy_protection:         VERIFIED (No Git repository connected; zero trigger risk on push)"
+            continue
+        }
+
         # 2. Source and GitHub integration check
-        if ($null -eq $proj.result.source -or $proj.result.source.type -ne 'github') {
-            throw "STOP GATE 0: Project '$projName' is not connected via GitHub provider (source.type: '$($proj.result.source.type)')."
+        if ($proj.result.source.type -ne 'github') {
+            throw "STOP GATE 0: Project '$projName' is connected via unexpected provider '$($proj.result.source.type)' (expected 'github')."
         }
         $cfg = $proj.result.source.config
         if ($null -eq $cfg) {
