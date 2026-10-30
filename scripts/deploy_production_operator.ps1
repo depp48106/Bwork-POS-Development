@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     BWORK-POS Production Deployment Operator Script (Windows PowerShell)
 .DESCRIPTION
@@ -544,7 +544,7 @@ Confirm-OperatorGate "Deploy POS Frontend Pages from $pagesDir?"
 if ($DryRun) {
     Write-Host "[DRY-RUN OFFLINE MOCK] Simulating POS Pages deployment..." -ForegroundColor Yellow
 } else {
-    npx.cmd wrangler pages deploy $pagesDir --project-name=bwork-pos --commit-dirty=true
+    npx.cmd wrangler pages deploy $pagesDir --project-name=bwork-pos --branch=main --commit-dirty=true
     if ($LASTEXITCODE -ne 0) {
         throw "STOP GATE 6: POS Pages deploy failed with exit code $LASTEXITCODE. Rollback target: $BaselinePagesDeployment."
     }
