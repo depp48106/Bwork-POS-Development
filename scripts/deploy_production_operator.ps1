@@ -2,23 +2,25 @@
 .SYNOPSIS
     BWORK-POS Production Deployment Operator Script (Windows PowerShell)
 .DESCRIPTION
-    Strictly gated deployment script for BWORK-POS Selective Release Candidate.
-    Includes automated D1 backup, integrity checks, Migration 015 execution,
-    Worker deploy, POS Pages deploy, health checks, and rollback controls.
+    Strictly gated, fail-closed deployment script for BWORK-POS Selective Release Candidate.
+    Enforces manual approval gates on all mutating commands, strictly offline DryRun mode,
+    automated D1 backup integrity checks, Migration 015 verification, Worker deploy,
+    POS Pages deploy, and rollback controls.
 .PARAMETER DryRun
-    Simulates deployment steps without executing mutating commands against Cloudflare.
-.PARAMETER SkipConfirmation
-    Bypasses interactive prompt checks. MUST only be used when explicitly intended.
+    Runs in strictly offline mock mode with zero network calls to Cloudflare or LINE.
+.PARAMETER DryRunSimulateYes
+    Simulates operator typing 'YES' at approval gates during automated DryRun testing.
+    STRICTLY PROHIBITED and rejected in Production mode.
 .PARAMETER MockFailureAt
     Simulates a failure at a specified gate for DryRun testing:
-    'Backup', 'Migration', 'MigrationHistory', 'WorkerDeploy', 'HealthCheck', 'PagesAsset'
+    'Backup', 'Migration', 'MigrationHistory', 'WorkerDeploy', 'HealthCheck', 'PagesAsset', 'RollbackFail'
 #>
 
 [CmdletBinding()]
 param(
     [switch]$DryRun,
-    [switch]$SkipConfirmation,
-    [ValidateSet('', 'Backup', 'Migration', 'MigrationHistory', 'WorkerDeploy', 'HealthCheck', 'PagesAsset')]
+    [switch]$DryRunSimulateYes,
+    [ValidateSet('', 'Backup', 'Migration', 'MigrationHistory', 'WorkerDeploy', 'HealthCheck', 'PagesAsset', 'RollbackFail')]
     [string]$MockFailureAt = '',
     [string]$BackupDir = "D:\Project BL\ProductionBackups\D1",
     [string]$ReleaseDir = "D:\Project BL\Bwork-POS-Release",
@@ -31,6 +33,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# ==============================================================================
+# SECURITY ENFORCEMENT: APPROVAL BYPASS PREVENTION
+# ==============================================================================
+if (-not $DryRun -and $DryRunSimulateYes) {
+    throw "FATAL SECURITY VIOLATION: Manual approval bypass (-DryRunSimulateYes) is strictly prohibited in Production mode! You must manually confirm every step."
+}
+
+if (-not $DryRun) {
+    if ($env:SKIP_CONFIRMATION -or $env:APPROVE_ALL -or $env:AUTO_DEPLOY) {
+        throw "FATAL SECURITY VIOLATION: Environment variable approval bypass is strictly prohibited in Production mode! Unset all deployment bypass variables."
+    }
+}
+
 function Write-StepHeader {
     param([string]$Title)
     Write-Host "`n================================================================================" -ForegroundColor Cyan
@@ -40,8 +55,8 @@ function Write-StepHeader {
 
 function Confirm-OperatorGate {
     param([string]$ActionDescription)
-    if ($SkipConfirmation) {
-        Write-Host "[AUTO-CONFIRM] $ActionDescription" -ForegroundColor DarkYellow
+    if ($DryRun -and $DryRunSimulateYes) {
+        Write-Host "[DRY-RUN SIMULATED APPROVAL] $ActionDescription" -ForegroundColor DarkYellow
         return $true
     }
     Write-Host "`n[MANUAL APPROVAL GATE] $ActionDescription" -ForegroundColor Yellow
@@ -50,6 +65,27 @@ function Confirm-OperatorGate {
         throw "OPERATOR ABORT: Confirmation rejected by user for action: $ActionDescription"
     }
     return $true
+}
+
+# ==============================================================================
+# TOP-LEVEL AUTHORIZATION CHECK
+# ==============================================================================
+if ($DryRun) {
+    Write-Host "`n********************************************************************************" -ForegroundColor DarkYellow
+    Write-Host "  MODE: STRICT OFFLINE DRY RUN" -ForegroundColor DarkYellow
+    Write-Host "  Zero network calls will be made to Cloudflare, D1, Pages, or LINE APIs." -ForegroundColor DarkYellow
+    Write-Host "********************************************************************************" -ForegroundColor DarkYellow
+} else {
+    Write-Host "`n********************************************************************************" -ForegroundColor Red
+    Write-Host "  ATTENTION: YOU ARE RUNNING IN REAL PRODUCTION DEPLOYMENT MODE" -ForegroundColor Red
+    Write-Host "  Target Cloudflare Worker: bwork-pos-api" -ForegroundColor Red
+    Write-Host "  Target Cloudflare Pages:  bwork-pos" -ForegroundColor Red
+    Write-Host "  Target Cloudflare D1:     bworkpos_db (0f171606-080b-4380-bf91-167dc678e2e4)" -ForegroundColor Red
+    Write-Host "********************************************************************************" -ForegroundColor Red
+    $topAuth = Read-Host "Type 'APPROVE PRODUCTION DEPLOYMENT' to initiate the release sequence"
+    if ($topAuth -ne 'APPROVE PRODUCTION DEPLOYMENT') {
+        throw "OPERATOR ABORT: Production deployment not authorized by operator."
+    }
 }
 
 # ==============================================================================
@@ -86,12 +122,19 @@ Write-Host "   -> Frontend assets verified: $ExpectedBundleJs, $ExpectedBundleCs
 
 Write-Host "5. Checking external backup directory..."
 if (-not (Test-Path $BackupDir)) {
-    New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+    try {
+        New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+    } catch {
+        if (-not $DryRun) { throw }
+        Write-Warning "Could not create backup directory in dry-run mode: $_"
+    }
 }
-$resolvedBackup = (Resolve-Path $BackupDir).Path
-$resolvedRelease = (Resolve-Path $ReleaseDir).Path
-if ($resolvedBackup.StartsWith($resolvedRelease, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "SECURITY ALERT: Backup directory is inside Git worktree!"
+$resolvedBackup = (Resolve-Path $BackupDir -ErrorAction SilentlyContinue)
+if ($resolvedBackup) {
+    $resolvedRelease = (Resolve-Path $ReleaseDir).Path
+    if ($resolvedBackup.Path.StartsWith($resolvedRelease, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "SECURITY ALERT: Backup directory is inside Git worktree!"
+    }
 }
 Write-Host "   -> External backup path is safe and outside Git: $BackupDir" -ForegroundColor Green
 
@@ -103,47 +146,72 @@ Write-Host "`n[STATUS] Step 0 Preflight Checks PASSED 100%." -ForegroundColor Gr
 Write-StepHeader "STEP 1: FRESH D1 BACKUP & INTEGRITY VERIFICATION"
 
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$backupFile = Join-Path $BackupDir "bworkpos_db_backup_$timestamp.sql"
+$backupFile = if ($DryRun) {
+    Join-Path $BackupDir "dryrun_mock_backup_$timestamp.sql"
+} else {
+    Join-Path $BackupDir "bworkpos_db_production_backup_$timestamp.sql"
+}
 Write-Host "Target backup file: $backupFile"
 
 Confirm-OperatorGate "Execute D1 Export of production database 'bworkpos_db'?"
 
-if ($DryRun) {
-    Write-Host "[DRY-RUN] Simulating D1 export..." -ForegroundColor Yellow
-    if ($MockFailureAt -eq 'Backup') {
-        throw "MOCK FAILURE at Step 1: D1 Backup export failed."
-    }
-    # Create valid mock SQL file for dry-run verification
-    $mockSql = "CREATE TABLE bookings (id INTEGER PRIMARY KEY, total_amount REAL);`nCREATE TABLE payment_transactions (id INTEGER PRIMARY KEY);`nCREATE TABLE customers (id INTEGER PRIMARY KEY);`nCREATE TABLE users (id INTEGER PRIMARY KEY);`nCREATE TABLE rooms (id INTEGER PRIMARY KEY);`nCREATE TABLE settings (key TEXT, value TEXT);`nINSERT INTO bookings VALUES (1, 1000);"
-    Set-Content -Path $backupFile -Value $mockSql -Encoding UTF8
-} else {
-    Set-Location (Join-Path $ReleaseDir "backend")
-    npx.cmd wrangler d1 export bworkpos_db --remote --output=$backupFile -y
-    if ($LASTEXITCODE -ne 0) {
-        throw "STOP GATE 1: Wrangler D1 export command failed with exit code $LASTEXITCODE"
-    }
-}
-
-# Gate 1.1: Size Check
-$backupItem = Get-Item $backupFile
-$minSize = if ($DryRun) { 100 } else { 5MB }
-if ($backupItem.Length -lt $minSize) {
-    throw "STOP GATE 1: Backup file size is suspiciously small ($($backupItem.Length) bytes). Aborting."
-}
-Write-Host "[PASS] Backup file exported ($([math]::Round($backupItem.Length / 1MB, 2)) MB)" -ForegroundColor Green
-
-# Gate 1.2: Integrity Check in temporary SQLite
-$tempDb = Join-Path $BackupDir "temp_verify_$timestamp.sqlite"
+$mockCreated = $false
 try {
-    Write-Host "Verifying backup content and PRAGMA integrity_check..."
-    $helperScript = Join-Path $PSScriptRoot "verify_backup_helper.cjs"
-    node $helperScript $backupFile $tempDb $ReleaseDir
-    if ($LASTEXITCODE -ne 0) {
-        throw "STOP GATE 1: Temporary database import or PRAGMA integrity_check failed!"
+    if ($DryRun) {
+        Write-Host "[DRY-RUN OFFLINE MOCK] Simulating D1 export to $backupFile..." -ForegroundColor Yellow
+        if ($MockFailureAt -eq 'Backup') {
+            throw "MOCK FAILURE at Step 1: D1 Backup export failed."
+        }
+        # Write valid mock SQL with core tables and sample data for offline verification
+        $mockSql = "CREATE TABLE bookings (id INTEGER PRIMARY KEY, total_amount REAL);`n" +
+                   "CREATE TABLE payment_transactions (id INTEGER PRIMARY KEY);`n" +
+                   "CREATE TABLE customers (id INTEGER PRIMARY KEY);`n" +
+                   "CREATE TABLE users (id INTEGER PRIMARY KEY);`n" +
+                   "CREATE TABLE rooms (id INTEGER PRIMARY KEY);`n" +
+                   "CREATE TABLE settings (key TEXT, value TEXT);`n" +
+                   "INSERT INTO bookings VALUES (1, 1000);"
+        try {
+            Set-Content -Path $backupFile -Value $mockSql -Encoding UTF8
+            $mockCreated = $true
+        } catch [System.UnauthorizedAccessException] {
+            $backupFile = Join-Path ([System.IO.Path]::GetTempPath()) "dryrun_mock_backup_$timestamp.sql"
+            Set-Content -Path $backupFile -Value $mockSql -Encoding UTF8
+            $mockCreated = $true
+        }
+    } else {
+        Set-Location (Join-Path $ReleaseDir "backend")
+        npx.cmd wrangler d1 export bworkpos_db --remote --output=$backupFile -y
+        if ($LASTEXITCODE -ne 0) {
+            throw "STOP GATE 1: Wrangler D1 export command failed with exit code $LASTEXITCODE"
+        }
     }
-    Write-Host "[PASS] Backup integrity verification PASSED 100%." -ForegroundColor Green
+
+    # Gate 1.1: Size Check
+    $backupItem = Get-Item $backupFile
+    $minSize = if ($DryRun) { 100 } else { 5MB }
+    if ($backupItem.Length -lt $minSize) {
+        throw "STOP GATE 1: Backup file size is suspiciously small ($($backupItem.Length) bytes). Aborting."
+    }
+    Write-Host "[PASS] Backup file exported ($([math]::Round($backupItem.Length / 1MB, 2)) MB)" -ForegroundColor Green
+
+    # Gate 1.2: Integrity Check in temporary SQLite
+    $tempDb = Join-Path ([System.IO.Path]::GetDirectoryName($backupFile)) "temp_verify_$timestamp.sqlite"
+    try {
+        Write-Host "Verifying backup content and PRAGMA integrity_check..."
+        $helperScript = Join-Path $PSScriptRoot "verify_backup_helper.cjs"
+        node $helperScript $backupFile $tempDb $ReleaseDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "STOP GATE 1: Temporary database import or PRAGMA integrity_check failed!"
+        }
+        Write-Host "[PASS] Backup integrity verification PASSED 100%." -ForegroundColor Green
+    } finally {
+        if (Test-Path $tempDb) { Remove-Item -Force $tempDb }
+    }
 } finally {
-    if (Test-Path $tempDb) { Remove-Item -Force $tempDb }
+    if ($DryRun -and $mockCreated -and (Test-Path $backupFile)) {
+        Remove-Item -Force $backupFile
+        Write-Host "[DRY-RUN] Cleaned up temporary mock backup file." -ForegroundColor DarkYellow
+    }
 }
 
 # ==============================================================================
@@ -152,19 +220,27 @@ try {
 Write-StepHeader "STEP 2: EXECUTE MIGRATION 015"
 
 Write-Host "Checking if table line_notification_claims already exists..."
-$tableCheckJson = if ($DryRun) {
-    '{"results":[{"count":0}]}'
+$tableAlreadyExists = $false
+
+if ($DryRun) {
+    Write-Host "[DRY-RUN OFFLINE MOCK] Simulating D1 table existence check..." -ForegroundColor Yellow
+    $tableAlreadyExists = $false
 } else {
     Set-Location (Join-Path $ReleaseDir "backend")
-    npx.cmd wrangler d1 execute bworkpos_db --remote --json --command="SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='line_notification_claims';"
+    $tableCheckJson = npx.cmd wrangler d1 execute bworkpos_db --remote --json --command="SELECT COUNT(*) as count FROM sqlite_master WHERE type='table' AND name='line_notification_claims';"
+    if ($LASTEXITCODE -ne 0) {
+        throw "STOP GATE 2: Failed to query sqlite_master for table existence check."
+    }
+    $parsedCheck = $tableCheckJson | ConvertFrom-Json
+    $tableAlreadyExists = ($parsedCheck[0].results[0].count -eq 1)
 }
 
-if ($tableCheckJson -match '"count":1') {
+if ($tableAlreadyExists) {
     Write-Warning "[NOTICE] Table line_notification_claims already exists in production D1. Skipping CREATE TABLE."
 } else {
     Confirm-OperatorGate "Execute Migration 015 (CREATE TABLE line_notification_claims) on remote D1?"
     if ($DryRun) {
-        Write-Host "[DRY-RUN] Simulating Migration 015 execution..." -ForegroundColor Yellow
+        Write-Host "[DRY-RUN OFFLINE MOCK] Simulating Migration 015 execution..." -ForegroundColor Yellow
         if ($MockFailureAt -eq 'Migration') {
             throw "MOCK FAILURE at Step 2: Migration 015 failed."
         }
@@ -185,19 +261,39 @@ Write-StepHeader "STEP 3: MIGRATION SCHEMA VERIFICATION & HISTORY RECORDING"
 
 Write-Host "Verifying table columns and indexes in production D1..."
 if ($DryRun) {
-    Write-Host "[DRY-RUN] Simulating schema inspection: 12 columns verified." -ForegroundColor Yellow
+    Write-Host "[DRY-RUN OFFLINE MOCK] Simulating schema inspection: 12 columns, UNIQUE constraints, and indexes verified." -ForegroundColor Yellow
 } else {
     Set-Location (Join-Path $ReleaseDir "backend")
-    $colCheck = npx.cmd wrangler d1 execute bworkpos_db --remote --command="PRAGMA table_info(line_notification_claims);"
-    if ($LASTEXITCODE -ne 0 -or $colCheck -notlike "*retry_key*" -or $colCheck -notlike "*claim_token*") {
-        throw "STOP GATE 3: Table line_notification_claims verification failed. Essential columns missing."
+    $colJson = npx.cmd wrangler d1 execute bworkpos_db --remote --json --command="PRAGMA table_info(line_notification_claims);"
+    if ($LASTEXITCODE -ne 0) {
+        throw "STOP GATE 3: Failed to query PRAGMA table_info for line_notification_claims."
+    }
+    $colParsed = $colJson | ConvertFrom-Json
+    $cols = $colParsed[0].results
+    if ($cols.Count -ne 12) {
+        throw "STOP GATE 3: Column count mismatch! Expected 12 columns, found $($cols.Count)."
+    }
+    $colNames = $cols | ForEach-Object { $_.name }
+    $requiredCols = @('id', 'booking_id', 'notification_type', 'status', 'claim_token', 'retry_key', 'claimed_at', 'updated_at', 'http_status', 'error_message', 'accepted_request_id', 'created_at')
+    foreach ($rc in $requiredCols) {
+        if ($colNames -notcontains $rc) {
+            throw "STOP GATE 3: Required column '$rc' missing from line_notification_claims!"
+        }
+    }
+
+    # Verify Indexes
+    $indexJson = npx.cmd wrangler d1 execute bworkpos_db --remote --json --command="SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='line_notification_claims';"
+    $indexParsed = $indexJson | ConvertFrom-Json
+    $indexes = ($indexParsed[0].results | ForEach-Object { $_.name })
+    if ($indexes -notcontains 'idx_line_claims_booking_status' -or $indexes -notcontains 'idx_line_claims_retry_key') {
+        throw "STOP GATE 3: Required indexes missing on line_notification_claims!"
     }
 }
-Write-Host "[PASS] Table line_notification_claims schema verified." -ForegroundColor Green
+Write-Host "[PASS] Table line_notification_claims schema (12 columns, constraints, indexes) verified." -ForegroundColor Green
 
 Confirm-OperatorGate "Record Migration 015 in d1_migrations history table?"
 if ($DryRun) {
-    Write-Host "[DRY-RUN] Simulating history recording..." -ForegroundColor Yellow
+    Write-Host "[DRY-RUN OFFLINE MOCK] Simulating history recording..." -ForegroundColor Yellow
     if ($MockFailureAt -eq 'MigrationHistory') {
         throw "MOCK FAILURE at Step 3: Migration history recording failed."
     }
@@ -208,8 +304,15 @@ if ($DryRun) {
     if ($LASTEXITCODE -ne 0) {
         throw "STOP GATE 3: Recording migration history failed with exit code $LASTEXITCODE"
     }
+
+    # Confirm history record exists
+    $histCheck = npx.cmd wrangler d1 execute bworkpos_db --remote --json --command="SELECT COUNT(*) as cnt FROM d1_migrations WHERE name = '015_add_line_notification_claims.sql';"
+    $histParsed = $histCheck | ConvertFrom-Json
+    if ($histParsed[0].results[0].cnt -ne 1) {
+        throw "STOP GATE 3: Migration history verification failed (count != 1)."
+    }
 }
-Write-Host "[PASS] Migration 015 history recorded safely." -ForegroundColor Green
+Write-Host "[PASS] Migration 015 history recorded and verified safely." -ForegroundColor Green
 
 # ==============================================================================
 # STEP 4: DEPLOY WORKER API (bwork-pos-api)
@@ -220,7 +323,7 @@ Write-Host "Current confirmed baseline Worker version: $BaselineWorkerVersion"
 Confirm-OperatorGate "Deploy Cloudflare Worker API from $ReleaseDir\backend\worker.js?"
 
 if ($DryRun) {
-    Write-Host "[DRY-RUN] Simulating Worker deployment..." -ForegroundColor Yellow
+    Write-Host "[DRY-RUN OFFLINE MOCK] Simulating Worker deployment..." -ForegroundColor Yellow
     if ($MockFailureAt -eq 'WorkerDeploy') {
         throw "MOCK FAILURE at Step 4: Worker deployment failed."
     }
@@ -228,7 +331,7 @@ if ($DryRun) {
     Set-Location (Join-Path $ReleaseDir "backend")
     npx.cmd wrangler deploy
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "STOP GATE 4: Worker deployment failed with exit code $LASTEXITCODE"
+        Write-Host "STOP GATE 4: Worker deployment failed with exit code $LASTEXITCODE" -ForegroundColor Red
         Write-Warning "Do NOT blindly rollback without checking deployed version."
         throw "Worker deployment failed. Inspect deployment status before attempting recovery."
     }
@@ -238,34 +341,74 @@ Write-Host "[PASS] Cloudflare Worker deployed successfully." -ForegroundColor Gr
 # ==============================================================================
 # STEP 5: WORKER HEALTH CHECK & RECOVERY DECISION GATE
 # ==============================================================================
-Write-StepHeader "STEP 5: WORKER HEALTH CHECK"
+Write-StepHeader "STEP 5: WORKER HEALTH CHECK & RECOVERY DECISION GATE"
 
 Write-Host "Probing Worker API endpoint: https://bwork-pos-api.ohnatza74185-ky.workers.dev/api/rooms"
-Start-Sleep -Seconds 3
 
-if ($DryRun -and $MockFailureAt -eq 'HealthCheck') {
-    $rooms = @()
+$healthOk = $false
+$roomsCount = 0
+
+if ($DryRun) {
+    Write-Host "[DRY-RUN OFFLINE MOCK] Simulating Worker health check..." -ForegroundColor Yellow
+    if ($MockFailureAt -in @('HealthCheck', 'RollbackFail')) {
+        $healthOk = $false
+        $roomsCount = 0
+    } else {
+        $healthOk = $true
+        $roomsCount = 10
+    }
 } else {
-    $rooms = Invoke-RestMethod -Uri "https://bwork-pos-api.ohnatza74185-ky.workers.dev/api/rooms" -Method Get
+    Start-Sleep -Seconds 3
+    try {
+        $rooms = Invoke-RestMethod -Uri "https://bwork-pos-api.ohnatza74185-ky.workers.dev/api/rooms" -Method Get
+        if ($rooms -and $rooms.Count -gt 0) {
+            $healthOk = $true
+            $roomsCount = $rooms.Count
+        }
+    } catch {
+        Write-Warning "Worker health endpoint error: $_"
+        $healthOk = $false
+    }
 }
 
-if (-not $rooms -or $rooms.Count -eq 0) {
-    Write-Error "STOP GATE 5: Worker Health Check FAILED! No rooms returned from API."
+if (-not $healthOk) {
+    Write-Host "STOP GATE 5: Worker Health Check FAILED!" -ForegroundColor Red
     Write-Host "`nEVIDENCE GATHERED:" -ForegroundColor Red
     Write-Host "- Endpoint probed: https://bwork-pos-api.ohnatza74185-ky.workers.dev/api/rooms"
-    Write-Host "- Result: Null or empty response"
+    Write-Host "- Result: Null, empty response, or HTTP error"
     Write-Host "- Baseline rollback target: $BaselineWorkerVersion"
-    
-    Confirm-OperatorGate "CRITICAL RECOVERY: Execute Worker rollback to baseline version $BaselineWorkerVersion?"
+
+    # Query Active Version before rollback
     if ($DryRun) {
-        Write-Host "[DRY-RUN] Simulating Worker rollback to $BaselineWorkerVersion..." -ForegroundColor Yellow
+        Write-Host "[DRY-RUN OFFLINE MOCK] Querying active Worker version: mock-deployed-version" -ForegroundColor Yellow
+    } else {
+        Set-Location (Join-Path $ReleaseDir "backend")
+        Write-Host "Active Deployments Status from Cloudflare:"
+        npx.cmd wrangler deployments list
+    }
+
+    Confirm-OperatorGate "CRITICAL RECOVERY: Execute Worker rollback to baseline version $BaselineWorkerVersion?"
+
+    if ($DryRun) {
+        Write-Host "[DRY-RUN OFFLINE MOCK] Simulating Worker rollback to $BaselineWorkerVersion..." -ForegroundColor Yellow
+        if ($MockFailureAt -eq 'RollbackFail') {
+            throw "MOCK FAILURE at Step 5: Rollback command failed to revert version."
+        }
     } else {
         Set-Location (Join-Path $ReleaseDir "backend")
         npx.cmd wrangler rollback $BaselineWorkerVersion -y -m "Automated rollback after Health Check failure"
+        if ($LASTEXITCODE -ne 0) {
+            throw "CRITICAL ALERT: Wrangler rollback command failed with exit code $LASTEXITCODE! Active version may still be broken. Immediate manual intervention required."
+        }
+        $verifyRollback = npx.cmd wrangler deployments list
+        if ($verifyRollback -notlike "*$BaselineWorkerVersion*") {
+            throw "CRITICAL ALERT: Active version did not show baseline $BaselineWorkerVersion after rollback! Immediate manual intervention required."
+        }
+        Write-Host "[PASS] Worker successfully rolled back and verified at baseline version $BaselineWorkerVersion." -ForegroundColor Green
     }
-    throw "Worker API unhealthy. Rollback executed to $BaselineWorkerVersion. STOPPING DEPLOYMENT."
+    throw "Worker API unhealthy. Rollback executed and confirmed to $BaselineWorkerVersion. STOPPING DEPLOYMENT."
 }
-Write-Host "[PASS] Worker Health Check PASSED. Rooms active: $($rooms.Count)" -ForegroundColor Green
+Write-Host "[PASS] Worker Health Check PASSED. Rooms active: $roomsCount" -ForegroundColor Green
 
 # ==============================================================================
 # STEP 6: DEPLOY POS FRONTEND PAGES (bwork-pos)
@@ -276,7 +419,7 @@ Write-Host "Current confirmed baseline POS Pages deployment: $BaselinePagesDeplo
 Confirm-OperatorGate "Deploy POS Frontend Pages from $ReleaseDir\frontend\dist?"
 
 if ($DryRun) {
-    Write-Host "[DRY-RUN] Simulating POS Pages deployment..." -ForegroundColor Yellow
+    Write-Host "[DRY-RUN OFFLINE MOCK] Simulating POS Pages deployment..." -ForegroundColor Yellow
 } else {
     Set-Location (Join-Path $ReleaseDir "frontend")
     npx.cmd wrangler pages deploy dist --project-name=bwork-pos --commit-dirty=true
@@ -287,53 +430,60 @@ if ($DryRun) {
 Write-Host "[PASS] Cloudflare POS Pages deployed successfully." -ForegroundColor Green
 
 # ==============================================================================
-# STEP 7: PAGES ASSET VERIFICATION
+# STEP 7: PAGES ASSET VERIFICATION (FAIL-CLOSED)
 # ==============================================================================
-Write-StepHeader "STEP 7: PAGES ASSET VERIFICATION"
+Write-StepHeader "STEP 7: PAGES ASSET VERIFICATION (FAIL-CLOSED)"
 
 Write-Host "Verifying live page content at https://bwork-pos.pages.dev..."
-Start-Sleep -Seconds 3
 
-$page = Invoke-WebRequest -Uri "https://bwork-pos.pages.dev" -UseBasicParsing
-if ($page.StatusCode -ne 200) {
-    throw "STOP GATE 7: POS Pages returned HTTP status $($page.StatusCode)"
-}
+$assetVerified = $false
 
-$hasNewAsset = ($page.Content -like "*$ExpectedBundleJs*")
-if ($DryRun -and $MockFailureAt -eq 'PagesAsset') {
-    $hasNewAsset = $false
-}
-
-if (-not $hasNewAsset) {
-    Write-Warning "[WARN] Live HTML does not yet contain $ExpectedBundleJs."
-    Write-Warning "Cloudflare Edge CDN cache may take 1-2 minutes to propagate."
-    Write-Host "Retrying asset verification in 10 seconds..."
-    Start-Sleep -Seconds 10
-    $pageRetry = Invoke-WebRequest -Uri "https://bwork-pos.pages.dev" -UseBasicParsing
-    if ($pageRetry.Content -like "*$ExpectedBundleJs*") {
-        Write-Host "[PASS] Asset verification confirmed on retry." -ForegroundColor Green
+if ($DryRun) {
+    Write-Host "[DRY-RUN OFFLINE MOCK] Simulating Pages asset check for '$ExpectedBundleJs'..." -ForegroundColor Yellow
+    if ($MockFailureAt -eq 'PagesAsset') {
+        $assetVerified = $false
     } else {
-        if ($MockFailureAt -eq 'PagesAsset') {
-            throw "MOCK FAILURE at Step 7: Asset mismatch detected."
-        }
-        Write-Warning "[NOTICE] Asset hash still propagating on Edge CDN. Please check browser with Hard Refresh (Ctrl+F5)."
+        $assetVerified = $true
     }
 } else {
-    Write-Host "[PASS] Live POS Pages is actively serving target bundle: $ExpectedBundleJs" -ForegroundColor Green
+    Start-Sleep -Seconds 3
+    $page = Invoke-WebRequest -Uri "https://bwork-pos.pages.dev" -UseBasicParsing
+    if ($page.StatusCode -ne 200) {
+        throw "STOP GATE 7: POS Pages returned HTTP status $($page.StatusCode)"
+    }
+    if ($page.Content -like "*$ExpectedBundleJs*") {
+        $assetVerified = $true
+    } else {
+        Write-Warning "[WARN] Target asset not detected on initial check. Cloudflare Edge CDN cache may take 1-2 minutes to propagate."
+        Write-Host "Retrying asset verification in 10 seconds..."
+        Start-Sleep -Seconds 10
+        $pageRetry = Invoke-WebRequest -Uri "https://bwork-pos.pages.dev" -UseBasicParsing
+        if ($pageRetry.Content -like "*$ExpectedBundleJs*") {
+            $assetVerified = $true
+        }
+    }
 }
 
-# ==============================================================================
-# STEP 8: READ-ONLY OPERATIONAL SMOKE TEST GUIDE
-# ==============================================================================
-Write-StepHeader "STEP 8: READ-ONLY OPERATIONAL SMOKE TEST GUIDE"
+if (-not $assetVerified) {
+    throw "STOP GATE 7: Live Pages asset verification FAILED! Target bundle '$ExpectedBundleJs' was NOT found in live HTML. Deployment cannot be marked as verified. Please inspect Pages deployment and purge CDN cache or rollback to $BaselinePagesDeployment."
+}
+Write-Host "[PASS] Live POS Pages is actively serving target bundle: $ExpectedBundleJs" -ForegroundColor Green
 
-Write-Host "Operator manual verification checklist (Open https://bwork-pos.pages.dev):" -ForegroundColor Yellow
+# ==============================================================================
+# STEP 8: READ-ONLY OPERATIONAL SMOKE TEST GUIDE & CONFIRMATION
+# ==============================================================================
+Write-StepHeader "STEP 8: READ-ONLY OPERATIONAL SMOKE TEST GUIDE & CONFIRMATION"
+
+Write-Host "Operator manual verification checklist (Open https://bwork-pos.pages.dev in browser):" -ForegroundColor Yellow
 Write-Host "  [ ] 1. Open browser to https://bwork-pos.pages.dev and login"
 Write-Host "  [ ] 2. Navigate to Customer Management (CRM)"
 Write-Host "  [ ] 3. Click Add New Customer button"
 Write-Host "  [ ] 4. Verify Wide Modal layout (2 columns, clean responsive spacing)"
 Write-Host "  [ ] 5. Click Start Date -> Verify solid white calendar popup, no overlay on left form"
 Write-Host "  [ ] 6. Verify customer groups: Basecamp, Shop, OnDemand, Virtual Office"
+
+Confirm-OperatorGate "Confirm that Operator Read-Only Smoke Test in browser (Wide Modal & Datepicker) passed 100%?"
+Write-Host "[PASS] Operator Read-Only Smoke Test confirmed." -ForegroundColor Green
 
 # ==============================================================================
 # STEP 9: POST-DEPLOYMENT MONITORING
@@ -343,6 +493,18 @@ Write-StepHeader "STEP 9: POST-DEPLOYMENT MONITORING"
 Write-Host "To monitor live Cloudflare Worker logs for the next 15 minutes, execute:" -ForegroundColor Cyan
 Write-Host "   npx wrangler tail bwork-pos-api" -ForegroundColor Yellow
 Write-Host "`nConfirm zero HTTP 500 errors and successful payment notifications."
-Write-Host "`n================================================================================" -ForegroundColor Green
-Write-Host "  PRODUCTION DEPLOYMENT COMPLETED SUCCESSFULLY!" -ForegroundColor Green
-Write-Host "================================================================================" -ForegroundColor Green
+
+# ==============================================================================
+# HONEST EXECUTION RESULT BANNER
+# ==============================================================================
+if ($DryRun) {
+    Write-Host "`n================================================================================" -ForegroundColor Cyan
+    Write-Host "  DRY RUN PASSED - NO PRODUCTION DEPLOYMENT" -ForegroundColor Cyan
+    Write-Host "  All dry-run simulations, offline mocks, and stop gates passed successfully" -ForegroundColor Cyan
+    Write-Host "================================================================================" -ForegroundColor Cyan
+} else {
+    Write-Host "`n================================================================================" -ForegroundColor Green
+    Write-Host "  PRODUCTION DEPLOYMENT COMPLETED - VERIFIED" -ForegroundColor Green
+    Write-Host "  Production Worker, Migration 015, POS Pages, and Smoke Tests Verified" -ForegroundColor Green
+    Write-Host "================================================================================" -ForegroundColor Green
+}
