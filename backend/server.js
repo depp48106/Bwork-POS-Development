@@ -444,10 +444,20 @@ app.use('/api/hour-credits', authenticateToken, requireAnyPermission('hour-credi
 app.use('/api/bookings', creditMutationGuard(dbQuery));
 app.use('/api/admin/clear-history', creditMutationGuard(dbQuery, true));
 
-// Customer Support Tickets & POS Notification System
-const { createPublicSupportRouter, createStaffSupportRouter } = require('./supportTickets/routes');
-app.use('/api/public/support', createPublicSupportRouter(dbQuery));
-app.use('/api/pos/support', authenticateToken, requireAnyPermission('tickets', 'admin-management'), createStaffSupportRouter(dbQuery));
+// Customer Support Tickets & POS Notification System (Hard-gated; returns 404 in Production)
+if (process.env.ENABLE_SUPPORT_TICKETS === 'true') {
+  try {
+    const { createPublicSupportRouter, createStaffSupportRouter } = require('./supportTickets/routes');
+    app.use('/api/public/support', createPublicSupportRouter(dbQuery));
+    app.use('/api/pos/support', authenticateToken, requireAnyPermission('tickets', 'admin-management'), createStaffSupportRouter(dbQuery));
+  } catch (_) {
+    app.use('/api/public/support', (req, res) => res.status(404).json({ error: 'Support tickets feature is disabled' }));
+    app.use('/api/pos/support', (req, res) => res.status(404).json({ error: 'Support tickets feature is disabled' }));
+  }
+} else {
+  app.use('/api/public/support', (req, res) => res.status(404).json({ error: 'Support tickets feature is disabled' }));
+  app.use('/api/pos/support', (req, res) => res.status(404).json({ error: 'Support tickets feature is disabled' }));
+}
 
 // ==========================================
 // 2. ROOMS ENDPOINTS
