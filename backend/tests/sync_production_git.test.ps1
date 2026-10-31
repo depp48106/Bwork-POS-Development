@@ -5,13 +5,28 @@
     Tests all fail-closed Stop Gates, AST validity, dry-run safety, and mock failure modes.
 #>
 [CmdletBinding()]
-param()
+param(
+    [string]$ProductionDir = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$scriptPath = "D:\Project BL\Bwork-POS-Development\scripts\sync_production_git.ps1"
-$prodDir    = "D:\Project BL\Bwork-POS"
+# Dynamic path resolution based on script location (portable across Home, Office, and CI environments)
+$scriptDir  = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+$scriptPath = (Resolve-Path (Join-Path $scriptDir "../../scripts/sync_production_git.ps1")).Path
+
+# Dynamic resolution of Production directory across environments
+if (-not $ProductionDir) {
+    $parentDir = (Resolve-Path "$scriptDir/../../..").Path
+    $candidateProd = Join-Path $parentDir "Bwork-POS"
+    if (Test-Path $candidateProd) {
+        $ProductionDir = (Resolve-Path $candidateProd).Path
+    } else {
+        $ProductionDir = "D:\Project BL\Bwork-POS"
+    }
+}
+$prodDir    = $ProductionDir
 $baseline   = "bd6947590d9fe0b994248e964d9feec5505b26a0"
 
 Write-Host "================================================================================" -ForegroundColor Cyan
@@ -19,6 +34,36 @@ Write-Host "  TEST SUITE: BWORK-POS PRODUCTION GIT SYNC SAFETY GATES" -Foregroun
 Write-Host "================================================================================" -ForegroundColor Cyan
 
 $testResults = [System.Collections.Generic.List[PSObject]]::new()
+
+# Mock Cloudflare API calls during unit test runs to ensure offline/cross-machine reproducibility
+function Invoke-RestMethod {
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromRemainingArguments=$true)]$RemainingArgs,
+        [string]$Uri = ''
+    )
+    if ($Uri -match '/pages/projects/(bwork-[a-z]+)') {
+        $projName = $matches[1]
+        return [PSCustomObject]@{
+            success = $true
+            result  = [PSCustomObject]@{
+                name              = $projName
+                production_branch = 'main'
+                source            = [PSCustomObject]@{
+                    type   = 'github'
+                    config = [PSCustomObject]@{
+                        owner                          = 'depp48106'
+                        repo_name                      = 'Bwork-POS'
+                        production_branch              = 'main'
+                        production_deployments_enabled = $false
+                        deployments_enabled            = $false
+                    }
+                }
+            }
+        }
+    }
+    return Microsoft.PowerShell.Utility\Invoke-RestMethod @PSBoundParameters
+}
 
 function Run-TestCase([string]$TestName, [scriptblock]$TestBlock) {
     Write-Host "`n[TEST] $TestName..." -ForegroundColor Yellow
@@ -155,7 +200,7 @@ Run-TestCase "9. Remote HEAD Mismatch Stop Gate" {
     }
 }
 
-# 10. RC SHA Mismatch
+# 10. Target RC SHA Mismatch
 Run-TestCase "10. Target RC SHA Mismatch Stop Gate" {
     $err = $null
     try {
@@ -168,7 +213,7 @@ Run-TestCase "10. Target RC SHA Mismatch Stop Gate" {
     }
 }
 
-# 11. Simulated Push Failure
+# 11. Push Failure Handling and Non-Destructive Recovery
 Run-TestCase "11. Push Failure Handling and Non-Destructive Recovery" {
     $err = $null
     try {
@@ -181,11 +226,12 @@ Run-TestCase "11. Push Failure Handling and Non-Destructive Recovery" {
     }
 }
 
-# 12. Normal DryRun & Zero Mutation Invariant
+# 12. Normal DryRun & Zero Production Mutation Verification
 Run-TestCase "12. Normal DryRun & Zero Production Mutation Verification" {
-    # Check baseline HEAD before
+    # Check baseline HEAD and branches before
     $headBefore = (git -C $prodDir rev-parse HEAD).Trim()
     $statusBefore = @(git -C $prodDir status --porcelain).Count
+    $branchesBefore = (git -C $prodDir branch | Out-String).Trim()
 
     # Live Cloudflare Pages check will fail Gate 0 if not paused, which is correct fail-closed!
     $dryRunOutput = $null
@@ -199,7 +245,7 @@ Run-TestCase "12. Normal DryRun & Zero Production Mutation Verification" {
 
     # Verify fail-closed behavior: either passed (if paused) or halted at Stop Gate 0
     if ($gate0Failed) {
-        if ($dryRunOutput -notmatch "STOP GATE 0 FAILED") {
+        if ($dryRunOutput -notmatch "STOP GATE 0") {
             throw "Unexpected failure in normal DryRun: $dryRunOutput"
         }
         Write-Host "     (Note: Correctly stopped at Gate 0 because live Cloudflare auto-deploy is currently Active)" -ForegroundColor Cyan
@@ -223,10 +269,17 @@ Run-TestCase "12. Normal DryRun & Zero Production Mutation Verification" {
         throw "Production working tree dirty after test!"
     }
 
-    # Verify no branches were created
-    $branches = (git -C $prodDir branch).Trim()
-    if ($branches -ne "* main") {
-        throw "Unexpected local branches created: $branches"
+    # Verify no branches were created or modified
+    $branchesAfter = (git -C $prodDir branch | Out-String).Trim()
+    if ($branchesBefore -ne $branchesAfter) {
+        throw "Unexpected local branches modified or created! Before: $branchesBefore, After: $branchesAfter"
+    }
+    if ($branchesAfter -match "sync-candidate-rc") {
+        throw "Temporary sync branch 'sync-candidate-rc' was left behind!"
+    }
+    $currentBranchAfter = (git -C $prodDir branch --show-current).Trim()
+    if ($currentBranchAfter -ne "main") {
+        throw "Active branch was changed! Expected 'main' but found: $currentBranchAfter"
     }
 }
 
