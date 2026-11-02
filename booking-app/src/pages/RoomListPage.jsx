@@ -7,6 +7,7 @@ import {
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { calculateOnlineBookingPricing } from '../utils/onlinePromotionHelper';
+import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
 
 // Generate 30-minute interval time options from 08:00 to 18:00
 const TIME_OPTIONS = [];
@@ -536,7 +537,8 @@ export default function RoomListPage() {
     const { isOccupied, label: statusLabel, reason } = getRoomOccupiedInfo(room.id, sel.startTime, sel.endTime);
     const currentLayout = roomLayouts[room.id] || 'standard';
     const isClassroom = currentLayout === 'classroom';
-    const displayImage = isClassroom && room.classroom_image_url ? room.classroom_image_url : room.image_url;
+    const rawImage = isClassroom && room.classroom_image_url ? room.classroom_image_url : room.image_url;
+    const displayImage = getRoomImageUrl(room, isClassroom);
 
     return (
       <div 
@@ -550,10 +552,11 @@ export default function RoomListPage() {
         {/* Left / Top: Room Image */}
         <div className="room-card-image" style={{ position: 'relative', borderRadius: '12px', overflow: 'hidden', height: '220px', backgroundColor: '#f1f5f9' }}>
           {displayImage ? (
-            <img 
-              src={displayImage} 
-              alt={room.name} 
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+            <img
+              src={displayImage}
+              alt={room.name}
+              onError={(e) => handleRoomImageError(e, rawImage)}
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
             />
           ) : (
             <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)', backgroundColor: 'var(--primary-light)' }}>

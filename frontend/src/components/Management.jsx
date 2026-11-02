@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
 import { Plus, Edit2, Trash2, Home, Coffee, X, Search, Check, AlertCircle, Layers, ChevronDown, Crosshair, RotateCcw, Sliders, KeyRound, Building2 } from 'lucide-react';
 import { API_BASE } from '../apiConfig';
 
@@ -847,7 +848,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                           <div style={{ width: '44px', height: '44px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-color)', backgroundColor: 'rgba(255,255,255,0.02)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                             {item.image_url ? (
-                              <img src={item.image_url} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              <img src={getRoomImageUrl(item.image_url)} alt={item.name} onError={(e) => handleRoomImageError(e, item.image_url)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                             ) : (
                               <Home size={18} style={{ opacity: 0.2 }} />
                             )}
@@ -1411,7 +1412,7 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                   <div style={{ width: '80px', height: '80px', borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--border-color)', backgroundColor: 'rgba(255,255,255,0.02)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     {itemForm.image_url ? (
-                      <img src={itemForm.image_url} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      <img src={getRoomImageUrl(itemForm.image_url)} alt="Preview" onError={(e) => handleRoomImageError(e, itemForm.image_url)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     ) : (
                       <Layers size={24} style={{ opacity: 0.2 }} />
                     )}

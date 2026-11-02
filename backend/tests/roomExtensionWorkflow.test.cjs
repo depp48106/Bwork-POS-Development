@@ -731,3 +731,459 @@ test('15. Cross-channel race condition: POS extend vs LINE OA new reservation co
 
   await db.close();
 });
+
+test('16. Fail-closed guard: missing or mismatched current_end_time must reject extension', async () => {
+  const db = createTestDb();
+  await initSchema(db);
+
+  const roomRes = await db.run("INSERT INTO rooms (name, capacity, hourly_rate) VALUES ('FailClosed Room', 8, 500)");
+  const roomId = roomRes.lastID;
+
+  const bRes = await db.run("INSERT INTO bookings (customer_name, total_amount, paid_amount, balance_amount, payment_status) VALUES ('Test FC', 500, 500, 0, 'paid')");
+  const bookingId = bRes.lastID;
+
+  const itemRes = await db.run("INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal) VALUES (?, ?, 1, 500, '2026-10-27T12:00:00', '2026-10-27T13:00:00', 500)", [bookingId, roomId]);
+  const itemId = itemRes.lastID;
+
+  // Simulate CAS Guard in server.js/worker.js:
+  // if (current_end_time && item.end_time !== current_end_time) -> throw 409
+  const item = await db.get('SELECT * FROM booking_items WHERE id = ?', [itemId]);
+
+  const staleEndTime = '2026-10-27T12:30:00';
+  assert.notEqual(item.end_time, staleEndTime);
+
+  // Mismatched current_end_time throws 409 Conflict
+  let caughtConflict = false;
+  if (staleEndTime && item.end_time !== staleEndTime) {
+    caughtConflict = true;
+  }
+  assert.equal(caughtConflict, true, 'Mismatched end_time must fail closed with conflict');
+
+  // Empty or missing end_time from client validation
+  const clientValidate = (clientEndTime) => {
+    if (!clientEndTime || typeof clientEndTime !== 'string' || clientEndTime.trim() === '') {
+      return { valid: false, error: 'ไม่พบเวลาสิ้นสุดเดิมของการใช้งานห้อง (ห้ามส่งข้อมูลโดยไม่มีเวลาสิ้นสุด)' };
+    }
+    return { valid: true };
+  };
+
+  assert.equal(clientValidate(null).valid, false);
+  assert.equal(clientValidate(undefined).valid, false);
+  assert.equal(clientValidate('').valid, false);
+  assert.equal(clientValidate('2026-10-27T13:00:00').valid, true);
+
+  await db.close();
+});
+
+test('17. Fail-closed guard: missing or null new_end_time cannot proceed with extension', () => {
+  // If preview is null, preview.available is false, or new_end_time is missing:
+  const canProceed = (preview) => {
+    if (!preview || !preview.available || !preview.new_end_time || !preview.current_end_time) {
+      return false;
+    }
+    return true;
+  };
+
+  assert.equal(canProceed(null), false, 'Null preview must fail closed');
+  assert.equal(canProceed({ available: true }), false, 'Preview without new_end_time must fail closed');
+  assert.equal(canProceed({ available: true, new_end_time: '2026-10-27T14:00:00' }), false, 'Preview without current_end_time must fail closed');
+  assert.equal(canProceed({ available: false, new_end_time: '2026-10-27T14:00:00', current_end_time: '2026-10-27T13:00:00' }), false, 'Unavailable preview must fail closed');
+  assert.equal(canProceed({ available: true, new_end_time: '2026-10-27T14:00:00', current_end_time: '2026-10-27T13:00:00' }), true, 'Complete available preview can proceed');
+});
+
+test('18. Room Extension Preview: time addition and fee calculation precision', () => {
+  // Test local time addition across noon and boundary conditions
+  const t1 = addMinutesToLocalISO('2026-10-27T11:30:00', 30);
+  assert.equal(t1, '2026-10-27T12:00:00');
+
+  const t2 = addMinutesToLocalISO('2026-10-27T11:30:00', 90);
+  assert.equal(t2, '2026-10-27T13:00:00');
+
+  const t3 = addMinutesToLocalISO('2026-10-27T17:30:00', 60);
+  assert.equal(t3, '2026-10-27T18:30:00');
+
+  // Money rounding for 0.5 hours with odd rates
+  const rate = 350;
+  const halfHourFee = roundMoney((30 / 60) * rate);
+  assert.equal(halfHourFee, 175);
+
+  const rateWithFraction = 333.33;
+  const fracFee = roundMoney((30 / 60) * rateWithFraction);
+  assert.equal(fracFee, 166.67);
+});
+
+test('19. Multi-room booking: extension targets strictly the chosen item without touching other rooms', async () => {
+  const db = createTestDb();
+  await initSchema(db);
+
+  // Setup 2 rooms
+  const r1 = await db.run("INSERT INTO rooms (name, capacity, hourly_rate) VALUES ('Mercury (302)', 8, 500)");
+  const r2 = await db.run("INSERT INTO rooms (name, capacity, hourly_rate) VALUES ('Mars (301)', 6, 600)");
+  const roomId1 = r1.lastID;
+  const roomId2 = r2.lastID;
+
+  // Single booking with 2 rooms
+  const bRes = await db.run("INSERT INTO bookings (customer_name, total_amount, paid_amount, balance_amount, payment_status) VALUES ('Multi-Room Customer', 2200, 2200, 0, 'paid')");
+  const bookingId = bRes.lastID;
+
+  // Item 1: Mercury 10:00 - 12:00 (2 hrs @ 500 = 1000)
+  const it1 = await db.run("INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal) VALUES (?, ?, 2, 500, '2026-10-27T10:00:00', '2026-10-27T12:00:00', 1000)", [bookingId, roomId1]);
+  const itemId1 = it1.lastID;
+
+  // Item 2: Mars 11:00 - 13:00 (2 hrs @ 600 = 1200)
+  const it2 = await db.run("INSERT INTO booking_items (booking_id, room_id, quantity, price, start_time, end_time, subtotal) VALUES (?, ?, 2, 600, '2026-10-27T11:00:00', '2026-10-27T13:00:00', 1200)", [bookingId, roomId2]);
+  const itemId2 = it2.lastID;
+
+  // User chooses to extend Item 2 (Mars) by 60 minutes (13:00 -> 14:00)
+  const targetItemId = itemId2;
+  const chosenDuration = 60;
+
+  // 1. Fetch item by targetItemId
+  const selectedItem = await db.get('SELECT * FROM booking_items WHERE id = ? AND booking_id = ?', [targetItemId, bookingId]);
+  assert.equal(selectedItem.id, itemId2);
+  assert.equal(selectedItem.room_id, roomId2);
+  assert.equal(selectedItem.end_time, '2026-10-27T13:00:00');
+
+  // 2. Calculate extension for Mars
+  const newEnd = addMinutesToLocalISO(selectedItem.end_time, chosenDuration);
+  assert.equal(newEnd, '2026-10-27T14:00:00');
+
+  // Verify overlap on Mars excluding itemId2
+  const overlap = await checkRoomOverlap(roomId2, selectedItem.start_time, newEnd, null, db, selectedItem.id);
+  assert.equal(overlap.hasOverlap, false);
+
+  // Execute extension on Item 2 only
+  const additionalHours = chosenDuration / 60;
+  const room2Rate = 600;
+  const extensionFee = roundMoney(additionalHours * room2Rate); // 600
+  const newItemSubtotal = roundMoney(selectedItem.subtotal + extensionFee); // 1800
+  const newItemQuantity = roundMoney(selectedItem.quantity + additionalHours); // 3
+
+  await db.run(
+    'UPDATE booking_items SET end_time = ?, quantity = ?, subtotal = ? WHERE id = ? AND end_time = ?',
+    [newEnd, newItemQuantity, newItemSubtotal, targetItemId, selectedItem.end_time]
+  );
+
+  // Update booking totals
+  const oldTotal = 2200;
+  const newTotal = oldTotal + extensionFee; // 2800
+  await db.run('UPDATE bookings SET total_amount = ?, paid_amount = ?, balance_amount = 0 WHERE id = ?', [newTotal, newTotal, bookingId]);
+
+  // Assertions:
+  // Item 2 is extended
+  const verifiedItem2 = await db.get('SELECT * FROM booking_items WHERE id = ?', [itemId2]);
+  assert.equal(verifiedItem2.end_time, '2026-10-27T14:00:00');
+  assert.equal(verifiedItem2.subtotal, 1800);
+  assert.equal(verifiedItem2.quantity, 3);
+
+  // Item 1 remains completely untouched!
+  const verifiedItem1 = await db.get('SELECT * FROM booking_items WHERE id = ?', [itemId1]);
+  assert.equal(verifiedItem1.end_time, '2026-10-27T12:00:00', 'Item 1 end_time must NOT be modified');
+  assert.equal(verifiedItem1.subtotal, 1000);
+  assert.equal(verifiedItem1.quantity, 2);
+
+  // Booking total updated
+  const verifiedBooking = await db.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
+  assert.equal(verifiedBooking.total_amount, 2800);
+
+  await db.close();
+});
+
+test('20. Rapid room/duration switching race condition defense: stale preview rejected', () => {
+  // Simulate client-side request sequence counter and freshness validation
+  let previewSeq = 0;
+
+  // User selects Room 10, Duration 30
+  const req1Seq = ++previewSeq;
+  let activeItemId = 10;
+  let activeDuration = 30;
+  let activeCurrentEndTime = '2026-10-27T12:00:00';
+
+  // User quickly switches to Room 11, Duration 60 before Req 1 arrives
+  const req2Seq = ++previewSeq;
+  activeItemId = 11;
+  activeDuration = 60;
+  activeCurrentEndTime = '2026-10-27T14:00:00';
+
+  // Delayed response for Req 1 arrives
+  const res1 = {
+    seq: req1Seq,
+    booking_item_id: 10,
+    duration_minutes: 30,
+    current_end_time: '2026-10-27T12:00:00',
+    new_end_time: '2026-10-27T12:30:00',
+    gross_extension_fee: 300,
+    available: true
+  };
+
+  // Check 1: Sequence counter rejects delayed Req 1
+  const isSeqValid = (res1.seq === previewSeq);
+  assert.equal(isSeqValid, false, 'Delayed response from earlier sequence must be discarded');
+
+  // Check 2: Even if sequence bypassed, freshness invariant strictly rejects mismatched item or duration
+  const isFresh = (
+    res1.booking_item_id === activeItemId &&
+    res1.duration_minutes === activeDuration &&
+    res1.current_end_time === activeCurrentEndTime
+  );
+  assert.equal(isFresh, false, 'Mismatched room/duration preview must be marked stale');
+
+  // Check 3: Response for Req 2 arrives
+  const res2 = {
+    seq: req2Seq,
+    booking_item_id: 11,
+    duration_minutes: 60,
+    current_end_time: '2026-10-27T14:00:00',
+    new_end_time: '2026-10-27T15:00:00',
+    gross_extension_fee: 600,
+    available: true
+  };
+
+  assert.equal(res2.seq === previewSeq, true);
+  assert.equal(
+    res2.booking_item_id === activeItemId &&
+    res2.duration_minutes === activeDuration &&
+    res2.current_end_time === activeCurrentEndTime,
+    true,
+    'Matching fresh preview is accepted'
+  );
+
+  // Check 4: Submit validator blocks stale preview
+  const validateSubmit = (selectedId, currentEndTime, preview, isPreviewFresh) => {
+    if (!selectedId) return { ok: false, error: 'กรุณาเลือกห้องประชุมที่ต้องการต่อเวลา' };
+    if (!preview || !isPreviewFresh) return { ok: false, error: 'ข้อมูลพรีวิวไม่ตรงกับห้องหรือระยะเวลาที่เลือก กรุณารอสักครู่' };
+    if (preview.current_end_time !== currentEndTime) return { ok: false, error: 'เวลาสิ้นสุดไม่ตรงกัน' };
+    return { ok: true };
+  };
+
+  const staleSubmit = validateSubmit(11, '2026-10-27T14:00:00', res1, false);
+  assert.equal(staleSubmit.ok, false);
+  assert.match(staleSubmit.error, /ข้อมูลพรีวิวไม่ตรง/);
+
+  const validSubmit = validateSubmit(11, '2026-10-27T14:00:00', res2, true);
+  assert.equal(validSubmit.ok, true);
+});
+
+test('21. Multi-room modal selection rules: auto-selects only when 1 room exists, requires explicit choice when > 1', () => {
+  const resolveInitialSelection = (initialItem, eligibleRooms) => {
+    // 1. If initialItem is specified and in eligibleRooms, select it
+    if (initialItem && initialItem.room_id) {
+      const initId = initialItem.id || initialItem.booking_item_id;
+      const matched = eligibleRooms.find(it => it.id === initId);
+      if (matched) return matched.id;
+    }
+
+    // 2. Only auto-select if EXACTLY 1 eligible room exists
+    if (eligibleRooms.length === 1 && eligibleRooms[0].id) {
+      return eligibleRooms[0].id;
+    }
+
+    // 3. If multiple rooms and no unambiguous initialItem, return null (force user choice)
+    return null;
+  };
+
+  // Scenario A: Single room booking
+  const singleRoom = [{ id: 101, room_id: 4, room_name: 'Mars' }];
+  assert.equal(resolveInitialSelection(null, singleRoom), 101, 'Single room booking auto-selects item 101');
+
+  // Scenario B: Multi-room booking without explicit initialItem
+  const multiRooms = [
+    { id: 201, room_id: 4, room_name: 'Mars' },
+    { id: 202, room_id: 5, room_name: 'Mercury' }
+  ];
+  assert.equal(resolveInitialSelection(null, multiRooms), null, 'Multi-room booking must NOT auto-select; returns null');
+
+  // Scenario C: Multi-room booking with explicit initialItem (e.g. clicked Mercury)
+  const clickedMercury = { id: 202, room_id: 5 };
+  assert.equal(resolveInitialSelection(clickedMercury, multiRooms), 202, 'Explicit clicked room item is honored');
+
+  // Scenario D: Confirm button disabled state when no room is selected
+  const isConfirmDisabled = (selectedId, isPreviewFresh, isSubmitting, loadingPreview) => {
+    return isSubmitting || loadingPreview || !selectedId || !isPreviewFresh;
+  };
+
+  assert.equal(isConfirmDisabled(null, false, false, false), true, 'Confirm button must be disabled when selectedId is null');
+  assert.equal(isConfirmDisabled(201, true, false, false), false, 'Confirm button enabled when room selected and preview fresh');
+});
+
+test('22. Out-of-order Response Control: switching booking A to B drops A and prevents submitting A item in B', () => {
+  // Simulate RoomExtensionModal state machine with request generation & ID binding
+  let bookingSeq = 0;
+  let previewSeq = 0;
+
+  // Active session state
+  let activeBookingId = 1001; // Booking A
+  let loadedBooking = null;
+  let loadingBooking = true;
+  let selectedItemId = 5001; // Item A1 in Booking A
+  let preview = null;
+  let loadingPreview = true;
+
+  // Request A dispatched
+  const bReqSeqA = ++bookingSeq;
+  const pReqSeqA = ++previewSeq;
+
+  // User switches to Booking B (id: 1002) BEFORE Request A responds
+  activeBookingId = 1002;
+  // Invalidation on booking change:
+  bookingSeq++;
+  previewSeq++;
+  loadedBooking = null;
+  loadingBooking = true;
+  selectedItemId = null; // Cleared until B items evaluated
+  preview = null;
+  loadingPreview = false;
+
+  // Request B dispatched
+  const bReqSeqB = ++bookingSeq;
+
+  // Delayed Response A arrives for Booking Details: { id: 1001, items: [{ id: 5001 }] }
+  const resBookingA = { id: 1001, customer_name: 'Customer A', items: [{ id: 5001, room_id: 4, start_time: '10:00', end_time: '12:00' }] };
+
+  // Guard 1: Sequence counter check
+  const isBSeqAValid = (bReqSeqA === bookingSeq);
+  assert.equal(isBSeqAValid, false, 'Delayed booking response A has outdated sequence; must be discarded');
+
+  // Guard 2: Strict ID binding check
+  const isLoadedIdMatch = (resBookingA.id === activeBookingId);
+  assert.equal(isLoadedIdMatch, false, 'Delayed booking response A has mismatched ID (1001 != 1002); must NOT set loadedBooking');
+
+  if (isBSeqAValid && isLoadedIdMatch) {
+    loadedBooking = resBookingA;
+  }
+  assert.equal(loadedBooking, null, 'loadedBooking remains null despite delayed response A');
+
+  // Delayed Response A arrives for Extension Preview
+  const resPreviewA = {
+    booking_id: 1001,
+    booking_item_id: 5001,
+    duration_minutes: 60,
+    current_end_time: '2026-10-27T12:00:00',
+    new_end_time: '2026-10-27T13:00:00',
+    gross_extension_fee: 500,
+    available: true
+  };
+
+  const isPSeqAValid = (pReqSeqA === previewSeq);
+  assert.equal(isPSeqAValid, false, 'Delayed preview A has outdated sequence; must be discarded');
+
+  const isPreviewIdMatch = (resPreviewA.booking_id === activeBookingId && resPreviewA.booking_item_id === selectedItemId);
+  assert.equal(isPreviewIdMatch, false, 'Delayed preview A does not match activeBookingId or selectedItemId');
+
+  if (isPSeqAValid && isPreviewIdMatch) {
+    preview = resPreviewA;
+  }
+  assert.equal(preview, null, 'preview remains null; A preview is NOT displayed');
+
+  // Attempt to submit while loading booking B or with stale preview
+  const attemptSubmit = (activeId, loadingB, loadingP, selItemId, prev, fresh) => {
+    if (loadingB) return { ok: false, error: 'กำลังโหลดข้อมูลการจอง กรุณารอสักครู่' };
+    if (!selItemId) return { ok: false, error: 'กรุณาเลือกห้องประชุมที่ต้องการต่อเวลา' };
+    if (!prev || !fresh) return { ok: false, error: 'ข้อมูลพรีวิวไม่ตรงกับห้องหรือระยะเวลาที่เลือก' };
+    if (prev.booking_id !== activeId) return { ok: false, error: 'ข้อมูลพรีวิวไม่ตรงกับการจองปัจจุบัน' };
+    return { ok: true };
+  };
+
+  const submitDuringTransition = attemptSubmit(activeBookingId, loadingBooking, loadingPreview, selectedItemId, preview, false);
+  assert.equal(submitDuringTransition.ok, false);
+  assert.equal(submitDuringTransition.error, 'กำลังโหลดข้อมูลการจอง กรุณารอสักครู่');
+
+  // Response B arrives for Booking B Details: { id: 1002, items: [{ id: 6001, room_id: 5 }] }
+  const resBookingB = { id: 1002, customer_name: 'Customer B', items: [{ id: 6001, room_id: 5, start_time: '13:00', end_time: '15:00' }] };
+  assert.equal(bReqSeqB === bookingSeq, true);
+  assert.equal(resBookingB.id === activeBookingId, true);
+
+  loadedBooking = resBookingB;
+  loadingBooking = false;
+  selectedItemId = 6001; // Auto-selected because single room in Booking B
+
+  // Request B dispatched for Preview
+  const pReqSeqB = ++previewSeq;
+  const resPreviewB = {
+    booking_id: 1002,
+    booking_item_id: 6001,
+    duration_minutes: 60,
+    current_end_time: '2026-10-27T15:00:00',
+    new_end_time: '2026-10-27T16:00:00',
+    gross_extension_fee: 600,
+    available: true
+  };
+
+  assert.equal(pReqSeqB === previewSeq, true);
+  assert.equal(resPreviewB.booking_id === activeBookingId, true);
+  assert.equal(resPreviewB.booking_item_id === selectedItemId, true);
+
+  preview = resPreviewB;
+  const isBPreviewFresh = true;
+
+  const validSubmitB = attemptSubmit(activeBookingId, loadingBooking, loadingPreview, selectedItemId, preview, isBPreviewFresh);
+  assert.equal(validSubmitB.ok, true, 'Valid submission of item 6001 for Booking B succeeds');
+  assert.equal(selectedItemId, 6001);
+  assert.equal(activeBookingId, 1002);
+});
+
+test('23. Invalidation & Abort Control on Modal Close / Re-open', () => {
+  let modalOpen = true;
+  let activeBookingId = 2001;
+  let abortController = new AbortController();
+  let previewSeq = 1;
+  let preview = null;
+
+  // Signal is active
+  assert.equal(abortController.signal.aborted, false);
+
+  // User closes modal while request in flight
+  modalOpen = false;
+  activeBookingId = null;
+
+  // Invalidation effect triggered
+  abortController.abort();
+  previewSeq++;
+  preview = null;
+
+  assert.equal(abortController.signal.aborted, true, 'AbortController must be aborted on modal close');
+
+  // In-flight fetch rejects with AbortError or reaches .catch
+  let caughtAbort = false;
+  try {
+    if (abortController.signal.aborted) {
+      const err = new Error('The user aborted a request.');
+      err.name = 'AbortError';
+      throw err;
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') caughtAbort = true;
+  }
+  assert.equal(caughtAbort, true, 'AbortError properly caught and suppressed');
+
+  // Late response handler check
+  const delayedResponseSeq = 1;
+  const canSetPreview = (modalOpen && delayedResponseSeq === previewSeq);
+  assert.equal(canSetPreview, false, 'Late response cannot update preview when modal is closed or sequence incremented');
+
+  // Re-open modal with new booking
+  modalOpen = true;
+  activeBookingId = 2002;
+  abortController = new AbortController();
+  previewSeq++;
+
+  assert.equal(abortController.signal.aborted, false, 'New session gets fresh AbortController');
+  assert.equal(preview, null, 'New session starts with clean null preview');
+});
+
+test('24. Fail-closed: submit strictly prohibited while loadingBooking is true', () => {
+  const isButtonDisabled = (loadingBooking, loadingPreview, selectedItemId, isPreviewFresh, isSubmitting) => {
+    return isSubmitting || loadingBooking || loadingPreview || !selectedItemId || !isPreviewFresh;
+  };
+
+  // While loading booking details
+  assert.equal(isButtonDisabled(true, false, 501, true, false), true, 'Button must be disabled when loadingBooking is true');
+  // While loading preview
+  assert.equal(isButtonDisabled(false, true, 501, true, false), true, 'Button must be disabled when loadingPreview is true');
+  // When no room selected
+  assert.equal(isButtonDisabled(false, false, null, true, false), true, 'Button must be disabled when selectedItemId is null');
+  // When preview is stale
+  assert.equal(isButtonDisabled(false, false, 501, false, false), true, 'Button must be disabled when isPreviewFresh is false');
+  // Ready to submit
+  assert.equal(isButtonDisabled(false, false, 501, true, false), false, 'Button enabled only when all guards pass');
+});

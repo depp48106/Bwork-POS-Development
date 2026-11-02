@@ -2,6 +2,9 @@ import POSTaxAndSlipSection from './POSTaxAndSlipSection';
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
 import RoomExtensionModal from './RoomExtensionModal';
+import { API_BASE } from '../apiConfig.js';
+import { authManager } from '../authManager';
+import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
 import AuthenticatedSlipImage from './AuthenticatedSlipImage';
 import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import BasecampQuotaModal from './BasecampQuotaModal';
@@ -2222,7 +2225,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               title={`${room.name} (${room.capacity} ที่นั่ง) · ${roomPinText} · คลิกเพื่อเปิดฟอร์มจองห้องนี้`}
                             >
                               {room.image_url ? (
-                                <img src={room.image_url} alt={room.name} style={{ width: '40px', height: '40px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0, border: '1px solid var(--border-color)' }} />
+                                <img src={getRoomImageUrl(room.image_url)} alt={room.name} onError={(e) => handleRoomImageError(e, room.image_url)} style={{ width: '40px', height: '40px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0, border: '1px solid var(--border-color)' }} />
                               ) : (
                                 <div style={{ width: '40px', height: '40px', borderRadius: '10px', backgroundColor: 'rgba(37,99,235,0.1)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                                   <Building size={20} />
@@ -6100,27 +6103,40 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       id="btn-drawer-extend-room"
                       className="bwork-btn-footer bwork-btn-footer-extend"
                       onClick={() => {
+                        const rawItems = (viewedEvent.items && viewedEvent.items.length > 0)
+                          ? viewedEvent.items
+                          : (viewedEvent.room_id ? [{
+                              id: viewedEvent.booking_item_id || null,
+                              booking_id: rawBookingId,
+                              room_id: viewedEvent.room_id,
+                              room_name: viewedEvent.room_name,
+                              start_time: viewedEvent.start_time,
+                              end_time: viewedEvent.end_time,
+                              layout: viewedEvent.layout || 'standard'
+                            }] : []);
+
+                        const eligibleRooms = rawItems.filter(it => it && it.room_id && it.checkin_status !== 'cancelled');
+
+                        // Match target item: if viewedEvent points to a specific item, or exactly 1 room exists
+                        let targetItem = null;
+                        if (viewedEvent.booking_item_id) {
+                          targetItem = eligibleRooms.find(it => it.id === viewedEvent.booking_item_id) || null;
+                        } else if (eligibleRooms.length === 1) {
+                          targetItem = eligibleRooms[0];
+                        }
+
                         const bookingObj = {
                           ...viewedEvent,
                           id: rawBookingId,
                           booking_id: rawBookingId,
-                          items: viewedEvent.items && viewedEvent.items.length > 0 ? viewedEvent.items : [{
-                            ...viewedEvent,
-                            id: viewedEvent.booking_item_id || rawBookingId || 1,
-                            booking_id: rawBookingId,
-                            room_id: viewedEvent.room_id,
-                            room_name: viewedEvent.room_name,
-                            start_time: viewedEvent.start_time,
-                            end_time: viewedEvent.end_time,
-                            layout: viewedEvent.layout || 'standard'
-                          }]
+                          items: rawItems
                         };
                         // Single Active Modal: Save current viewedEvent for return, then close drawer before opening extension modal
                         setExtensionReturnEvent(viewedEvent);
                         setViewedEvent(null);
                         setExtensionModalData({
                           booking: bookingObj,
-                          item: bookingObj.items[0]
+                          item: targetItem
                         });
                       }}
                     >
@@ -6750,8 +6766,9 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
             fetchCalendarEvents();
             if (bId) {
               try {
-                const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
-                const res = await fetch(`/api/bookings/${bId}`, {
+                const token = (authManager && authManager.getToken) ? authManager.getToken() : (localStorage.getItem('pos_token') || localStorage.getItem('token') || '');
+                const base = API_BASE ? API_BASE.replace(/\/+$/, '') : '';
+                const res = await fetch(`${base}/api/bookings/${encodeURIComponent(bId)}`, {
                   headers: {
                     'Content-Type': 'application/json',
                     ...(token ? { 'Authorization': `Bearer ${token}` } : {})
