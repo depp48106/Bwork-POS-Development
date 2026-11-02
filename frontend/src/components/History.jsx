@@ -2932,7 +2932,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                           cursor: 'pointer'
                         }}
                         onClick={() => {
-                          const roomItem = (selectedBooking.items || []).find(it => it.room_id);
+                          const eligibleRooms = (selectedBooking.items || []).filter(it => it && it.room_id && it.checkin_status !== 'cancelled');
+                          const roomItem = eligibleRooms.length === 1 ? eligibleRooms[0] : null;
                           setExtensionModalData({ booking: selectedBooking, item: roomItem });
                         }}
                       >

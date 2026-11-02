@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
+import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
 
 export default function BookingFormPage() {
   const navigate = useNavigate();
@@ -290,7 +291,7 @@ export default function BookingFormPage() {
 
           {bookingData.image_url && (
             <div style={{ borderRadius: '12px', overflow: 'hidden', height: '140px', marginBottom: '12px' }}>
-              <img src={bookingData.image_url} alt={bookingData.room_name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              <img src={getRoomImageUrl(bookingData.image_url)} alt={bookingData.room_name} onError={(e) => handleRoomImageError(e, bookingData.image_url)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             </div>
           )}
 

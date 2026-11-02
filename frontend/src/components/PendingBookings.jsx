@@ -1,6 +1,7 @@
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
 import RoomExtensionModal from './RoomExtensionModal';
+import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
 import AuthenticatedSlipImage from './AuthenticatedSlipImage';
 import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useCallback } from 'react';
@@ -3792,7 +3793,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   const b = activeActionMenuBooking;
                   setActiveActionMenuBooking(null);
                   setActionMenuPos(null);
-                  const roomItem = (b.items || []).find(it => it.room_id);
+                  const eligibleRooms = (b.items || []).filter(it => it && it.room_id && it.checkin_status !== 'cancelled');
+                  const roomItem = eligibleRooms.length === 1 ? eligibleRooms[0] : null;
                   setExtensionModalData({ booking: b, item: roomItem });
                 }}
                 className="action-menu-item"
@@ -5402,7 +5404,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       id="pb-detail-btn-extend-room"
                       className="pb-detail-btn-secondary"
                       onClick={() => {
-                        const roomItem = (b.items || []).find(it => it.room_id);
+                        const eligibleRooms = (b.items || []).filter(it => it && it.room_id && it.checkin_status !== 'cancelled');
+                        const roomItem = eligibleRooms.length === 1 ? eligibleRooms[0] : null;
                         setExtensionModalData({ booking: b, item: roomItem });
                       }}
                       style={{

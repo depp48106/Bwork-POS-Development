@@ -3,8 +3,11 @@
 // 2. If on Cloudflare Pages (*.pages.dev) or production domain, use Cloudflare Worker API
 // 3. Otherwise (localhost / 127.0.0.1 / 192.168.x.x), use '' (relative path to local backend)
 export const API_BASE = (() => {
-  if (import.meta.env.VITE_API_BASE) {
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE) {
     return import.meta.env.VITE_API_BASE;
+  }
+  if (typeof process !== 'undefined' && process.env && process.env.VITE_API_BASE) {
+    return process.env.VITE_API_BASE;
   }
   if (typeof window !== 'undefined') {
     const host = window.location.hostname;
@@ -17,4 +20,3 @@ export const API_BASE = (() => {
   }
   return '';
 })();
-

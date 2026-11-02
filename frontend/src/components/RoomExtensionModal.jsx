@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   X,
@@ -17,6 +17,8 @@ import {
   QrCode
 } from 'lucide-react';
 import './RoomExtensionModal.css';
+import { API_BASE } from '../apiConfig.js';
+import { authManager } from '../authManager';
 
 /**
  * Validates file signature (magic bytes) for uploaded payment slip files.
@@ -59,25 +61,6 @@ function validateSlipFileSignature(file) {
   });
 }
 
-function addMinutesToLocalISO(isoString, minutes) {
-  if (!isoString) return '';
-  const norm = isoString.includes('T') ? isoString.replace(' ', 'T') : `${isoString}T00:00:00`;
-  const [datePart, timePart] = norm.split('T');
-  const [h, m, s] = (timePart || '00:00:00').split(':').map(Number);
-  const totalM = (isNaN(h) ? 0 : h) * 60 + (isNaN(m) ? 0 : m) + Number(minutes);
-  const newDate = new Date(datePart + 'T00:00:00');
-  const dayOffset = Math.floor(totalM / (24 * 60));
-  if (dayOffset > 0) newDate.setDate(newDate.getDate() + dayOffset);
-  const remM = ((totalM % (24 * 60)) + (24 * 60)) % (24 * 60);
-  const newH = String(Math.floor(remM / 60)).padStart(2, '0');
-  const newM = String(remM % 60).padStart(2, '0');
-  const newS = String(s || 0).padStart(2, '0');
-  const y = newDate.getFullYear();
-  const mo = String(newDate.getMonth() + 1).padStart(2, '0');
-  const d = String(newDate.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${d}T${newH}:${newM}:${newS}`;
-}
-
 const DURATION_PRESETS = [
   { label: '+30 นาที', sub: '0.5 ชั่วโมง', minutes: 30 },
   { label: '+1 ชั่วโมง', sub: '60 นาที', minutes: 60 },
@@ -93,6 +76,11 @@ export default function RoomExtensionModal({
   onSuccess,
   sysAlert = null
 }) {
+  const activeBookingId = booking ? (booking.booking_id || booking.id) : null;
+
+  const [loadedBooking, setLoadedBooking] = useState(null);
+  const [loadingBooking, setLoadingBooking] = useState(false);
+
   const [selectedDuration, setSelectedDuration] = useState(60);
   const [customMinutes, setCustomMinutes] = useState('');
   const [isCustom, setIsCustom] = useState(false);
@@ -101,6 +89,12 @@ export default function RoomExtensionModal({
   const [preview, setPreview] = useState(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewError, setPreviewError] = useState(null);
+
+  // Generation sequence refs & abort controller refs
+  const bookingSeqRef = useRef(0);
+  const bookingAbortRef = useRef(null);
+  const previewSeqRef = useRef(0);
+  const previewAbortRef = useRef(null);
 
   const [useQuota, setUseQuota] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState('cash'); // 'cash' | 'promptpay' | 'transfer' | 'unpaid'
@@ -119,31 +113,154 @@ export default function RoomExtensionModal({
 
   const activeDurationMinutes = isCustom ? (parseInt(customMinutes, 10) || 60) : selectedDuration;
 
-  // Initialize selected item
+  // Strict binding: loadedBooking is only valid if its ID exactly matches activeBookingId
+  const isLoadedBookingValid = Boolean(
+    loadedBooking &&
+    activeBookingId &&
+    (loadedBooking.id === activeBookingId || loadedBooking.booking_id === activeBookingId)
+  );
+  const currentBooking = isLoadedBookingValid ? loadedBooking : booking;
+
+  // Cleanup & Invalidation on modal close or booking change
   useEffect(() => {
-    if (!isOpen || !booking) return;
+    if (!isOpen || !activeBookingId) {
+      if (bookingAbortRef.current) {
+        bookingAbortRef.current.abort();
+        bookingAbortRef.current = null;
+      }
+      if (previewAbortRef.current) {
+        previewAbortRef.current.abort();
+        previewAbortRef.current = null;
+      }
+      bookingSeqRef.current++;
+      previewSeqRef.current++;
 
-    const items = (booking.items && booking.items.length > 0)
-      ? booking.items.filter(it => it && it.room_id)
-      : (booking.room_id ? [{
-          id: booking.booking_item_id || booking.id || 1,
-          booking_id: booking.booking_id || booking.id,
-          room_id: booking.room_id,
-          room_name: booking.room_name,
-          start_time: booking.start_time,
-          end_time: booking.end_time,
-          layout: booking.layout || 'standard'
-        }] : []);
+      setLoadedBooking(null);
+      setLoadingBooking(false);
+      setSelectedItemId(null);
+      setPreview(null);
+      setLoadingPreview(false);
+      setPreviewError(null);
+      setSubmitError(null);
+    }
+  }, [isOpen, activeBookingId]);
 
-    if (initialItem && initialItem.room_id) {
-      setSelectedItemId(initialItem.id || initialItem.booking_item_id || items[0]?.id || 1);
-    } else if (items.length > 0) {
-      setSelectedItemId(items[0].id || items[0].booking_item_id || 1);
-    } else {
-      setSelectedItemId(1);
+  // Load full booking details if items array is missing or empty
+  useEffect(() => {
+    if (!isOpen || !activeBookingId) return;
+
+    const hasItems = Array.isArray(booking?.items) && booking.items.length > 0;
+    if (hasItems) {
+      if (bookingAbortRef.current) {
+        bookingAbortRef.current.abort();
+        bookingAbortRef.current = null;
+      }
+      setLoadedBooking(null);
+      setLoadingBooking(false);
+      return;
     }
 
-    // Reset defaults
+    if (bookingAbortRef.current) {
+      bookingAbortRef.current.abort();
+    }
+    const abortCtrl = new AbortController();
+    bookingAbortRef.current = abortCtrl;
+    const seq = ++bookingSeqRef.current;
+
+    setLoadingBooking(true);
+    setLoadedBooking(null);
+
+    const token = (authManager && authManager.getToken)
+      ? authManager.getToken()
+      : (localStorage.getItem('pos_token') || localStorage.getItem('token') || sessionStorage.getItem('token') || '');
+    const base = API_BASE ? API_BASE.replace(/\/+$/, '') : '';
+
+    fetch(`${base}/api/bookings/${encodeURIComponent(activeBookingId)}`, {
+      signal: abortCtrl.signal,
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        'Content-Type': 'application/json'
+      }
+    })
+      .then(async (res) => {
+        if (!res.ok) return null;
+        return res.json();
+      })
+      .then((data) => {
+        if (seq !== bookingSeqRef.current) return;
+        if (!data) return;
+
+        const returnedId = data.id || data.booking_id;
+        if (returnedId === activeBookingId) {
+          setLoadedBooking(data);
+        }
+      })
+      .catch((err) => {
+        if (err.name === 'AbortError') return;
+        if (seq !== bookingSeqRef.current) return;
+        console.error('Failed to load full booking details for extension:', err);
+      })
+      .finally(() => {
+        if (seq === bookingSeqRef.current) {
+          setLoadingBooking(false);
+        }
+      });
+
+    return () => {
+      abortCtrl.abort();
+    };
+  }, [isOpen, activeBookingId, booking?.items?.length]);
+
+  // Extract eligible room items
+  const roomItems = useMemo(() => {
+    if (!currentBooking) return [];
+    if (Array.isArray(currentBooking.items) && currentBooking.items.length > 0) {
+      return currentBooking.items.filter(it => it && it.room_id && it.checkin_status !== 'cancelled');
+    }
+    if (currentBooking.room_id) {
+      return [{
+        id: currentBooking.booking_item_id || currentBooking.item_id || null,
+        booking_id: currentBooking.booking_id || currentBooking.id,
+        room_id: currentBooking.room_id,
+        room_name: currentBooking.room_name,
+        start_time: currentBooking.start_time,
+        end_time: currentBooking.end_time,
+        layout: currentBooking.layout || 'standard'
+      }];
+    }
+    return [];
+  }, [currentBooking]);
+
+  // Active item strictly derived from selectedItemId
+  const activeItem = useMemo(() => {
+    if (!selectedItemId) return null;
+    return roomItems.find(it => it.id === selectedItemId) || null;
+  }, [selectedItemId, roomItems]);
+
+  // Initialize selected item on modal open or roomItems update
+  useEffect(() => {
+    if (!isOpen || !activeBookingId) return;
+
+    let targetItemId = null;
+
+    // Rule 1: If initialItem is specified and matches an eligible item, select it
+    if (initialItem && initialItem.room_id) {
+      const initId = initialItem.id || initialItem.booking_item_id;
+      const matched = roomItems.find(it => it.id === initId || (it.room_id === initialItem.room_id && it.start_time === initialItem.start_time));
+      if (matched && matched.id) {
+        targetItemId = matched.id;
+      }
+    }
+
+    // Rule 2: If no initial target, only auto-select if there is EXACTLY 1 eligible room
+    // NEVER auto-select if there are multiple rooms! Force the user to choose.
+    if (!targetItemId && roomItems.length === 1 && roomItems[0].id) {
+      targetItemId = roomItems[0].id;
+    }
+
+    setSelectedItemId(targetItemId);
+
+    // Reset form state
     setSelectedDuration(60);
     setIsCustom(false);
     setCustomMinutes('');
@@ -154,26 +271,57 @@ export default function RoomExtensionModal({
     setSlipPreviewUrl(null);
     setSlipError(null);
     setSubmitError(null);
-  }, [isOpen, booking, initialItem]);
+    setPreview(null);
+    setPreviewError(null);
+  }, [isOpen, activeBookingId, initialItem, roomItems]);
 
-  // Fetch preview whenever item or duration changes
+  // Fetch extension preview with AbortController & generation guard
   useEffect(() => {
-    if (!isOpen || !booking || !selectedItemId || !activeDurationMinutes) return;
+    if (!isOpen || !activeBookingId) return;
 
-    let isMounted = true;
+    // If no room is selected yet or duration missing or loading booking, clear preview and cancel pending fetch
+    if (!selectedItemId || !activeDurationMinutes || loadingBooking) {
+      if (previewAbortRef.current) {
+        previewAbortRef.current.abort();
+        previewAbortRef.current = null;
+      }
+      previewSeqRef.current++;
+      setPreview(null);
+      setLoadingPreview(false);
+      setPreviewError(null);
+      return;
+    }
+
+    if (previewAbortRef.current) {
+      previewAbortRef.current.abort();
+    }
+    const abortCtrl = new AbortController();
+    previewAbortRef.current = abortCtrl;
+    const seq = ++previewSeqRef.current;
+
     setLoadingPreview(true);
     setPreviewError(null);
+    setPreview(null); // Clear stale preview immediately
 
-    const token = localStorage.getItem('token') || sessionStorage.getItem('token');
-    const bId = booking.booking_id || booking.id;
+    const token = (authManager && authManager.getToken)
+      ? authManager.getToken()
+      : (localStorage.getItem('pos_token') || localStorage.getItem('token') || sessionStorage.getItem('token') || '');
+    const base = API_BASE ? API_BASE.replace(/\/+$/, '') : '';
 
-    fetch(`/api/bookings/${bId}/extension-preview?booking_item_id=${selectedItemId}&duration_minutes=${activeDurationMinutes}`, {
+    const previewUrl = `${base}/api/bookings/${encodeURIComponent(activeBookingId)}/extension-preview?duration_minutes=${encodeURIComponent(activeDurationMinutes)}&booking_item_id=${encodeURIComponent(selectedItemId)}`;
+
+    fetch(previewUrl, {
+      signal: abortCtrl.signal,
       headers: {
-        'Authorization': token ? `Bearer ${token}` : '',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
         'Content-Type': 'application/json'
       }
     })
       .then(async (res) => {
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          throw new Error('ไม่สามารถเชื่อมต่อระบบ API ได้ (ได้รับข้อมูลตอบกลับไม่ถูกต้อง)');
+        }
         const data = await res.json();
         if (!res.ok) {
           throw new Error(data.error || 'ไม่สามารถตรวจสอบการต่อเวลาได้');
@@ -181,26 +329,52 @@ export default function RoomExtensionModal({
         return data;
       })
       .then((data) => {
-        if (!isMounted) return;
+        if (seq !== previewSeqRef.current) return;
+        if (!data) return;
+
+        // Discard response if returned booking, item, or duration does not match current state
+        if (
+          data.booking_id !== activeBookingId ||
+          data.booking_item_id !== selectedItemId ||
+          Number(data.duration_minutes) !== Number(activeDurationMinutes)
+        ) {
+          return;
+        }
+
         setPreview(data);
-        // If quota is available, default to checked if appropriate
         if (data.quota && data.quota.contract_eligible && data.quota.remaining_quota > 0) {
           setUseQuota(true);
         }
       })
       .catch((err) => {
-        if (!isMounted) return;
+        if (err.name === 'AbortError') return;
+        if (seq !== previewSeqRef.current) return;
         setPreviewError(err.message);
         setPreview(null);
       })
       .finally(() => {
-        if (isMounted) setLoadingPreview(false);
+        if (seq === previewSeqRef.current) {
+          setLoadingPreview(false);
+        }
       });
 
     return () => {
-      isMounted = false;
+      abortCtrl.abort();
     };
-  }, [isOpen, booking?.id, booking?.booking_id, selectedItemId, activeDurationMinutes]);
+  }, [isOpen, activeBookingId, selectedItemId, activeDurationMinutes, loadingBooking]);
+
+  // Strict Preview Freshness Invariant
+  const isPreviewFresh = Boolean(
+    preview &&
+    !loadingPreview &&
+    !loadingBooking &&
+    selectedItemId &&
+    preview.booking_id === activeBookingId &&
+    preview.booking_item_id === selectedItemId &&
+    Number(preview.duration_minutes) === Number(activeDurationMinutes) &&
+    activeItem &&
+    preview.current_end_time === activeItem.end_time
+  );
 
   // Handle escape key
   useEffect(() => {
@@ -248,14 +422,44 @@ export default function RoomExtensionModal({
   // Submit Extension
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!preview || !preview.available) return;
+
+    if (loadingBooking) {
+      setSubmitError('กำลังโหลดข้อมูลการจอง กรุณารอสักครู่');
+      return;
+    }
+    if (!selectedItemId) {
+      setSubmitError('กรุณาเลือกห้องประชุมที่ต้องการต่อเวลา');
+      return;
+    }
+    if (!activeItem || !activeItem.end_time) {
+      setSubmitError('ไม่พบข้อมูลเวลาเดิมของห้องที่เลือก (ห้ามส่งข้อมูลโดยไม่มีเวลาสิ้นสุด)');
+      return;
+    }
+    if (!preview || !isPreviewFresh) {
+      setSubmitError('ข้อมูลพรีวิวไม่ตรงกับห้องหรือระยะเวลาที่เลือก กรุณารอสักครู่');
+      return;
+    }
+    if (preview.booking_id !== activeBookingId) {
+      setSubmitError('ข้อมูลพรีวิวไม่ตรงกับการจองปัจจุบัน');
+      return;
+    }
+    if (!preview.available) {
+      setSubmitError(preview.conflict?.message || 'ห้องไม่ว่างในช่วงเวลาดังกล่าว');
+      return;
+    }
+    if (!preview.new_end_time) {
+      setSubmitError('ไม่สามารถต่อเวลาได้เนื่องจากไม่พบการคำนวณเวลาสิ้นสุดใหม่');
+      return;
+    }
 
     setIsSubmitting(true);
     setSubmitError(null);
 
     try {
-      const token = localStorage.getItem('token') || sessionStorage.getItem('token');
-      const bId = booking.booking_id || booking.id;
+      const token = (authManager && authManager.getToken)
+        ? authManager.getToken()
+        : (localStorage.getItem('pos_token') || localStorage.getItem('token') || sessionStorage.getItem('token') || '');
+      const base = API_BASE ? API_BASE.replace(/\/+$/, '') : '';
 
       // Calculate net fee with quota toggle
       const hourlyRate = preview.hourly_rate || 0;
@@ -275,14 +479,9 @@ export default function RoomExtensionModal({
         amountPaid = 0;
       }
 
-      // Check slip requirement for transfer/promptpay if fee > 0 and paid
-      if ((paymentMethod === 'transfer' || paymentMethod === 'promptpay') && amountPaid > 0 && !slipBase64) {
-        // Optional warning or allow submit without slip
-      }
-
       const payload = {
         booking_item_id: selectedItemId,
-        current_end_time: preview?.current_end_time || selectedItem?.end_time || null,
+        current_end_time: activeItem.end_time, // Guaranteed to match preview.current_end_time
         duration_minutes: activeDurationMinutes,
         payment_method: fee === 0 ? 'quota' : paymentMethod,
         use_quota: useQuota,
@@ -291,14 +490,20 @@ export default function RoomExtensionModal({
         notes: notes || null
       };
 
-      const res = await fetch(`/api/bookings/${bId}/extend`, {
+      const extendUrl = `${base}/api/bookings/${encodeURIComponent(activeBookingId)}/extend`;
+      const res = await fetch(extendUrl, {
         method: 'POST',
         headers: {
-          'Authorization': token ? `Bearer ${token}` : '',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(payload)
       });
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('ไม่สามารถเชื่อมต่อระบบ API ได้ (ได้รับข้อมูลตอบกลับไม่ถูกต้อง)');
+      }
 
       const resData = await res.json();
       if (!res.ok) {
@@ -323,19 +528,7 @@ export default function RoomExtensionModal({
 
   if (!isOpen || !booking) return null;
 
-  const roomItems = (booking?.items && booking.items.length > 0)
-    ? booking.items.filter(it => it && it.room_id)
-    : (booking?.room_id ? [{
-        id: booking.booking_item_id || booking.id || 1,
-        booking_id: booking.booking_id || booking.id,
-        room_id: booking.room_id,
-        room_name: booking.room_name,
-        start_time: booking.start_time,
-        end_time: booking.end_time,
-        layout: booking.layout || 'standard'
-      }] : []);
-  const activeItem = (selectedItemId ? roomItems.find(it => it.id === selectedItemId) : null) || roomItems[0] || null;
-  const roomName = activeItem?.room_name || preview?.room_name || (booking?.room_id ? `ห้อง #${booking.room_id}` : 'ห้องประชุม');
+  const roomName = activeItem?.room_name || (selectedItemId ? `ห้อง #${selectedItemId}` : 'ห้องประชุม');
 
   // Format times for display
   const formatTimeOnly = (isoStr) => {
@@ -344,22 +537,22 @@ export default function RoomExtensionModal({
     return isoStr.substring(0, 5);
   };
 
-  const currentStart = formatTimeOnly(activeItem?.start_time || preview?.start_time);
-  const currentEnd = formatTimeOnly(activeItem?.end_time || preview?.current_end_time);
-  const newEnd = preview?.new_end_time ? formatTimeOnly(preview.new_end_time) : '--:--';
+  const currentStart = formatTimeOnly(activeItem?.start_time);
+  const currentEnd = formatTimeOnly(activeItem?.end_time);
+  const newEnd = isPreviewFresh && preview?.new_end_time ? formatTimeOnly(preview.new_end_time) : '--:--';
 
   // Calculate net fee for display
   const additionalHours = activeDurationMinutes / 60;
-  const hourlyRate = preview?.hourly_rate || 0;
-  const grossFee = preview?.gross_extension_fee || 0;
-  const isInternalFree = preview?.is_internal_free || false;
+  const hourlyRate = isPreviewFresh ? (preview?.hourly_rate || 0) : 0;
+  const grossFee = isPreviewFresh ? (preview?.gross_extension_fee || 0) : 0;
+  const isInternalFree = isPreviewFresh ? (preview?.is_internal_free || false) : false;
 
   let quotaDeductedHours = 0;
   let netFee = grossFee;
 
   if (isInternalFree) {
     netFee = 0;
-  } else if (useQuota && preview?.quota?.contract_eligible) {
+  } else if (useQuota && preview?.quota?.contract_eligible && isPreviewFresh) {
     quotaDeductedHours = Math.min(additionalHours, preview.quota.remaining_quota || 0);
     netFee = Math.round(Math.max(0, additionalHours - quotaDeductedHours) * hourlyRate * 100) / 100;
   }
@@ -377,9 +570,9 @@ export default function RoomExtensionModal({
               <h2 id="rx-modal-title" className="rx-modal-title">ต่อเวลาการใช้งานห้องประชุม</h2>
             </div>
             <div className="rx-modal-subtitle">
-              <span>รหัสการจอง: <strong>{booking.booking_code || `#${booking.id}`}</strong></span>
+              <span>รหัสการจอง: <strong>{currentBooking.booking_code || `#${currentBooking.id}`}</strong></span>
               <span>•</span>
-              <span>ผู้จอง: <strong>{booking.customer_name}</strong></span>
+              <span>ผู้จอง: <strong>{currentBooking.customer_name}</strong></span>
             </div>
           </div>
           <button
@@ -395,26 +588,46 @@ export default function RoomExtensionModal({
 
         {/* BODY */}
         <div className="rx-modal-body">
-          {/* Room Selection (if multiple) or Room Bar */}
+          {/* Room Selection (if multiple rooms) or Single Room Bar */}
           {roomItems.length > 1 ? (
             <div>
-              <label className="rx-section-label">เลือกห้องที่ต้องการต่อเวลา</label>
+              <label className="rx-section-label">
+                เลือกห้องที่ต้องการต่อเวลา <span style={{ color: '#dc2626' }}>*</span>
+              </label>
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                {roomItems.map(it => (
-                  <button
-                    key={it.id}
-                    type="button"
-                    className={`rx-duration-chip ${selectedItemId === it.id ? 'active' : ''}`}
-                    onClick={() => setSelectedItemId(it.id)}
-                    style={{ flex: 1, minWidth: '120px' }}
-                  >
-                    <span>{it.room_name || `ห้อง #${it.room_id}`}</span>
-                    <span className="rx-duration-sub">{formatTimeOnly(it.start_time)} - {formatTimeOnly(it.end_time)}</span>
-                  </button>
-                ))}
+                {roomItems.map(it => {
+                  const isSelected = selectedItemId === it.id;
+                  return (
+                    <button
+                      key={it.id}
+                      type="button"
+                      className={`rx-duration-chip ${isSelected ? 'active' : ''}`}
+                      onClick={() => {
+                        if (selectedItemId !== it.id) {
+                          setSelectedItemId(it.id);
+                        }
+                      }}
+                      style={{
+                        flex: 1,
+                        minWidth: '140px',
+                        borderColor: isSelected ? 'var(--primary-color, #2563eb)' : 'var(--border-color, #e2e8f0)',
+                        backgroundColor: isSelected ? 'rgba(37, 99, 235, 0.08)' : 'transparent',
+                        fontWeight: isSelected ? 700 : 500
+                      }}
+                    >
+                      <span>{it.room_name || `ห้อง #${it.room_id}`}</span>
+                      <span className="rx-duration-sub">{formatTimeOnly(it.start_time)} - {formatTimeOnly(it.end_time)}</span>
+                    </button>
+                  );
+                })}
               </div>
+              {!selectedItemId && (
+                <div style={{ fontSize: '0.78rem', color: '#dc2626', marginTop: '6px', fontWeight: 600 }}>
+                  การจองนี้มีหลายห้อง กรุณาคลิกเลือกห้องที่ต้องการต่อเวลา
+                </div>
+              )}
             </div>
-          ) : (
+          ) : roomItems.length === 1 ? (
             <div className="rx-room-bar">
               <div className="rx-room-name-box">
                 <span className="rx-room-pill">{roomName}</span>
@@ -425,6 +638,16 @@ export default function RoomExtensionModal({
               <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                 อัตราปกติ: ฿{hourlyRate.toLocaleString()} / ชม.
               </span>
+            </div>
+          ) : loadingBooking ? (
+            <div className="rx-avail-status loading">
+              <RotateCcw size={16} className="rx-spin" />
+              <span>กำลังโหลดรายละเอียดรายการห้อง...</span>
+            </div>
+          ) : (
+            <div className="rx-avail-status conflict">
+              <AlertCircle size={18} />
+              <span>ไม่พบรายการห้องที่สามารถต่อเวลาได้ในการจองนี้</span>
             </div>
           )}
 
@@ -503,7 +726,12 @@ export default function RoomExtensionModal({
           </div>
 
           {/* Availability Status */}
-          {loadingPreview ? (
+          {!selectedItemId && roomItems.length > 1 ? (
+            <div className="rx-avail-status" style={{ backgroundColor: '#fffbeb', borderColor: '#fde68a', color: '#92400e' }}>
+              <AlertCircle size={18} />
+              <span>กรุณาคลิกเลือกห้องประชุมด้านบนเพื่อคำนวณเวลาและตรวจสอบคิวว่าง</span>
+            </div>
+          ) : loadingPreview ? (
             <div className="rx-avail-status loading">
               <RotateCcw size={16} className="rx-spin" />
               <span>กำลังตรวจสอบคิวและการเว้นระยะเวลาทำความสะอาด (Cleaning Buffer 30 นาที)...</span>
@@ -513,133 +741,116 @@ export default function RoomExtensionModal({
               <AlertCircle size={18} />
               <span>{previewError}</span>
             </div>
-          ) : preview?.available ? (
+          ) : isPreviewFresh && preview?.available ? (
             <div className="rx-avail-status available">
               <CheckCircle2 size={18} />
               <div>
                 <div>ห้องว่าง สามารถต่อเวลาได้จนถึง <strong>{newEnd} น.</strong></div>
-                <div style={{ fontSize: '0.74rem', opacity: 0.85, marginTop: '2px' }}>
-                  ระบบเว้น Cleaning Buffer 30 นาทีอัตโนมัติก่อนคิวถัดไป (คิวถัดไปจองได้ตั้งแต่ {preview?.new_end_time ? addMinutesToLocalISO(preview.new_end_time, 30).split('T')[1]?.substring(0, 5) : '--:--'} น.)
+                <div style={{ fontSize: '0.78rem', color: '#166534', marginTop: '2px' }}>
+                  ระบบรักษา Cleaning Buffer 30 นาที สำหรับลูกค้ารายถัดไปเรียบร้อยแล้ว
                 </div>
               </div>
             </div>
-          ) : (
+          ) : isPreviewFresh && preview && !preview.available ? (
             <div className="rx-avail-status conflict">
-              <AlertCircle size={18} style={{ flexShrink: 0 }} />
+              <AlertCircle size={18} />
               <div>
-                <div><strong>ไม่สามารถต่อเวลาได้:</strong> {preview?.conflict?.message || 'ห้องไม่ว่างในช่วงเวลาดังกล่าว'}</div>
-                {preview?.conflict?.is_cleaning_buffer && (
-                  <div style={{ fontSize: '0.74rem', marginTop: '2px' }}>
-                    ชนกับระยะเวลาทำความสะอาดห้อง 30 นาที ก่อนรายการจองถัดไปของ {preview?.conflict?.booking?.customer_name || 'ลูกค้าท่านอื่น'}
+                <div>{preview.conflict?.message || 'ห้องไม่ว่างในช่วงเวลาดังกล่าว'}</div>
+                {preview.conflict?.is_cleaning_buffer && (
+                  <div style={{ fontSize: '0.78rem', color: '#991b1b', marginTop: '2px' }}>
+                    ชนระยะเวลาทำความสะอาด 30 นาทีของการจองถัดไป
                   </div>
                 )}
               </div>
             </div>
-          )}
+          ) : null}
 
-          {/* Quota Section (if eligible) */}
-          {preview?.quota && preview.quota.contract_eligible && (
+          {/* Quota Section (Basecamp / CRM) */}
+          {isPreviewFresh && preview?.quota?.contract_eligible && (
             <div className="rx-quota-box">
-              <div className="rx-quota-info">
-                <Sparkles size={18} style={{ color: '#059669', flexShrink: 0 }} />
-                <div className="rx-quota-text">
-                  ลูกค้ามีสิทธิ์โควต้าสัญญาคงเหลือ <strong>{preview.quota.remaining_quota} ชั่วโมง</strong>
+              <div className="rx-quota-left">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <ShieldCheck size={18} style={{ color: '#2563eb' }} />
+                  <span className="rx-quota-title">สิทธิ์ใช้งานห้องตามสัญญา (Quota)</span>
+                </div>
+                <div className="rx-quota-desc">
+                  คงเหลือ: <strong>{preview.quota.remaining_quota || 0} ชม.</strong>
+                  {preview.quota.contract?.contract_type && ` (${preview.quota.contract.contract_type})`}
                 </div>
               </div>
-              <label className="rx-quota-toggle">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={useQuota}
                   onChange={(e) => setUseQuota(e.target.checked)}
+                  style={{ width: '18px', height: '18px', accentColor: '#2563eb' }}
                 />
-                <span>หักโควต้า (-{Math.min(additionalHours, preview.quota.remaining_quota)} ชม.)</span>
+                <span style={{ fontSize: '0.82rem', fontWeight: 650, color: 'var(--text-color)' }}>
+                  ใช้โควต้า
+                </span>
               </label>
             </div>
           )}
 
-          {/* Payment Method & Slip (if fee > 0) */}
-          {netFee > 0 && (
+          {/* Payment Method Selector */}
+          {isPreviewFresh && netFee > 0 && (
             <div>
-              <div className="rx-section-label">
-                <span>วิธีชำระค่าบริการต่อเวลา (฿{netFee.toLocaleString()})</span>
-              </div>
-              <div className="rx-pay-methods-grid">
-                <button
-                  type="button"
-                  className={`rx-pay-method-chip ${paymentMethod === 'cash' ? 'active' : ''}`}
-                  onClick={() => setPaymentMethod('cash')}
-                >
-                  <Banknote size={14} />
-                  <span>เงินสด</span>
-                </button>
-                <button
-                  type="button"
-                  className={`rx-pay-method-chip ${paymentMethod === 'promptpay' ? 'active' : ''}`}
-                  onClick={() => setPaymentMethod('promptpay')}
-                >
-                  <QrCode size={14} />
-                  <span>PromptPay</span>
-                </button>
-                <button
-                  type="button"
-                  className={`rx-pay-method-chip ${paymentMethod === 'transfer' ? 'active' : ''}`}
-                  onClick={() => setPaymentMethod('transfer')}
-                >
-                  <CreditCard size={14} />
-                  <span>โอนเงิน</span>
-                </button>
-                <button
-                  type="button"
-                  className={`rx-pay-method-chip ${paymentMethod === 'unpaid' ? 'active' : ''}`}
-                  onClick={() => setPaymentMethod('unpaid')}
-                  title="ชำระรวมตอนเช็คเอาท์"
-                >
-                  <Clock size={14} />
-                  <span>ชำระภายหลัง</span>
-                </button>
+              <label className="rx-section-label">วิธีการชำระเงินค่าต่อเวลา</label>
+              <div className="rx-payment-grid">
+                {[
+                  { id: 'cash', label: 'เงินสด', icon: Banknote },
+                  { id: 'promptpay', label: 'พร้อมเพย์', icon: QrCode },
+                  { id: 'transfer', label: 'โอนเงิน', icon: CreditCard },
+                  { id: 'unpaid', label: 'ค้างชำระ', icon: RotateCcw }
+                ].map((m) => {
+                  const Icon = m.icon;
+                  const isActive = paymentMethod === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className={`rx-payment-chip ${isActive ? 'active' : ''}`}
+                      onClick={() => setPaymentMethod(m.id)}
+                    >
+                      <Icon size={16} />
+                      <span>{m.label}</span>
+                    </button>
+                  );
+                })}
               </div>
 
-              {/* Slip Attachment for Transfer / PromptPay */}
+              {/* Slip Upload for PromptPay / Transfer */}
               {(paymentMethod === 'promptpay' || paymentMethod === 'transfer') && (
                 <div style={{ marginTop: '12px' }}>
+                  <label className="rx-section-label" style={{ marginBottom: '6px' }}>
+                    แนบสลิปการชำระเงิน (ถ้ามี)
+                  </label>
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept="image/png,image/jpeg,image/webp"
                     style={{ display: 'none' }}
-                    onChange={(e) => {
-                      if (e.target.files && e.target.files[0]) {
-                        handleFileChange(e.target.files[0]);
-                      }
-                    }}
+                    onChange={(e) => e.target.files && handleFileChange(e.target.files[0])}
                   />
                   {!slipPreviewUrl ? (
                     <div
-                      className={`rx-slip-dropzone ${isDragging ? 'dragging' : ''}`}
-                      onClick={() => fileInputRef.current?.click()}
+                      className={`rx-dropzone ${isDragging ? 'dragging' : ''}`}
+                      onClick={() => fileInputRef.current && fileInputRef.current.click()}
                       onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
                       onDragLeave={() => setIsDragging(false)}
                       onDrop={handleDrop}
                     >
-                      <Upload size={22} style={{ margin: '0 auto 6px auto', color: '#2563eb' }} />
-                      <div style={{ fontSize: '0.82rem', fontWeight: 650 }}>แนบสลิปการโอนเงิน (PNG, JPG, WEBP)</div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        คลิกเพื่อเลือกไฟล์ หรือลากไฟล์มาวางที่นี่ (ไม่เกิน 10MB)
+                      <Upload size={20} style={{ color: 'var(--text-muted)' }} />
+                      <div className="rx-dropzone-text">
+                        คลิกเพื่อเลือกรูปภาพ หรือลากไฟล์สลิปมาวางที่นี่
+                      </div>
+                      <div className="rx-dropzone-hint">
+                        รองรับไฟล์ JPG, PNG, WEBP (ไม่เกิน 10MB)
                       </div>
                     </div>
                   ) : (
                     <div className="rx-slip-preview-box">
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <img src={slipPreviewUrl} alt="Slip Preview" className="rx-slip-preview-thumb" />
-                        <div>
-                          <div style={{ fontSize: '0.82rem', fontWeight: 700 }}>
-                            {selectedSlipFile ? selectedSlipFile.name : 'สลิปการต่อเวลา'}
-                          </div>
-                          <div style={{ fontSize: '0.72rem', color: '#059669', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <ShieldCheck size={12} /> ตรวจสอบไฟล์ถูกต้อง
-                          </div>
-                        </div>
-                      </div>
+                      <img src={slipPreviewUrl} alt="Slip Preview" className="rx-slip-preview-img" />
                       <button
                         type="button"
                         onClick={() => {
@@ -650,7 +861,7 @@ export default function RoomExtensionModal({
                         style={{
                           background: 'none',
                           border: 'none',
-                          color: '#ef4444',
+                          color: '#dc2626',
                           cursor: 'pointer',
                           fontSize: '0.75rem',
                           fontWeight: 650
@@ -681,7 +892,11 @@ export default function RoomExtensionModal({
                   : 'ค่าบริการต่อเวลาทั้งหมด'}
               </span>
               <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                {paymentMethod === 'unpaid' ? 'บันทึกเข้ายอดค้างชำระของรายการจอง' : 'ชำระทันที'}
+                {!selectedItemId
+                  ? 'รอการเลือกห้อง'
+                  : paymentMethod === 'unpaid'
+                  ? 'บันทึกเข้ายอดค้างชำระของรายการจอง'
+                  : 'ชำระทันที'}
               </div>
             </div>
             <span className="rx-summary-fee-amount">
@@ -711,7 +926,15 @@ export default function RoomExtensionModal({
             type="button"
             className="rx-btn-primary"
             onClick={handleSubmit}
-            disabled={isSubmitting || loadingPreview || !preview || !preview.available}
+            disabled={
+              isSubmitting ||
+              loadingBooking ||
+              loadingPreview ||
+              !selectedItemId ||
+              !isPreviewFresh ||
+              !preview?.available ||
+              !preview?.new_end_time
+            }
           >
             {isSubmitting ? (
               <>
