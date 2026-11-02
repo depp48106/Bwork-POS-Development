@@ -177,7 +177,7 @@ test('router grant/read/search/redeem/reverse integration with staff identity',a
   const r=await post('/'+g.credit_id+'/redeem',{minutes:60,start_time:'2030-01-03T08:00',end_time:'2030-01-03T09:00',reason:'Use',idempotency_key:'api-redeem'});
   await post('/'+g.credit_id+'/reversals',{entry_id:r.entry_id,reason:'Cancel',idempotency_key:'api-reverse'});
   assert.equal((await (await fetch(base+'/'+g.credit_id)).json()).remaining_minutes,240);
-  assert.match(source,/app\.use\('\/api\/hour-credits', authenticateToken, requireAnyPermission\('pos'\)/);
+  assert.match(source,/app\.use\('\/api\/hour-credits', authenticateToken, requireAnyPermission\('hour-credits'\)/);
 });
 test('two concurrent reversals restore credit once',async t=>{
   const f=await fixture(t),g=await f.grant(),r=await f.redeem(g.credit_id);
@@ -356,4 +356,54 @@ test('Phase3: router POST /:creditId/send-line integration and staff auth',async
   currentUser=null;
   const unauthRes=await fetch(base+'/'+g.credit_id+'/send-line',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
   assert.equal(unauthRes.status,403);
+});
+test('hour-credits route guard enforces permission "hour-credits" for staff and allows admin',async t=>{
+  const f=await fixture(t);
+  const permHelper=source.slice(source.indexOf('function requireAnyPermission('),source.indexOf('const app = express();'));
+  vm.runInContext(permHelper,context);
+  const {requireAnyPermission}=context;
+
+  const app=express();
+  app.use(express.json());
+  let currentUser=null;
+  app.use((req,res,next)=>{req.user=currentUser;next();});
+  app.use('/api/hour-credits',requireAnyPermission('hour-credits'),creditRouter(f.service));
+
+  const server=app.listen(0,'127.0.0.1');
+  await new Promise(resolve=>server.once('listening',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+
+  const base='http://127.0.0.1:'+server.address().port+'/api/hour-credits';
+
+  // 1. Authorized staff with 'hour-credits' permission -> 200
+  currentUser={id:2,role:'staff',permissions:'pos,hour-credits'};
+  const authRes=await fetch(base);
+  assert.equal(authRes.status,200);
+
+  // 2. Unauthorized staff with only 'pos' permission -> 403
+  currentUser={id:3,role:'staff',permissions:'pos'};
+  const posOnlyRes=await fetch(base);
+  assert.equal(posOnlyRes.status,403);
+  const posOnlyData=await posOnlyRes.json();
+  assert.match(posOnlyData.error,/ไม่มีสิทธิ์/);
+
+  // 3. Unauthorized staff without hour-credits permission -> 403
+  currentUser={id:4,role:'staff',permissions:'pending,layout,history'};
+  const otherPermRes=await fetch(base);
+  assert.equal(otherPermRes.status,403);
+
+  // 4. Admin by role -> 200 (even with empty permissions string)
+  currentUser={id:1,role:'admin',permissions:''};
+  const adminRoleRes=await fetch(base);
+  assert.equal(adminRoleRes.status,200);
+
+  // 5. Admin by username -> 200
+  currentUser={id:99,username:'admin',role:'custom',permissions:''};
+  const adminUserRes=await fetch(base);
+  assert.equal(adminUserRes.status,200);
+
+  // 6. No authenticated user: tests permission guard directly without passing through authenticateToken -> 403
+  currentUser=null;
+  const anonRes=await fetch(base);
+  assert.equal(anonRes.status,403);
 });
