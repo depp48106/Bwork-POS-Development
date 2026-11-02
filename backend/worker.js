@@ -7463,6 +7463,7 @@ export default {
         const bookingId = Number(parts[3]);
         const urlObj = new URL(request.url);
         const bookingItemId = urlObj.searchParams.get('booking_item_id') ? Number(urlObj.searchParams.get('booking_item_id')) : null;
+        const current_end_time = urlObj.searchParams.get('current_end_time');
         const durationMinutes = Math.max(15, Math.min(480, Number(urlObj.searchParams.get('duration_minutes')) || 60));
 
         const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
