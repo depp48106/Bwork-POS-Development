@@ -1,10 +1,10 @@
-<#
+﻿<#
 .SYNOPSIS
     BWORK-POS Production Git Fast-Forward Sync Script
 .DESCRIPTION
-    Safely synchronizes GitHub Production repository 'main' branch to the 
+    Safely synchronizes GitHub Production repository 'main' branch to the
     already-deployed and verified Release Candidate (2b56b8500f9eb53b45a1c03c87c010de9f67adf9).
-    
+
     Safety Invariants:
       1. Cloudflare Pages auto-deploy protection verified explicitly boolean false for both projects.
       2. No bypass flags (-SkipCloudflareCheck removed).
@@ -16,27 +16,220 @@
 [CmdletBinding()]
 param(
     [switch]$DryRun = $false,
-    [string]$MockFailureAt = ''
+    [string]$MockFailureAt = '',
+    [switch]$ExportFunctionsOnly = $false,
+    [string]$ProductionDir = "D:\Project BL\Bwork-POS",
+    [string]$ReleaseDir = "D:\Project BL\Bwork-POS-Release"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if (-not $DryRun -and -not [string]::IsNullOrEmpty($MockFailureAt)) {
+if (-not $DryRun -and -not $ExportFunctionsOnly -and -not [string]::IsNullOrEmpty($MockFailureAt)) {
     throw "SAFETY VIOLATION: Mock failure testing parameter is strictly forbidden in live production mode."
 }
 
 $ExpectedBaseline = "bd6947590d9fe0b994248e964d9feec5505b26a0"
 $ExpectedRcSha    = "2b56b8500f9eb53b45a1c03c87c010de9f67adf9"
-$ProductionDir    = "D:\Project BL\Bwork-POS"
-$ReleaseDir       = "D:\Project BL\Bwork-POS-Release"
 
-Write-Host "================================================================================" -ForegroundColor Cyan
-Write-Host "  BWORK-POS | PRODUCTION GIT FAST-FORWARD SYNC" -ForegroundColor Cyan
-Write-Host "  Execution Mode: $(if ($DryRun) { 'GENUINE READ-ONLY DRY-RUN' } else { 'LIVE PRODUCTION EXECUTION' })" -ForegroundColor $(if ($DryRun) { 'Yellow' } else { 'Green' })
-Write-Host "  Expected Baseline: $ExpectedBaseline" -ForegroundColor Gray
-Write-Host "  Target RC SHA:     $ExpectedRcSha" -ForegroundColor Gray
-Write-Host "================================================================================" -ForegroundColor Cyan
+if (-not $ExportFunctionsOnly) {
+    Write-Host "================================================================================" -ForegroundColor Cyan
+    Write-Host "  BWORK-POS | PRODUCTION GIT FAST-FORWARD SYNC" -ForegroundColor Cyan
+    Write-Host "  Execution Mode: $(if ($DryRun) { 'GENUINE READ-ONLY DRY-RUN' } else { 'LIVE PRODUCTION EXECUTION' })" -ForegroundColor $(if ($DryRun) { 'Yellow' } else { 'Green' })
+    Write-Host "  Expected Baseline: $ExpectedBaseline" -ForegroundColor Gray
+    Write-Host "  Target RC SHA:     $ExpectedRcSha" -ForegroundColor Gray
+    Write-Host "================================================================================" -ForegroundColor Cyan
+}
+
+# ------------------------------------------------------------------------------
+# NATIVE PROCESS HELPER FOR SAFE GIT EXECUTION IN POWERSHELL 5.1
+# ------------------------------------------------------------------------------
+function Invoke-GitSafe {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+        [string]$WorkingDirectory = '',
+        [string]$Executable = 'git.exe',
+        [int]$TimeoutMs = 60000
+    )
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $Executable
+    $escapedArgs = $Arguments | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            $escaped = $_ -replace '(\\*)(")', '$1$1\"'
+            $escaped = $escaped -replace '(\\+)$', '$1$1'
+            "`"$escaped`""
+        } else {
+            $_
+        }
+    }
+    $psi.Arguments = ($escapedArgs -join ' ')
+    if ($WorkingDirectory) {
+        $psi.WorkingDirectory = $WorkingDirectory
+    }
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    $proc = [System.Diagnostics.Process]::new()
+    $proc.StartInfo = $psi
+    try {
+        if (-not $proc.Start()) {
+            throw "Failed to start process '$Executable'."
+        }
+
+        # Concurrently read stdout and stderr via ReadToEndAsync to avoid pipe buffer deadlock
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+
+        if (-not $proc.WaitForExit($TimeoutMs)) {
+            try { $proc.Kill() } catch {}
+            throw "Process '$Executable $($psi.Arguments)' timed out after $TimeoutMs ms."
+        }
+
+        [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask))
+
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
+        $combined = ($stdout + "`n" + $stderr).Trim()
+
+        return [PSCustomObject]@{
+            ExitCode = $proc.ExitCode
+            Output   = $combined
+            Stdout   = $stdout.Trim()
+            Stderr   = $stderr.Trim()
+        }
+    } finally {
+        $proc.Dispose()
+    }
+}
+
+# ------------------------------------------------------------------------------
+# POST-PUSH REMOTE STATUS EVALUATION & INCIDENT REPORTING
+# ------------------------------------------------------------------------------
+function Test-ProductionGitPushResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetRcSha,
+        [Parameter(Mandatory = $true)]
+        [string]$BaselineSha,
+        [Parameter(Mandatory = $true)]
+        [string]$LocalHead,
+        [string]$VerifiedRemoteHead = $null,
+        [string]$RemoteCheckError = $null,
+        [bool]$PushHadError = $false,
+        [string]$PushErrorMessage = '',
+        [string]$PushOutput = ''
+    )
+
+    # --------------------------------------------------------------------------
+    # 1. VERIFY REMOTE QUERY INTEGRITY & VALID SHA FORMAT FIRST (FAIL-CLOSED)
+    # Strictly forbid reporting success or baseline if remote query errored or SHA is invalid
+    # --------------------------------------------------------------------------
+    $hasRemoteError = -not [string]::IsNullOrEmpty($RemoteCheckError)
+    $hasEmptySha    = [string]::IsNullOrWhiteSpace($VerifiedRemoteHead)
+    $hasInvalidSha  = (-not $hasEmptySha) -and ($VerifiedRemoteHead.Trim() -notmatch '^[0-9a-fA-F]{40}$')
+
+    if ($hasRemoteError -or $hasEmptySha -or $hasInvalidSha) {
+        Write-Host "`n********************************************************************************" -ForegroundColor Red
+        Write-Host "  CRITICAL ALERT: UNABLE TO VERIFY REMOTE ORIGIN/MAIN AFTER PUSH!" -ForegroundColor Red
+        Write-Host "********************************************************************************" -ForegroundColor Red
+        Write-Host "  Local HEAD:        $LocalHead" -ForegroundColor Yellow
+        Write-Host "  Remote Status:     UNCONFIRMED (Failed to query or validate remote origin/main)" -ForegroundColor Yellow
+
+        $detailMsg = ""
+        if ($hasRemoteError) {
+            $detailMsg = $RemoteCheckError
+            Write-Host "  Verification Error:$RemoteCheckError" -ForegroundColor Red
+        } elseif ($hasEmptySha) {
+            $detailMsg = "Remote origin/main ref query returned empty SHA"
+            Write-Host "  Verification Error:$detailMsg" -ForegroundColor Red
+        } else {
+            $detailMsg = "Invalid SHA format received from remote query: '$VerifiedRemoteHead'"
+            Write-Host "  Verification Error:$detailMsg" -ForegroundColor Red
+        }
+
+        if ($PushHadError) {
+            Write-Host "  Push Error:        $PushErrorMessage" -ForegroundColor Red
+        } else {
+            Write-Host "  Push Command:      Completed with exit code 0" -ForegroundColor Green
+        }
+        Write-Host "`n  OPERATIONAL DIRECTIVE:" -ForegroundColor Yellow
+        Write-Host "    1. STOP immediately. Do NOT retry blindly." -ForegroundColor Yellow
+        Write-Host "    2. Check network connectivity and GitHub status." -ForegroundColor Yellow
+        Write-Host "    3. Run 'git ls-remote origin refs/heads/main' manually to inspect remote ref." -ForegroundColor Yellow
+        Write-Host "********************************************************************************`n" -ForegroundColor Red
+        throw "STOP GATE 9: Unable to verify remote origin/main ref after push attempt. Remote query error: $detailMsg"
+    }
+
+    $cleanRemoteHead = $VerifiedRemoteHead.Trim()
+
+    # --------------------------------------------------------------------------
+    # 2. COMPARE AGAINST TARGET RC & BASELINE (ONLY WHEN REMOTE SHA IS VERIFIED)
+    # --------------------------------------------------------------------------
+
+    # Case A: Remote matches Target RC (Goal achieved!)
+    if ($cleanRemoteHead -eq $TargetRcSha) {
+        if ($PushHadError) {
+            Write-Host "`n[WARNING] Git push command reported an error or non-zero exit code: $PushErrorMessage" -ForegroundColor Yellow
+            Write-Host "  However, remote origin/main HEAD was verified updated to target RC: $cleanRemoteHead" -ForegroundColor Green
+            Write-Host "  Target synchronization has been achieved successfully on GitHub." -ForegroundColor Green
+        } else {
+            Write-Host "  -> Remote origin/main verified matching target RC: $cleanRemoteHead" -ForegroundColor Green
+        }
+
+        Write-Host "`n================================================================================" -ForegroundColor Green
+        Write-Host "  PRODUCTION GIT SYNC COMPLETED SUCCESSFULLY - 100% VERIFIED" -ForegroundColor Green
+        Write-Host "  GitHub Production main is now synchronized to Deployed RC $TargetRcSha" -ForegroundColor Green
+        Write-Host "================================================================================" -ForegroundColor Green
+        return $true
+    }
+
+    # Case B: Remote is still at Baseline (Not updated)
+    if ($cleanRemoteHead -eq $BaselineSha) {
+        Write-Host "`n********************************************************************************" -ForegroundColor Red
+        Write-Host "  CRITICAL ALERT: GIT PUSH TO PRODUCTION REMOTE FAILED!" -ForegroundColor Red
+        Write-Host "********************************************************************************" -ForegroundColor Red
+        Write-Host "  Local HEAD:     $LocalHead (Fast-forwarded to Target RC)" -ForegroundColor Yellow
+        Write-Host "  Remote HEAD:    $cleanRemoteHead (Still at Baseline $BaselineSha on GitHub - Unmodified)" -ForegroundColor Yellow
+        if ($PushHadError) {
+            Write-Host "  Push Error:     $PushErrorMessage" -ForegroundColor Red
+        }
+        Write-Host "`n  INCIDENT REPORT & MANUAL INVESTIGATION REQUIRED:" -ForegroundColor Cyan
+        Write-Host "    - Local Branch HEAD:   $LocalHead" -ForegroundColor White
+        Write-Host "    - Remote origin/main:  $cleanRemoteHead" -ForegroundColor White
+        Write-Host "    - Push Failure Detail: $PushErrorMessage" -ForegroundColor White
+        Write-Host "`n  OPERATIONAL DIRECTIVE:" -ForegroundColor Yellow
+        Write-Host "    1. STOP immediately. Do NOT run git reset, git update-ref, or force push." -ForegroundColor Yellow
+        Write-Host "    2. Collect Git status, network telemetry, and GitHub permission logs." -ForegroundColor Yellow
+        Write-Host "    3. Escalate for manual investigation and senior authorization before any retry." -ForegroundColor Yellow
+        Write-Host "`n  STATUS: PRODUCTION GIT SYNC HAS NOT COMPLETED. REMOTE MAIN UNMODIFIED." -ForegroundColor Red
+        Write-Host "********************************************************************************`n" -ForegroundColor Red
+        throw "STOP GATE 9: Production push failed. Remote main was not updated (remains at baseline $BaselineSha). Push error: $PushErrorMessage"
+    }
+
+    # Case C: Remote has an unexpected SHA (neither Target RC nor Baseline)
+    Write-Host "`n********************************************************************************" -ForegroundColor Red
+    Write-Host "  CRITICAL ALERT: UNEXPECTED REMOTE HEAD DETECTED AFTER PUSH!" -ForegroundColor Red
+    Write-Host "********************************************************************************" -ForegroundColor Red
+    Write-Host "  Local HEAD:     $LocalHead (Target RC: $TargetRcSha)" -ForegroundColor Yellow
+    Write-Host "  Remote HEAD:    $cleanRemoteHead (UNEXPECTED SHA - Neither Baseline nor Target RC!)" -ForegroundColor Red
+    if ($PushOutput) {
+        Write-Host "  Push Output:    $PushOutput" -ForegroundColor White
+    }
+    if ($PushHadError) {
+        Write-Host "  Push Error:     $PushErrorMessage" -ForegroundColor Red
+    }
+    Write-Host "`n  OPERATIONAL DIRECTIVE:" -ForegroundColor Yellow
+    Write-Host "    1. STOP immediately. Do NOT run git reset, git update-ref, or force push." -ForegroundColor Yellow
+    Write-Host "    2. Collect Git log and network telemetry to determine why remote diverged." -ForegroundColor Yellow
+    Write-Host "    3. Escalate for senior manual investigation." -ForegroundColor Yellow
+    Write-Host "********************************************************************************`n" -ForegroundColor Red
+    throw "STOP GATE 9: Remote origin/main has unexpected commit ($cleanRemoteHead). Expected Target RC ($TargetRcSha) or Baseline ($BaselineSha)."
+}
 
 # ------------------------------------------------------------------------------
 # CLOUDFLARE PROTECTION VALIDATION FUNCTION
@@ -211,6 +404,10 @@ function Test-CloudflareAutoDeployProtection {
     }
 
     Write-Host "  -> Cloudflare Pages auto-deployments verified explicitly PAUSED on 'main' for all projects." -ForegroundColor Green
+}
+
+if ($ExportFunctionsOnly) {
+    return
 }
 
 # ------------------------------------------------------------------------------
@@ -456,48 +653,51 @@ if ($DryRun) {
     Write-Host "  Zero local branches created/deleted. Zero Git mutations. Zero remote changes." -ForegroundColor Cyan
     Write-Host "================================================================================" -ForegroundColor Cyan
 } else {
+    $pushExitCode = $null
+    $pushOutputText = ""
+    $pushHadError = $false
+    $pushErrorMessage = ""
+
     try {
         if ($MockFailureAt -eq 'PushFailure') {
             throw "Simulated push failure (Network/Remote Error)"
         }
-        $pushOutput = & git push origin main 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "git push origin main exited with code $LASTEXITCODE. Output: $pushOutput"
+        $pushResult = Invoke-GitSafe -Arguments @('push', 'origin', 'main') -WorkingDirectory $ProductionDir
+        $pushExitCode = $pushResult.ExitCode
+        $pushOutputText = $pushResult.Output
+        if ($pushExitCode -ne 0) {
+            $pushHadError = $true
+            $pushErrorMessage = "git push origin main exited with code $pushExitCode. Output: $pushOutputText"
         }
     } catch {
-        $failedLocalHead = (& git rev-parse HEAD).Trim()
-        $failedRemoteCheck = & git ls-remote origin refs/heads/main
-        $failedRemoteHead = ($failedRemoteCheck -split "\s+")[0].Trim()
-
-        Write-Host "`n********************************************************************************" -ForegroundColor Red
-        Write-Host "  CRITICAL ALERT: GIT PUSH TO PRODUCTION REMOTE FAILED!" -ForegroundColor Red
-        Write-Host "********************************************************************************" -ForegroundColor Red
-        Write-Host "  Local HEAD:     $failedLocalHead (Fast-forwarded to Target RC)" -ForegroundColor Yellow
-        Write-Host "  Remote HEAD:    $failedRemoteHead (Still at Baseline on GitHub)" -ForegroundColor Yellow
-        Write-Host "  Push Error:     $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "`n  INCIDENT REPORT & MANUAL INVESTIGATION REQUIRED:" -ForegroundColor Cyan
-        Write-Host "    - Local Branch HEAD:   $failedLocalHead" -ForegroundColor White
-        Write-Host "    - Remote origin/main:  $failedRemoteHead" -ForegroundColor White
-        Write-Host "    - Push Failure Detail: $($_.Exception.Message)" -ForegroundColor White
-        Write-Host "`n  OPERATIONAL DIRECTIVE:" -ForegroundColor Yellow
-        Write-Host "    1. STOP immediately. Do NOT run git reset, git update-ref, or force push." -ForegroundColor Yellow
-        Write-Host "    2. Collect Git status, network telemetry, and GitHub permission logs." -ForegroundColor Yellow
-        Write-Host "    3. Escalate for manual investigation and senior authorization before any retry." -ForegroundColor Yellow
-        Write-Host "`n  STATUS: PRODUCTION GIT SYNC HAS NOT COMPLETED. REMOTE MAIN UNMODIFIED." -ForegroundColor Red
-        Write-Host "********************************************************************************`n" -ForegroundColor Red
-        throw "STOP GATE 9: Production push failed. Remote remains at $failedRemoteHead. STOPPING. Manual investigation required."
+        $pushHadError = $true
+        $pushErrorMessage = $_.Exception.Message
     }
 
-    $finalRemoteCheck = & git ls-remote origin refs/heads/main
-    $finalRemoteHead = ($finalRemoteCheck -split "\s+")[0].Trim()
-    if ($finalRemoteHead -ne $ExpectedRcSha) {
-        throw "STOP GATE 9: Remote origin/main ($finalRemoteHead) does NOT match target RC ($ExpectedRcSha) after push!"
+    # Query remote origin/main HEAD
+    $remoteCheckError = $null
+    $verifiedRemoteHead = $null
+
+    try {
+        $lsRemoteResult = Invoke-GitSafe -Arguments @('ls-remote', 'origin', 'refs/heads/main') -WorkingDirectory $ProductionDir
+        if ($lsRemoteResult.ExitCode -eq 0 -and $lsRemoteResult.Stdout) {
+            $verifiedRemoteHead = ($lsRemoteResult.Stdout -split "\s+")[0].Trim()
+        } else {
+            $remoteCheckError = "git ls-remote failed with exit code $($lsRemoteResult.ExitCode): $($lsRemoteResult.Output)"
+        }
+    } catch {
+        $remoteCheckError = $_.Exception.Message
     }
 
-    Write-Host "  -> Remote origin/main verified matching target RC: $finalRemoteHead" -ForegroundColor Green
+    $currentLocalHead = (Invoke-GitSafe -Arguments @('rev-parse', 'HEAD') -WorkingDirectory $ProductionDir).Stdout.Trim()
 
-    Write-Host "`n================================================================================" -ForegroundColor Green
-    Write-Host "  PRODUCTION GIT SYNC COMPLETED SUCCESSFULLY - 100% VERIFIED" -ForegroundColor Green
-    Write-Host "  GitHub Production main is now synchronized to Deployed RC $ExpectedRcSha" -ForegroundColor Green
-    Write-Host "================================================================================" -ForegroundColor Green
+    Test-ProductionGitPushResult `
+        -TargetRcSha $ExpectedRcSha `
+        -BaselineSha $ExpectedBaseline `
+        -LocalHead $currentLocalHead `
+        -VerifiedRemoteHead $verifiedRemoteHead `
+        -RemoteCheckError $remoteCheckError `
+        -PushHadError $pushHadError `
+        -PushErrorMessage $pushErrorMessage `
+        -PushOutput $pushOutputText
 }
