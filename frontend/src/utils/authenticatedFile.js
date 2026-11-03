@@ -24,10 +24,8 @@ export function getAuthToken() {
 const IS_STAGING = import.meta.env.MODE === 'staging';
 
 export const TRUSTED_AUTH_HOSTS = new Set([
-  ...(IS_STAGING ? [] : ['bwork-pos-api.ohnatza74185-ky.workers.dev']),
-  'bwork-pos-api-staging.ohnatza74185-ky.workers.dev',
-  ...(IS_STAGING ? [] : ['bwork-pos.pages.dev']),
-  'bwork-pos-staging.pages.dev',
+  ...(IS_STAGING ? [] : ['bwork-pos-api.ohnatza74185-ky.workers.dev', 'bwork-pos.pages.dev']),
+  ...(IS_STAGING ? ['bwork-pos-api-staging.ohnatza74185-ky.workers.dev', 'bwork-pos-staging.pages.dev'] : []),
   'bwork-booking.pages.dev',
   'localhost',
   '127.0.0.1'
