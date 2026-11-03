@@ -31,7 +31,9 @@ import {
   User,
   Copy,
   Check,
-  AlertCircle
+  AlertCircle,
+  Plus,
+  ShieldCheck
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import ReceiptPrint from './ReceiptPrint';
@@ -133,7 +135,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
         if (res.ok && data.success) {
           if (sysAlert) await sysAlert('แนบสลิปหลักฐานเรียบร้อยแล้ว');
           fetchPaymentTransactions(bookingId);
-          fetchHistoryBookings(true);
+          fetchBookings(true);
         } else {
           if (sysAlert) await sysAlert(data.error || 'เกิดข้อผิดพลาดในการแนบสลิป');
         }
@@ -3039,7 +3041,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
               if (selectedBooking && selectedBooking.id === bId) {
                 setSelectedBooking(updatedBooking);
               }
-              fetchHistoryBookings(true);
+              fetchBookings(true);
             }
           }}
           sysAlert={sysAlert}
@@ -3064,7 +3066,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                 }
                 return prev;
               });
-              fetchHistoryBookings(true);
+              fetchBookings(true);
             }
           }}
           sysAlert={sysAlert}
@@ -3075,8 +3077,8 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
       {selectedTaxBooking && (
         <TaxInvoiceManagementModal
           booking={selectedTaxBooking}
-          onClose={() => { setSelectedTaxBooking(null); setTaxCopied(false); }}
-          onUpdated={() => fetchHistoryBookings(true)}
+          onClose={() => setSelectedTaxBooking(null)}
+          onUpdated={() => fetchBookings(true)}
           sysAlert={sysAlert}
         />
       )}

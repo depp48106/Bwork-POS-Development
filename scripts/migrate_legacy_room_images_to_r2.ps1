@@ -151,9 +151,13 @@ try {
 
         # Check existing target object via wrangler r2 object get
         if (Test-Path $tempTargetFile) { Remove-Item $tempTargetFile -Force }
-        $checkProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx.cmd wrangler r2 object get '$targetObject' --file='$tempTargetFile' --remote" -NoNewWindow -PassThru -Wait
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'SilentlyContinue'
+        & npx.cmd wrangler r2 object get $targetObject --file $tempTargetFile --remote 2>$null
+        $checkExitCode = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
         
-        if ($checkProcess.ExitCode -eq 0 -and (Test-Path $tempTargetFile)) {
+        if ($checkExitCode -eq 0 -and (Test-Path $tempTargetFile)) {
             $existingHash = Get-FileSha256Hash $tempTargetFile
             if ($existingHash -eq $item.ExpectedSha256) {
                 Write-SuccessLog "Target object $targetObject already exists in R2 with identical checksum ($existingHash). Re-upload not required."
@@ -167,17 +171,16 @@ try {
 
         # Upload file using npx.cmd wrangler
         Write-InfoLog "Uploading $($item.FileName) to $targetObject..."
-        $putArgs = "/c npx.cmd wrangler r2 object put '$targetObject' --file='$sourcePath' --content-type='$($item.ContentType)' --remote"
-        $putProcess = Start-Process -FilePath "cmd.exe" -ArgumentList $putArgs -NoNewWindow -PassThru -Wait
-        if ($putProcess.ExitCode -ne 0) {
-            throw "FATAL: Failed to upload $sourcePath to $targetObject (Exit code: $($putProcess.ExitCode))"
+        & npx.cmd wrangler r2 object put $targetObject --file $sourcePath --content-type $item.ContentType --remote
+        if ($LASTEXITCODE -ne 0) {
+            throw "FATAL: Failed to upload $sourcePath to $targetObject (Exit code: $LASTEXITCODE)"
         }
 
         # Post-upload verification: Download and assert hash
         $tempPostFile = Join-Path $tempDir "$($item.RoomId)_post_verify.tmp"
         if (Test-Path $tempPostFile) { Remove-Item $tempPostFile -Force }
-        $verifyProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c npx.cmd wrangler r2 object get '$targetObject' --file='$tempPostFile' --remote" -NoNewWindow -PassThru -Wait
-        if ($verifyProcess.ExitCode -ne 0 -or (-not (Test-Path $tempPostFile))) {
+        & npx.cmd wrangler r2 object get $targetObject --file $tempPostFile --remote
+        if ($LASTEXITCODE -ne 0 -or (-not (Test-Path $tempPostFile))) {
             throw "FATAL: Post-upload download verification failed for $targetObject"
         }
 
