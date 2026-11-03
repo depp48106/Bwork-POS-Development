@@ -3033,6 +3033,7 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
           isOpen={!!extensionModalData}
           booking={extensionModalData.booking}
           initialItem={extensionModalData.item}
+          settings={settings}
           onClose={() => setExtensionModalData(null)}
           onSuccess={(updatedBooking) => {
             const bId = extensionModalData.booking?.id;

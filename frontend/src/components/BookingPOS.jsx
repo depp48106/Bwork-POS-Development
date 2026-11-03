@@ -6753,6 +6753,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           isOpen={!!extensionModalData}
           booking={extensionModalData.booking}
           initialItem={extensionModalData.item}
+          settings={settings}
           onClose={() => {
             setExtensionModalData(null);
             if (extensionReturnEvent) {

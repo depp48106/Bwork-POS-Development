@@ -14,7 +14,12 @@ import {
   ShieldCheck,
   CreditCard,
   Banknote,
-  QrCode
+  QrCode,
+  Copy,
+  Check,
+  Trash2,
+  Eye,
+  RefreshCw
 } from 'lucide-react';
 import './RoomExtensionModal.css';
 import { API_BASE } from '../apiConfig.js';
@@ -22,10 +27,27 @@ import { authManager } from '../authManager';
 
 /**
  * Validates file signature (magic bytes) for uploaded payment slip files.
+ * Explicitly rejects HEIC/HEIF files with clear user feedback.
  */
 function validateSlipFileSignature(file) {
   return new Promise((resolve) => {
     if (!file) return resolve({ valid: false, error: 'ไม่พบไฟล์' });
+
+    // Explicit HEIC/HEIF check by extension and mime type
+    const fileName = (file.name || '').toLowerCase();
+    const fileType = (file.type || '').toLowerCase();
+    if (
+      fileName.endsWith('.heic') ||
+      fileName.endsWith('.heif') ||
+      fileType.includes('heic') ||
+      fileType.includes('heif')
+    ) {
+      return resolve({
+        valid: false,
+        error: 'ระบบไม่รองรับไฟล์รูปภาพรูปแบบ HEIC/HEIF กรุณาแปลงเป็น JPG หรือ PNG ก่อนแนบรูปภาพ'
+      });
+    }
+
     if (file.size > 10 * 1024 * 1024) {
       return resolve({ valid: false, error: 'ขนาดไฟล์เกิน 10MB กรุณาเลือกรูปภาพที่มีขนาดเล็กลง' });
     }
@@ -54,11 +76,47 @@ function validateSlipFileSignature(file) {
         return resolve({ valid: true, ext: 'webp', mime: 'image/webp' });
       }
 
+      // Explicit check for HEIC/HEIF ISO container (ftypheic, ftypmif1, ftypmsf1)
+      if (
+        buffer.length >= 12 &&
+        buffer[4] === 0x66 && buffer[5] === 0x74 && buffer[6] === 0x79 && buffer[7] === 0x70
+      ) {
+        return resolve({
+          valid: false,
+          error: 'ระบบไม่รองรับไฟล์รูปภาพรูปแบบ HEIC/HEIF กรุณาแปลงเป็น JPG หรือ PNG ก่อนแนบรูปภาพ'
+        });
+      }
+
       return resolve({ valid: false, error: 'ชนิดไฟล์ไม่ถูกต้อง กรุณาอัปโหลดรูปภาพ JPG, PNG หรือ WEBP เท่านั้น' });
     };
     reader.onerror = () => resolve({ valid: false, error: 'ไม่สามารถอ่านไฟล์ได้' });
     reader.readAsArrayBuffer(file.slice(0, 16));
   });
+}
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function fallbackCopyTextToClipboard(text) {
+  try {
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.top = '-9999px';
+    textArea.style.left = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textArea);
+  } catch (err) {
+    console.error('Fallback clipboard copy failed:', err);
+  }
 }
 
 const DURATION_PRESETS = [
@@ -72,6 +130,7 @@ export default function RoomExtensionModal({
   isOpen,
   booking,
   initialItem = null,
+  settings = null,
   onClose,
   onSuccess,
   sysAlert = null
@@ -100,16 +159,46 @@ export default function RoomExtensionModal({
   const [paymentMethod, setPaymentMethod] = useState('cash'); // 'cash' | 'promptpay' | 'transfer' | 'unpaid'
   const [notes, setNotes] = useState('');
 
+  // Payment settings state from system settings & API
+  const [apiPaymentSettings, setApiPaymentSettings] = useState(null);
+  const [copyFeedback, setCopyFeedback] = useState(''); // 'account' | 'promptpay' | ''
+  const copyTimeoutRef = useRef(null);
+
+  // Dynamic payment info strictly derived from settings / API (no hardcoded credentials)
+  const paymentInfo = useMemo(() => {
+    const s = settings || {};
+    const api = apiPaymentSettings || {};
+
+    const bankName = s.payment_bank_name || s.quotation_bank_name || api.bank_name || '';
+    const bankAccount = s.payment_bank_account || s.quotation_bank_account_no || api.bank_account || '';
+    const bankAccountName = s.payment_bank_account_name || s.quotation_bank_account_name || s.quotation_company_name || api.bank_account_name || '';
+    const promptPayId = s.promptpay_id || api.promptpay_id || '';
+    const qrImage = s.payment_qr_image || api.qr_image || '/bwork_payment_qr.png';
+
+    return {
+      bank_name: bankName,
+      bank_account: bankAccount,
+      bank_account_name: bankAccountName,
+      promptpay_id: promptPayId,
+      qr_image: qrImage
+    };
+  }, [settings, apiPaymentSettings]);
+
   // Slip Upload State
   const [selectedSlipFile, setSelectedSlipFile] = useState(null);
   const [slipBase64, setSlipBase64] = useState(null);
   const [slipPreviewUrl, setSlipPreviewUrl] = useState(null);
   const [slipError, setSlipError] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const fileInputRef = useRef(null);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
+
+  // Tracking refs to preserve slip across duration/preview changes but isolate across bookings/rooms
+  const prevBookingIdRef = useRef(activeBookingId);
+  const prevItemIdRef = useRef(selectedItemId);
 
   const activeDurationMinutes = isCustom ? (parseInt(customMinutes, 10) || 60) : selectedDuration;
 
@@ -120,6 +209,35 @@ export default function RoomExtensionModal({
     (loadedBooking.id === activeBookingId || loadedBooking.booking_id === activeBookingId)
   );
   const currentBooking = isLoadedBookingValid ? loadedBooking : booking;
+
+  // Body Scroll Locking: lock body scroll when modal is open and restore on close/unmount
+  useEffect(() => {
+    if (!isOpen) return;
+    const originalOverflow = document.body.style.overflow;
+    const originalTouchAction = document.body.style.touchAction;
+    document.body.style.overflow = 'hidden';
+    document.body.style.touchAction = 'none';
+
+    return () => {
+      document.body.style.overflow = originalOverflow;
+      document.body.style.touchAction = originalTouchAction;
+    };
+  }, [isOpen]);
+
+  // Load public payment settings on modal open
+  useEffect(() => {
+    if (!isOpen) return;
+    let isSubscribed = true;
+    const base = API_BASE ? API_BASE.replace(/\/+$/, '') : '';
+    fetch(`${base}/api/public/settings/payment`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!isSubscribed || !data) return;
+        setApiPaymentSettings(data);
+      })
+      .catch(() => {});
+    return () => { isSubscribed = false; };
+  }, [isOpen]);
 
   // Cleanup & Invalidation on modal close or booking change
   useEffect(() => {
@@ -142,8 +260,46 @@ export default function RoomExtensionModal({
       setLoadingPreview(false);
       setPreviewError(null);
       setSubmitError(null);
+
+      // Clean up slip when modal closes
+      setSelectedSlipFile(null);
+      setSlipBase64(null);
+      if (slipPreviewUrl && slipPreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(slipPreviewUrl);
+      }
+      setSlipPreviewUrl(null);
+      setSlipError(null);
+      setIsLightboxOpen(false);
     }
   }, [isOpen, activeBookingId]);
+
+  // Reset slip when switching to a completely different booking
+  useEffect(() => {
+    if (prevBookingIdRef.current !== activeBookingId) {
+      setSelectedSlipFile(null);
+      setSlipBase64(null);
+      if (slipPreviewUrl && slipPreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(slipPreviewUrl);
+      }
+      setSlipPreviewUrl(null);
+      setSlipError(null);
+      prevBookingIdRef.current = activeBookingId;
+    }
+  }, [activeBookingId]);
+
+  // Reset slip when changing room item in multi-room bookings
+  useEffect(() => {
+    if (prevItemIdRef.current !== null && selectedItemId !== null && prevItemIdRef.current !== selectedItemId) {
+      setSelectedSlipFile(null);
+      setSlipBase64(null);
+      if (slipPreviewUrl && slipPreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(slipPreviewUrl);
+      }
+      setSlipPreviewUrl(null);
+      setSlipError(null);
+    }
+    prevItemIdRef.current = selectedItemId;
+  }, [selectedItemId]);
 
   // Load full booking details if items array is missing or empty
   useEffect(() => {
@@ -260,16 +416,12 @@ export default function RoomExtensionModal({
 
     setSelectedItemId(targetItemId);
 
-    // Reset form state
+    // Reset duration and errors on room change, but do NOT wipe slip state unless booking changed
     setSelectedDuration(60);
     setIsCustom(false);
     setCustomMinutes('');
     setUseQuota(false);
     setPaymentMethod('cash');
-    setSelectedSlipFile(null);
-    setSlipBase64(null);
-    setSlipPreviewUrl(null);
-    setSlipError(null);
     setSubmitError(null);
     setPreview(null);
     setPreviewError(null);
@@ -380,13 +532,17 @@ export default function RoomExtensionModal({
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e) => {
-      if (e.key === 'Escape' && !isSubmitting) {
-        onClose();
+      if (e.key === 'Escape') {
+        if (isLightboxOpen) {
+          setIsLightboxOpen(false);
+        } else if (!isSubmitting) {
+          onClose();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, isSubmitting, onClose]);
+  }, [isOpen, isSubmitting, isLightboxOpen, onClose]);
 
   // Handle file selection
   const handleFileChange = async (file) => {
@@ -398,6 +554,9 @@ export default function RoomExtensionModal({
       setSlipError(validation.error);
       setSelectedSlipFile(null);
       setSlipBase64(null);
+      if (slipPreviewUrl && slipPreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(slipPreviewUrl);
+      }
       setSlipPreviewUrl(null);
       return;
     }
@@ -405,10 +564,23 @@ export default function RoomExtensionModal({
     const reader = new FileReader();
     reader.onload = (e) => {
       setSlipBase64(e.target.result);
+      if (slipPreviewUrl && slipPreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(slipPreviewUrl);
+      }
       setSlipPreviewUrl(URL.createObjectURL(file));
       setSelectedSlipFile(file);
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleRemoveSlip = () => {
+    setSelectedSlipFile(null);
+    setSlipBase64(null);
+    if (slipPreviewUrl && slipPreviewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(slipPreviewUrl);
+    }
+    setSlipPreviewUrl(null);
+    setSlipError(null);
   };
 
   const handleDrop = (e) => {
@@ -417,6 +589,23 @@ export default function RoomExtensionModal({
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleFileChange(e.dataTransfer.files[0]);
     }
+  };
+
+  const handleCopy = (text, type) => {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {
+        fallbackCopyTextToClipboard(text);
+      });
+    } else {
+      fallbackCopyTextToClipboard(text);
+    }
+
+    setCopyFeedback(type);
+    if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = setTimeout(() => {
+      setCopyFeedback('');
+    }, 2500);
   };
 
   // Submit Extension
@@ -582,7 +771,7 @@ export default function RoomExtensionModal({
             disabled={isSubmitting}
             aria-label="ปิดหน้าต่าง"
           >
-            <X size={18} />
+            <X size={20} />
           </button>
         </div>
 
@@ -594,7 +783,7 @@ export default function RoomExtensionModal({
               <label className="rx-section-label">
                 เลือกห้องที่ต้องการต่อเวลา <span style={{ color: '#dc2626' }}>*</span>
               </label>
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <div className="rx-room-chips-grid">
                 {roomItems.map(it => {
                   const isSelected = selectedItemId === it.id;
                   return (
@@ -608,21 +797,19 @@ export default function RoomExtensionModal({
                         }
                       }}
                       style={{
-                        flex: 1,
-                        minWidth: '140px',
                         borderColor: isSelected ? 'var(--primary-color, #2563eb)' : 'var(--border-color, #e2e8f0)',
                         backgroundColor: isSelected ? 'rgba(37, 99, 235, 0.08)' : 'transparent',
                         fontWeight: isSelected ? 700 : 500
                       }}
                     >
-                      <span>{it.room_name || `ห้อง #${it.room_id}`}</span>
+                      <span className="rx-chip-title">{it.room_name || `ห้อง #${it.room_id}`}</span>
                       <span className="rx-duration-sub">{formatTimeOnly(it.start_time)} - {formatTimeOnly(it.end_time)}</span>
                     </button>
                   );
                 })}
               </div>
               {!selectedItemId && (
-                <div style={{ fontSize: '0.78rem', color: '#dc2626', marginTop: '6px', fontWeight: 600 }}>
+                <div style={{ fontSize: '0.8rem', color: '#dc2626', marginTop: '6px', fontWeight: 600 }}>
                   การจองนี้มีหลายห้อง กรุณาคลิกเลือกห้องที่ต้องการต่อเวลา
                 </div>
               )}
@@ -635,7 +822,7 @@ export default function RoomExtensionModal({
                   {activeItem?.layout === 'classroom' ? 'Classroom (อบรม)' : 'Standard'}
                 </span>
               </div>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                 อัตราปกติ: ฿{hourlyRate.toLocaleString()} / ชม.
               </span>
             </div>
@@ -675,14 +862,7 @@ export default function RoomExtensionModal({
               <button
                 type="button"
                 onClick={() => { setIsCustom(!isCustom); setCustomMinutes(String(selectedDuration)); }}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: '#2563eb',
-                  fontSize: '0.76rem',
-                  fontWeight: 650,
-                  cursor: 'pointer'
-                }}
+                className="rx-btn-link"
               >
                 {isCustom ? 'เลือกเวลามาตรฐาน' : 'กำหนดนาทีเอง'}
               </button>
@@ -703,24 +883,23 @@ export default function RoomExtensionModal({
                 ))}
               </div>
             ) : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div className="rx-custom-duration-row">
                 <input
                   type="number"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   min="15"
                   max="480"
                   step="15"
                   value={customMinutes}
                   onChange={(e) => setCustomMinutes(e.target.value)}
-                  placeholder="ระบุจำนวนนาที (เช่น 45)"
-                  style={{
-                    flex: 1,
-                    padding: '8px 12px',
-                    borderRadius: '8px',
-                    border: '1.5px solid var(--border-color)',
-                    fontSize: '0.85rem'
+                  onFocus={(e) => {
+                    e.target.scrollIntoView({ behavior: 'smooth', block: 'center' });
                   }}
+                  placeholder="ระบุจำนวนนาที (เช่น 45)"
+                  className="rx-custom-minutes-input"
                 />
-                <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-muted)' }}>นาที</span>
+                <span className="rx-custom-minutes-unit">นาที</span>
               </div>
             )}
           </div>
@@ -746,7 +925,7 @@ export default function RoomExtensionModal({
               <CheckCircle2 size={18} />
               <div>
                 <div>ห้องว่าง สามารถต่อเวลาได้จนถึง <strong>{newEnd} น.</strong></div>
-                <div style={{ fontSize: '0.78rem', color: '#166534', marginTop: '2px' }}>
+                <div style={{ fontSize: '0.8rem', color: '#166534', marginTop: '2px' }}>
                   ระบบรักษา Cleaning Buffer 30 นาที สำหรับลูกค้ารายถัดไปเรียบร้อยแล้ว
                 </div>
               </div>
@@ -757,7 +936,7 @@ export default function RoomExtensionModal({
               <div>
                 <div>{preview.conflict?.message || 'ห้องไม่ว่างในช่วงเวลาดังกล่าว'}</div>
                 {preview.conflict?.is_cleaning_buffer && (
-                  <div style={{ fontSize: '0.78rem', color: '#991b1b', marginTop: '2px' }}>
+                  <div style={{ fontSize: '0.8rem', color: '#991b1b', marginTop: '2px' }}>
                     ชนระยะเวลาทำความสะอาด 30 นาทีของการจองถัดไป
                   </div>
                 )}
@@ -778,23 +957,20 @@ export default function RoomExtensionModal({
                   {preview.quota.contract?.contract_type && ` (${preview.quota.contract.contract_type})`}
                 </div>
               </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <label className="rx-quota-toggle">
                 <input
                   type="checkbox"
                   checked={useQuota}
                   onChange={(e) => setUseQuota(e.target.checked)}
-                  style={{ width: '18px', height: '18px', accentColor: '#2563eb' }}
                 />
-                <span style={{ fontSize: '0.82rem', fontWeight: 650, color: 'var(--text-color)' }}>
-                  ใช้โควต้า
-                </span>
+                <span>ใช้โควต้า</span>
               </label>
             </div>
           )}
 
           {/* Payment Method Selector */}
           {isPreviewFresh && netFee > 0 && (
-            <div>
+            <div className="rx-payment-section">
               <label className="rx-section-label">วิธีการชำระเงินค่าต่อเวลา</label>
               <div className="rx-payment-grid">
                 {[
@@ -819,61 +995,250 @@ export default function RoomExtensionModal({
                 })}
               </div>
 
+              {/* Payment Details Card for Transfer / PromptPay */}
+              {(paymentMethod === 'promptpay' || paymentMethod === 'transfer') && (
+                <div className="rx-payment-card">
+                  <div className="rx-payment-card-header">
+                    <div className="rx-payment-card-brand">
+                      {paymentMethod === 'promptpay' ? (
+                        <>
+                          <div className="rx-payment-brand-badge promptpay">
+                            <QrCode size={18} />
+                          </div>
+                          <div>
+                            <div className="rx-payment-card-title">ชำระผ่าน พร้อมเพย์ (PromptPay)</div>
+                            <div className="rx-payment-card-sub">สแกน QR ผ่าน Mobile Banking ได้ทุกธนาคาร</div>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="rx-payment-brand-badge transfer">
+                            <CreditCard size={18} />
+                          </div>
+                          <div>
+                            <div className="rx-payment-card-title">ชำระผ่าน การโอนเงินธนาคาร</div>
+                            <div className="rx-payment-card-sub">{paymentInfo.bank_name}</div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <div className="rx-payment-amount-box">
+                      <span className="rx-payment-amount-label">ยอดที่ต้องชำระ</span>
+                      <span className="rx-payment-amount-value">฿{netFee.toLocaleString()}</span>
+                    </div>
+                  </div>
+
+                  <div className="rx-payment-card-body">
+                    {paymentMethod === 'promptpay' ? (
+                      <div className="rx-promptpay-details">
+                        <div className="rx-promptpay-qr-wrapper">
+                          <img
+                            src={paymentInfo.qr_image || '/bwork_payment_qr.png'}
+                            alt="PromptPay QR Code"
+                            className="rx-promptpay-qr-img"
+                          />
+                          <span className="rx-promptpay-qr-hint">สแกน QR เพื่อชำระเงิน</span>
+                        </div>
+                        <div className="rx-payment-info-fields">
+                          <div className="rx-payment-info-row">
+                            <span className="rx-payment-field-label">หมายเลขพร้อมเพย์:</span>
+                            <div className="rx-payment-field-content">
+                              <span className="rx-payment-field-value mono">{paymentInfo.promptpay_id}</span>
+                              <button
+                                type="button"
+                                className={`rx-btn-copy ${copyFeedback === 'promptpay' ? 'copied' : ''}`}
+                                onClick={() => handleCopy(paymentInfo.promptpay_id, 'promptpay')}
+                                aria-label="คัดลอกหมายเลขพร้อมเพย์"
+                              >
+                                {copyFeedback === 'promptpay' ? (
+                                  <>
+                                    <Check size={14} />
+                                    <span>คัดลอกแล้ว!</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={14} />
+                                    <span>คัดลอก</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="rx-payment-info-row">
+                            <span className="rx-payment-field-label">ชื่อบัญชี:</span>
+                            <span className="rx-payment-field-value bold">{paymentInfo.bank_account_name}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rx-transfer-details">
+                        <div className="rx-payment-info-fields">
+                          <div className="rx-payment-info-row">
+                            <span className="rx-payment-field-label">ธนาคาร:</span>
+                            <span className="rx-payment-field-value bold">{paymentInfo.bank_name}</span>
+                          </div>
+                          <div className="rx-payment-info-row">
+                            <span className="rx-payment-field-label">เลขที่บัญชี:</span>
+                            <div className="rx-payment-field-content">
+                              <span className="rx-payment-field-value mono bold">{paymentInfo.bank_account}</span>
+                              <button
+                                type="button"
+                                className={`rx-btn-copy ${copyFeedback === 'account' ? 'copied' : ''}`}
+                                onClick={() => handleCopy(paymentInfo.bank_account, 'account')}
+                                aria-label="คัดลอกเลขที่บัญชี"
+                              >
+                                {copyFeedback === 'account' ? (
+                                  <>
+                                    <Check size={14} />
+                                    <span>คัดลอกเลขบัญชีแล้ว!</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={14} />
+                                    <span>คัดลอกเลขบัญชี</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                          <div className="rx-payment-info-row">
+                            <span className="rx-payment-field-label">ชื่อบัญชี:</span>
+                            <span className="rx-payment-field-value bold">{paymentInfo.bank_account_name}</span>
+                          </div>
+                        </div>
+
+                        <div className="rx-transfer-qr-mini">
+                          <img
+                            src={paymentInfo.qr_image || '/bwork_payment_qr.png'}
+                            alt="PromptPay QR Mini"
+                            className="rx-qr-mini-img"
+                          />
+                          <span className="rx-qr-mini-text">หรือสแกน QR PromptPay</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Slip Upload for PromptPay / Transfer */}
               {(paymentMethod === 'promptpay' || paymentMethod === 'transfer') && (
-                <div style={{ marginTop: '12px' }}>
-                  <label className="rx-section-label" style={{ marginBottom: '6px' }}>
-                    แนบสลิปการชำระเงิน (ถ้ามี)
-                  </label>
+                <div className="rx-slip-section">
+                  <div className="rx-section-label">
+                    <span>แนบหลักฐานสลิปการชำระเงิน</span>
+                    <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)', fontWeight: 500 }}>
+                      (ไม่บังคับ แนะนำให้แนบเพื่อตรวจสอบ)
+                    </span>
+                  </div>
+
+                  {/* Hidden Device File Picker: Gallery & Camera without forcing capture */}
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept="image/png,image/jpeg,image/webp"
+                    accept="image/png,image/jpeg,image/webp,.jpg,.jpeg,.png,.webp"
                     style={{ display: 'none' }}
-                    onChange={(e) => e.target.files && handleFileChange(e.target.files[0])}
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleFileChange(e.target.files[0]);
+                      }
+                      e.target.value = '';
+                    }}
                   />
-                  {!slipPreviewUrl ? (
+
+                  {!selectedSlipFile ? (
                     <div
-                      className={`rx-dropzone ${isDragging ? 'dragging' : ''}`}
-                      onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                      className={`rx-slip-dropzone-prominent ${isDragging ? 'dragging' : ''}`}
+                      onClick={() => fileInputRef.current?.click()}
                       onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
                       onDragLeave={() => setIsDragging(false)}
                       onDrop={handleDrop}
                     >
-                      <Upload size={20} style={{ color: 'var(--text-muted)' }} />
-                      <div className="rx-dropzone-text">
-                        คลิกเพื่อเลือกรูปภาพ หรือลากไฟล์สลิปมาวางที่นี่
+                      <div className="rx-slip-dropzone-icon-box">
+                        <Upload size={28} />
                       </div>
-                      <div className="rx-dropzone-hint">
-                        รองรับไฟล์ JPG, PNG, WEBP (ไม่เกิน 10MB)
+                      <div className="rx-slip-dropzone-main">
+                        <span className="rx-slip-dropzone-heading">ลากไฟล์สลิปมาวางที่นี่ หรือ</span>
+                        <button
+                          type="button"
+                          className="rx-btn-select-slip"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            fileInputRef.current?.click();
+                          }}
+                        >
+                          <ImageIcon size={16} />
+                          <span>เลือกรูปสลิป</span>
+                        </button>
+                      </div>
+                      <div className="rx-slip-dropzone-formats">
+                        รองรับรูปภาพ JPG, PNG, WEBP (ขนาดไม่เกิน 10MB)
                       </div>
                     </div>
                   ) : (
-                    <div className="rx-slip-preview-box">
-                      <img src={slipPreviewUrl} alt="Slip Preview" className="rx-slip-preview-img" />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedSlipFile(null);
-                          setSlipBase64(null);
-                          setSlipPreviewUrl(null);
-                        }}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: '#dc2626',
-                          cursor: 'pointer',
-                          fontSize: '0.75rem',
-                          fontWeight: 650
-                        }}
+                    <div className="rx-slip-attached-card">
+                      <div
+                        className="rx-slip-thumbnail-box"
+                        onClick={() => setIsLightboxOpen(true)}
+                        title="คลิกเพื่อดูรูปขยาย"
+                        role="button"
+                        tabIndex={0}
                       >
-                        ลบสลิป
-                      </button>
+                        <img src={slipPreviewUrl} alt="Slip Thumbnail" className="rx-slip-thumbnail-img" />
+                        <div className="rx-slip-zoom-overlay">
+                          <Eye size={16} />
+                        </div>
+                      </div>
+
+                      <div className="rx-slip-attached-info">
+                        <div className="rx-slip-attached-name" title={selectedSlipFile.name}>
+                          {selectedSlipFile.name}
+                        </div>
+                        <div className="rx-slip-attached-meta">
+                          <span className="rx-slip-attached-size">{formatFileSize(selectedSlipFile.size)}</span>
+                          <span className="rx-slip-badge-success">
+                            <CheckCircle2 size={12} />
+                            <span>แนบสลิปแล้ว</span>
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="rx-slip-attached-actions">
+                        <button
+                          type="button"
+                          className="rx-btn-slip-action view"
+                          onClick={() => setIsLightboxOpen(true)}
+                          title="ดูรูปขยาย"
+                        >
+                          <Eye size={15} />
+                          <span className="rx-action-text">ดูรูป</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="rx-btn-slip-action change"
+                          onClick={() => fileInputRef.current?.click()}
+                          title="เปลี่ยนรูปสลิป"
+                        >
+                          <RefreshCw size={15} />
+                          <span className="rx-action-text">เปลี่ยนรูป</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="rx-btn-slip-action remove"
+                          onClick={handleRemoveSlip}
+                          title="นำออก"
+                        >
+                          <Trash2 size={15} />
+                          <span className="rx-action-text">นำออก</span>
+                        </button>
+                      </div>
                     </div>
                   )}
+
+                  {/* File validation / HEIC error message */}
                   {slipError && (
-                    <div style={{ fontSize: '0.75rem', color: '#dc2626', marginTop: '4px' }}>
-                      {slipError}
+                    <div className="rx-slip-error-banner">
+                      <AlertCircle size={16} className="rx-slip-error-icon" />
+                      <span className="rx-slip-error-text">{slipError}</span>
                     </div>
                   )}
                 </div>
@@ -891,7 +1256,7 @@ export default function RoomExtensionModal({
                   ? `หักโควต้า ${quotaDeductedHours} ชม. (คงเหลือที่ต้องชำระ)`
                   : 'ค่าบริการต่อเวลาทั้งหมด'}
               </span>
-              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                 {!selectedItemId
                   ? 'รอการเลือกห้อง'
                   : paymentMethod === 'unpaid'
@@ -938,18 +1303,53 @@ export default function RoomExtensionModal({
           >
             {isSubmitting ? (
               <>
-                <RotateCcw size={15} className="rx-spin" />
+                <RotateCcw size={16} className="rx-spin" />
                 <span>กำลังบันทึก...</span>
               </>
             ) : (
               <>
-                <CheckCircle2 size={16} />
+                <CheckCircle2 size={17} />
                 <span>ยืนยันต่อเวลาห้อง</span>
               </>
             )}
           </button>
         </div>
       </div>
+
+      {/* Lightbox / Fullscreen Image Preview */}
+      {isLightboxOpen && slipPreviewUrl && (
+        <div
+          className="rx-lightbox-overlay"
+          onClick={() => setIsLightboxOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="รูปภาพสลิปขนาดเต็ม"
+        >
+          <div className="rx-lightbox-container" onClick={(e) => e.stopPropagation()}>
+            <div className="rx-lightbox-header">
+              <div className="rx-lightbox-title-box">
+                <ImageIcon size={18} />
+                <span className="rx-lightbox-filename">{selectedSlipFile?.name || 'สลิปการโอนเงิน'}</span>
+              </div>
+              <button
+                type="button"
+                className="rx-lightbox-close-btn"
+                onClick={() => setIsLightboxOpen(false)}
+                aria-label="ปิดพรีวิวรูปภาพ"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="rx-lightbox-body">
+              <img
+                src={slipPreviewUrl}
+                alt="รูปสลิปขนาดเต็ม"
+                className="rx-lightbox-image"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
