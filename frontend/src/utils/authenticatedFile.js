@@ -21,10 +21,13 @@ export function getAuthToken() {
  * Strict exact list of trusted hostnames for Authorization header transmission.
  * Explicitly avoids wildcard (*.) and broad suffix matching (.workers.dev) to prevent cross-tenant token leakage.
  */
+const IS_STAGING = import.meta.env.MODE === 'staging';
+
 export const TRUSTED_AUTH_HOSTS = new Set([
-  'bwork-pos-api.ohnatza74185-ky.workers.dev',
+  ...(IS_STAGING ? [] : ['bwork-pos-api.ohnatza74185-ky.workers.dev']),
   'bwork-pos-api-staging.ohnatza74185-ky.workers.dev',
-  'bwork-pos.pages.dev',
+  ...(IS_STAGING ? [] : ['bwork-pos.pages.dev']),
+  'bwork-pos-staging.pages.dev',
   'bwork-booking.pages.dev',
   'localhost',
   '127.0.0.1'
