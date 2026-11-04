@@ -13,6 +13,15 @@ const {
   updateContractDates
 } = require('./service');
 
+const DEFAULT_CUSTOMER_TYPES = [
+  { id: 'walkin', name: 'Walk-in', label: 'Walk-in (ลูกค้านอก)', active: true, system: true, category: 'retail' },
+  { id: 'builtland', name: 'Builtland', label: 'Builtland (พนักงาน)', active: true, system: true, category: 'internal' },
+  { id: 'basecamp', name: 'Basecamp', label: 'Basecamp (ผู้เช่าชั้น 4)', active: true, has_units: true, category: 'crm' },
+  { id: 'shop', name: 'Shop', label: 'Shop (ร้านค้า)', active: true, category: 'crm' },
+  { id: 'ondemand', name: 'OnDemand', label: 'OnDemand', active: true, category: 'crm' },
+  { id: 'virtual_office', name: 'Virtual Office', label: 'Virtual Office', active: true, category: 'crm' }
+];
+
 function createCustomerRouter(dbQuery) {
   const router = express.Router();
 
@@ -42,6 +51,88 @@ function createCustomerRouter(dbQuery) {
       candidate = `${prefix}-${String(counter++).padStart(2, '0')}`;
     }
   }
+
+  const DEFAULT_CUSTOMER_TYPES = [
+    { id: 'walkin', name: 'Walk-in', label: 'Walk-in (ลูกค้านอก)', active: true, system: true, category: 'retail' },
+    { id: 'builtland', name: 'Builtland', label: 'Builtland (พนักงาน)', active: true, system: true, category: 'internal' },
+    { id: 'basecamp', name: 'Basecamp', label: 'Basecamp (ผู้เช่าชั้น 4)', active: true, has_units: true, category: 'crm' },
+    { id: 'shop', name: 'Shop', label: 'Shop (ร้านค้า)', active: true, category: 'crm' },
+    { id: 'ondemand', name: 'OnDemand', label: 'OnDemand', active: true, category: 'crm' },
+    { id: 'virtual_office', name: 'Virtual Office', label: 'Virtual Office', active: true, category: 'crm' }
+  ];
+
+  async function getMergedCustomerTypes() {
+    let types = [...DEFAULT_CUSTOMER_TYPES];
+    try {
+      const row = await dbQuery.get("SELECT value FROM settings WHERE key = 'customer_types'");
+      if (row && row.value) {
+        const parsed = JSON.parse(row.value);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          types = parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('[CustomerRouter] Failed to parse settings customer_types:', e.message);
+    }
+
+    try {
+      const dbCustomerTypes = await dbQuery.all(
+        "SELECT DISTINCT customer_type FROM customers WHERE customer_type IS NOT NULL AND customer_type != ''"
+      );
+      const existingIds = new Set(types.map(t => String(t.id).toLowerCase()));
+      for (const r of dbCustomerTypes) {
+        const cType = String(r.customer_type).trim().toLowerCase();
+        if (cType && !existingIds.has(cType)) {
+          const words = cType.split(/[_\s-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1));
+          const formatted = words.join(' ');
+          types.push({
+            id: cType,
+            name: formatted,
+            label: formatted,
+            active: true,
+            category: 'crm'
+          });
+          existingIds.add(cType);
+        }
+      }
+    } catch (e) {
+      console.warn('[CustomerRouter] Failed to discover distinct customer types:', e.message);
+    }
+
+    return types;
+  }
+
+  // 1.0. GET /api/customers/types
+  router.get('/types', async (req, res) => {
+    try {
+      const types = await getMergedCustomerTypes();
+      res.json({
+        success: true,
+        types
+      });
+    } catch (err) {
+      console.error('[CustomerRouter] types error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 1.0.1. POST /api/customers/types
+  router.post('/types', async (req, res) => {
+    try {
+      const { types } = req.body;
+      if (!Array.isArray(types)) {
+        return res.status(400).json({ error: 'types ต้องเป็น Array' });
+      }
+      await dbQuery.run(
+        "INSERT INTO settings (key, value) VALUES ('customer_types', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [JSON.stringify(types)]
+      );
+      res.json({ success: true, types });
+    } catch (err) {
+      console.error('[CustomerRouter] save types error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // 1. GET /api/customers/contracts/alerts
   router.get('/contracts/alerts', async (req, res) => {
@@ -247,12 +338,11 @@ function createCustomerRouter(dbQuery) {
     if (start_date && end_date && start_date > end_date) {
       return res.status(400).json({ error: 'วันเริ่มสัญญาต้องไม่มากกว่าวันสิ้นสุดสัญญา' });
     }
-    const validTypes = ['basecamp', 'shop', 'ondemand', 'virtual_office'];
-    let cleanType = String(customer_type || '').toLowerCase().trim();
-    if (cleanType === 'virtual' || cleanType === 'virtual office' || cleanType === 'virtual-office') {
+    let cleanType = String(customer_type || '').toLowerCase().trim().replace(/[-\s]/g, '_');
+    if (cleanType === 'virtual' || cleanType === 'virtual office' || cleanType === 'virtual_office') {
       cleanType = 'virtual_office';
     }
-    if (!validTypes.includes(cleanType)) {
+    if (!cleanType || !/^[a-z0-9_]+$/.test(cleanType)) {
       cleanType = 'basecamp';
     }
 
@@ -399,12 +489,11 @@ function createCustomerRouter(dbQuery) {
       // Handle customer_type update if provided
       let targetType = existing.customer_type;
       if (customer_type) {
-        const validTypes = ['basecamp', 'shop', 'ondemand', 'virtual_office'];
-        let cleanType = String(customer_type).toLowerCase().trim();
-        if (cleanType === 'virtual' || cleanType === 'virtual office' || cleanType === 'virtual-office') {
+        let cleanType = String(customer_type).toLowerCase().trim().replace(/[-\s]/g, '_');
+        if (cleanType === 'virtual' || cleanType === 'virtual office' || cleanType === 'virtual_office') {
           cleanType = 'virtual_office';
         }
-        if (validTypes.includes(cleanType)) {
+        if (cleanType && /^[a-z0-9_]+$/.test(cleanType)) {
           targetType = cleanType;
         }
       }
@@ -869,4 +958,4 @@ function createCustomerRouter(dbQuery) {
   return router;
 }
 
-module.exports = { createCustomerRouter };
+module.exports = { createCustomerRouter, DEFAULT_CUSTOMER_TYPES };

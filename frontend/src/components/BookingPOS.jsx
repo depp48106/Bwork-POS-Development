@@ -170,6 +170,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [shopQuota, setShopQuota] = useState({ max_quota: 4, used_quota: 0, remaining_quota: 4, contract_eligible: true });
   const [registeredShops, setRegisteredShops] = useState([]);
   const [registeredBasecamps, setRegisteredBasecamps] = useState([]);
+  const [registeredCustomers, setRegisteredCustomers] = useState([]);
+  const [customerTypes, setCustomerTypes] = useState([
+    { id: 'walkin', name: 'Walk-in', label: 'Walk-in (ลูกค้านอก)', active: true, system: true },
+    { id: 'builtland', name: 'Builtland', label: 'Builtland (พนักงาน)', active: true, system: true },
+    { id: 'basecamp', name: 'Basecamp', label: 'Basecamp (ผู้เช่าชั้น 4)', active: true, has_units: true },
+    { id: 'shop', name: 'Shop', label: 'Shop (ร้านค้า)', active: true },
+    { id: 'ondemand', name: 'OnDemand', label: 'OnDemand', active: true },
+    { id: 'virtual_office', name: 'Virtual Office', label: 'Virtual Office', active: true }
+  ]);
 
   const BASECAMP_OFFICE_UNITS = ['401', '402', '403', '404', '405', '406', '407', '408', '409', '410', '411', '412', '413', '414'];
   const BASECAMP_HOTDESK_UNITS = ['419', '420', '421', '422', '427', '428', '429', '430'];
@@ -610,16 +619,29 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   };
 
 
-  // Fetch registered customers (Shop and Basecamp) on mount
+  // Fetch customer types and registered customers on mount
   useEffect(() => {
     const token = localStorage.getItem('token') || '';
     const authHeader = token ? { 'Authorization': `Bearer ${token}` } : {};
-    fetch('/api/customers?status=active', { headers: authHeader })
+
+    // 1. Dynamic customer types from backend
+    fetch('/api/customer-types', { headers: authHeader })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && Array.isArray(data.types) && data.types.length > 0) {
+          setCustomerTypes(data.types);
+        }
+      })
+      .catch(err => console.error('Failed to load customer types in POS:', err));
+
+    // 2. Registered customers
+    fetch('/api/customers', { headers: authHeader })
       .then(res => res.json())
       .then(data => {
         if (data.success && data.customers) {
-          setRegisteredShops(data.customers.filter(c => c.customer_type === 'shop'));
-          setRegisteredBasecamps(data.customers.filter(c => c.customer_type === 'basecamp'));
+          setRegisteredCustomers(data.customers);
+          setRegisteredShops(data.customers.filter(c => c.customer_type === 'shop' && c.status === 'active'));
+          setRegisteredBasecamps(data.customers.filter(c => c.customer_type === 'basecamp' && c.status === 'active'));
         }
       })
       .catch(err => console.error('Failed to load registered customers in POS:', err));
@@ -647,7 +669,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           }
         })
         .catch(err => console.error('Failed to fetch quota:', err));
-    } else if (customer.customer_type === 'shop') {
+    } else if (customer.customer_type !== 'walkin' && customer.customer_type !== 'builtland') {
       if (customer.customer_id) {
         fetch(`/api/customers/${customer.customer_id}/quota?month=${curMonth}&year=${curYear}&date=${targetDate}`)
           .then(res => res.json())
@@ -656,7 +678,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
               setShopQuota(data);
             }
           })
-          .catch(err => console.error('Failed to fetch shop quota:', err));
+          .catch(err => console.error('Failed to fetch customer quota:', err));
       } else {
         setShopQuota({ max_quota: 4, used_quota: 0, remaining_quota: 0, contract_eligible: false });
       }
@@ -1254,6 +1276,43 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     setCartTaxPostalAddress('');
   };
 
+  // Dynamically computed customer type dropdown options
+  const customerTypeOptions = useMemo(() => {
+    const options = [];
+    const currentType = customer.customer_type;
+    (customerTypes || []).forEach(t => {
+      const isCurrent = t.id === currentType;
+      const isActive = t.active !== false;
+      if (isActive) {
+        options.push({
+          value: t.id,
+          label: t.label || t.name || t.id,
+          triggerLabel: t.label || t.name || t.id,
+          sub: t.sub || (t.id === 'walkin' ? 'ลูกค้านอก' : t.id === 'builtland' ? 'พนักงาน' : t.id === 'basecamp' ? 'ผู้เช่าชั้น 4' : t.id === 'shop' ? 'ร้านค้า' : ''),
+          disabled: false
+        });
+      } else if (isCurrent) {
+        // Inactive type already bound to this existing/historical booking: display with (ปิดใช้งาน) and mark disabled
+        options.push({
+          value: t.id,
+          label: `${t.label || t.name || t.id} (ปิดใช้งาน)`,
+          triggerLabel: `${t.label || t.name || t.id} (ปิดใช้งาน)`,
+          sub: 'ปิดใช้งานแล้ว',
+          disabled: true
+        });
+      }
+    });
+    if (currentType && !options.some(o => o.value === currentType)) {
+      options.unshift({
+        value: currentType,
+        label: `${currentType} (รายการเดิม - ปิดใช้งาน)`,
+        triggerLabel: currentType,
+        disabled: true
+      });
+    }
+    return options;
+  }, [customerTypes, customer.customer_type]);
+
   const handleCustomerTypeChange = (newType) => {
     let newCustomerId = null;
     let newContractId = null;
@@ -1262,7 +1321,15 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     let newSubType = 'office';
     let newUnit = '401';
 
-    if (newType === 'shop') {
+    if (newType === 'basecamp') {
+      const matched = registeredBasecamps.find(b => b.basecamp_unit === '401');
+      if (matched) {
+        newCustomerId = matched.id;
+        newContractId = matched.active_contract?.id || null;
+        newName = matched.name;
+        newContact = matched.phone || matched.contact_name || '';
+      }
+    } else if (newType === 'shop') {
       const firstShop = registeredShops[0];
       if (firstShop) {
         newCustomerId = firstShop.id;
@@ -1270,13 +1337,14 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
         newName = firstShop.name;
         newContact = firstShop.phone || firstShop.contact_name || '';
       }
-    } else if (newType === 'basecamp') {
-      const matched = registeredBasecamps.find(b => b.basecamp_unit === '401');
-      if (matched) {
-        newCustomerId = matched.id;
-        newContractId = matched.active_contract?.id || null;
-        newName = matched.name;
-        newContact = matched.phone || matched.contact_name || '';
+    } else if (newType !== 'walkin' && newType !== 'builtland') {
+      const groupCustomers = (registeredCustomers || []).filter(c => c.customer_type === newType && c.status === 'active');
+      const firstCust = groupCustomers[0];
+      if (firstCust) {
+        newCustomerId = firstCust.id;
+        newContractId = firstCust.active_contract?.id || null;
+        newName = firstCust.name;
+        newContact = firstCust.phone || firstCust.contact_name || '';
       }
     }
 
@@ -4053,115 +4121,23 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     ประเภทลูกค้า (Customer Type) <span style={{ color: 'var(--danger-color)' }}>*</span>
                   </label>
 
-                  {/* 4-Way Segmented Switcher */}
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr 1fr 1fr',
-                    gap: '6px',
-                    backgroundColor: 'var(--bg-main)',
-                    padding: '4px',
-                    borderRadius: '12px',
-                    border: '1px solid var(--border-color)'
-                  }}>
-                    {/* 1. Walk-in */}
-                    <button
-                      type="button"
-                      onClick={() => handleCustomerTypeChange('walkin')}
-                      style={{
-                        padding: '10px 4px',
-                        borderRadius: '9px',
-                        border: customer.customer_type === 'walkin' ? '1px solid var(--primary-color)' : '1px solid transparent',
-                        backgroundColor: customer.customer_type === 'walkin' ? 'var(--primary-color)' : 'transparent',
-                        color: customer.customer_type === 'walkin' ? '#ffffff' : 'var(--text-muted)',
-                        fontWeight: customer.customer_type === 'walkin' ? 800 : 600,
-                        fontSize: '0.78rem',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        gap: '2px',
-                        transition: 'all 0.15s ease',
-                        boxShadow: customer.customer_type === 'walkin' ? '0 2px 8px rgba(37,99,235,0.3)' : 'none'
+                  {/* Searchable Mobile-Friendly Customer Type Dropdown */}
+                  <div id="pos-customer-type-dropdown-wrap" style={{ position: 'relative' }}>
+                    <CustomSelect
+                      value={customer.customer_type}
+                      onChange={val => handleCustomerTypeChange(val)}
+                      options={customerTypeOptions}
+                      searchable={customerTypeOptions.length > 3}
+                      searchPlaceholder="ค้นหาประเภทลูกค้า..."
+                      triggerStyle={{
+                        height: '46px',
+                        borderRadius: '12px',
+                        fontWeight: 750,
+                        backgroundColor: 'var(--bg-card)',
+                        border: '1.5px solid var(--border-color)',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                       }}
-                    >
-                      <span>Walk-in</span>
-                      <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'walkin' ? 0.95 : 0.7 }}>ลูกค้านอก</span>
-                    </button>
-
-                    {/* 2. Builtland */}
-                    <button
-                      type="button"
-                      onClick={() => handleCustomerTypeChange('builtland')}
-                      style={{
-                        padding: '10px 4px',
-                        borderRadius: '9px',
-                        border: customer.customer_type === 'builtland' ? '1px solid #ea580c' : '1px solid transparent',
-                        backgroundColor: customer.customer_type === 'builtland' ? '#ea580c' : 'transparent',
-                        color: customer.customer_type === 'builtland' ? '#ffffff' : 'var(--text-muted)',
-                        fontWeight: customer.customer_type === 'builtland' ? 800 : 600,
-                        fontSize: '0.78rem',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        gap: '2px',
-                        transition: 'all 0.15s ease',
-                        boxShadow: customer.customer_type === 'builtland' ? '0 2px 8px rgba(234,88,12,0.3)' : 'none'
-                      }}
-                    >
-                      <span>Builtland</span>
-                      <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'builtland' ? 0.95 : 0.7 }}>พนักงาน</span>
-                    </button>
-
-                    {/* 3. Basecamp */}
-                    <button
-                      type="button"
-                      onClick={() => handleCustomerTypeChange('basecamp')}
-                      style={{
-                        padding: '10px 4px',
-                        borderRadius: '9px',
-                        border: customer.customer_type === 'basecamp' ? '1px solid #9333ea' : '1px solid transparent',
-                        backgroundColor: customer.customer_type === 'basecamp' ? '#9333ea' : 'transparent',
-                        color: customer.customer_type === 'basecamp' ? '#ffffff' : 'var(--text-muted)',
-                        fontWeight: customer.customer_type === 'basecamp' ? 800 : 600,
-                        fontSize: '0.78rem',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        gap: '2px',
-                        transition: 'all 0.15s ease',
-                        boxShadow: customer.customer_type === 'basecamp' ? '0 2px 8px rgba(147,51,234,0.3)' : 'none'
-                      }}
-                    >
-                      <span>Basecamp</span>
-                      <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'basecamp' ? 0.95 : 0.7 }}>ผู้เช่าชั้น 4</span>
-                    </button>
-
-                    {/* 4. Shop */}
-                    <button
-                      type="button"
-                      onClick={() => handleCustomerTypeChange('shop')}
-                      style={{
-                        padding: '10px 4px',
-                        borderRadius: '9px',
-                        border: customer.customer_type === 'shop' ? '1px solid #059669' : '1px solid transparent',
-                        backgroundColor: customer.customer_type === 'shop' ? '#059669' : 'transparent',
-                        color: customer.customer_type === 'shop' ? '#ffffff' : 'var(--text-muted)',
-                        fontWeight: customer.customer_type === 'shop' ? 800 : 600,
-                        fontSize: '0.78rem',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        gap: '2px',
-                        transition: 'all 0.15s ease',
-                        boxShadow: customer.customer_type === 'shop' ? '0 2px 8px rgba(5,150,105,0.3)' : 'none'
-                      }}
-                    >
-                      <span>Shop</span>
-                      <span style={{ fontSize: '0.66rem', opacity: customer.customer_type === 'shop' ? 0.95 : 0.7 }}>ร้านค้า</span>
-                    </button>
+                    />
                   </div>
                 </div>
 
@@ -4321,43 +4297,51 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                   </div>
                 )}
 
-                {/* --- CASE D: SHOP (Partner / Merchant) --- */}
-                {customer.customer_type === 'shop' && (
-                  <div style={{
-                    backgroundColor: 'var(--bg-main)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '14px',
-                    padding: '14px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '12px'
-                  }}>
-                    {/* Shop Selection Dropdown */}
-                    <div>
-                      <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
-                        เลือกร้านค้าพันธมิตร (Shop) <span style={{ color: 'var(--danger-color)' }}>*</span>
-                      </label>
-                      <CustomSelect
-                        value={customer.customer_id ? String(customer.customer_id) : (registeredShops[0]?.id ? String(registeredShops[0].id) : '')}
-                        onChange={val => {
-                          const s = registeredShops.find(item => String(item.id) === String(val));
-                          if (s) {
-                            setCustomer(prev => ({
-                              ...prev,
-                              customer_id: s.id,
-                              contract_id: s.active_contract?.id || null,
-                              name: s.name,
-                              contact: s.phone || s.contact_name || ''
-                            }));
-                          }
-                        }}
-                        options={registeredShops.map(s => ({
-                          value: String(s.id),
-                          label: `${s.name}${s.category ? ` (${s.category})` : ''}`
-                        }))}
-                        placeholder="-- เลือกร้านค้าพันธมิตร --"
-                      />
-                    </div>
+                {/* --- CASE D: CONTRACT CUSTOMER (Shop / OnDemand / Virtual Office / Custom CRM Types) --- */}
+                {customer.customer_type !== 'walkin' && customer.customer_type !== 'builtland' && customer.customer_type !== 'basecamp' && (() => {
+                  const currentTypeObj = (customerTypes || []).find(t => t.id === customer.customer_type);
+                  const typeLabel = currentTypeObj?.label || currentTypeObj?.name || customer.customer_type;
+                  const groupCustomers = (registeredCustomers || []).filter(c => c.customer_type === customer.customer_type && c.status === 'active');
+                  const selectedCust = groupCustomers.find(item => String(item.id) === String(customer.customer_id)) || groupCustomers[0];
+
+                  return (
+                    <div style={{
+                      backgroundColor: 'var(--bg-main)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '14px',
+                      padding: '14px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '12px'
+                    }}>
+                      {/* Customer Selection Dropdown */}
+                      <div>
+                        <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-main)', marginBottom: '6px', display: 'block' }}>
+                          เลือกลูกค้าในกลุ่ม {typeLabel} <span style={{ color: 'var(--danger-color)' }}>*</span>
+                        </label>
+                        <CustomSelect
+                          value={customer.customer_id ? String(customer.customer_id) : (selectedCust?.id ? String(selectedCust.id) : '')}
+                          onChange={val => {
+                            const s = groupCustomers.find(item => String(item.id) === String(val));
+                            if (s) {
+                              setCustomer(prev => ({
+                                ...prev,
+                                customer_id: s.id,
+                                contract_id: s.active_contract?.id || null,
+                                name: s.name,
+                                contact: s.phone || s.contact_name || ''
+                              }));
+                            }
+                          }}
+                          options={groupCustomers.map(s => ({
+                            value: String(s.id),
+                            label: `${s.name}${s.contact_name ? ` (${s.contact_name})` : ''}`
+                          }))}
+                          searchable={groupCustomers.length > 4}
+                          searchPlaceholder="ค้นหารายชื่อลูกค้า..."
+                          placeholder={`-- เลือกลูกค้า ${typeLabel} --`}
+                        />
+                      </div>
 
                     {/* Monthly Quota & Contract Status Info Card */}
                     <div style={{
@@ -4432,10 +4416,11 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                       color: '#059669',
                       fontWeight: 700
                     }}>
-                      ระบบจะทำการตัดชั่วโมงโควต้าของร้านค้าให้อัตโนมัติ (หากวันใช้งานอยู่ในอายุสัญญา)
+                      ระบบจะทำการตัดชั่วโมงโควต้าของลูกค้าให้อัตโนมัติ (หากวันใช้งานอยู่ในอายุสัญญา)
                     </div>
                   </div>
-                )}
+                );
+              })()}
 
                 {/* --- CASE B: BUILTLAND STAFF --- */}
                 {customer.customer_type === 'builtland' && (

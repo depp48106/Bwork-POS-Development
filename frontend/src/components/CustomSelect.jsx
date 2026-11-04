@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, Check } from 'lucide-react';
+import { ChevronDown, Check, Search, X } from 'lucide-react';
 
 function CustomSelect({ 
   value, 
@@ -17,9 +17,12 @@ function CustomSelect({
   size = 'medium',
   wrap = false,
   usePortal = false,
-  noTruncate = false
+  noTruncate = false,
+  searchable = false,
+  searchPlaceholder = 'ค้นหา...'
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
   const containerRef = useRef(null);
   const popoverRef = useRef(null);
 
@@ -32,6 +35,7 @@ function CustomSelect({
         (!popoverRef.current || !popoverRef.current.contains(event.target))
       ) {
         setIsOpen(false);
+        setSearchTerm('');
       }
     }
     if (isOpen) {
@@ -227,20 +231,76 @@ function CustomSelect({
               }}
               className="scrollbar-thin"
             >
-              {options.length === 0 ? (
-                <div style={{ padding: '10px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-                  ไม่มีตัวเลือก
+              {searchable && (
+                <div style={{ padding: '4px 6px 8px 6px', borderBottom: '1px solid var(--border-color)', marginBottom: '4px' }}>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    backgroundColor: 'var(--bg-main)',
+                    borderRadius: '8px',
+                    padding: '0 8px',
+                    border: '1px solid var(--border-color)'
+                  }}>
+                    <Search size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                    <input
+                      type="text"
+                      value={searchTerm}
+                      onChange={e => setSearchTerm(e.target.value)}
+                      placeholder={searchPlaceholder}
+                      onClick={e => e.stopPropagation()}
+                      style={{
+                        width: '100%',
+                        height: '32px',
+                        border: 'none',
+                        background: 'transparent',
+                        outline: 'none',
+                        fontSize: '0.78rem',
+                        color: 'var(--text-main)'
+                      }}
+                    />
+                    {searchTerm && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setSearchTerm(''); }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--text-muted)' }}
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
                 </div>
-              ) : (
-                options.map((opt, idx) => {
+              )}
+              {(() => {
+                const filteredOptions = options.filter(opt => {
+                  if (!searchTerm.trim()) return true;
+                  const term = searchTerm.toLowerCase();
+                  const label = String(typeof opt === 'object' && opt !== null ? (opt.label || opt.name || opt.value) : opt).toLowerCase();
+                  const desc = String(opt.desc || opt.description || opt.sub || '').toLowerCase();
+                  return label.includes(term) || desc.includes(term);
+                });
+
+                if (filteredOptions.length === 0) {
+                  return (
+                    <div style={{ padding: '10px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                      {searchTerm ? 'ไม่พบข้อมูลที่ค้นหา' : 'ไม่มีตัวเลือก'}
+                    </div>
+                  );
+                }
+
+                return filteredOptions.map((opt, idx) => {
                   const optVal = typeof opt === 'object' && opt !== null ? opt.value : opt;
+                  const isOptDisabled = typeof opt === 'object' && opt !== null && opt.disabled === true;
                   const isSelected = String(optVal) === String(value);
 
                   return (
                     <div
                       key={idx}
+                      role="option"
+                      aria-disabled={isOptDisabled}
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (isOptDisabled) return;
                         console.log('[CustomSelect] Option clicked:', optVal);
                         onChange(optVal);
                         setIsOpen(false);
@@ -254,13 +314,15 @@ function CustomSelect({
                         borderRadius: '9px',
                         fontSize: '0.84rem',
                         fontWeight: isSelected ? 800 : 500,
-                        color: isSelected ? 'var(--primary-color)' : 'var(--text-main)',
+                        color: isSelected ? 'var(--primary-color)' : (isOptDisabled ? 'var(--text-muted)' : 'var(--text-main)'),
                         backgroundColor: isSelected ? 'rgba(37, 99, 235, 0.1)' : 'transparent',
-                        cursor: 'pointer',
+                        cursor: isOptDisabled ? 'not-allowed' : 'pointer',
+                        opacity: isOptDisabled ? 0.45 : 1,
+                        pointerEvents: isOptDisabled ? 'none' : 'auto',
                         transition: 'all 0.12s ease'
                       }}
                       onMouseEnter={e => {
-                        if (!isSelected) e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
+                        if (!isSelected && !isOptDisabled) e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
                       }}
                       onMouseLeave={e => {
                         if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
@@ -285,8 +347,8 @@ function CustomSelect({
                       )}
                     </div>
                   );
-                })
-              )}
+                });
+              })()}
             </div>
           </>
         );
