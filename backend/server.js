@@ -1702,7 +1702,7 @@ app.post('/api/bookings', async (req, res) => {
           normalizedDetails.value,
           slipUrl,
           isTaxReq,
-          tax_payer_type === 'individual' ? 'individual' : 'corporate',
+          isTaxReq ? (tax_payer_type === 'individual' ? 'individual' : 'corporate') : null,
           cleanTaxName,
           cleanTaxId,
           cleanBranchType,

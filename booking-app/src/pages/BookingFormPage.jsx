@@ -44,6 +44,9 @@ export default function BookingFormPage() {
 
   // Load payload and LIFF profile from location.state or sessionStorage / localStorage
   useEffect(() => {
+    let parsed = null;
+    let savedLineId = '';
+
     // 1. Prefer React Router in-memory state (immune to storage quota or restrictions)
     if (location.state && location.state.room_id) {
       setBookingData(location.state);
@@ -51,7 +54,6 @@ export default function BookingFormPage() {
         setAttendees(String(location.state.guests));
       }
     } else {
-      let parsed = null;
       try {
         const raw = typeof window !== 'undefined' ? sessionStorage.getItem('current_booking_payload') : null;
         if (raw) parsed = JSON.parse(raw);
@@ -71,7 +73,7 @@ export default function BookingFormPage() {
 
     // Check LINE LIFF Profile
     try {
-      const savedLineId = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id')) : '') || '';
+      savedLineId = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id')) : '') || '';
       const savedLineName = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_name') || localStorage.getItem('line_user_name')) : '') || '';
       const savedLinePic = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_pic') || localStorage.getItem('line_user_pic')) : '') || '';
 

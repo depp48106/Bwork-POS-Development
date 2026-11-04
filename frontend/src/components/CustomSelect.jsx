@@ -17,9 +17,12 @@ function CustomSelect({
   size = 'medium',
   wrap = false,
   usePortal = false,
-  noTruncate = false
+  noTruncate = false,
+  searchable = false,
+  searchPlaceholder = 'ค้นหา...'
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
   const containerRef = useRef(null);
   const popoverRef = useRef(null);
 

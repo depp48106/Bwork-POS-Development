@@ -4880,7 +4880,7 @@ export default {
       // ----------------------------------------------------
       // CUSTOMER, SHOP & CONTRACT MANAGEMENT ENDPOINTS
       // ----------------------------------------------------
-      if (pathname.startsWith('/api/customers')) {
+      if (pathname.startsWith('/api/customers') || pathname.startsWith('/api/customer-types')) {
         const auth = await authenticateUser(request, env);
         if (auth.error) {
           return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -4888,7 +4888,9 @@ export default {
         const user = auth.user;
         if (user && user.role !== 'admin') {
           const perms = (user.permissions || '').split(',').map(p => p.trim());
-          if (!perms.some(p => ['customers', 'admin-management'].includes(p))) {
+          const isCustomerTypes = pathname === '/api/customer-types' || pathname === '/api/customers/types';
+          const allowedPerms = isCustomerTypes ? ['customers', 'admin-management', 'pos'] : ['customers', 'admin-management'];
+          if (!perms.some(p => allowedPerms.includes(p))) {
             return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงข้อมูลลูกค้า' }), { status: 403, headers: corsHeaders });
           }
         }
@@ -6280,7 +6282,7 @@ export default {
             normalizedDetails.value,
             slipUrl,
             isTaxReq,
-            tax_payer_type === 'individual' ? 'individual' : 'corporate',
+            isTaxReq ? (tax_payer_type === 'individual' ? 'individual' : 'corporate') : null,
             cleanTaxName,
             cleanTaxId,
             cleanBranchType,
