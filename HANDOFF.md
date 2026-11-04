@@ -1,11 +1,11 @@
 # BWORK-POS | DEVELOPMENT HANDOFF REPORT
 
-> **Document Version:** 1.1.0  
+> **Document Version:** 1.2.0  
 > **Date:** 4 พฤศจิกายน 2026  
 > **Workspace:** Development (`D:\Project BL\Bwork-POS-Development`)  
 > **Branch:** `integration/home-office-20261021`  
 > **Remote Repository:** `https://github.com/depp48106/Bwork-POS-Development.git`  
-> **Status:** **PAUSED RELEASE / READY FOR FUTURE DEPLOYMENT**  
+> **Status:** **DEVELOPMENT READY / ROOM CONFIRMATION INTEGRITY VERIFIED**  
 
 ---
 
@@ -74,7 +74,31 @@
 
 ---
 
-## 6. คิวงานถัดไป (Next Queue)
+## 6. สถานะงานแก้ไขรูปภาพห้องประชุมในใบยืนยันการจอง (Booking Confirmation Card)
+
+- ✅ **แก้ไขปัญหาแสดง "ไม่มีรูปภาพห้องประชุมที่ตั้งค่าไว้":**
+  - ใน `PendingBookings.jsx` แปลง URL ผ่าน `getRoomImageUrl` เพื่อต่อ `API_BASE` ดึงรูปจาก Cloudflare R2 สำหรับ `/uploads/rooms/` ป้องกัน 404 บน Pages
+  - เพิ่ม `crossOrigin="anonymous"` ให้กับแท็ก `<img>` ทั้งหมดในการ์ดยืนยัน (Hero banner, BWORK logo, building banner, room thumbnails) ป้องกัน Canvas Tainting
+  - รองรับ Fallback เมื่อรูปเสียด้วย `handleRoomImageError` + `fallbackTried` ลองสลับระหว่าง API_BASE และ relative 1 ครั้ง หากยังล้มเหลวจะหยุดโหลดถาวร ไม่เกิด Infinite Loop
+- ✅ **ความปลอดภัย Path Traversal & Sanitization (`server.js` & `worker.js`):**
+  - ปฏิเสธ `..` และ `\` ทันที ป้องกันการเข้าถึงไฟล์ระบบ
+  - Normalize path ที่ขาด leading slash (`uploads/rooms/` → `/uploads/rooms/`)
+  - ปฏิเสธ External URL scheme ทั้งหมด (`http:`, `https:`, `//`, `javascript:`)
+- ✅ **ความถูกต้องของการ Export และ Print (`printReceiptHelper.js`):**
+  - ตรวจจับ SecurityError / Tainted Canvas อย่างชัดเจน โดยแจ้ง Error ชัดเจน ไม่ซ่อนข้อผิดพลาด และไม่ถือว่า `naturalWidth > 0` เพียงพอต่อการ Export
+  - สร้างไฟล์จริงบนดิสก์และผ่านการตรวจสอบ:
+    - Single-room JPG: `actual_exported_confirmation_single_room.jpg` (259 KB)
+    - Single-room PDF: `actual_printed_confirmation_single_room.pdf` (1.49 MB)
+    - Multi-room JPG: `actual_exported_confirmation_multi_room.jpg` (352 KB)
+    - Multi-room PDF: `actual_printed_confirmation_multi_room.pdf` (11.64 MB)
+- ✅ **ผลการรัน Test Suite ทั้งหมด:**
+  - `bookingConfirmationCard.test.cjs`: 15/15 PASS
+  - `roomImageResolution.test.cjs`: 6/6 PASS
+  - `verifyCrossoriginExportPrintAndSafety.cjs`: PASS ครบทุกการทดสอบ (Traversal, Staging CORS, Taint Rejection, Real Export, Retry Halt)
+
+---
+
+## 7. คิวงานถัดไป (Next Queue)
 
 1. **ระบบส่งใบกำกับภาษีผ่าน Gmail API:** พัฒนาการส่ง e-Tax Invoice / เอกสารใบกำกับภาษีหาลูกค้าทาง Gmail
-2. **รูปภาพในใบยืนยันการจอง:** จัดการรูปภาพและ Banner ในบัตรยืนยันการจอง (LINE Booking Confirmation Card / Flex Message)
+2. **เตรียม Release สำหรับฟีเจอร์รูปภาพห้องประชุม:** เมื่อผู้ใช้มีคำสั่งให้รวมเป็น RC ถัดไป

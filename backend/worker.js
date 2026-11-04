@@ -8696,9 +8696,13 @@ export default {
 
         const sanitizeRoomImageUrl = (rawUrl) => {
           if (!rawUrl || typeof rawUrl !== 'string') return null;
-          const trimmed = rawUrl.trim();
+          let trimmed = rawUrl.trim();
           if (!trimmed) return null;
           if (/^(https?:|\/\/|javascript:|vbscript:|file:)/i.test(trimmed)) return null;
+          if (trimmed.includes('..') || trimmed.includes(String.fromCharCode(92))) return null;
+          if (!trimmed.startsWith('/') && (trimmed.startsWith('uploads/') || trimmed.startsWith('rooms/'))) {
+            trimmed = '/' + (trimmed.startsWith('rooms/') ? 'uploads/' + trimmed : trimmed);
+          }
           if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed;
           if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(trimmed)) return trimmed;
           return null;

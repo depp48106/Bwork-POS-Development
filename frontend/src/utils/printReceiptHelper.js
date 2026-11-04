@@ -369,10 +369,16 @@ export async function exportConfirmationCardAsJpg(element, bookingRef, options =
               restoredAttrs.push(() => img.setAttribute('src', origSrc));
             }
           }
-        } catch (_) {
-          // Cross-origin or untrusted image that cannot be drawn to canvas -> hide broken img node safely
-          img.setAttribute('data-export-hide', 'true');
-          restoredAttrs.push(() => img.removeAttribute('data-export-hide'));
+        } catch (inliningErr) {
+          // If canvas was tainted by cross-origin image without CORS, fail explicitly and do not hide error
+          if (inliningErr && (inliningErr.name === 'SecurityError' || String(inliningErr).includes('Tainted') || String(inliningErr).includes('insecure'))) {
+            throw new Error('ไม่สามารถบันทึกเอกสารเป็นรูปภาพได้ เนื่องจากรูปภาพ (' + (origSrc.split('/').pop() || origSrc) + ') ติดปัญหา CORS / Cross-Origin Security');
+          }
+          // Only hide if the image is truly broken or empty
+          if (!img.complete || img.naturalWidth === 0) {
+            img.setAttribute('data-export-hide', 'true');
+            restoredAttrs.push(() => img.removeAttribute('data-export-hide'));
+          }
         }
       }
     }

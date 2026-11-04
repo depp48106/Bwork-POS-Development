@@ -144,6 +144,15 @@ app.use('/uploads', async (req, res, next) => {
 
   // If public catalog asset, allow static middleware to serve
   if (!isFinancialOrSensitive) {
+    if (cleanPath.startsWith('rooms/')) {
+      const targetOnDisk = path.join(__dirname, 'uploads', cleanPath);
+      if (!fs.existsSync(targetOnDisk)) {
+        const fallbackOnDisk = path.join(__dirname, 'uploads', cleanPath.replace(/^rooms\//, ''));
+        if (fs.existsSync(fallbackOnDisk)) {
+          req.url = req.url.replace(/^\/rooms\//, '/');
+        }
+      }
+    }
     return next();
   }
 
@@ -2355,10 +2364,16 @@ app.get('/api/bookings/:id', async (req, res) => {
 // - Automatic LINE notifications are STRICTLY FORBIDDEN
 function sanitizeRoomImageUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return null;
-  const trimmed = rawUrl.trim();
+  let trimmed = rawUrl.trim();
   if (!trimmed) return null;
   if (/^(https?:|\/\/|javascript:|vbscript:|file:)/i.test(trimmed)) {
     return null;
+  }
+  if (trimmed.includes('..') || trimmed.includes(String.fromCharCode(92))) {
+    return null;
+  }
+  if (!trimmed.startsWith('/') && (trimmed.startsWith('uploads/') || trimmed.startsWith('rooms/'))) {
+    trimmed = '/' + (trimmed.startsWith('rooms/') ? 'uploads/' + trimmed : trimmed);
   }
   if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
     return trimmed;

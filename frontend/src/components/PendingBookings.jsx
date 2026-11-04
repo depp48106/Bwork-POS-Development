@@ -9385,25 +9385,27 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       {showWifiCardModal && (() => {
         const sharedSsid = wifiCardData?.wifi?.ssid || settings?.wifi_ssid || '@BWORK';
         const distinctRooms = Array.isArray(wifiCardData?.rooms) ? wifiCardData.rooms : [];
-        const scheduleItems = Array.isArray(wifiCardData?.items) && wifiCardData.items.length > 0
+        const rawScheduleItems = Array.isArray(wifiCardData?.items) && wifiCardData.items.length > 0
           ? wifiCardData.items
-          : (Array.isArray(wifiCardData?.schedules) ? wifiCardData.schedules.map((s, idx) => {
-              const matchingRoom = distinctRooms.find(r => r.room_id === s.room_id || r.room_name === s.room_name) || distinctRooms[0] || {};
-              return {
-                ...s,
-                booking_item_id: s.booking_item_id || idx + 1,
-                room_id: s.room_id || matchingRoom.room_id,
-                room_image_url: s.room_image_url || matchingRoom.image_url || null,
-                image_position_x: s.image_position_x !== undefined ? s.image_position_x : (matchingRoom.image_position_x !== undefined ? matchingRoom.image_position_x : 50),
-                image_position_y: s.image_position_y !== undefined ? s.image_position_y : (matchingRoom.image_position_y !== undefined ? matchingRoom.image_position_y : 50),
-                uses_door_pin: s.uses_door_pin !== undefined ? s.uses_door_pin : (matchingRoom.uses_door_pin !== undefined ? matchingRoom.uses_door_pin : true),
-                door_pin: s.door_pin !== undefined ? s.door_pin : (matchingRoom.door_pin || null),
-                wifi_ssid: s.wifi_ssid || sharedSsid,
-                wifi_username: s.wifi_username !== undefined ? s.wifi_username : (matchingRoom.wifi_username || null),
-                wifi_password: s.wifi_password !== undefined ? s.wifi_password : (matchingRoom.wifi_password || null),
-                wifi_configured: s.wifi_configured !== undefined ? s.wifi_configured : Boolean(matchingRoom.is_configured)
-              };
-            }) : []);
+          : (Array.isArray(wifiCardData?.schedules) ? wifiCardData.schedules : []);
+        const scheduleItems = rawScheduleItems.map((s, idx) => {
+          const matchingRoom = distinctRooms.find(r => r.room_id === s.room_id || r.room_name === s.room_name) || distinctRooms[0] || {};
+          return {
+            ...s,
+            booking_item_id: s.booking_item_id || idx + 1,
+            room_id: s.room_id || matchingRoom.room_id,
+            room_name: s.room_name || matchingRoom.room_name || 'ห้องประชุม',
+            room_image_url: s.room_image_url || matchingRoom.image_url || null,
+            image_position_x: s.image_position_x !== undefined ? s.image_position_x : (matchingRoom.image_position_x !== undefined ? matchingRoom.image_position_x : 50),
+            image_position_y: s.image_position_y !== undefined ? s.image_position_y : (matchingRoom.image_position_y !== undefined ? matchingRoom.image_position_y : 50),
+            uses_door_pin: s.uses_door_pin !== undefined ? s.uses_door_pin : (matchingRoom.uses_door_pin !== undefined ? matchingRoom.uses_door_pin : true),
+            door_pin: s.door_pin !== undefined ? s.door_pin : (matchingRoom.door_pin || null),
+            wifi_ssid: s.wifi_ssid || sharedSsid,
+            wifi_username: s.wifi_username !== undefined ? s.wifi_username : (matchingRoom.wifi_username || null),
+            wifi_password: s.wifi_password !== undefined ? s.wifi_password : (matchingRoom.wifi_password || null),
+            wifi_configured: s.wifi_configured !== undefined ? s.wifi_configured : Boolean(matchingRoom.is_configured)
+          };
+        });
         const isMultiRoom = Boolean(wifiCardData?.is_multi_room || distinctRooms.length > 1);
         const isMultiItem = scheduleItems.length > 1;
         const singleRoomObj = distinctRooms[0] || scheduleItems[0] || {};
@@ -9411,7 +9413,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
         const rawSingleRoomImage = !isMultiRoom
           ? (wifiCardData?.banner_image_url || singleRoomObj.image_url || singleRoomObj.room_image_url || null)
           : null;
-        const hasValidSingleRoomImage = Boolean(rawSingleRoomImage && !failedCardImages[rawSingleRoomImage]);
+        const singleRoomImageUrl = rawSingleRoomImage ? getRoomImageUrl(rawSingleRoomImage) : null;
+        const hasValidSingleRoomImage = Boolean(
+          singleRoomImageUrl &&
+          !failedCardImages[rawSingleRoomImage] &&
+          !failedCardImages[singleRoomImageUrl]
+        );
         const brandBannerUrl = '/Bworktower.jpg';
         const hasValidBrandBanner = !failedCardImages[brandBannerUrl];
         // Calculate room image focal position (normalized percentage 0-100, clamped safely, defaulting to 50% 50% Center)
@@ -9540,6 +9547,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           <img
                             src="/BWORK-LOGO.png"
                             alt="BWORK"
+                            crossOrigin="anonymous"
                             onError={() => setFailedCardImages(prev => ({ ...prev, ['/BWORK-LOGO.png']: true }))}
                             style={{ height: '32px', width: 'auto', objectFit: 'contain', display: 'block' }}
                           />
@@ -9644,6 +9652,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                             <img
                               src={brandBannerUrl}
                               alt="BWORK Building Banner"
+                              crossOrigin="anonymous"
                               onError={() => setFailedCardImages(prev => ({ ...prev, [brandBannerUrl]: true }))}
                               style={{
                                 width: '100%',
@@ -9722,9 +9731,20 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           }}
                         >
                           <img
-                            src={rawSingleRoomImage}
+                            src={singleRoomImageUrl}
                             alt={singleRoomName}
-                            onError={() => setFailedCardImages(prev => ({ ...prev, [rawSingleRoomImage]: true }))}
+                            crossOrigin="anonymous"
+                            onError={(e) => {
+                              if (e.currentTarget?.dataset?.fallbackTried === 'true') {
+                                setFailedCardImages(prev => ({
+                                  ...prev,
+                                  [rawSingleRoomImage]: true,
+                                  [singleRoomImageUrl]: true
+                                }));
+                              } else {
+                                handleRoomImageError(e, rawSingleRoomImage);
+                              }
+                            }}
                             style={{
                               width: '100%',
                               height: '100%',
@@ -9934,8 +9954,9 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                     {/* SECTIONS D, E, F: Room Details as Simple Aligned Rows */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                       {scheduleItems.map((sch, sIdx) => {
-                        const itemRoomImg = sch.room_image_url && !failedCardImages[sch.room_image_url]
-                          ? sch.room_image_url
+                        const rawItemImg = sch.room_image_url || null;
+                        const itemRoomImg = rawItemImg && !failedCardImages[rawItemImg]
+                          ? getRoomImageUrl(rawItemImg)
                           : null;
                         const itemTimeText = (sch.start_time && sch.end_time)
                           ? `${sch.start_time} - ${sch.end_time} น.`
@@ -9968,11 +9989,22 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                             >
                               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                 {isMultiRoom && (
-                                  itemRoomImg ? (
+                                  itemRoomImg && !failedCardImages[itemRoomImg] ? (
                                     <img
                                       src={itemRoomImg}
                                       alt={sch.room_name}
-                                      onError={() => setFailedCardImages(prev => ({ ...prev, [sch.room_image_url]: true }))}
+                                      crossOrigin="anonymous"
+                                      onError={(e) => {
+                                        if (e.currentTarget?.dataset?.fallbackTried === 'true') {
+                                          setFailedCardImages(prev => ({
+                                            ...prev,
+                                            [rawItemImg]: true,
+                                            [itemRoomImg]: true
+                                          }));
+                                        } else {
+                                          handleRoomImageError(e, rawItemImg);
+                                        }
+                                      }}
                                       style={{
                                         width: '56px',
                                         height: '40px',
