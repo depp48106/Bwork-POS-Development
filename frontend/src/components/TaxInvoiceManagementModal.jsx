@@ -206,10 +206,13 @@ export default function TaxInvoiceManagementModal({
   const handleCopyTaxDetails = () => {
     if (!taxData) return;
     const lines = [];
-    lines.push(`ประเภท: ${taxData.tax_payer_type === 'individual' ? 'บุคคลธรรมดา' : 'นิติบุคคล'}`);
+    const payerLabel = taxData.tax_payer_type === 'individual' ? 'บุคคลธรรมดา' : (taxData.tax_payer_type === 'corporate' ? 'นิติบุคคล' : 'ไม่ระบุประเภท');
+    lines.push(`ประเภท: ${payerLabel}`);
     if (taxData.tax_name) lines.push(`ชื่อผู้เสียภาษี: ${taxData.tax_name}`);
     if (taxData.tax_id) lines.push(`เลขประจำตัวผู้เสียภาษี: ${taxData.tax_id}`);
-    lines.push(`สาขา: ${taxData.tax_branch_type === 'branch' ? `สาขา ${taxData.tax_branch_number || '-'}` : 'สำนักงานใหญ่'}`);
+    if (taxData.tax_payer_type !== 'individual') {
+      lines.push(`สาขา: ${taxData.tax_branch_type === 'branch' ? `สาขา ${taxData.tax_branch_number || '-'}` : 'สำนักงานใหญ่'}`);
+    }
     if (taxData.tax_address) lines.push(`ที่อยู่: ${taxData.tax_address}`);
     if (taxData.tax_email) lines.push(`อีเมล: ${taxData.tax_email}`);
     if (taxData.tax_phone) lines.push(`เบอร์โทรศัพท์: ${taxData.tax_phone}`);
@@ -686,8 +689,17 @@ export default function TaxInvoiceManagementModal({
                     ) : (
                       /* Read-Only Display */
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px', fontSize: '0.84rem' }}>
-                        <div style={{ gridColumn: 'span 2' }}>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ชื่อผู้เสียภาษี:</span>
+                        <div>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ประเภทผู้เสียภาษี:</span>
+                          <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
+                            {taxData?.tax_payer_type === 'individual' ? 'บุคคลธรรมดา' : (taxData?.tax_payer_type === 'corporate' ? 'นิติบุคคล' : 'ไม่ระบุประเภท')}
+                          </div>
+                        </div>
+
+                        <div>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+                            {taxData?.tax_payer_type === 'individual' ? 'ชื่อ–นามสกุล:' : 'ชื่อผู้เสียภาษี / บริษัท:'}
+                          </span>
                           <div style={{ fontSize: '0.98rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
                             {taxData?.tax_name || '-'}
                           </div>
@@ -700,14 +712,16 @@ export default function TaxInvoiceManagementModal({
                           </div>
                         </div>
 
-                        <div>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>สำนักงานใหญ่ / สาขา:</span>
-                          <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
-                            {taxData?.tax_branch_type === 'branch'
-                              ? `สาขา (เลขที่สาขา: ${taxData.tax_branch_number || '-'})`
-                              : 'สำนักงานใหญ่ (Head Office)'}
+                        {taxData?.tax_payer_type !== 'individual' && (
+                          <div>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>สำนักงานใหญ่ / สาขา:</span>
+                            <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                              {taxData?.tax_branch_type === 'branch'
+                                ? `สาขา (เลขที่สาขา: ${taxData.tax_branch_number || '-'})`
+                                : 'สำนักงานใหญ่ (Head Office)'}
+                            </div>
                           </div>
-                        </div>
+                        )}
 
                         <div style={{ gridColumn: 'span 2' }}>
                           <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ที่อยู่ออกใบกำกับภาษี:</span>

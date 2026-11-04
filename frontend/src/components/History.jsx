@@ -2850,8 +2850,16 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
                     borderRadius: '10px',
                     border: '1px solid var(--border-color)'
                   }}>
-                    <div><strong>ชื่อผู้เสียภาษี:</strong> {selectedBooking.tax_name || '-'}</div>
-                    <div><strong>เลขประจำตัวผู้เสียภาษี:</strong> <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{selectedBooking.tax_id || '-'}</span> ({selectedBooking.tax_branch === 'branch' ? `สาขา ${selectedBooking.tax_branch_number || ''}` : 'สำนักงานใหญ่'})</div>
+                    <div>
+                      <strong>ประเภทผู้เสียภาษี:</strong> {selectedBooking.tax_payer_type === 'individual' ? 'บุคคลธรรมดา' : (selectedBooking.tax_payer_type === 'corporate' ? 'นิติบุคคล' : 'ไม่ระบุประเภท')}
+                    </div>
+                    <div><strong>{selectedBooking.tax_payer_type === 'individual' ? 'ชื่อ–นามสกุล:' : 'ชื่อผู้เสียภาษี:'}</strong> {selectedBooking.tax_name || '-'}</div>
+                    <div>
+                      <strong>เลขประจำตัวผู้เสียภาษี:</strong> <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{selectedBooking.tax_id || '-'}</span>
+                      {selectedBooking.tax_payer_type !== 'individual' && (
+                        <span> ({selectedBooking.tax_branch === 'branch' || selectedBooking.tax_branch_type === 'branch' ? `สาขา ${selectedBooking.tax_branch_number || ''}` : 'สำนักงานใหญ่'})</span>
+                      )}
+                    </div>
                     {selectedBooking.tax_address && (
                       <div style={{ color: 'var(--text-muted)', fontSize: '0.74rem' }}>
                         <strong>ที่อยู่:</strong> {selectedBooking.tax_address}

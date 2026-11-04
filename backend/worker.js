@@ -4893,7 +4893,67 @@ export default {
           }
         }
 
-        // 1. GET /api/customers/contracts/alerts
+        // 1.0. GET /api/customer-types & GET /api/customers/types
+      if ((pathname === '/api/customer-types' || pathname === '/api/customers/types') && method === 'GET') {
+        const DEFAULT_TYPES = [
+          { id: 'walkin', name: 'Walk-in', label: 'Walk-in (ลูกค้านอก)', active: true, system: true, category: 'retail' },
+          { id: 'builtland', name: 'Builtland', label: 'Builtland (พนักงาน)', active: true, system: true, category: 'internal' },
+          { id: 'basecamp', name: 'Basecamp', label: 'Basecamp (ผู้เช่าชั้น 4)', active: true, has_units: true, category: 'crm' },
+          { id: 'shop', name: 'Shop', label: 'Shop (ร้านค้า)', active: true, category: 'crm' },
+          { id: 'ondemand', name: 'OnDemand', label: 'OnDemand', active: true, category: 'crm' },
+          { id: 'virtual_office', name: 'Virtual Office', label: 'Virtual Office', active: true, category: 'crm' }
+        ];
+        let types = [...DEFAULT_TYPES];
+        try {
+          const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'customer_types'").first();
+          if (row && row.value) {
+            const parsed = JSON.parse(row.value);
+            if (Array.isArray(parsed) && parsed.length > 0) types = parsed;
+          }
+        } catch (e) {
+          console.warn('[Worker] Failed to parse settings customer_types:', e);
+        }
+
+        try {
+          const { results: rows } = await env.DB.prepare("SELECT DISTINCT customer_type FROM customers WHERE customer_type IS NOT NULL AND customer_type != ''").all();
+          const existingIds = new Set(types.map(t => String(t.id).toLowerCase()));
+          if (rows) {
+            for (const r of rows) {
+              const cType = String(r.customer_type).trim().toLowerCase();
+              if (cType && !existingIds.has(cType)) {
+                const words = cType.split(/[_s-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1));
+                const formatted = words.join(' ');
+                types.push({
+                  id: cType,
+                  name: formatted,
+                  label: formatted,
+                  active: true,
+                  category: 'crm'
+                });
+                existingIds.add(cType);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[Worker] Failed to query distinct customer_type:', e);
+        }
+
+        return new Response(JSON.stringify({ success: true, types }), { status: 200, headers: corsHeaders });
+      }
+
+      // 1.0.1. POST /api/customer-types & POST /api/customers/types
+      if ((pathname === '/api/customer-types' || pathname === '/api/customers/types') && method === 'POST') {
+        const body = await request.json();
+        const { types } = body;
+        if (!Array.isArray(types)) {
+          return new Response(JSON.stringify({ error: 'types ต้องเป็น Array' }), { status: 400, headers: corsHeaders });
+        }
+        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('customer_types', ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+          .bind(JSON.stringify(types), JSON.stringify(types)).run();
+        return new Response(JSON.stringify({ success: true, types }), { status: 200, headers: corsHeaders });
+      }
+
+      // 1. GET /api/customers/contracts/alerts
       if (pathname === '/api/customers/contracts/alerts' && method === 'GET') {
         try {
           const today = url.searchParams.get('date') || getBangkokLocalISO(new Date()).slice(0, 10);
@@ -5962,52 +6022,31 @@ export default {
           }
         }
 
+        // Backend Validation: reject inactive customer types for new bookings
+        if (customer_type && customer_type !== 'walkin') {
+          try {
+            const typeRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'customer_types'").first();
+            if (typeRow && typeRow.value) {
+              const configuredTypes = JSON.parse(typeRow.value);
+              if (Array.isArray(configuredTypes)) {
+                const matchedType = configuredTypes.find(t => String(t.id).toLowerCase() === String(customer_type).toLowerCase());
+                if (matchedType && matchedType.active === false) {
+                  return new Response(JSON.stringify({ error: `ประเภทลูกค้า '${matchedType.name || matchedType.label || customer_type}' ถูกปิดใช้งานแล้ว ไม่สามารถเลือกสร้างการจองใหม่ได้` }), { status: 400, headers: corsHeaders });
+                }
+              }
+            }
+          } catch (tErr) {
+            console.warn('[Worker] Could not verify customer_type active status:', tErr);
+          }
+        }
+
         let verifiedTotal = body.total_amount !== undefined ? body.total_amount : Math.round(serverTotal * 100) / 100;
         let quotaHoursUsed = 0;
         let effectiveBillingOption = billing_option || 'paid';
         const customerId = body.customer_id ? parseInt(body.customer_id, 10) : null;
         let contractId = body.contract_id ? parseInt(body.contract_id, 10) : null;
 
-        if (customer_type === 'shop') {
-          const firstItemDate = items[0]?.start_time || new Date().toISOString();
-          let remainingQuota = 0;
-          let contractEligible = true;
-
-          if (customerId) {
-            const quotaCalc = await calculateWorkerCustomerQuota(env, {
-              customerId,
-              customerType: 'shop',
-              serviceDate: firstItemDate
-            });
-            remainingQuota = quotaCalc.remaining_quota;
-            contractEligible = quotaCalc.contract_eligible;
-            if (quotaCalc.contract && !contractId) {
-              contractId = quotaCalc.contract.id;
-            }
-          } else {
-            contractEligible = false;
-          }
-
-          if (!contractEligible) {
-            quotaHoursUsed = 0;
-            verifiedTotal = Math.round(serverTotal * 100) / 100;
-            effectiveBillingOption = 'paid';
-          } else {
-            quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
-            const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
-            verifiedTotal = totalBookingHours > 0
-              ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
-              : 0;
-
-            if (quotaHoursUsed > 0 && verifiedTotal === 0) {
-              effectiveBillingOption = 'quota';
-            } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
-              effectiveBillingOption = 'quota_partial';
-            } else {
-              effectiveBillingOption = 'standard';
-            }
-          }
-        } else if (customer_type === 'basecamp') {
+        if (customer_type === 'basecamp') {
           const firstItemDate = items[0]?.start_time || new Date().toISOString();
           let remainingQuota = 0;
           let contractEligible = true;
@@ -6027,40 +6066,73 @@ export default {
             }
           } else {
             const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
-            const targetMonthStr = normalizeToLocalISO(firstItemDate).substring(0, 7);
-
-            try {
-              const quotaRow = await env.DB.prepare(
-                `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
-                 FROM bookings b
-                 WHERE b.customer_type = 'basecamp'
-                   AND b.basecamp_sub_type = ?
-                   AND b.basecamp_unit = ?
-                   AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
-                   AND (
-                     EXISTS (
-                       SELECT 1 FROM booking_items bi
-                       WHERE bi.booking_id = b.id
-                         AND strftime('%Y-%m', bi.start_time) = ?
-                     )
-                     OR (
-                       NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
-                       AND strftime('%Y-%m', b.created_at) = ?
-                     )
-                   )`
-              ).bind(basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr).first();
-
-              const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
-              remainingQuota = Math.max(0, maxQuota - usedQuota);
-            } catch (qErr) {
-              console.error('Error fetching quota in worker:', qErr);
-            }
+            const targetMonthStr = firstItemDate.slice(0, 7);
+            const quotaRow = await env.DB.prepare(
+              `SELECT COALESCE(SUM(b.quota_hours_used), 0) AS used_hours
+               FROM bookings b
+               WHERE b.customer_type = 'basecamp'
+                 AND b.basecamp_sub_type = ?
+                 AND b.basecamp_unit = ?
+                 AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                 AND (
+                   EXISTS (
+                     SELECT 1 FROM booking_items bi
+                     WHERE bi.booking_id = b.id
+                       AND substr(bi.start_time, 1, 7) = ?
+                   )
+                   OR (
+                     NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+                     AND substr(b.created_at, 1, 7) = ?
+                   )
+                 )`
+            ).bind(basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr).first();
+            const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
+            remainingQuota = Math.max(0, maxQuota - usedQuota);
           }
 
           if (!contractEligible) {
             quotaHoursUsed = 0;
             verifiedTotal = Math.round(serverTotal * 100) / 100;
             effectiveBillingOption = 'standard';
+          } else {
+            quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
+            const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+            verifiedTotal = totalBookingHours > 0
+              ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
+              : 0;
+
+            if (quotaHoursUsed > 0 && verifiedTotal === 0) {
+              effectiveBillingOption = 'quota';
+            } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
+              effectiveBillingOption = 'quota_partial';
+            } else {
+              effectiveBillingOption = 'standard';
+            }
+          }
+        } else if (customer_type === 'shop' || customerId || (customer_type !== 'walkin' && customer_type !== 'builtland')) {
+          const firstItemDate = items[0]?.start_time || new Date().toISOString();
+          let remainingQuota = 0;
+          let contractEligible = true;
+
+          if (customerId) {
+            const quotaCalc = await calculateWorkerCustomerQuota(env, {
+              customerId,
+              customerType: customer_type,
+              serviceDate: firstItemDate
+            });
+            remainingQuota = quotaCalc.remaining_quota;
+            contractEligible = quotaCalc.contract_eligible;
+            if (quotaCalc.contract && !contractId) {
+              contractId = quotaCalc.contract.id;
+            }
+          } else {
+            contractEligible = false;
+          }
+
+          if (!contractEligible) {
+            quotaHoursUsed = 0;
+            verifiedTotal = Math.round(serverTotal * 100) / 100;
+            effectiveBillingOption = 'paid';
           } else {
             quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
             const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
@@ -7922,7 +7994,7 @@ export default {
           booking_id: bookingId,
           tax_data: {
             tax_invoice_required: Number(booking.tax_invoice_required) || 0,
-            tax_payer_type: booking.tax_payer_type || 'corporate',
+            tax_payer_type: booking.tax_payer_type || null,
             tax_name: booking.tax_name || '',
             tax_id: booking.tax_id || '',
             tax_branch_type: booking.tax_branch_type || 'head',
@@ -9774,7 +9846,7 @@ export default {
         const {
           customer_name, contact, email, department, note, room_id, booking_date,
           start_time, end_time, booking_type, layout, total_amount, line_user_id,
-          tax_invoice_required, tax_name, tax_address, tax_id, tax_phone,
+          tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone,
           tax_delivery_method, tax_postal_address, guest_count, guests
         } = body;
 
@@ -9810,6 +9882,64 @@ export default {
         const bookingStartUtc = new Date(Date.UTC(by, bm - 1, bd, bsh - 7, bsm));
         if (bookingStartUtc.getTime() < Date.now() - 5 * 60 * 1000) {
           return new Response(JSON.stringify({ error: 'ขออภัย ไม่สามารถจองช่วงเวลาในอดีตได้ กรุณาเลือกช่วงเวลาใหม่' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Validate Tax Invoice Information when requested
+        const isTaxInvoiceRequired = tax_invoice_required === 1 || tax_invoice_required === true || tax_invoice_required === '1' || tax_invoice_required === 'true';
+        let cleanTaxPayerType = null;
+        let cleanTaxName = null;
+        let cleanTaxId = null;
+        let cleanTaxBranchType = null;
+        let cleanTaxBranchNumber = null;
+        let cleanTaxAddress = null;
+        let cleanTaxPhone = null;
+        let cleanTaxDeliveryMethod = null;
+        let cleanTaxPostalAddress = null;
+
+        if (isTaxInvoiceRequired) {
+          cleanTaxPayerType = String(tax_payer_type || '').toLowerCase().trim();
+          if (cleanTaxPayerType !== 'individual' && cleanTaxPayerType !== 'corporate') {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)' }), { status: 400, headers: corsHeaders });
+          }
+          cleanTaxName = String(tax_name || '').trim();
+          if (!cleanTaxName) {
+            return new Response(JSON.stringify({ error: cleanTaxPayerType === 'individual' ? 'กรุณากรอกชื่อ–นามสกุลสำหรับออกใบกำกับภาษี' : 'กรุณากรอกชื่อนิติบุคคลสำหรับออกใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+          }
+          cleanTaxId = String(tax_id || '').replace(/[-\s]/g, '').trim();
+          if (!cleanTaxId || cleanTaxId.length !== 13 || !/^\d{13}$/.test(cleanTaxId)) {
+            return new Response(JSON.stringify({ error: 'เลขประจำตัวผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' }), { status: 400, headers: corsHeaders });
+          }
+          cleanTaxAddress = String(tax_address || '').trim();
+          if (!cleanTaxAddress) {
+            return new Response(JSON.stringify({ error: cleanTaxPayerType === 'individual' ? 'ที่อยู่สำหรับออกใบกำกับภาษีจำเป็นต้องระบุ' : 'ที่อยู่จดทะเบียนสำหรับออกใบกำกับภาษีจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+          cleanTaxPhone = String(tax_phone || contact || '').trim();
+          if (!cleanTaxPhone) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเบอร์โทรศัพท์สำหรับใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+          }
+          if (cleanTaxPayerType === 'corporate') {
+            cleanTaxBranchType = (tax_branch_type === 'branch' ? 'branch' : 'head');
+            if (cleanTaxBranchType === 'branch') {
+              cleanTaxBranchNumber = String(tax_branch_number || '').trim();
+              if (!cleanTaxBranchNumber) {
+                return new Response(JSON.stringify({ error: 'กรุณาระบุเลขที่สาขาสำหรับนิติบุคคล' }), { status: 400, headers: corsHeaders });
+              }
+            } else {
+              cleanTaxBranchNumber = null;
+            }
+          } else {
+            cleanTaxBranchType = null;
+            cleanTaxBranchNumber = null;
+          }
+          cleanTaxDeliveryMethod = String(tax_delivery_method || 'online').trim();
+          if (cleanTaxDeliveryMethod === 'postal') {
+            cleanTaxPostalAddress = String(tax_postal_address || '').trim();
+            if (!cleanTaxPostalAddress) {
+              return new Response(JSON.stringify({ error: 'กรุณาระบุที่อยู่สำหรับจัดส่งทางไปรษณีย์' }), { status: 400, headers: corsHeaders });
+            }
+          } else {
+            cleanTaxPostalAddress = null;
+          }
         }
 
         const room = await env.DB.prepare("SELECT * FROM rooms WHERE id = ? AND status = 'active'").bind(room_id).first();
@@ -9869,18 +9999,17 @@ export default {
                subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
                payment_status, payment_method,
                receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
-               tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
+               tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone, tax_delivery_method, tax_postal_address,
                guest_count,
                created_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name, department || note || '', contact,
             promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
             receiptNumber, pinCode,
             email || null, line_user_id || null,
-            tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
-            tax_delivery_method || null, tax_postal_address || null,
+            isTaxInvoiceRequired ? 1 : 0, cleanTaxPayerType, cleanTaxName, cleanTaxAddress, cleanTaxId, cleanTaxBranchType, cleanTaxBranchNumber, cleanTaxPhone, cleanTaxDeliveryMethod, cleanTaxPostalAddress,
             parsedGuests,
             nowIso
           ).run();

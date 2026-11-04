@@ -3998,7 +3998,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
             {selectedBooking?.tax_invoice_required === 1 && (
               <div style={{ padding: '10px 12px', borderRadius: '10px', backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.25)', fontSize: '0.8rem' }}>
                 <div style={{ color: '#3b82f6', fontWeight: 800, marginBottom: '4px' }}>ลูกค้าขอใบกำกับภาษี (Tax Invoice):</div>
-                <div style={{ color: 'var(--text-main)' }}><strong>ชื่อ:</strong> {selectedBooking.tax_name} | <strong>เลข 13 หลัก:</strong> {selectedBooking.tax_id}</div>
+                <div style={{ color: 'var(--text-main)' }}>
+                  <strong>ประเภท:</strong> {selectedBooking.tax_payer_type === 'individual' ? 'บุคคลธรรมดา' : (selectedBooking.tax_payer_type === 'corporate' ? 'นิติบุคคล' : 'ไม่ระบุประเภท')} | <strong>ชื่อ:</strong> {selectedBooking.tax_name} | <strong>เลข 13 หลัก:</strong> {selectedBooking.tax_id}
+                  {selectedBooking.tax_payer_type !== 'individual' && (selectedBooking.tax_branch || selectedBooking.tax_branch_type) && (
+                    <span> | <strong>สาขา:</strong> {selectedBooking.tax_branch === 'branch' || selectedBooking.tax_branch_type === 'branch' ? `สาขา ${selectedBooking.tax_branch_number || ''}` : 'สำนักงานใหญ่'}</span>
+                  )}
+                </div>
                 <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '2px' }}><strong>ที่อยู่:</strong> {selectedBooking.tax_address}</div>
                 <div style={{ color: '#3b82f6', fontSize: '0.75rem', marginTop: '2px' }}>
                   <strong>จัดส่ง:</strong> {selectedBooking.tax_delivery_method === 'postal' ? `ไปรษณีย์ (${selectedBooking.tax_postal_address || selectedBooking.tax_address})` : (selectedBooking.tax_delivery_method === 'pickup' ? 'รับหน้าร้าน' : 'อีเมล')}
@@ -5299,18 +5304,26 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       <div className="pb-detail-content">
                         {b.tax_invoice_required === 1 || b.tax_name ? (
                           <div className="pb-detail-field-group">
+                            <div className="pb-detail-field">
+                              <span className="pb-detail-label">ประเภทผู้เสียภาษี</span>
+                              <span className="pb-detail-val">
+                                {b.tax_payer_type === 'individual' ? 'บุคคลธรรมดา' : (b.tax_payer_type === 'corporate' ? 'นิติบุคคล' : 'ไม่ระบุประเภท')}
+                              </span>
+                            </div>
                             <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
-                              <span className="pb-detail-label">ชื่อ / บริษัท</span>
+                              <span className="pb-detail-label">{b.tax_payer_type === 'individual' ? 'ชื่อ–นามสกุล' : 'ชื่อ / บริษัท'}</span>
                               <span className="pb-detail-val pb-detail-val--strong">{b.tax_name || b.tax_invoice_name || '-'}</span>
                             </div>
                             <div className="pb-detail-field">
                               <span className="pb-detail-label">เลขประจำตัวผู้เสียภาษี 13 หลัก</span>
                               <span className="pb-detail-val" style={{ fontFamily: 'monospace' }}>{b.tax_id || b.tax_invoice_id || '-'}</span>
                             </div>
-                            <div className="pb-detail-field">
-                              <span className="pb-detail-label">สาขา</span>
-                              <span className="pb-detail-val">{b.tax_branch || b.tax_invoice_branch || 'สำนักงานใหญ่'}</span>
-                            </div>
+                            {b.tax_payer_type !== 'individual' && (
+                              <div className="pb-detail-field">
+                                <span className="pb-detail-label">สาขา</span>
+                                <span className="pb-detail-val">{b.tax_branch_type === 'branch' || b.tax_branch === 'branch' ? `สาขา ${b.tax_branch_number || ''}`.trim() : (b.tax_branch || b.tax_invoice_branch || 'สำนักงานใหญ่')}</span>
+                              </div>
+                            )}
                             <div className="pb-detail-field" style={{ gridColumn: '1 / -1' }}>
                               <span className="pb-detail-label">ที่อยู่ออกใบกำกับภาษี</span>
                               <span className="pb-detail-val">{b.tax_address || b.tax_invoice_address || '-'}</span>
