@@ -1,11 +1,11 @@
 # BWORK-POS | DEVELOPMENT HANDOFF REPORT
 
-> **Document Version:** 1.7.0  
+> **Document Version:** 1.8.0  
 > **Date:** 5 พฤศจิกายน 2026  
-> **Workspace:** Development (`D:\Project BL\Bwork-POS-Development`)  
+> **Workspace:** Development (`D:\Project BL\Bwork-POS-Development-Home`)  
 > **Branch:** `integration/home-office-20261021`  
 > **Remote Repository:** `https://github.com/depp48106/Bwork-POS-Development.git`  
-> **Status:** **SELECTIVE PATCH DEPLOYED TO PRODUCTION (POS PAGES + WORKER) / EMPLOYEE UI NOTICE REFINED / DUPLICATE PROTECTION HARDENED / SWITCHES STRICTLY FALSE**  
+> **Status:** **TAX INVOICE MODAL REDESIGNED TO POS PALETTE / EMAIL UPDATE & DESYNC BUG FULLY RESOLVED / EDITING DIRTY SAFETY LOCK ENFORCED / 9/9 AUTOMATED UAT SUITES PASSED / DEVELOPMENT ONLY**
 
 ---
 
@@ -401,3 +401,99 @@
 - **Git State:**
   - Branch `release/selective-gmail-tax-invoice-20261105`: Commit `cd9a4b44` (Pushed to Origin)
   - Branch `integration/home-office-20261021`: Commit `8fe13097` (In sync with selective patch)
+
+
+---
+
+## 9. การปรับปรุงหน้าต่างจัดการใบกำกับภาษี (Tax Invoice Modal Redesign) และการแก้ปัญหาอีเมลไม่อัปเดต (Email Sync Hotfix)
+
+> **บันทึกการพัฒนา:** 5 พฤศจิกายน 2026  
+> **สภาพแวดล้อม:** Development Workspace (`D:\Project BL\Bwork-POS-Development-Home`)  
+> **Branch:** `integration/home-office-20261021`  
+> **ขอบเขตงาน:** ดำเนินการเฉพาะใน Development เพื่อทดสอบและตรวจรับ — **ไม่มีการ Deploy ขึ้น Production, ไม่มีการแตะต้องข้อมูลลูกค้าจริง, และไม่มีการส่งอีเมลจริง**
+
+### 9.1 สาเหตุที่แท้จริงของบั๊กอีเมลไม่อัปเดตหลังบันทึก (Root Cause Analysis)
+จากการตรวจสอบเส้นทางข้อมูลตั้งแต่ Input → บันทึก → ฐานข้อมูล → API Response → Modal State → Email Preview → Send Email พบสาเหตุ 3 ประการ:
+1. **Database Desynchronization (Split-brain ในฐานข้อมูล):**
+   - เมื่อผู้ใช้กดบันทึกข้อมูลภาษีผ่าน `PUT /api/bookings/:id/tax-invoice` ฝั่ง Backend ทำการอัปเดตเฉพาะตาราง `bookings.tax_email` แต่ **ไม่ได้อัปเดตตาราง `tax_invoices.tax_email`**
+   - เอกสารใบกำกับภาษีที่เคยอัปโหลดไว้ก่อนหน้าจึงยังคงจำค่าอีเมลเก่าของ snapshot ตอนอัปโหลดไว้
+2. **Backend Priority Inversion ใน Endpoint Preview และ Send:**
+   - ใน `email-preview` และ `send-email` Backend เคยประเมิน:
+     ```javascript
+     const recipientEmail = (invoice.tax_email || booking.tax_email || '').trim();
+     ```
+   - เมื่อ `invoice.tax_email` มีค่าเดิมอยู่ จึงถูกดึงมาใช้ก่อนเสมอ ทำให้ค่าใหม่ใน `booking.tax_email` ไม่มีผล
+3. **Frontend State Staleness & Cached Preview:**
+   - ฝั่ง Frontend ใน `TaxInvoiceManagementModal.jsx` ไม่ได้อัปเดตรายการ `invoices` หลังบันทึก และไม่ได้เคลียร์แคช `previewData` เก่า ทำให้ตัวอย่างอีเมลยังแสดงผลค่าเดิม
+
+### 9.2 การแก้ไขฝั่ง Backend (Server Express & Worker Parity)
+1. **Synchronize ตาราง `tax_invoices` ทันทีที่มีการแก้ไขข้อมูลภาษี:**
+   - ใน `PUT /api/bookings/:id/tax-invoice` เพิ่มคำสั่ง UPDATE ตาราง `tax_invoices` ทุกเรคคอร์ดของ booking นั้น ๆ ให้มีข้อมูล `tax_name`, `tax_id`, `tax_email`, `tax_address` ตรงกันกับข้อมูลล่าสุดเสมอ
+   - ส่งคืนรายการ `invoices` ที่อัปเดตแล้วกลับมาใน response ของ `PUT`
+2. **Authoritative Recipient Enforcement:**
+   - ปรับ `email-preview` และ `send-email` ให้ใช้ `(booking.tax_email || invoice.tax_email || '').trim()` เป็นค่าหลัก
+   - หากไม่มีอีเมลผู้รับ ให้ปฏิเสธด้วย HTTP 400 ชัดเจน: `"ยังไม่ได้ระบุอีเมลผู้รับในระบบ กรุณากรอกและบันทึกข้อมูลก่อนส่ง"` โดยไม่มีการ silent fallback ไปใช้อีเมลลูกค้าทั่วไป
+   - ใน `send-email` ตรวจสอบว่าหาก client ส่ง `recipient_email` มา ค่าต้องตรงกับอีเมลล่าสุดที่บันทึกไว้ในระบบเพื่อป้องกัน race condition
+3. **Parity สมบูรณ์ระหว่าง Express และ Cloudflare Worker:**
+   - นำการแก้ไขทั้งหมดไปประยุกต์ใช้ทั้งใน `backend/server.js` และ `backend/worker.js` อย่างเท่าเทียม 100%
+
+### 9.3 การปรับโฉมและสถาปัตยกรรม UI (POS Visual Design Language)
+ปรับปรุง `TaxInvoiceManagementModal.jsx` ให้เข้ากับธีมหลักของ Bwork-POS อย่างประณีต:
+1. **Color Palette & Visual Elements:**
+   - พื้นหลังสะอาดตา (`#ffffff`), แถบหัว/ท้าย (`#ffffff` / `#f8fafc`)
+   - สีหลัก Primary: Royal Blue (`#2563eb`)
+   - ตัวอักษรสีเข้มอ่านง่าย (`#0f172a` / `#64748b`)
+   - เส้นขอบเรียบเนียน (`#e2e8f0`) ยกเลิกกรอบซ้อนและเส้นประหนาที่รกตา
+2. **Header สวยงาม กะทัดรัด:**
+   - แสดงหัวข้อ "จัดการใบกำกับภาษี" พร้อมไอคอน POS
+   - Badge สถานะกะทัดรัด (ออกเอกสารแล้ว, รอออกเอกสาร, ยังไม่ระบุข้อมูล)
+   - ข้อมูลรหัสการจองและชื่อผู้จองแยกชั้นชัดเจน
+3. **โครงสร้าง Desktop (2 คอลัมน์สมดุล):**
+   - **คอลัมน์ซ้าย (ข้อมูลผู้เสียภาษีและวิธีจัดส่ง):**
+     - โหมดดูข้อมูล: แสดงสรุปเรียบร้อย พร้อมปุ่ม "คัดลอกข้อมูล" และ "แก้ไขข้อมูล"
+     - โหมดแก้ไข: ฟอร์มจัดระเบียบเรียบร้อย สวิตช์ประเภทบุคคล/นิติบุคคล และ สนง.ใหญ่/สาขา พร้อมปุ่ม "ยกเลิก" และ "บันทึกข้อมูล"
+   - **คอลัมน์ขวาบน (เอกสารใบกำกับภาษี):**
+     - แสดงรายการเอกสารใบกำกับภาษีที่แนบ
+     - **Active PDF Selector:** หากมีเอกสารหลายฉบับ ผู้ใช้สามารถคลิกเลือกเอกสารที่จะใช้ส่งหรือดูตัวอย่างได้ชัดเจน
+     - ส่วนแนบไฟล์แบบพับเก็บได้ (+ แนบเอกสาร) เพื่อไม่ให้เกะกะสายตา
+   - **คอลัมน์ขวาล่าง (การจัดส่งเอกสารทางอีเมล e-Tax):**
+     - แสดงอีเมลผู้รับและไฟล์ที่จะจัดส่งชัดเจน
+     - Badge สถานะการส่ง (ยังไม่ได้ส่ง, จำลองส่งแล้ว, Gmail รับคำขอแล้ว, ผลส่งไม่แน่นอน)
+     - ปุ่มหลัก: "ส่งอีเมล" (สีน้ำเงิน Royal Blue)
+     - ปุ่มรอง: "ดูตัวอย่างอีเมล"
+     - ตัวเลือกจำลองส่ง (Dry-run Simulation) ซ่อนในเมนูพับเก็บได้ เพื่อความปลอดภัยและเป็นระเบียบ
+4. **ความเข้ากันได้กับ Mobile 390px (Zero Horizontal Overflow):**
+   - ปรับ Grid ด้วย `minmax(min(100%, ...), 1fr)` ทำให้ทุกคอลัมน์เรียงต่อกันเป็น Single-column บนหน้าจอมือถืออย่างสวยงาม
+   - ตรวจวัดจริงด้วย Chrome CDP: `scrollWidth: 348px === clientWidth: 348px` **ไม่มีการล้นขอบแนวนอน 100%**
+   - Sticky Header และ Footer ใช้งานได้คล่องตัว ไม่ถูกบังหรือตัดทอน
+
+### 9.4 กลไกความปลอดภัยและ State Management ใหม่
+1. **Editing / Dirty Safety Lock:**
+   - ในขณะที่ผู้ใช้กำลังเปิดโหมดแก้ไขข้อมูล (`isEditingTaxInfo`) หรือข้อมูลในฟอร์มยังไม่ได้บันทึก:
+     - ปุ่ม "ส่งอีเมล" และ "ดูตัวอย่างอีเมล" จะถูกปิดใช้งาน (Disabled) ทันที
+     - กล่องข้อความแจ้งเตือนสีส้มจะปรากฏขึ้น: **"กรุณาบันทึกข้อมูลก่อนส่งอีเมล"** ป้องกันข้อผิดพลาดในการเผลอกดส่งค่าเก่าโดยไม่ตั้งใจ
+2. **Cancel Revert ปลอดภัย:**
+   - เมื่อกด "ยกเลิก" ค่าทั้งหมดในฟอร์มจะย้อนกลับไปเป็นค่าที่บันทึกไว้ล่าสุดทันที
+3. **Clearing Email Behavior:**
+   - หากผู้ใช้ลบอีเมลจนว่างเปล่าแล้วบันทึก ระบบจะบันทึกเป็นค่าว่าง ไม่มีการ silent fallback ไปใช้อีเมลติดต่ออื่น
+   - ส่วนจัดส่งอีเมลจะแสดงข้อความสีแดง: **"ยังไม่ได้ระบุอีเมลผู้รับ"** และปิดการทำงานของปุ่มส่ง/พรีวิวทันที
+4. **Active PDF Binding & Confirmation Safety:**
+   - ทั้งการกดดูตัวอย่าง (Preview) และการส่งอีเมล (Send) จะผูกกับ ID ของเอกสารที่เลือกอย่างเข้มงวด
+   - หากมีการเปลี่ยนอีเมลผู้รับหรือเปลี่ยนไฟล์เอกสารในขณะที่หน้าต่างยืนยันการส่งเปิดอยู่ หน้าต่างยืนยันจะปิดลงอัตโนมัติเพื่อบังคับให้ผู้ใช้ตรวจสอบใหม่
+
+### 9.5 ผลการทดสอบ Automated End-to-End Suite (Chrome CDP)
+ทดสอบผ่านสคริปต์อัตโนมัติ `scratch/test_tax_invoice_modal.cjs` บน Chrome จริงแบบ Headless:
+- **Test 1: Initial State & Display:** PASS — แสดงผลข้อมูลผู้เสียภาษี เอกสาร และอีเมลผู้รับถูกต้อง
+- **Test 2: Dirty State Safety Lock:** PASS — ขณะแก้ไขข้อมูล ฟอร์มปิดการทำงานของปุ่มส่ง/พรีวิว พร้อมแสดง "กรุณาบันทึกข้อมูลก่อนส่งอีเมล"
+- **Test 3: Cancel Revert:** PASS — กดยกเลิก ค่าย้อนกลับเป็นอีเมลเดิมทันที
+- **Test 4: Save & Real-time Update:** PASS — บันทึกอีเมลใหม่ ค่าอัปเดตทันทีทั้งในการ์ดข้อมูลภาษีและการ์ดจัดส่งโดยไม่ต้องรีเฟรชหน้าเว็บ
+- **Test 5: Email Preview with Updated Email:** PASS — ตัวอย่างอีเมลแสดง "ถึง: billing.updated.2026@bwork.com" ตรงตามค่าใหม่ล่าสุด
+- **Test 6: Dry-run Simulation Dispatch:** PASS — คำขอส่ง API ได้รับอีเมลใหม่และบันทึกลงใน `tax_invoices` สำเร็จ
+- **Test 7: Desktop Viewport (1280px):** PASS — สองคอลัมน์สวยงาม สอดคล้องกับ POS
+- **Test 8: Mobile Viewport (390px):** PASS — `scrollWidth: 348 === clientWidth: 348`, Zero horizontal overflow
+- **Test 9: Clear Email & No Fallback:** PASS — ลบอีเมลแล้วบันทึก ระบบแสดง "ยังไม่ได้ระบุอีเมลผู้รับ" และปิดการส่งถูกต้อง
+
+### 9.6 ภาพหลักฐานผลการทดสอบ (Visual Artifacts)
+- **Desktop Redesign (1280px):** `pos_tax_modal_desktop_redesign.png`
+- **Mobile Redesign (390px):** `pos_tax_modal_mobile_390_redesign.png`
+- **Email Preview with Updated Email:** `pos_tax_modal_preview_desktop.png`
