@@ -543,19 +543,99 @@ async function sendTaxInvoiceEmail({
   };
 }
 
+const TARGET_TEST_RECIPIENT = 'kunakornwhynatt@gmail.com';
+const TEST_EMAIL_SUBJECT = '[BWORK TEST] ทดสอบส่งเอกสาร PDF — ไม่ใช่ใบกำกับภาษีจริง';
+
+function isTestDispatchEnabled(env = process.env) {
+  return String(env.GMAIL_TEST_DISPATCH_ENABLED || '').toLowerCase() === 'true';
+}
+
+function createTestSamplePdfBuffer() {
+  const content = 'BT /F1 16 Tf 50 720 Td ([BWORK TEST DOCUMENT] - NOT A REAL TAX INVOICE) Tj 0 -30 Td /F1 11 Tf (This is an automated system integration test message from B-WORK POS.) Tj 0 -20 Td (Recipient: kunakornwhynatt@gmail.com) Tj 0 -20 Td (Sender: Built Heart Co., Ltd. <coworkings.bwork@gmail.com>) Tj 0 -20 Td (Date: ' + new Date().toISOString() + ') Tj 0 -30 Td (IMPORTANT: DO NOT USE FOR TAX DEDUCTION OR OFFICIAL PURPOSE.) Tj ET';
+  const streamLen = Buffer.byteLength(content, 'utf8');
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+
+  offsets.push(pdf.length);
+  pdf += '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '4 0 obj\n<< /Length ' + streamLen + ' >>\nstream\n' + content + '\nendstream\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n';
+
+  const startxref = pdf.length;
+  pdf += 'xref\n0 6\n0000000000 65535 f \n';
+  for (let i = 0; i < offsets.length; i++) {
+    pdf += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+  }
+  pdf += 'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n' + startxref + '\n%%EOF';
+
+  return Buffer.from(pdf, 'utf8');
+}
+
+function generateTestEmailContent({
+  recipientEmail = TARGET_TEST_RECIPIENT,
+  senderEmail = DEFAULT_SENDER_EMAIL,
+  senderName = DEFAULT_SENDER_NAME
+} = {}) {
+  const subject = TEST_EMAIL_SUBJECT;
+  const dateFormatted = new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
+
+  const textBody = `เรียน คุณากร ไวยณัทท์,
+
+นี่คืออีเมลทดสอบระบบ (System Integration Test) จากระบบ BWORK POS ของ บริษัท บิลท์ ฮาร์ท จำกัด
+ตามที่ได้รับการอนุมัติการทดสอบส่งอีเมลจริงผ่าน Google Gmail API ร่วมกับไฟล์แนบ PDF
+
+--------------------------------------------------
+[ข้อความสำคัญ / IMPORTANT DISCLAIMER]
+เอกสาร PDF ที่แนบมาพร้อมกับอีเมลฉบับนี้ เป็น "เอกสารข้อมูลสมมติเพื่อการทดสอบระบบเท่านั้น"
+ไม่ใช่ใบกำกับภาษี หรือใบเสร็จรับเงินจริง และไม่สามารถนำไปใช้ในทางภาษีหรืออ้างอิงทางบัญชีใด ๆ ทั้งสิ้น
+--------------------------------------------------
+
+ข้อมูลการทดสอบ:
+- ผู้ส่ง: บริษัท บิลท์ ฮาร์ท จำกัด <${senderEmail}>
+- ผู้รับ: ${recipientEmail}
+- หัวข้อ: ${subject}
+- ไฟล์แนบ: BWORK_TEST_SAMPLE.pdf
+- วันและเวลาที่ทดสอบ: ${dateFormatted}
+- การเชื่อมต่อ: Google OAuth2 Gmail API (scope: gmail.send)
+
+ขอแสดงความนับถือ,
+ทีมพัฒนาระบบ BWORK POS
+บริษัท บิลท์ ฮาร์ท จำกัด`;
+
+  const htmlBody = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${subject}</title><style>body { font-family: -apple-system, BlinkMacSystemFont, 'Prompt', 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f1f5f9; color: #1e293b; } .container { max-width: 600px; margin: 24px auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; } .header { background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%); color: #ffffff; padding: 32px 24px; text-align: center; } .header h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; } .header p { margin: 8px 0 0; font-size: 14px; opacity: 0.9; } .body { padding: 32px 24px; } .disclaimer-box { background-color: #fef2f2; border: 2px solid #ef4444; border-radius: 12px; padding: 16px; margin: 20px 0; color: #991b1b; } .disclaimer-box h3 { margin: 0 0 8px; font-size: 16px; font-weight: 800; } .disclaimer-box p { margin: 0; font-size: 13px; line-height: 1.5; } .card { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 20px 0; } .card-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #cbd5e1; font-size: 14px; } .card-row:last-child { border-bottom: none; } .label { color: #64748b; font-weight: 600; } .value { color: #0f172a; font-weight: 700; text-align: right; } .attachment-box { display: flex; align-items: center; gap: 12px; background: rgba(79, 70, 229, 0.08); border: 1.5px solid #818cf8; border-radius: 10px; padding: 14px 18px; margin: 20px 0; } .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px; text-align: center; font-size: 12px; color: #64748b; }</style></head><body><div class="container"><div class="header"><h1>${senderName}</h1><p>ระบบ BWORK POS — Gmail API Integration Test</p></div><div class="body"><p style="font-size: 16px; line-height: 1.6; margin-top: 0;">เรียน <strong>คุณากร ไวยณัทท์</strong>,</p><p style="font-size: 14px; line-height: 1.6; color: #475569;">นี่คืออีเมลทดสอบระบบ (System Integration Test) ที่ส่งผ่าน Google Gmail API โดยระบบ BWORK POS จาก Production Environment</p><div class="disclaimer-box"><h3>⚠️ ข้อความแจ้งเตือนสำคัญ (Important Disclaimer)</h3><p>เอกสาร PDF ที่แนบมานี้เป็น <strong>เอกสารข้อมูลสมมติเพื่อการทดสอบระบบเท่านั้น</strong> ไม่ใช่ใบกำกับภาษี หรือใบเสร็จรับเงินจริง และไม่สามารถนำไปใช้ในทางภาษีหรืออ้างอิงทางบัญชีได้</p></div><div class="card"><div class="card-row"><span class="label">ผู้ส่ง:</span><span class="value">${senderName}</span></div><div class="card-row"><span class="label">อีเมลผู้ส่ง:</span><span class="value">${senderEmail}</span></div><div class="card-row"><span class="label">ผู้รับ:</span><span class="value">${recipientEmail}</span></div><div class="card-row"><span class="label">หัวข้อ:</span><span class="value">${subject}</span></div><div class="card-row"><span class="label">วันเวลาที่ส่ง:</span><span class="value">${dateFormatted}</span></div><div class="card-row"><span class="label">สถานะการทดสอบ:</span><span class="value" style="color: #4f46e5;">Gmail API Live Dispatch (1 Approved Test)</span></div></div><div class="attachment-box"><div style="font-size: 24px;">📄</div><div><div style="font-weight: 800; font-size: 14px; color: #4338ca;">ไฟล์แนบ: BWORK_TEST_SAMPLE.pdf</div><div style="font-size: 12px; color: #64748b;">เอกสาร PDF ข้อมูลสมมติในหน่วยความจำ (In-memory generated)</div></div></div></div><div class="footer"><div>© ${new Date().getFullYear()} บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.)</div><div style="margin-top: 4px;">B-WORK Coworking Space & Meeting Rooms</div><div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">ข้อความนี้ส่งจากการทดสอบระบบของผู้ดูแลระบบ</div></div></div></body></html>`;
+
+  return { subject, textBody, htmlBody };
+}
+
 module.exports = {
   DEFAULT_SENDER_NAME,
   DEFAULT_SENDER_EMAIL,
   DEFAULT_REPLY_TO,
+  TARGET_TEST_RECIPIENT,
+  TEST_EMAIL_SUBJECT,
   GMAIL_SEND_SCOPE,
   isGmailConfigured,
   isLiveDispatchEnabled,
+  isTestDispatchEnabled,
   getEffectiveEnvironment,
   isEmailAllowedInStaging,
   isValidEmail,
   encodeMimeHeader,
   base64UrlEncode,
   generateTaxInvoiceEmailContent,
+  generateTestEmailContent,
+  createTestSamplePdfBuffer,
   buildMimeMessage,
   getGmailAccessToken,
   sendTaxInvoiceEmail

@@ -36,6 +36,81 @@ function isGmailConfigured(env) {
 function isLiveDispatchEnabled(env) {
   return String(env?.GMAIL_LIVE_DISPATCH_ENABLED || '').toLowerCase() === 'true';
 }
+const TARGET_TEST_RECIPIENT = 'kunakornwhynatt@gmail.com';
+const TEST_EMAIL_SUBJECT = '[BWORK TEST] ทดสอบส่งเอกสาร PDF — ไม่ใช่ใบกำกับภาษีจริง';
+
+function isTestDispatchEnabledWorker(env) {
+  return String(env?.GMAIL_TEST_DISPATCH_ENABLED || '').toLowerCase() === 'true';
+}
+
+function createTestSamplePdfUint8Array() {
+  const content = 'BT /F1 16 Tf 50 720 Td ([BWORK TEST DOCUMENT] - NOT A REAL TAX INVOICE) Tj 0 -30 Td /F1 11 Tf (This is an automated system integration test message from B-WORK POS.) Tj 0 -20 Td (Recipient: kunakornwhynatt@gmail.com) Tj 0 -20 Td (Sender: Built Heart Co., Ltd. <coworkings.bwork@gmail.com>) Tj 0 -20 Td (Date: ' + new Date().toISOString() + ') Tj 0 -30 Td (IMPORTANT: DO NOT USE FOR TAX DEDUCTION OR OFFICIAL PURPOSE.) Tj ET';
+  const streamLen = new TextEncoder().encode(content).length;
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+
+  offsets.push(pdf.length);
+  pdf += '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '4 0 obj\n<< /Length ' + streamLen + ' >>\nstream\n' + content + '\nendstream\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n';
+
+  const startxref = pdf.length;
+  pdf += 'xref\n0 6\n0000000000 65535 f \n';
+  for (let i = 0; i < offsets.length; i++) {
+    pdf += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+  }
+  pdf += 'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n' + startxref + '\n%%EOF';
+
+  return new TextEncoder().encode(pdf);
+}
+
+function generateTestEmailContentWorker({
+  recipientEmail = TARGET_TEST_RECIPIENT,
+  senderEmail = DEFAULT_SENDER_EMAIL,
+  senderName = DEFAULT_SENDER_NAME
+} = {}) {
+  const subject = TEST_EMAIL_SUBJECT;
+  const dateFormatted = new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
+
+  const textBody = `เรียน คุณากร ไวยณัทท์,
+
+นี่คืออีเมลทดสอบระบบ (System Integration Test) จากระบบ BWORK POS ของ บริษัท บิลท์ ฮาร์ท จำกัด
+ตามที่ได้รับการอนุมัติการทดสอบส่งอีเมลจริงผ่าน Google Gmail API ร่วมกับไฟล์แนบ PDF
+
+--------------------------------------------------
+[ข้อความสำคัญ / IMPORTANT DISCLAIMER]
+เอกสาร PDF ที่แนบมาพร้อมกับอีเมลฉบับนี้ เป็น "เอกสารข้อมูลสมมติเพื่อการทดสอบระบบเท่านั้น"
+ไม่ใช่ใบกำกับภาษี หรือใบเสร็จรับเงินจริง และไม่สามารถนำไปใช้ในทางภาษีหรืออ้างอิงทางบัญชีใด ๆ ทั้งสิ้น
+--------------------------------------------------
+
+ข้อมูลการทดสอบ:
+- ผู้ส่ง: บริษัท บิลท์ ฮาร์ท จำกัด <${senderEmail}>
+- ผู้รับ: ${recipientEmail}
+- หัวข้อ: ${subject}
+- ไฟล์แนบ: BWORK_TEST_SAMPLE.pdf
+- วันและเวลาที่ทดสอบ: ${dateFormatted}
+- การเชื่อมต่อ: Google OAuth2 Gmail API (scope: gmail.send)
+
+ขอแสดงความนับถือ,
+ทีมพัฒนาระบบ BWORK POS
+บริษัท บิลท์ ฮาร์ท จำกัด`;
+
+  const htmlBody = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${subject}</title><style>body { font-family: -apple-system, BlinkMacSystemFont, 'Prompt', 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f1f5f9; color: #1e293b; } .container { max-width: 600px; margin: 24px auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; } .header { background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%); color: #ffffff; padding: 32px 24px; text-align: center; } .header h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; } .header p { margin: 8px 0 0; font-size: 14px; opacity: 0.9; } .body { padding: 32px 24px; } .disclaimer-box { background-color: #fef2f2; border: 2px solid #ef4444; border-radius: 12px; padding: 16px; margin: 20px 0; color: #991b1b; } .disclaimer-box h3 { margin: 0 0 8px; font-size: 16px; font-weight: 800; } .disclaimer-box p { margin: 0; font-size: 13px; line-height: 1.5; } .card { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 20px 0; } .card-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #cbd5e1; font-size: 14px; } .card-row:last-child { border-bottom: none; } .label { color: #64748b; font-weight: 600; } .value { color: #0f172a; font-weight: 700; text-align: right; } .attachment-box { display: flex; align-items: center; gap: 12px; background: rgba(79, 70, 229, 0.08); border: 1.5px solid #818cf8; border-radius: 10px; padding: 14px 18px; margin: 20px 0; } .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px; text-align: center; font-size: 12px; color: #64748b; }</style></head><body><div class="container"><div class="header"><h1>${senderName}</h1><p>ระบบ BWORK POS — Gmail API Integration Test</p></div><div class="body"><p style="font-size: 16px; line-height: 1.6; margin-top: 0;">เรียน <strong>คุณากร ไวยณัทท์</strong>,</p><p style="font-size: 14px; line-height: 1.6; color: #475569;">นี่คืออีเมลทดสอบระบบ (System Integration Test) ที่ส่งผ่าน Google Gmail API โดยระบบ BWORK POS จาก Production Environment</p><div class="disclaimer-box"><h3>⚠️ ข้อความแจ้งเตือนสำคัญ (Important Disclaimer)</h3><p>เอกสาร PDF ที่แนบมานี้เป็น <strong>เอกสารข้อมูลสมมติเพื่อการทดสอบระบบเท่านั้น</strong> ไม่ใช่ใบกำกับภาษี หรือใบเสร็จรับเงินจริง และไม่สามารถนำไปใช้ในทางภาษีหรืออ้างอิงทางบัญชีได้</p></div><div class="card"><div class="card-row"><span class="label">ผู้ส่ง:</span><span class="value">${senderName}</span></div><div class="card-row"><span class="label">อีเมลผู้ส่ง:</span><span class="value">${senderEmail}</span></div><div class="card-row"><span class="label">ผู้รับ:</span><span class="value">${recipientEmail}</span></div><div class="card-row"><span class="label">หัวข้อ:</span><span class="value">${subject}</span></div><div class="card-row"><span class="label">วันเวลาที่ส่ง:</span><span class="value">${dateFormatted}</span></div><div class="card-row"><span class="label">สถานะการทดสอบ:</span><span class="value" style="color: #4f46e5;">Gmail API Live Dispatch (1 Approved Test)</span></div></div><div class="attachment-box"><div style="font-size: 24px;">📄</div><div><div style="font-weight: 800; font-size: 14px; color: #4338ca;">ไฟล์แนบ: BWORK_TEST_SAMPLE.pdf</div><div style="font-size: 12px; color: #64748b;">เอกสาร PDF ข้อมูลสมมติในหน่วยความจำ (In-memory generated)</div></div></div></div><div class="footer"><div>© ${new Date().getFullYear()} บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.)</div><div style="margin-top: 4px;">B-WORK Coworking Space & Meeting Rooms</div><div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">ข้อความนี้ส่งจากการทดสอบระบบของผู้ดูแลระบบ</div></div></div></body></html>`;
+
+  return { subject, textBody, htmlBody };
+}
+
 
 function isValidEmail(email) {
   if (!email || typeof email !== 'string') return false;
@@ -8687,6 +8762,261 @@ export default {
             oauth_connected: false,
             error: cleanError
           }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // ----------------------------------------------------
+      // GMAIL ADMIN TEST SWITCH (GET / POST)
+      // ----------------------------------------------------
+      if (pathname === '/api/admin/gmail/test-switch') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        if (auth.user?.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'สงวนสิทธิ์เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น' }), { status: 403, headers: corsHeaders });
+        }
+
+        if (method === 'POST') {
+          const body = await request.json().catch(() => ({}));
+          const enabled = Boolean(body?.enabled);
+          if (env.DB) {
+            await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_dispatch_enabled', ?)").bind(enabled ? 'true' : 'false').run().catch(() => {});
+          }
+          return new Response(JSON.stringify({
+            success: true,
+            test_dispatch_enabled: enabled,
+            customer_live_dispatch_enabled: isLiveDispatchEnabled(env)
+          }), { headers: corsHeaders });
+        }
+
+        // GET: Check switch status
+        let testEnabled = isTestDispatchEnabledWorker(env);
+        if (env.DB) {
+          const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gmail_test_dispatch_enabled'").first().catch(() => null);
+          if (row && row.value !== undefined) {
+            testEnabled = String(row.value).trim().toLowerCase() === 'true';
+          }
+        }
+        return new Response(JSON.stringify({
+          success: true,
+          test_dispatch_enabled: testEnabled,
+          customer_live_dispatch_enabled: isLiveDispatchEnabled(env)
+        }), { headers: corsHeaders });
+      }
+
+      // ----------------------------------------------------
+      // GMAIL ADMIN ISOLATED TEST SEND (POST)
+      // ----------------------------------------------------
+      if (pathname === '/api/admin/gmail/test-send' && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        if (auth.user?.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'สงวนสิทธิ์เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น' }), { status: 403, headers: corsHeaders });
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const isDryRun = body?.dry_run !== false;
+        const targetEmail = TARGET_TEST_RECIPIENT;
+        const subject = TEST_EMAIL_SUBJECT;
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'admin';
+
+        // Check test switch from DB or env
+        let testSwitchEnabled = isTestDispatchEnabledWorker(env);
+        if (env.DB) {
+          const switchRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gmail_test_dispatch_enabled'").first().catch(() => null);
+          if (switchRow && switchRow.value !== undefined) {
+            testSwitchEnabled = String(switchRow.value).trim().toLowerCase() === 'true';
+          }
+        }
+
+        const senderEmail = env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+        const senderName = env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+        const replyTo = env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
+        const pdfBytes = createTestSamplePdfUint8Array();
+        const nowIso = new Date().toISOString();
+
+        const { textBody, htmlBody } = generateTestEmailContentWorker({
+          recipientEmail: targetEmail,
+          senderEmail,
+          senderName
+        });
+
+        // Helper to record audit log in settings
+        const recordAudit = async (status, extra = {}) => {
+          if (!env.DB) return;
+          try {
+            const logsRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'").first().catch(() => null);
+            let logs = [];
+            if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+            if (!Array.isArray(logs)) logs = [];
+            logs.unshift({
+              id: 'test_audit_' + Date.now(),
+              timestamp: new Date().toISOString(),
+              status,
+              recipient: targetEmail,
+              subject,
+              dispatched_by: staffName,
+              ...extra
+            });
+            if (logs.length > 50) logs = logs.slice(0, 50);
+            await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)").bind(JSON.stringify(logs)).run();
+            await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)").bind(JSON.stringify({
+              status,
+              message_id: extra.message_id || null,
+              error: extra.error || null,
+              updated_at: new Date().toISOString()
+            })).run();
+          } catch (_) {}
+        };
+
+        // 1. Dry Run Mode
+        if (isDryRun) {
+          const simulatedMsgId = 'dry_run_test_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+          await recordAudit('dry_run', { is_dry_run: true, message_id: simulatedMsgId, file_name: 'BWORK_TEST_SAMPLE.pdf', file_size: pdfBytes.length });
+          return new Response(JSON.stringify({
+            success: true,
+            dry_run: true,
+            status: 'dry_run',
+            message: 'จำลองการส่งอีเมลทดสอบเรียบร้อยแล้ว (Dry-run)',
+            data: {
+              recipient: targetEmail,
+              subject,
+              message_id: simulatedMsgId,
+              file_name: 'BWORK_TEST_SAMPLE.pdf',
+              file_size: pdfBytes.length,
+              dispatched_by: staffName,
+              test_dispatch_switch: testSwitchEnabled,
+              customer_dispatch_switch: isLiveDispatchEnabled(env)
+            }
+          }), { headers: corsHeaders });
+        }
+
+        // 2. Live Dispatch Validations
+        if (!testSwitchEnabled) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'ระบบยังไม่ได้เปิดสวิตช์ทดสอบส่งอีเมล (GMAIL_TEST_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)'
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        if (!isGmailConfigured(env)) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'ยังไม่ได้ตั้งค่า Gmail API OAuth2 Credentials ในระบบ กรุณาตรวจสอบการตั้งค่า'
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        // Durable Concurrency Check via settings key gmail_test_send_claim
+        if (env.DB) {
+          const claimRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gmail_test_send_claim'").first().catch(() => null);
+          let claim = null;
+          if (claimRow?.value) { try { claim = JSON.parse(claimRow.value); } catch (_) {} }
+          if (claim && claim.status === 'claiming') {
+            const elapsedSec = (Date.now() - new Date(claim.claimed_at).getTime()) / 1000;
+            if (elapsedSec < 60) {
+              return new Response(JSON.stringify({
+                error: 'กำลังดำเนินการส่งอีเมลทดสอบอยู่ กรุณารอสักครู่ (In-flight)'
+              }), { status: 429, headers: corsHeaders });
+            }
+          }
+          await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)").bind(JSON.stringify({
+            status: 'claiming',
+            claimed_at: nowIso,
+            dispatched_by: staffName
+          })).run().catch(() => {});
+        }
+
+        try {
+          const accessToken = await getGmailAccessTokenWorker({
+            clientId: env.GMAIL_CLIENT_ID,
+            clientSecret: env.GMAIL_CLIENT_SECRET,
+            refreshToken: env.GMAIL_REFRESH_TOKEN
+          });
+
+          const mimePayload = buildMimeMessageWorker({
+            from: `${senderName} <${senderEmail}>`,
+            to: targetEmail,
+            replyTo,
+            subject,
+            text: textBody,
+            html: htmlBody,
+            attachmentBytes: pdfBytes,
+            attachmentFileName: 'BWORK_TEST_SAMPLE.pdf'
+          });
+
+          const base64UrlRaw = base64UrlEncode(mimePayload);
+
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 15000);
+
+          let gmailRes;
+          try {
+            gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+              method: 'POST',
+              headers: {
+                'Authorization': 'Bearer ' + accessToken,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ raw: base64UrlRaw }),
+              signal: controller.signal
+            });
+          } catch (netErr) {
+            clearTimeout(timer);
+            await recordAudit('uncertain', { is_dry_run: false, error: netErr.message || 'Timeout/Network error' });
+            return new Response(JSON.stringify({
+              success: false,
+              status: 'uncertain',
+              error: 'คำขอส่งอีเมลไปยัง Gmail API หมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกสถานะเป็น "uncertain" และจะไม่ส่งซ้ำอัตโนมัติ เพื่อความปลอดภัย กรุณาตรวจสอบก่อนทำรายการใหม่'
+            }), { status: 504, headers: corsHeaders });
+          }
+          clearTimeout(timer);
+
+          if (!gmailRes.ok) {
+            const errBody = await gmailRes.text().catch(() => '');
+            const errMsg = `Gmail API ส่งข้อความไม่สำเร็จ (HTTP ${gmailRes.status}): ${errBody}`;
+            await recordAudit('failed', { is_dry_run: false, error: errMsg });
+            return new Response(JSON.stringify({
+              success: false,
+              status: 'failed',
+              error: errMsg
+            }), { status: 500, headers: corsHeaders });
+          }
+
+          const gmailData = await gmailRes.json().catch(() => ({}));
+          const finalMsgId = gmailData.id || ('gmail_test_' + Date.now());
+
+          await recordAudit('gmail_accepted', {
+            is_dry_run: false,
+            message_id: finalMsgId,
+            file_name: 'BWORK_TEST_SAMPLE.pdf',
+            file_size: pdfBytes.length
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            dry_run: false,
+            status: 'gmail_accepted',
+            message: 'Gmail API รับคำขอส่งอีเมลทดสอบเรียบร้อยแล้ว (รอคิวส่งของ Gmail)',
+            data: {
+              recipient: targetEmail,
+              subject,
+              message_id: finalMsgId,
+              file_name: 'BWORK_TEST_SAMPLE.pdf',
+              file_size: pdfBytes.length,
+              dispatched_by: staffName,
+              test_dispatch_switch: false,
+              customer_dispatch_switch: false
+            }
+          }), { headers: corsHeaders });
+        } catch (outerErr) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'เกิดข้อผิดพลาดในการประมวลผลคำขอส่งอีเมล: ' + outerErr.message
+          }), { status: 500, headers: corsHeaders });
+        } finally {
+          // Crucial requirement: Reset test switch back to false immediately even if error occurs!
+          if (env.DB) {
+            await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_dispatch_enabled', 'false')").run().catch(() => {});
+          }
         }
       }
 

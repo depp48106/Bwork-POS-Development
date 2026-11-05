@@ -14,3 +14,12 @@ bucket_name = "bwork-uploads"
 
 [triggers]
 crons = ["* * * * *", "0 17 * * *"] # * * * * * = Auto-Cancel Expired Bookings (every 1 min), 0 17 * * * = 17:00 UTC Midnight Cloud Backup
+
+[vars]
+ENVIRONMENT = "development"
+APP_ENV = "development"
+GMAIL_LIVE_DISPATCH_ENABLED = "false"
+GMAIL_TEST_DISPATCH_ENABLED = "false"
+GMAIL_SENDER_NAME = "บริษัท บิลท์ ฮาร์ท จำกัด"
+GMAIL_USER_EMAIL = "coworkings.bwork@gmail.com"
+GMAIL_REPLY_TO = "coworkings.bwork@gmail.com"
