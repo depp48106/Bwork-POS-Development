@@ -1,11 +1,11 @@
 # BWORK-POS | DEVELOPMENT HANDOFF REPORT
 
-> **Document Version:** 1.8.0  
+> **Document Version:** 1.8.1  
 > **Date:** 5 พฤศจิกายน 2026  
 > **Workspace:** Development (`D:\Project BL\Bwork-POS-Development-Home`)  
 > **Branch:** `integration/home-office-20261021`  
 > **Remote Repository:** `https://github.com/depp48106/Bwork-POS-Development.git`  
-> **Status:** **TAX INVOICE MODAL REDESIGNED TO POS PALETTE / EMAIL UPDATE & DESYNC BUG FULLY RESOLVED / EDITING DIRTY SAFETY LOCK ENFORCED / 9/9 AUTOMATED UAT SUITES PASSED / DEVELOPMENT ONLY**
+> **Status:** **RECIPIENT SINGLE TRUTH ENFORCED (`booking.tax_email`) / HISTORICAL INVOICE MUTATION REMOVED / CONFIRMATION SNAPSHOT & BACKEND MISMATCH REJECTION VERIFIED / 6/6 TEST SCENARIOS PASSED / DEVELOPMENT ONLY**
 
 ---
 
@@ -497,3 +497,106 @@
 - **Desktop Redesign (1280px):** `pos_tax_modal_desktop_redesign.png`
 - **Mobile Redesign (390px):** `pos_tax_modal_mobile_390_redesign.png`
 - **Email Preview with Updated Email:** `pos_tax_modal_preview_desktop.png`
+
+---
+
+## 10. ระบบรักษาความสอดคล้องของข้อมูลผู้รับและการส่งอีเมล (Recipient Truth & Safety Audit)
+
+> **Implementation Baseline:** Commit ต่อเนื่องจาก `146fd457`  
+> **Key Architecture Decisions:**
+> 1. ยึด `booking.tax_email` เป็น Single Source of Truth สำหรับผู้รับอีเมลใบกำกับภาษีเพียงแห่งเดียว
+> 2. ยกเลิกการสั่ง `UPDATE tax_invoices` ย้อนหลังเมื่อมีการแก้ไขข้อมูลผู้เสียภาษีของการจอง เพื่อรักษาประวัติเอกสารดั้งเดิม
+> 3. ผูกหน้าต่างยืนยันการส่ง (Confirmation Dialog) ด้วย Snapshot ข้อมูล และตรวจสอบความตรงกันที่ Backend ป้องกันการส่งผิดพลาด
+
+### 10.1 กำหนดแหล่งอีเมลผู้รับเอกสาร (Recipient Single Source of Truth)
+- **ปัญหาเดิม:** โค้ดเดิมมีการใช้ `booking.tax_email || invoice.tax_email` ใน endpoint `email-preview` และ `send-email` ทำให้หากผู้ใช้ล้างอีเมลในฟอร์มแล้วบันทึก ระบบกลับย้อนไปดึงอีเมลเก่าจาก `invoice.tax_email` มาใช้โดยไม่ตั้งใจ
+- **การแก้ไข:**
+  - กำหนดให้ `booking.tax_email` เป็นแหล่งข้อมูลผู้รับเอกสารเพียงหนึ่งเดียว ทั้งในฝั่ง Express (`server.js`) และ Cloudflare Worker (`worker.js`):
+    ```javascript
+    const recipientEmail = (booking.tax_email || '').trim();
+    if (!recipientEmail) {
+      return res.status(400).json({ error: 'ยังไม่ได้ระบุอีเมลผู้รับ กรุณากรอกและบันทึกอีเมลในข้อมูลใบกำกับภาษีก่อนดูตัวอย่าง' });
+    }
+    ```
+  - หาก `booking.tax_email` เป็นค่าว่าง ระบบจะถือว่าไม่มีผู้รับ และปฏิเสธคำขอด้วย **HTTP 400** ทันทีทั้ง Preview และ Send โดยไม่มีการ fallback ไปใช้ค่าเก่าเด็ดขาด
+
+### 10.2 การยกเลิกและจำกัดขอบเขตการแก้ไขตาราง `tax_invoices`
+- **ปัญหาเดิม:** ใน `PUT /api/bookings/:id/tax-invoice` มีคำสั่ง `UPDATE tax_invoices SET tax_name = ?, tax_id = ?, ... WHERE booking_id = ?` ซึ่งทำให้เอกสารใบกำกับภาษีที่เคยออกไปแล้วในอดีตถูกแก้ไขย้อนหลังโดยไม่ถูกต้อง
+- **การแก้ไข:**
+  - ตัดบล็อกคำสั่ง `UPDATE tax_invoices` ออกจาก `PUT /api/bookings/:id/tax-invoice` ทั้งใน Express และ Cloudflare Worker
+  - แยกข้อมูลเอกสารภาษี (Document Tax Metadata), ข้อมูลผู้รับปัจจุบัน (`booking.tax_email`) และประวัติการจัดส่งในอดีต (`tax_invoices.email_recipient`, `tax_invoices.email_status`, `tax_invoices.email_sent_at`, และ `tax_invoice_email_logs`) ออกจากกันอย่างเด็ดขาด
+  - การแก้ไขข้อมูลผู้เสียภาษีของการจองจะไม่แตะต้องหรือแก้ไขข้อมูลในตาราง `tax_invoices` ย้อนหลัง
+  - การอัปเดตสถานะการจัดส่งจะเกิดขึ้นเฉพาะเมื่อมีการส่งจริงผ่าน `POST /api/bookings/:id/tax-invoice/send-email` และมีผลเฉพาะแถวของเอกสาร ID ที่ถูกส่งเท่านั้น
+
+### 10.3 กลไก Snapshot และการตรวจสอบความถูกต้องของหน้าต่างยืนยัน (Confirmation Safety Binding)
+1. **Frontend Snapshot Binding:**
+   - เมื่อกดเปิดหน้าต่างยืนยันส่งจริง ระบบจะบันทึกสถานะ snapshot:
+     ```javascript
+     setConfirmedSnapshot({
+       bookingId: bookingId,
+       invoiceId: activePdfInvoice.id,
+       recipientEmail: recipientEmail,
+       invoiceNumber: activePdfInvoice.invoice_number || ('INV-' + bookingId),
+       fileName: activePdfInvoice.file_name || 'Tax_Invoice.pdf'
+     });
+     ```
+   - หน้าต่างยืนยันจะแสดงผลตาม `confirmedSnapshot` โดยตรง
+   - มี `useEffect` ติดตามความเปลี่ยนแปลง: หากมีการเปลี่ยน `bookingId`, สลับเอกสาร PDF (`activePdfInvoice.id`), หรือเปลี่ยน `recipientEmail` ในระหว่างที่หน้าต่างยืนยันเปิดอยู่ หน้าต่างยืนยันจะปิดตัวลงทันที และล้าง snapshot เพื่อบังคับให้ผู้ใช้ตรวจสอบใหม่
+2. **Backend Authoritative Enforcement:**
+   - ฝั่ง Frontend ส่ง `recipient_email` ที่ผ่านการยืนยันมาใน payload
+   - ฝั่ง Backend (Express & Worker) ตรวจสอบ:
+     ```javascript
+     if (!recipient_email || recipient_email.trim().toLowerCase() !== authoritativeEmail.toLowerCase()) {
+       return res.status(400).json({
+         error: `อีเมลผู้รับที่ยืนยัน (${recipient_email || 'ไม่ระบุ'}) ไม่ตรงกับข้อมูลล่าสุดที่บันทึกไว้ในระบบ (${authoritativeEmail}) กรุณาตรวจสอบและยืนยันใหม่`
+       });
+     }
+     ```
+   - ป้องกันช่องโหว่การเปลี่ยนอีเมลหรือการเรียก API สวนทาง (Race Conditions) โดยไม่อนุญาตให้ส่งไปยังอีเมลที่ไม่ตรงกับฐานข้อมูลเด็ดขาด
+3. **ป้องกัน Out-of-order Response:**
+   - ใน `useEffect` เมื่อมีการสลับ `bookingId` มีการใช้แฟล็ก `isCancelled` เพื่อตัดทอนการตอบกลับที่ล่าช้าของ booking ก่อนหน้า ป้องกันข้อมูลข้ามกัน
+
+### 10.4 ปรับชื่อส่วนการจัดส่งเอกสารบน UI
+- เปลี่ยนชื่อหัวข้อการ์ดจัดส่งเอกสารใน `TaxInvoiceManagementModal.jsx`:
+  - จากเดิม: `การจัดส่งเอกสารทางอีเมล (e-Tax)`
+  - ปรับเป็น: **`ส่งเอกสารทางอีเมล`** ให้กระชับ สุภาพ และตรงตามคู่มือ UI ของระบบ
+
+### 10.5 ผลการทดสอบ (Verification & Test Results)
+1. **Backend Unit & Safety Suite (`backend/tests/taxInvoiceEmailDryRun.test.cjs`):**
+   - **13/13 PASS**
+2. **Comprehensive Strict Rules Integration Suite (`scratch/test_strict_tax_invoice_rules.cjs`):**
+   - **Suite 1: Empty booking.tax_email + stale invoice.tax_email**
+     - Preview API: HTTP 400 Bad Request (`ยังไม่ได้ระบุอีเมลผู้รับ...`) PASS
+     - Send API: HTTP 400 Bad Request (`ยังไม่ได้ระบุอีเมลผู้รับในระบบ...`) PASS
+     - ไม่มีการ fallback ใช้อีเมลเก่าเด็ดขาด PASS
+   - **Suite 2: Edit recipient A -> B**
+     - บันทึกอีเมล B: สำเร็จ
+     - Preview API: แสดง recipient email เป็น B PASS
+     - Confirmation Snapshot: แสดง recipient email เป็น B PASS
+     - Dry-run Send API: ได้รับ B และตอบกลับสำเร็จ PASS
+   - **Suite 3: Past history preservation**
+     - ตรวจสอบ `tax_invoices` ของเอกสารฉบับเดิมหลังแก้ไขข้อมูลการจอง
+     - `email_recipient`, `email_status`, `tax_name`, `tax_id` เดิมคงอยู่ครบถ้วน ไม่ถูกเขียนทับย้อนหลัง PASS
+   - **Suite 4: Backend mismatch validation**
+     - ส่ง `recipient_email: "stale.client@company.com"` ขณะที่ระบบบันทึก B: Backend ตอบกลับ HTTP 400 Mismatch ชัดเจน PASS
+     - ส่งคำขอโดยไม่แนบ `recipient_email`: Backend ตอบกลับ HTTP 400 ทันที PASS
+   - **Suite 5: Status lock against overwrite**
+     - รายการสถานะ `gmail_accepted`: ปฏิเสธด้วย HTTP 409 Conflict PASS
+     - รายการสถานะ `uncertain`: ปฏิเสธด้วย HTTP 409 Conflict PASS
+     - ไม่สามารถส่งซ้ำหรือเขียนทับด้วย Dry-run ได้ PASS
+   - **Suite 6: Browser UI CDP & Responsive Layout**
+     - ส่วนจัดส่งเอกสารแสดงชื่อ: **"ส่งเอกสารทางอีเมล"** PASS
+     - Desktop Viewport (1280px): แสดงผล 2 คอลัมน์สมบูรณ์ PASS
+     - Mobile Viewport (390px): `scrollWidth: 348 === clientWidth: 348` (Zero horizontal overflow) PASS
+
+### 10.6 รายการไฟล์และแผนการออกแพตช์เฉพาะส่วน (Selective Release Alignment)
+- **เป้าหมาย Release Branch:** `release/selective-gmail-tax-invoice-20261105` (Baseline commit: `cd9a4b44`)
+- **ชุดไฟล์ที่เปลี่ยนแปลงสำหรับการ Deploy (Selective Patch Files):**
+  1. `backend/server.js` (Express backend logic)
+  2. `backend/worker.js` (Cloudflare Worker logic)
+  3. `frontend/src/components/TaxInvoiceManagementModal.jsx` (UI logic & snapshot safety)
+  4. `backend/public/index.html` และ `backend/public/assets/index-BuMrcHJI.js` (Compiled static frontend bundle)
+- **เงื่อนไขความปลอดภัยในการ Deploy Production:**
+  - สวิตช์ `GMAIL_LIVE_DISPATCH_ENABLED` คงค่า `"false"` ไว้ตลอดเวลา ไม่เปิดส่งจริงในรอบนี้
+  - ไม่มีการเปลี่ยนแปลง Database Schema หรือ Migration ไฟล์ D1 ใด ๆ
+  - ไม่มีผลกระทบต่องานฟีเจอร์ RC Customer Type ที่พักไว้

@@ -96,6 +96,7 @@ export default function TaxInvoiceManagementModal({
   const [emailFeedback, setEmailFeedback] = useState(null);
   const [liveDispatchEnabled, setLiveDispatchEnabled] = useState(false);
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
+  const [confirmedSnapshot, setConfirmedSnapshot] = useState(null);
   const [showDryRunOptions, setShowDryRunOptions] = useState(false);
 
   const fileInputRef = useRef(null);
@@ -182,14 +183,60 @@ export default function TaxInvoiceManagementModal({
     }
   };
 
-  // Reset when booking changes
+  // Reset when booking changes and protect against out-of-order responses
   useEffect(() => {
+    let isCancelled = false;
     setIsEditingTaxInfo(false);
     setEmailFeedback(null);
     setPreviewData(null);
     setIsConfirmModalOpen(false);
+    setConfirmedSnapshot(null);
     setSelectedInvoiceId(null);
-    fetchTaxInvoiceData();
+    setTaxData(null);
+    setInvoices([]);
+
+    const loadData = async () => {
+      if (!bookingId) return;
+      try {
+        setLoading(true);
+        const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+        const res = await fetch(`/api/bookings/${bookingId}/tax-invoice`, {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (isCancelled) return;
+          setTaxData(data.tax_data);
+          const invList = data.invoices || [];
+          setInvoices(invList);
+          if (data.live_dispatch_enabled !== undefined) {
+            setLiveDispatchEnabled(Boolean(data.live_dispatch_enabled));
+          }
+
+          const pdfInv = invList.find(inv =>
+            inv.content_type?.toLowerCase().includes('pdf') ||
+            inv.file_name?.toLowerCase().endsWith('.pdf') ||
+            inv.file_url?.toLowerCase().endsWith('.pdf')
+          );
+          setSelectedInvoiceId(prev => {
+            if (prev && invList.some(inv => inv.id === prev)) return prev;
+            return pdfInv?.id || invList[0]?.id || null;
+          });
+
+          syncFormWithData(data.tax_data);
+        }
+      } catch (err) {
+        if (!isCancelled) console.error('Error fetching tax invoice details:', err);
+      } finally {
+        if (!isCancelled) setLoading(false);
+      }
+    };
+
+    loadData();
+    return () => { isCancelled = true; };
   }, [bookingId]);
 
   // Start editing tax information
@@ -342,12 +389,19 @@ export default function TaxInvoiceManagementModal({
   const recipientEmail = (taxData?.tax_email || '').trim();
   const isEmailValid = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(recipientEmail);
 
-  // Close confirmation modal automatically if recipient or active file changes
+  // Close confirmation modal automatically if booking, recipient, or active file changes
   useEffect(() => {
-    if (isConfirmModalOpen) {
-      setIsConfirmModalOpen(false);
+    if (isConfirmModalOpen && confirmedSnapshot) {
+      if (
+        confirmedSnapshot.bookingId !== bookingId ||
+        confirmedSnapshot.invoiceId !== activePdfInvoice?.id ||
+        confirmedSnapshot.recipientEmail !== recipientEmail
+      ) {
+        setIsConfirmModalOpen(false);
+        setConfirmedSnapshot(null);
+      }
     }
-  }, [recipientEmail, activePdfInvoice?.id]);
+  }, [isConfirmModalOpen, confirmedSnapshot, bookingId, activePdfInvoice?.id, recipientEmail]);
 
   // Open Email Preview Modal
   const handleOpenEmailPreview = async () => {
@@ -417,8 +471,13 @@ export default function TaxInvoiceManagementModal({
   }, [bookingId, activePdfInvoice?.id]);
 
   // Send Tax Invoice Email (Dry-run default or live Gmail)
-  const handleSendTaxEmail = async (isDryRun = true) => {
-    if (!bookingId || !activePdfInvoice || isSendingEmail) return;
+  const handleSendTaxEmail = async (isDryRun = true, targetSnapshot = null) => {
+    const targetInvoice = targetSnapshot
+      ? (invoices.find(inv => inv.id === targetSnapshot.invoiceId) || activePdfInvoice)
+      : activePdfInvoice;
+    const targetRecipient = targetSnapshot ? targetSnapshot.recipientEmail : recipientEmail;
+
+    if (!bookingId || !targetInvoice || isSendingEmail) return;
     try {
       setIsSendingEmail(true);
       setEmailFeedback(null);
@@ -430,13 +489,14 @@ export default function TaxInvoiceManagementModal({
           ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
         body: JSON.stringify({
-          invoice_id: activePdfInvoice.id,
-          recipient_email: recipientEmail,
+          invoice_id: targetInvoice.id,
+          recipient_email: targetRecipient,
           dry_run: isDryRun
         })
       });
       const data = await res.json();
       setIsConfirmModalOpen(false);
+      setConfirmedSnapshot(null);
       if (res.ok && data.success) {
         const msg = data.message || (isDryRun ? 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)' : 'Gmail รับคำขอส่งอีเมลเรียบร้อยแล้ว (รอคิวส่งของ Gmail)');
         setEmailFeedback({
@@ -460,6 +520,7 @@ export default function TaxInvoiceManagementModal({
       }
     } catch (err) {
       setIsConfirmModalOpen(false);
+      setConfirmedSnapshot(null);
       setEmailFeedback({
         type: 'error',
         message: 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์: ' + err.message
@@ -471,7 +532,7 @@ export default function TaxInvoiceManagementModal({
 
   const handleSimulateSendEmail = () => handleSendTaxEmail(true);
   const handleOpenLiveSendConfirm = () => {
-    if (!isPdfAttached || !isEmailValid || !hasSendPermission || !liveDispatchEnabled || isSendingEmail) return;
+    if (!isPdfAttached || !isEmailValid || !hasSendPermission || !liveDispatchEnabled || isSendingEmail || formDirty) return;
     if (activePdfInvoice?.email_status === 'gmail_accepted') {
       if (sysAlert) sysAlert('เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้');
       return;
@@ -480,9 +541,25 @@ export default function TaxInvoiceManagementModal({
       if (sysAlert) sysAlert('สถานะการส่งก่อนหน้าไม่แน่นอน (uncertain) เพื่อความปลอดภัย กรุณาตรวจสอบประวัติการส่งก่อนดำเนินการใหม่');
       return;
     }
+    setConfirmedSnapshot({
+      bookingId: bookingId,
+      invoiceId: activePdfInvoice.id,
+      recipientEmail: recipientEmail,
+      invoiceNumber: activePdfInvoice.invoice_number || ('INV-' + bookingId),
+      fileName: activePdfInvoice.file_name || 'Tax_Invoice.pdf'
+    });
     setIsConfirmModalOpen(true);
   };
-  const handleLiveSendEmailConfirmed = () => handleSendTaxEmail(false);
+
+  const handleLiveSendEmailConfirmed = () => {
+    if (!confirmedSnapshot || confirmedSnapshot.recipientEmail !== recipientEmail || confirmedSnapshot.invoiceId !== activePdfInvoice?.id) {
+      setIsConfirmModalOpen(false);
+      setConfirmedSnapshot(null);
+      if (sysAlert) sysAlert('ข้อมูลมีการเปลี่ยนแปลง กรุณาตรวจสอบและยืนยันการส่งใหม่อีกครั้ง');
+      return;
+    }
+    handleSendTaxEmail(false, confirmedSnapshot);
+  };
 
   const renderEmailStatusBadge = (status) => {
     switch (status) {
@@ -1793,7 +1870,7 @@ export default function TaxInvoiceManagementModal({
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <Mail size={16} color="#2563eb" />
                       <span style={{ fontSize: '0.9rem', fontWeight: 700, color: '#0f172a' }}>
-                        การจัดส่งเอกสารทางอีเมล (e-Tax)
+                        ส่งเอกสารทางอีเมล
                       </span>
                     </div>
                     <div>
@@ -2496,21 +2573,21 @@ export default function TaxInvoiceManagementModal({
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', paddingBottom: '6px' }}>
                     <span style={{ color: '#64748b' }}>อีเมลผู้รับ (To):</span>
                     <span id="confirm-recipient-email" style={{ color: '#2563eb', fontWeight: 700, wordBreak: 'break-all', textAlign: 'right' }}>
-                      {recipientEmail}
+                      {confirmedSnapshot?.recipientEmail || recipientEmail}
                     </span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', paddingBottom: '6px' }}>
                     <span style={{ color: '#64748b' }}>เลขที่ใบกำกับภาษี:</span>
                     <span id="confirm-invoice-number" style={{ color: '#0f172a', fontWeight: 700 }}>
-                      {activePdfInvoice?.invoice_number || ('INV-' + bookingId)}
+                      {confirmedSnapshot?.invoiceNumber || activePdfInvoice?.invoice_number || ('INV-' + bookingId)}
                     </span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9', paddingBottom: '6px' }}>
                     <span style={{ color: '#64748b' }}>ไฟล์แนบ PDF:</span>
                     <span id="confirm-file-name" style={{ color: '#059669', fontWeight: 700, wordBreak: 'break-all', textAlign: 'right' }}>
-                      📄 {activePdfInvoice?.file_name || 'Tax_Invoice.pdf'}
+                      📄 {confirmedSnapshot?.fileName || activePdfInvoice?.file_name || 'Tax_Invoice.pdf'}
                     </span>
                   </div>
 
