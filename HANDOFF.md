@@ -306,3 +306,23 @@
 - **การประเมินผลการแสดงผล:**
   - **สถานะทางระบบ:** Gmail API รับคำขอแล้ว (`gmail_accepted`) เข้าสู่คิวส่งจดหมายของ Google
   - **รอการยืนยันทางสายตา (Visual Verification Needed):** ผู้รับ (`kunakornwhynatt@gmail.com`) ตรวจสอบกล่องจดหมายของอีเมลฉบับล่าสุด (Message ID: `1a1aade3c63adccc`) เพื่อยืนยันว่าชื่อผู้ส่งแสดงเป็น **"บริษัท บิลท์ ฮาร์ท จำกัด"** โดยสมบูรณ์
+
+### 7.10 การตรวจและเตรียมปุ่มส่งใบกำกับภาษีจริงใน POS (Tax Invoice Live Dispatch UI Preparation)
+- **สาเหตุที่ไม่เห็นปุ่มส่งจริงในโค้ดเดิม:**
+  - โค้ดเดิมมีการประกาศฟังก์ชัน handler `handleLiveSendEmail()` ไว้แล้ว แต่ใน JSX ส่วน Render Action buttons มีเพียง 2 ปุ่ม ได้แก่ `btn-tax-email-preview` ("ดูตัวอย่างอีเมล") และ `btn-tax-simulate-send-email` ("จำลองส่งอีเมล (Dry-run)") โดยยังไม่ได้วางปุ่มสำหรับส่งจริง (`btn-tax-live-send-email`)
+- **การปรับปรุงและคุณสมบัติใหม่:**
+  1. **ปุ่มควบคุม 3 ปุ่ม:** จัดวาง Preview, Dry-run และ Live Send ครบถ้วน
+  2. **สวิตช์ความปลอดภัยและ Safety Gates:**
+     - ปุ่ม "ส่งอีเมล" จะเปิดใช้งานเมื่อ: มีสิทธิ์ (`admin`/`manage`/`pos`), มีอีเมลถูกต้อง, มีไฟล์ PDF แนบ, backend แจ้งว่าเปิดส่งจริงแล้ว (`live_dispatch_enabled === true`), และไม่ได้กำลังส่ง
+     - หากสวิตช์ส่งจริงปิดอยู่ (`GMAIL_LIVE_DISPATCH_ENABLED=false`): ปุ่มส่งจริงจะถูก disable พร้อมแสดงแถบเตือนสีเทาอ่อนชี้แจงเหตุผลและแนะนำให้ใช้ Dry-run
+  3. **หน้าต่างยืนยันก่อนส่งจริง (Dedicated Confirmation Modal):**
+     - ตรวจสอบอีเมลผู้รับ, เลขที่ใบกำกับภาษี, ชื่อไฟล์ PDF และขนาดไฟล์ พร้อมปุ่มยกเลิกและปุ่มยืนยันส่งจริง
+  4. **การป้องกันกดซ้ำและสถานะ Uncertain:**
+     - ปิดปุ่มทั้งหมดขณะส่ง แสดงสถานะกำลังหมุน และไม่ retry อัตโนมัติเมื่อเกิด timeout/uncertain
+  5. **การอัปเดตสถานะ:** แสดง Badge "Gmail รับคำขอแล้ว" (`gmail_accepted`) ทันทีที่ backend ตอบกลับ
+- **ผลการทดสอบส่วนติดต่อผู้ใช้ (UAT):**
+  - ผ่านชุดทดสอบอัตโนมัติบน Chrome CDP (`backend/tests/verifyTaxInvoiceModalUI.cjs`) ทั้ง Desktop และ Mobile Viewport (390px)
+  - บันทึกภาพหลักฐานใน Artifacts Directory ครบถ้วน
+- **สถานะ Selective Patch:**
+  - อัปเดตและบันทึกลงใน Development (`integration/home-office-20261021`) และ Release (`release/selective-gmail-tax-invoice-20261105`)
+  - **คงสถานะปลอดภัย:** ยังไม่มีการ Deploy เพิ่มเติม, ไม่เปิดสวิตช์ส่งจริงบน Production, และไม่ส่งอีเมลไปยังลูกค้าจริง
