@@ -452,6 +452,14 @@ export default function TaxInvoiceManagementModal({
   const handleSimulateSendEmail = () => handleSendTaxEmail(true);
   const handleOpenLiveSendConfirm = () => {
     if (!isPdfAttached || !isEmailValid || !hasSendPermission || !liveDispatchEnabled || isSendingEmail) return;
+    if (activePdfInvoice?.email_status === 'gmail_accepted') {
+      if (sysAlert) sysAlert('เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้');
+      return;
+    }
+    if (activePdfInvoice?.email_status === 'uncertain') {
+      if (sysAlert) sysAlert('สถานะการส่งก่อนหน้าไม่แน่นอน (uncertain) เพื่อความปลอดภัย กรุณาตรวจสอบประวัติการส่งก่อนดำเนินการใหม่');
+      return;
+    }
     setIsConfirmModalOpen(true);
   };
   const handleLiveSendEmailConfirmed = () => handleSendTaxEmail(false);
@@ -1690,8 +1698,7 @@ export default function TaxInvoiceManagementModal({
                         >
                           <AlertCircle size={14} color="#64748b" style={{ flexShrink: 0 }} />
                           <div>
-                            <strong>สวิตช์ส่งจริงปิดอยู่ (GMAIL_LIVE_DISPATCH_ENABLED=false):</strong> ปุ่ม “ส่งอีเมล” ถูกปิดใช้งานเพื่อความปลอดภัย กรุณาใช้ปุ่ม “จำลองส่งอีเมล (Dry-run)” เพื่อทดสอบกระบวนการ
-                          </div>
+                            <strong>ระบบยังไม่เปิดให้ส่งอีเมลจริง กรุณาติดต่อผู้ดูแลระบบ</strong></div>
                         </div>
                       )}
 
@@ -1763,13 +1770,13 @@ export default function TaxInvoiceManagementModal({
                           type="button"
                           id="btn-tax-live-send-email"
                           onClick={handleOpenLiveSendConfirm}
-                          disabled={!isPdfAttached || !isEmailValid || !hasSendPermission || !liveDispatchEnabled || isSendingEmail}
+                          disabled={!isPdfAttached || !isEmailValid || !hasSendPermission || !liveDispatchEnabled || isSendingEmail || activePdfInvoice?.email_status === 'gmail_accepted' || activePdfInvoice?.email_status === 'uncertain'}
                           style={{
                             height: '34px',
                             padding: '0 16px',
                             borderRadius: '8px',
                             border: 'none',
-                            backgroundColor: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail)
+                            backgroundColor: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail && activePdfInvoice?.email_status !== 'gmail_accepted' && activePdfInvoice?.email_status !== 'uncertain')
                               ? '#059669'
                               : '#94a3b8',
                             color: '#ffffff',
@@ -1778,15 +1785,17 @@ export default function TaxInvoiceManagementModal({
                             display: 'flex',
                             alignItems: 'center',
                             gap: '6px',
-                            cursor: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail) ? 'pointer' : 'not-allowed',
-                            opacity: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail) ? 1 : 0.65,
-                            boxShadow: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail) ? '0 2px 6px rgba(5, 150, 105, 0.3)' : 'none'
+                            cursor: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail && activePdfInvoice?.email_status !== 'gmail_accepted' && activePdfInvoice?.email_status !== 'uncertain') ? 'pointer' : 'not-allowed',
+                            opacity: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail && activePdfInvoice?.email_status !== 'gmail_accepted' && activePdfInvoice?.email_status !== 'uncertain') ? 1 : 0.65,
+                            boxShadow: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail && activePdfInvoice?.email_status !== 'gmail_accepted' && activePdfInvoice?.email_status !== 'uncertain') ? '0 2px 6px rgba(5, 150, 105, 0.3)' : 'none'
                           }}
                           title={
                             !isPdfAttached ? 'กรุณาแนบไฟล์ PDF ก่อนส่งอีเมล' :
                             !isEmailValid ? 'กรุณาระบุอีเมลที่ถูกต้อง' :
                             !hasSendPermission ? 'สงวนสิทธิ์เฉพาะผู้มีสิทธิ์ส่งอีเมล' :
-                            !liveDispatchEnabled ? 'ระบบปิดสวิตช์ส่งจริงอยู่ (GMAIL_LIVE_DISPATCH_ENABLED=false) ไม่สามารถส่งจริงได้ กรุณาใช้โหมดจำลองส่ง (Dry-run)' :
+                            activePdfInvoice?.email_status === 'gmail_accepted' ? 'เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้' :
+                            activePdfInvoice?.email_status === 'uncertain' ? 'สถานะการส่งก่อนหน้าไม่แน่นอน (uncertain) เพื่อความปลอดภัย กรุณาตรวจสอบประวัติการส่งก่อน' :
+                            !liveDispatchEnabled ? 'ระบบยังไม่เปิดให้ส่งอีเมลจริง กรุณาติดต่อผู้ดูแลระบบ' :
                             isSendingEmail ? 'กำลังดำเนินการ...' :
                             'ส่งอีเมลใบกำกับภาษีจริงไปยังลูกค้าผ่าน Gmail API'
                           }
