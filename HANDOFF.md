@@ -162,12 +162,14 @@
 ### 6.4 ผลการตรวจ OAuth Token Exchange จากเซิร์ฟเวอร์
 - ตรวจสอบผ่าน Admin diagnostic endpoint (`/api/admin/gmail/test-oauth`) บน Staging Worker โดยตรง
 - **ประวัติการทดสอบรอบที่ 1 (Version `da9e3d77`):**
-  - ผลตอบกลับจาก Google: **HTTP 401 Unauthorized** (`invalid_client`: The OAuth client was not found)
-- **ผลการทดสอบรอบล่าสุด (หลังผู้ใช้อัปเดต `GMAIL_CLIENT_ID` และ `GMAIL_CLIENT_SECRET` — Version `9f42f826`):**
-  - Google OAuth2 Server ตรวจพบและยอมรับ Client ID แล้ว (**ไม่พบ error `invalid_client` อีกต่อไป**)
-  - ผลตอบกลับรอบใหม่: **HTTP 400 Bad Request**
-    `{"error": "invalid_grant", "error_description": "Bad Request"}`
-- **ข้อสรุปและการแยกส่วนรายงาน:**
-  - โค้ดเชื่อมต่อของ Worker ทำงานถูกต้องสมบูรณ์ และ Client ID/Secret ชุดใหม่ถูกต้องตามระบบของ Google
-  - **รายการที่ยังติด:** ข้อผิดพลาด `invalid_grant` ชี้ว่าค่า `GMAIL_REFRESH_TOKEN` ใน Worker Secrets เดิม ถูกสร้างขึ้นโดยผูกกับ Client ID ชุดเก่า จำเป็นต้องสร้าง Refresh Token ใหม่โดยใช้คู่ Client ID & Client Secret ปัจจุบัน (ผ่าน OAuth Playground) แล้วรัน `wrangler secret put GMAIL_REFRESH_TOKEN`
-  - สวิตช์ `GMAIL_LIVE_DISPATCH_ENABLED` ยังคงเป็น `false` โดยเด็ดขาด ไม่มีการส่งอีเมล และไม่มีการเปิดเผย Token หรือ Secret
+  - ผลตอบกลับจาก Google: **HTTP 401 Unauthorized** (`invalid_client`)
+- **ประวัติการทดสอบรอบที่ 2 (Version `9f42f826` หลังอัปเดต Client ID/Secret):**
+  - ผลตอบกลับจาก Google: **HTTP 400 Bad Request** (`invalid_grant` จาก Refresh Token เดิมที่ผูกกับ Client ID เก่า)
+- **ผลการทดสอบรอบสมบูรณ์ (Version `791f95cf` หลังผู้ใช้อัปเดต `GMAIL_REFRESH_TOKEN` ใหม่):**
+  - สถานะ: **HTTP 200 OK — เชื่อมต่อและแลกเปลี่ยน Token สำเร็จสมบูรณ์!**
+  - ผลลัพธ์: `oauth_connected: true`, `app_env: "staging"`, `sender_email: "coworkings.bwork@gmail.com"`
+  - ข้อความ: *"เชื่อมต่อและแลกเปลี่ยน Google OAuth2 Token สำเร็จ (ไม่มีการส่งอีเมล)"*
+- **ข้อสรุปสถานะความปลอดภัย:**
+  - credentials ครบถ้วนและสามารถขอ Access Token จาก Google ได้จริง
+  - สวิตช์ความปลอดภัย `GMAIL_LIVE_DISPATCH_ENABLED="false"` คงปิดสนิท
+  - ไม่มีการส่งอีเมลจริง และไม่มีการเปิดเผย Token หรือ Secret ใด ๆ ทั้งสิ้น
