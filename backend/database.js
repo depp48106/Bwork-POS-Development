@@ -599,6 +599,35 @@ async function initDatabase() {
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_customer_id ON bookings(customer_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_contract_id ON bookings(contract_id)'); } catch (e) {}
 
+  // Migration 017: Tax Invoice Email Dispatch columns and logs table
+  try { await dbQuery.run("ALTER TABLE tax_invoices ADD COLUMN email_status TEXT DEFAULT 'unsent'"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE tax_invoices ADD COLUMN email_sent_at DATETIME"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE tax_invoices ADD COLUMN email_dry_run INTEGER DEFAULT 0"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE tax_invoices ADD COLUMN email_message_id TEXT"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE tax_invoices ADD COLUMN email_recipient TEXT"); } catch (e) {}
+  try { await dbQuery.run("ALTER TABLE tax_invoices ADD COLUMN email_error TEXT"); } catch (e) {}
+  try {
+    await dbQuery.run(`
+      CREATE TABLE IF NOT EXISTS tax_invoice_email_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+        tax_invoice_id INTEGER REFERENCES tax_invoices(id) ON DELETE CASCADE,
+        recipient_email TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'dry_run',
+        is_dry_run INTEGER DEFAULT 1,
+        message_id TEXT,
+        file_name TEXT,
+        file_size INTEGER,
+        dispatched_by TEXT,
+        payload_preview TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_tax_invoice_email_logs_booking ON tax_invoice_email_logs(booking_id)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_tax_invoice_email_logs_status ON tax_invoice_email_logs(status)');
+  } catch (e) {}
+
   // Performance: Database Indexes for High-Speed Queries
   try {
     await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_booking_items_booking_id ON booking_items(booking_id)');

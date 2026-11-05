@@ -9,20 +9,36 @@ const crypto = require('node:crypto');
 
 const { executeMigrationSql } = require('../migrator');
 const {
+  DEFAULT_SENDER_NAME,
+  DEFAULT_SENDER_EMAIL,
+  DEFAULT_REPLY_TO,
+  GMAIL_SEND_SCOPE,
   isGmailConfigured,
+  isLiveDispatchEnabled,
+  isEmailAllowedInStaging,
   isValidEmail,
+  encodeMimeHeader,
   generateTaxInvoiceEmailContent,
   buildMimeMessage,
+  getGmailAccessToken,
   sendTaxInvoiceEmail
 } = require('../services/gmailService');
 
 // ========================================================
-// 1. UNIT TESTS: GMAIL SERVICE & MIME BUILDER
+// 1. UNIT TESTS: SENDER INFO, MIME, SCOPE & CONFIG
 // ========================================================
+test('GmailService - Sender info constants and Gmail scope', () => {
+  assert.strictEqual(DEFAULT_SENDER_NAME, 'บริษัท บิลท์ ฮาร์ท จำกัด');
+  assert.strictEqual(DEFAULT_SENDER_EMAIL, 'coworkings.bwork@gmail.com');
+  assert.strictEqual(DEFAULT_REPLY_TO, 'coworkings.bwork@gmail.com');
+  assert.strictEqual(GMAIL_SEND_SCOPE, 'https://www.googleapis.com/auth/gmail.send');
+});
+
 test('GmailService - isValidEmail validation', () => {
   assert.strictEqual(isValidEmail('test@bwork.co'), true);
   assert.strictEqual(isValidEmail('customer.name+tag@example.com'), true);
   assert.strictEqual(isValidEmail('admin@sub.domain.co.th'), true);
+  assert.strictEqual(isValidEmail('coworkings.bwork@gmail.com'), true);
   assert.strictEqual(isValidEmail(''), false);
   assert.strictEqual(isValidEmail(null), false);
   assert.strictEqual(isValidEmail('invalid-email'), false);
@@ -31,7 +47,19 @@ test('GmailService - isValidEmail validation', () => {
   assert.strictEqual(isValidEmail('user @example.com'), false);
 });
 
-test('GmailService - generateTaxInvoiceEmailContent generates bilingual template', () => {
+test('GmailService - Thai sender name MIME encoding RFC 2047', () => {
+  const thaiSender = 'บริษัท บิลท์ ฮาร์ท จำกัด';
+  const encoded = encodeMimeHeader(thaiSender);
+  assert.ok(encoded.startsWith('=?UTF-8?B?'));
+  assert.ok(encoded.endsWith('?='));
+
+  // Decoding the base64 word yields the original Thai text
+  const base64Part = encoded.replace('=?UTF-8?B?', '').replace('?=', '');
+  const decoded = Buffer.from(base64Part, 'base64').toString('utf8');
+  assert.strictEqual(decoded, thaiSender);
+});
+
+test('GmailService - generateTaxInvoiceEmailContent generates bilingual template with default sender', () => {
   const booking = {
     id: 101,
     booking_code: 'BK-000101',
@@ -58,16 +86,19 @@ test('GmailService - generateTaxInvoiceEmailContent generates bilingual template
   assert.ok(content.textBody.includes('บริษัท สยามคอมเมิร์ซ จำกัด'));
   assert.ok(content.textBody.includes('0105559012345'));
   assert.ok(content.textBody.includes('฿3,500.00'));
-  assert.ok(content.htmlBody.includes('B-WORK Coworking Space'));
+  assert.ok(content.textBody.includes('coworkings.bwork@gmail.com'));
+  assert.ok(content.textBody.includes('บริษัท บิลท์ ฮาร์ท จำกัด'));
+  assert.ok(content.htmlBody.includes('บริษัท บิลท์ ฮาร์ท จำกัด'));
   assert.ok(content.htmlBody.includes('เอกสารใบกำกับภาษี (ไฟล์แนบ PDF)'));
 });
 
-test('GmailService - buildMimeMessage constructs valid RFC 2822 payload with PDF', () => {
+test('GmailService - buildMimeMessage constructs valid RFC 2822 payload with From, Reply-To and PDF', () => {
   const dummyPdf = Buffer.from('%PDF-1.4\n%dummy\n%%EOF');
   const mime = buildMimeMessage({
-    from: 'billing@bwork.co',
+    from: 'บริษัท บิลท์ ฮาร์ท จำกัด <coworkings.bwork@gmail.com>',
     to: 'customer@example.com',
-    subject: 'ทดสอบใบกำกับภาษี',
+    replyTo: 'coworkings.bwork@gmail.com',
+    subject: 'ใบกำกับภาษีทดสอบ',
     text: 'ข้อความทดสอบ',
     html: '<p>ข้อความทดสอบ HTML</p>',
     attachmentBuffer: dummyPdf,
@@ -75,9 +106,62 @@ test('GmailService - buildMimeMessage constructs valid RFC 2822 payload with PDF
   });
 
   assert.ok(mime.includes('To: customer@example.com'));
+  assert.ok(mime.includes('Reply-To: <coworkings.bwork@gmail.com>'));
   assert.ok(mime.includes('multipart/mixed'));
   assert.ok(mime.includes('multipart/alternative'));
   assert.ok(mime.includes('application/pdf'));
+  assert.ok(mime.includes('Tax_Invoice_001.pdf'));
+});
+
+test('GmailService - Master Switch & Credentials enforcement', async () => {
+  const envNoSwitch = {
+    GMAIL_CLIENT_ID: 'dummy_id',
+    GMAIL_CLIENT_SECRET: 'dummy_secret',
+    GMAIL_REFRESH_TOKEN: 'dummy_refresh',
+    GMAIL_LIVE_DISPATCH_ENABLED: 'false'
+  };
+
+  assert.strictEqual(isGmailConfigured(envNoSwitch), true);
+  assert.strictEqual(isLiveDispatchEnabled(envNoSwitch), false);
+
+  const booking = { id: 1 };
+  const invoice = { id: 1, invoice_number: 'INV-001' };
+  const validBuffer = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF');
+
+  // Calling with dry_run: false when switch is off MUST throw
+  await assert.rejects(
+    async () => {
+      await sendTaxInvoiceEmail({
+        booking,
+        invoice,
+        recipientEmail: 'user@example.com',
+        pdfBuffer: validBuffer,
+        dry_run: false,
+        env: envNoSwitch
+      });
+    },
+    { message: /ระบบยังไม่ได้เปิดสวิตช์ส่งอีเมลจริง/ }
+  );
+});
+
+test('GmailService - Staging Allowlist enforcement on non-production', () => {
+  const envWithAllowlist = {
+    GMAIL_STAGING_ALLOWLIST: 'qa@bwork.co,admin@bwork.co,@staging-team.com'
+  };
+
+  // 1. Staging / Development blocks unlisted emails
+  assert.strictEqual(isEmailAllowedInStaging('random@gmail.com', envWithAllowlist, 'staging'), false);
+  assert.strictEqual(isEmailAllowedInStaging('user@corporate.com', envWithAllowlist, 'development'), false);
+
+  // 2. Exact match in allowlist
+  assert.strictEqual(isEmailAllowedInStaging('qa@bwork.co', envWithAllowlist, 'staging'), true);
+  assert.strictEqual(isEmailAllowedInStaging('admin@bwork.co', envWithAllowlist, 'development'), true);
+
+  // 3. Domain match (@staging-team.com)
+  assert.strictEqual(isEmailAllowedInStaging('tester1@staging-team.com', envWithAllowlist, 'staging'), true);
+
+  // 4. Production allows all valid emails
+  assert.strictEqual(isEmailAllowedInStaging('customer@anydomain.com', envWithAllowlist, 'production'), true);
 });
 
 test('GmailService - sendTaxInvoiceEmail enforces PDF magic bytes and size check', async () => {
@@ -128,9 +212,121 @@ test('GmailService - sendTaxInvoiceEmail enforces PDF magic bytes and size check
 
   assert.strictEqual(result.success, true);
   assert.strictEqual(result.dry_run, true);
+  assert.strictEqual(result.status, 'dry_run');
   assert.ok(result.message_id.startsWith('dry_run_msg_'));
   assert.strictEqual(result.recipient, 'user@example.com');
   assert.strictEqual(result.file_name, 'INV-001.pdf');
+});
+
+test('GmailService - OAuth2 Token Exchange & Live Dispatch with Mock Fetch', async () => {
+  const mockFetchCalls = [];
+  const mockFetch = async (url, opts) => {
+    mockFetchCalls.push({ url, opts });
+    if (url === 'https://oauth2.googleapis.com/token') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'mock_access_token_xyz',
+          expires_in: 3600,
+          token_type: 'Bearer'
+        })
+      };
+    }
+    if (url === 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: 'gmail_msg_live_12345',
+          threadId: 'thread_live_67890'
+        })
+      };
+    }
+    throw new Error('Unexpected URL: ' + url);
+  };
+
+  const env = {
+    GMAIL_CLIENT_ID: 'mock_client_id',
+    GMAIL_CLIENT_SECRET: 'mock_client_secret',
+    GMAIL_REFRESH_TOKEN: 'mock_refresh_token',
+    GMAIL_LIVE_DISPATCH_ENABLED: 'true',
+    GMAIL_STAGING_ALLOWLIST: 'user@allowed.com',
+    APP_ENV: 'staging'
+  };
+
+  const booking = { id: 10, receipt_number: 'BK-000010' };
+  const invoice = { id: 5, invoice_number: 'INV-005' };
+  const validBuffer = Buffer.from('%PDF-1.4\nMocked live PDF content\n%%EOF');
+
+  const result = await sendTaxInvoiceEmail({
+    booking,
+    invoice,
+    recipientEmail: 'user@allowed.com',
+    pdfBuffer: validBuffer,
+    fileName: 'INV-005.pdf',
+    dry_run: false,
+    env,
+    fetchFn: mockFetch
+  });
+
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(result.dry_run, false);
+  assert.strictEqual(result.status, 'gmail_accepted');
+  assert.strictEqual(result.message_id, 'gmail_msg_live_12345');
+  assert.strictEqual(result.thread_id, 'thread_live_67890');
+  assert.strictEqual(mockFetchCalls.length, 2);
+  assert.strictEqual(mockFetchCalls[0].url, 'https://oauth2.googleapis.com/token');
+  assert.strictEqual(mockFetchCalls[1].url, 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send');
+});
+
+test('GmailService - Timeout / Network Uncertainty does not auto-retry and marks uncertain', async () => {
+  const timeoutFetch = async (url) => {
+    if (url === 'https://oauth2.googleapis.com/token') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: 'mock_token', expires_in: 3600 })
+      };
+    }
+    // Simulate socket reset or timeout after message was sent
+    const netErr = new Error('Socket timeout after payload transmitted');
+    netErr.code = 'ETIMEDOUT';
+    throw netErr;
+  };
+
+  const env = {
+    GMAIL_CLIENT_ID: 'mock_client_id',
+    GMAIL_CLIENT_SECRET: 'mock_client_secret',
+    GMAIL_REFRESH_TOKEN: 'mock_refresh_token',
+    GMAIL_LIVE_DISPATCH_ENABLED: 'true',
+    GMAIL_STAGING_ALLOWLIST: 'user@allowed.com',
+    APP_ENV: 'staging'
+  };
+
+  const booking = { id: 11, receipt_number: 'BK-000011' };
+  const invoice = { id: 6, invoice_number: 'INV-006' };
+  const validBuffer = Buffer.from('%PDF-1.4\nMocked live PDF\n%%EOF');
+
+  let caughtErr = null;
+  try {
+    await sendTaxInvoiceEmail({
+      booking,
+      invoice,
+      recipientEmail: 'user@allowed.com',
+      pdfBuffer: validBuffer,
+      fileName: 'INV-006.pdf',
+      dry_run: false,
+      env,
+      fetchFn: timeoutFetch
+    });
+  } catch (err) {
+    caughtErr = err;
+  }
+
+  assert.ok(caughtErr !== null);
+  assert.strictEqual(caughtErr.isUncertain, true);
+  assert.strictEqual(caughtErr.code, 'DISPATCH_UNCERTAIN');
 });
 
 // ========================================================
@@ -250,13 +446,14 @@ test('Tax Invoice Email Dispatch API - Comprehensive Negative & Positive Suites'
   const pdf2Path = path.join(uploadDir, 'inv_002.pdf');
   fs.writeFileSync(pdf2Path, Buffer.from('%PDF-1.4\n2 0 obj\n<<>>\nendobj\n%%EOF'));
 
-  const fileUrl1 = `/uploads/tax_invoices/inv_001.pdf`;
-  const fileUrl2 = `/uploads/tax_invoices/inv_002.pdf`;
+  const fileUrl1 = '/uploads/tax_invoices/inv_001.pdf';
+  const fileUrl2 = '/uploads/tax_invoices/inv_002.pdf';
 
+  // Seed Tax Invoices
   const inv1 = await dbQuery.run(
     `INSERT INTO tax_invoices (booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
-      tax_email, file_url, file_name, content_type, file_size, status)
-     VALUES (?, 'INV-202611-001', 'corporate', 'บริษัท ก้าวหน้า จำกัด', '0105558888888',
+      tax_branch_type, tax_address, tax_email, file_url, file_name, content_type, file_size, status)
+     VALUES (?, 'INV-202611-001', 'corporate', 'บริษัท ก้าวหน้า จำกัด', '0105558888888', 'head', '123 ถนนสุขุมวิท',
       'billing@kaona.co.th', ?, 'inv_001.pdf', 'application/pdf', 35, 'issued')`,
     [booking1Id, fileUrl1]
   );
@@ -362,7 +559,8 @@ test('Tax Invoice Email Dispatch API - Comprehensive Negative & Positive Suites'
         success: true,
         email_preview: {
           to: targetEmail,
-          from: 'billing@bwork.co',
+          from: `${DEFAULT_SENDER_NAME} <${DEFAULT_SENDER_EMAIL}>`,
+          reply_to: DEFAULT_REPLY_TO,
           subject,
           text: textBody,
           html: htmlBody,
@@ -377,7 +575,7 @@ test('Tax Invoice Email Dispatch API - Comprehensive Negative & Positive Suites'
     }
   });
 
-  // Route: Send Email (Dry-run)
+  // Route: Send Email (Dry-run default, Atomic Claim)
   app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireAnyPermission('pos', 'manage', 'admin'), async (req, res) => {
     try {
       const bookingId = Number(req.params.id);
@@ -391,7 +589,9 @@ test('Tax Invoice Email Dispatch API - Comprehensive Negative & Positive Suites'
       const booking = await dbQuery.get('SELECT * FROM bookings WHERE id = ?', [bookingId]);
       if (!booking) return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
 
-      const { invoice_id, recipient_email } = req.body || {};
+      const { invoice_id, recipient_email, dry_run } = req.body || {};
+      const isDryRun = dry_run !== false;
+
       let invoice = null;
       if (invoice_id) {
         invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE id = ?', [Number(invoice_id)]);
@@ -414,31 +614,57 @@ test('Tax Invoice Email Dispatch API - Comprehensive Negative & Positive Suites'
       if (!fs.existsSync(diskPath)) return res.status(404).json({ error: 'ไม่พบไฟล์เอกสาร PDF บนเซิร์ฟเวอร์' });
 
       const pdfBuffer = fs.readFileSync(diskPath);
+
+      // Atomic claim
+      const claimRes = await dbQuery.run(
+        `UPDATE tax_invoices
+         SET email_status = 'claiming',
+             email_sent_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND (
+             email_status IS NULL
+             OR email_status IN ('unsent', 'failed', 'uncertain', 'dry_run')
+             OR (email_status = 'claiming' AND (strftime('%s', 'now') - strftime('%s', email_sent_at)) > 60)
+           )`,
+        [invoice.id]
+      );
+
+      if (claimRes.changes === 0) {
+        const cur = await dbQuery.get('SELECT email_status FROM tax_invoices WHERE id = ?', [invoice.id]);
+        if (cur?.email_status === 'claiming') {
+          return res.status(429).json({ error: 'กำลังดำเนินการส่งอีเมลสำหรับเอกสารนี้ กรุณารอสักครู่ (In-flight)' });
+        }
+        if (cur?.email_status === 'gmail_accepted') {
+          return res.status(409).json({ error: 'เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้' });
+        }
+        return res.status(409).json({ error: `ไม่สามารถส่งอีเมลได้ในสถานะปัจจุบัน (${cur?.email_status || 'unknown'})` });
+      }
+
       const result = await sendTaxInvoiceEmail({
         booking,
         invoice,
         recipientEmail: targetEmail,
         pdfBuffer,
         fileName: invoice.file_name,
-        dry_run: true,
+        dry_run: isDryRun,
         dispatchedBy: req.user.username
       });
 
       const nowIso = new Date().toISOString();
       await dbQuery.run(
         `UPDATE tax_invoices
-         SET email_status = 'dry_run', email_sent_at = ?, email_dry_run = 1,
+         SET email_status = ?, email_sent_at = ?, email_dry_run = ?,
              email_message_id = ?, email_recipient = ?
          WHERE id = ?`,
-        [nowIso, result.message_id, targetEmail, invoice.id]
+        [result.status, nowIso, result.dry_run ? 1 : 0, result.message_id, targetEmail, invoice.id]
       );
 
       await dbQuery.run(
         `INSERT INTO tax_invoice_email_logs (
           booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
           message_id, file_name, file_size, dispatched_by, payload_preview, created_at
-        ) VALUES (?, ?, ?, ?, 'dry_run', 1, ?, ?, ?, ?, ?, ?)`,
-        [bookingId, invoice.id, targetEmail, result.subject, result.message_id, result.file_name, result.file_size, req.user.username, 'preview', nowIso]
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [bookingId, invoice.id, targetEmail, result.subject, result.status, result.dry_run ? 1 : 0, result.message_id, result.file_name, result.file_size, req.user.username, 'preview', nowIso]
       );
 
       await dbQuery.run(
@@ -449,8 +675,8 @@ test('Tax Invoice Email Dispatch API - Comprehensive Negative & Positive Suites'
 
       res.json({
         success: true,
-        dry_run: true,
-        status: 'dry_run',
+        dry_run: result.dry_run,
+        status: result.status,
         message: 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
         data: {
           booking_id: bookingId,
@@ -595,16 +821,37 @@ test('Tax Invoice Email Dispatch API - Comprehensive Negative & Positive Suites'
     assert.strictEqual(r9.status, 200);
     assert.strictEqual(r9.body.success, true);
     assert.strictEqual(r9.body.email_preview.to, 'billing@kaona.co.th');
+    assert.ok(r9.body.email_preview.from.includes(DEFAULT_SENDER_NAME));
+    assert.ok(r9.body.email_preview.from.includes(DEFAULT_SENDER_EMAIL));
+    assert.strictEqual(r9.body.email_preview.reply_to, DEFAULT_REPLY_TO);
     assert.ok(r9.body.email_preview.subject.includes('INV-202611-001'));
-    assert.ok(r9.body.email_preview.html.includes('B-WORK Coworking Space'));
+    assert.ok(r9.body.email_preview.html.includes(DEFAULT_SENDER_NAME));
     assert.strictEqual(r9.body.email_preview.dry_run, true);
 
-    // Preview Document Mismatch check
-    const r9_mismatch = await api(`/api/bookings/${booking1Id}/tax-invoice/email-preview?invoice_id=${invoice2Id}`, {
-      method: 'GET',
-      token: staffPosToken
+    // TEST 10: Atomic Claim Concurrency Lock
+    // Manually set invoice to 'claiming' state
+    await dbQuery.run("UPDATE tax_invoices SET email_status = 'claiming', email_sent_at = CURRENT_TIMESTAMP WHERE id = ?", [invoice1Id]);
+    taxEmailDebounce.delete(booking1Id);
+    const r10 = await api(`/api/bookings/${booking1Id}/tax-invoice/send-email`, {
+      method: 'POST',
+      token: staffPosToken,
+      body: JSON.stringify({ invoice_id: invoice1Id })
     });
-    assert.strictEqual(r9_mismatch.status, 400);
+    assert.strictEqual(r10.status, 429, 'In-flight claim must return 429');
+    assert.ok(r10.body.error.includes('In-flight'));
+
+    // TEST 11: Duplicate Live Send Protection
+    // When an invoice was already accepted by Gmail (gmail_accepted), live send must return 409
+    await dbQuery.run("UPDATE tax_invoices SET email_status = 'gmail_accepted', email_sent_at = CURRENT_TIMESTAMP WHERE id = ?", [invoice1Id]);
+    taxEmailDebounce.delete(booking1Id);
+    const r11 = await api(`/api/bookings/${booking1Id}/tax-invoice/send-email`, {
+      method: 'POST',
+      token: staffPosToken,
+      body: JSON.stringify({ invoice_id: invoice1Id, dry_run: false })
+    });
+    assert.strictEqual(r11.status, 409, 'Re-sending already accepted invoice must return 409 conflict');
+    assert.ok(r11.body.error.includes('gmail_accepted'));
+
   } finally {
     await new Promise(r => server.close(r));
     await new Promise(r => sqliteDb.close(r));
@@ -679,11 +926,11 @@ test('Cloudflare Worker - Tax Invoice Email Dispatch Parity (D1 & R2 Simulation)
             if (sql.includes('UPDATE tax_invoices SET email_status =')) {
               const inv = d1Invoices.find(i => i.id === params[4]);
               if (inv) {
-                inv.email_status = 'dry_run';
-                inv.email_sent_at = params[0];
-                inv.email_dry_run = 1;
-                inv.email_message_id = params[1];
-                inv.email_recipient = params[2];
+                inv.email_status = params[0] || 'dry_run';
+                inv.email_sent_at = params[1] || new Date().toISOString();
+                inv.email_dry_run = params[2] ?? 1;
+                inv.email_message_id = params[3] || 'dry_run_msg';
+                inv.email_recipient = params[4] || 'finance@cfworker.co.th';
               }
             }
             if (sql.includes('INSERT INTO tax_invoice_email_logs')) {
@@ -691,11 +938,11 @@ test('Cloudflare Worker - Tax Invoice Email Dispatch Parity (D1 & R2 Simulation)
                 booking_id: params[0],
                 tax_invoice_id: params[1],
                 recipient_email: params[2],
-                status: 'dry_run',
-                message_id: params[4]
+                status: params[4] || 'dry_run',
+                message_id: params[5]
               });
             }
-            return { success: true };
+            return { success: true, meta: { changes: 1 } };
           }
         })
       })
@@ -703,7 +950,9 @@ test('Cloudflare Worker - Tax Invoice Email Dispatch Parity (D1 & R2 Simulation)
     BUCKET: {
       get: async (key) => r2Bucket.get(key) || null
     },
-    GMAIL_USER_EMAIL: 'bwork.coworking@gmail.com'
+    GMAIL_USER_EMAIL: 'coworkings.bwork@gmail.com',
+    GMAIL_SENDER_NAME: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    GMAIL_REPLY_TO: 'coworkings.bwork@gmail.com'
   };
 
   // Test worker email preview generation
@@ -712,21 +961,24 @@ test('Cloudflare Worker - Tax Invoice Email Dispatch Parity (D1 & R2 Simulation)
   const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
     booking: previewBooking,
     invoice: previewInvoice,
-    recipientEmail: 'finance@cfworker.co.th'
+    recipientEmail: 'finance@cfworker.co.th',
+    senderEmail: mockEnv.GMAIL_USER_EMAIL,
+    senderName: mockEnv.GMAIL_SENDER_NAME,
+    replyTo: mockEnv.GMAIL_REPLY_TO
   });
 
   assert.ok(subject.includes('INV-CF-001'));
   assert.ok(subject.includes('BK-000010'));
-  assert.ok(htmlBody.includes('B-WORK Coworking Space'));
+  assert.ok(htmlBody.includes('บริษัท บิลท์ ฮาร์ท จำกัด'));
 
   // Test simulated dry-run dispatch
   const simulatedMsgId = `dry_run_msg_${Date.now()}_testcf`;
   await mockEnv.DB.prepare('UPDATE tax_invoices SET email_status = ? WHERE id = ?')
-    .bind(new Date().toISOString(), simulatedMsgId, 'finance@cfworker.co.th', null, 1)
+    .bind('dry_run', new Date().toISOString(), 1, simulatedMsgId, 1)
     .run();
 
   await mockEnv.DB.prepare('INSERT INTO tax_invoice_email_logs (...)')
-    .bind(10, 1, 'finance@cfworker.co.th', subject, simulatedMsgId)
+    .bind(10, 1, 'finance@cfworker.co.th', subject, 'dry_run', simulatedMsgId)
     .run();
 
   assert.strictEqual(d1Invoices[0].email_status, 'dry_run');

@@ -17,17 +17,79 @@ async function hashPassword(password) {
 
 // ==========================================
 // 1.14 TAX INVOICE EMAIL DISPATCH HELPERS (DRY-RUN / GMAIL)
+const DEFAULT_SENDER_NAME = 'บริษัท บิลท์ ฮาร์ท จำกัด';
+const DEFAULT_SENDER_EMAIL = 'coworkings.bwork@gmail.com';
+const DEFAULT_REPLY_TO = 'coworkings.bwork@gmail.com';
+const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+
+let cachedWorkerAccessToken = null;
+let cachedWorkerTokenExpiry = 0;
+
+function isGmailConfigured(env) {
+  return Boolean(
+    env?.GMAIL_CLIENT_ID &&
+    env?.GMAIL_CLIENT_SECRET &&
+    env?.GMAIL_REFRESH_TOKEN
+  );
+}
+
+function isLiveDispatchEnabled(env) {
+  return String(env?.GMAIL_LIVE_DISPATCH_ENABLED || '').toLowerCase() === 'true';
+}
+
 function isValidEmail(email) {
   if (!email || typeof email !== 'string') return false;
-  const re = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+  const re = /^[a-zA-Z0-9.!#$%'*+/=?^_`\{\|\}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
   return re.test(email.trim());
+}
+
+function isEmailAllowedInStaging(email, env, appEnv = (env?.APP_ENV || 'development')) {
+  if (appEnv === 'production') return true;
+  const rawList = env?.GMAIL_STAGING_ALLOWLIST || '';
+  if (!rawList.trim()) return false;
+  const target = String(email || '').trim().toLowerCase();
+  const allowed = rawList.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  return allowed.some(pattern => {
+    if (pattern.startsWith('@')) return target.endsWith(pattern);
+    return target === pattern;
+  });
+}
+
+function encodeMimeHeader(text) {
+  if (!text) return '';
+  if (/^[\x20-\x7E]+$/.test(text)) return text;
+  const utf8Bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (let i = 0; i < utf8Bytes.length; i++) {
+    binary += String.fromCharCode(utf8Bytes[i]);
+  }
+  const base64 = btoa(binary);
+  return `=?UTF-8?B?${base64}?=`;
+}
+
+function base64UrlEncode(strOrBytes) {
+  let base64 = '';
+  if (typeof strOrBytes === 'string') {
+    const utf8Bytes = new TextEncoder().encode(strOrBytes);
+    let binary = '';
+    for (let i = 0; i < utf8Bytes.length; i++) binary += String.fromCharCode(utf8Bytes[i]);
+    base64 = btoa(binary);
+  } else {
+    const uint8 = new Uint8Array(strOrBytes);
+    let binary = '';
+    for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+    base64 = btoa(binary);
+  }
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function generateTaxInvoiceEmailContent({
   booking,
   invoice,
   recipientEmail,
-  senderEmail = 'bwork.coworking@gmail.com'
+  senderEmail = DEFAULT_SENDER_EMAIL,
+  senderName = DEFAULT_SENDER_NAME,
+  replyTo = DEFAULT_REPLY_TO
 }) {
   const bookingId = booking?.id || booking?.booking_id || '-';
   const bookingCode = booking?.receipt_number || booking?.booking_code || ('BK-' + String(bookingId).padStart(6, '0'));
@@ -46,43 +108,121 @@ function generateTaxInvoiceEmailContent({
 
   const textBody = `เรียน ${customerName},
 
-` +
-    `บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่) ขอขอบพระคุณที่ท่านได้ใช้บริการ บีเวิร์ค โคเวิร์กกิ้ง สเปซ (B-WORK Coworking Space & Meeting Rooms)
+บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่) ขอขอบพระคุณที่ท่านได้ใช้บริการ บีเวิร์ค โคเวิร์กกิ้ง สเปซ (B-WORK Coworking Space & Meeting Rooms)
 
-` +
-    `ทางเราได้จัดทำเอกสารใบกำกับภาษี / ใบเสร็จรับเงินอิเล็กทรอนิกส์ (e-Tax Invoice / Receipt) สำหรับรายการจองของท่านเรียบร้อยแล้ว โดยมีรายละเอียดดังต่อไปนี้:
+ทางเราได้จัดทำเอกสารใบกำกับภาษี / ใบเสร็จรับเงินอิเล็กทรอนิกส์ (e-Tax Invoice / Receipt) สำหรับรายการจองของท่านเรียบร้อยแล้ว โดยมีรายละเอียดดังต่อไปนี้:
 
-` +
-    `- รหัสการจอง: ${bookingCode}
-` +
-    `- เลขที่ใบกำกับภาษี: ${invoiceNumber}
-` +
-    `- วันที่ออกเอกสาร: ${dateStr}
-` +
-    `- ผู้เสียภาษี: ${customerName}
-` +
-    `- เลขประจำตัวผู้เสียภาษี: ${taxId} (${branchText})
-` +
-    `- ยอดเงินรวมทั้งสิ้น: ฿${amount} บาท
+- รหัสการจอง: ${bookingCode}
+- เลขที่ใบกำกับภาษี: ${invoiceNumber}
+- วันที่ออกเอกสาร: ${dateStr}
+- ผู้เสียภาษี: ${customerName}
+- เลขประจำตัวผู้เสียภาษี: ${taxId} (${branchText})
+- ยอดเงินรวมทั้งสิ้น: ฿${amount} บาท
 
-` +
-    `ท่านสามารถเปิดดูหรือดาวน์โหลดไฟล์เอกสารใบกำกับภาษีอิเล็กทรอนิกส์ (ไฟล์แนบ PDF) ที่แนบมาพร้อมกับอีเมลฉบับนี้
+ท่านสามารถเปิดดูหรือดาวน์โหลดไฟล์เอกสารใบกำกับภาษีอิเล็กทรอนิกส์ (ไฟล์แนบ PDF) ที่แนบมาพร้อมกับอีเมลฉบับนี้
 
-` +
-    `หากท่านมีข้อสงสัยหรือต้องการสอบถามข้อมูลเพิ่มเติม สามารถติดต่อเราได้ที่:
-` +
-    `โทร: 02-000-0000
-อีเมล: support@bwork.co
+หากท่านมีข้อสงสัยหรือต้องการสอบถามข้อมูลเพิ่มเติม สามารถติดต่อเราได้ที่:
+โทร: 02-000-0000
+อีเมล: ${replyTo}
 LINE Official: @bwork
 
-` +
-    `ขอแสดงความนับถือ,
-ทีมงาน B-WORK Coworking Space
+ขอแสดงความนับถือ,
+${senderName}
 บริษัท บิลท์ ฮาร์ท จำกัด`;
 
-  const htmlBody = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${subject}</title><style>body { font-family: -apple-system, BlinkMacSystemFont, 'Prompt', 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f1f5f9; color: #1e293b; } .container { max-width: 600px; margin: 24px auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; } .header { background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: #ffffff; padding: 32px 24px; text-align: center; } .header h1 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px; } .header p { margin: 8px 0 0; font-size: 14px; opacity: 0.9; } .body { padding: 32px 24px; } .card { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 20px 0; } .card-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #cbd5e1; font-size: 14px; } .card-row:last-child { border-bottom: none; } .label { color: #64748b; font-weight: 600; } .value { color: #0f172a; font-weight: 700; text-align: right; } .attachment-box { display: flex; align-items: center; gap: 12px; background: rgba(2, 132, 199, 0.08); border: 1.5px solid #38bdf8; border-radius: 10px; padding: 14px 18px; margin: 20px 0; } .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px; text-align: center; font-size: 12px; color: #64748b; }</style></head><body><div class="container"><div class="header"><h1>B-WORK Coworking Space</h1><p>ใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบอิเล็กทรอนิกส์</p></div><div class="body"><p style="font-size: 16px; line-height: 1.6; margin-top: 0;">เรียน <strong>${customerName}</strong>,</p><p style="font-size: 14px; line-height: 1.6; color: #475569;">บริษัท บิลท์ ฮาร์ท จำกัด ขอขอบพระคุณที่ท่านได้ใช้บริการห้องประชุมและพื้นที่ทำงาน B-WORK ทางเราได้ออกเอกสารใบกำกับภาษีสำหรับรายการของท่านเรียบร้อยแล้ว รายละเอียดดังตารางด้านล่างนี้:</p><div class="card"><div class="card-row"><span class="label">รหัสการจอง:</span><span class="value">${bookingCode}</span></div><div class="card-row"><span class="label">เลขที่ใบกำกับภาษี:</span><span class="value" style="color: #0284c7;">${invoiceNumber}</span></div><div class="card-row"><span class="label">วันที่ออกเอกสาร:</span><span class="value">${dateStr}</span></div><div class="card-row"><span class="label">ผู้เสียภาษี:</span><span class="value">${customerName}</span></div><div class="card-row"><span class="label">เลขประจำตัวผู้เสียภาษี:</span><span class="value">${taxId} (${branchText})</span></div><div class="card-row" style="padding-top: 12px;"><span class="label" style="font-size: 15px;">ยอดเงินรวมทั้งสิ้น:</span><span class="value" style="font-size: 18px; color: #059669;">฿${amount}</span></div></div><div class="attachment-box"><div style="font-size: 24px;">📄</div><div><div style="font-weight: 800; font-size: 14px; color: #0369a1;">เอกสารใบกำกับภาษี (ไฟล์แนบ PDF)</div><div style="font-size: 12px; color: #64748b;">กรุณาตรวจสอบเอกสารฉบับสมบูรณ์ที่แนบมากับอีเมลนี้</div></div></div><p style="font-size: 13px; color: #64748b; line-height: 1.5;">หากท่านต้องการสอบถามข้อมูลเพิ่มเติม หรือแก้ไขข้อมูลภาษี กรุณาติดต่อฝ่ายบริการลูกค้า โทร 02-000-0000 หรือ LINE: @bwork</p></div><div class="footer"><div>© ${new Date().getFullYear()} บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.) · สำนักงานใหญ่</div><div style="margin-top: 4px;">B-WORK Coworking Space & Meeting Rooms · ถนนสุขุมวิท กรุงเทพมหานคร</div><div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">อีเมลฉบับนี้ส่งโดยระบบอัตโนมัติ กรุณาอย่าตอบกลับ</div></div></div></body></html>`;
+  const htmlBody = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${subject}</title><style>body { font-family: -apple-system, BlinkMacSystemFont, 'Prompt', 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f1f5f9; color: #1e293b; } .container { max-width: 600px; margin: 24px auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; } .header { background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: #ffffff; padding: 32px 24px; text-align: center; } .header h1 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px; } .header p { margin: 8px 0 0; font-size: 14px; opacity: 0.9; } .body { padding: 32px 24px; } .card { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 20px 0; } .card-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #cbd5e1; font-size: 14px; } .card-row:last-child { border-bottom: none; } .label { color: #64748b; font-weight: 600; } .value { color: #0f172a; font-weight: 700; text-align: right; } .attachment-box { display: flex; align-items: center; gap: 12px; background: rgba(2, 132, 199, 0.08); border: 1.5px solid #38bdf8; border-radius: 10px; padding: 14px 18px; margin: 20px 0; } .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px; text-align: center; font-size: 12px; color: #64748b; }</style></head><body><div class="container"><div class="header"><h1>${senderName}</h1><p>ใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบอิเล็กทรอนิกส์</p></div><div class="body"><p style="font-size: 16px; line-height: 1.6; margin-top: 0;">เรียน <strong>${customerName}</strong>,</p><p style="font-size: 14px; line-height: 1.6; color: #475569;">บริษัท บิลท์ ฮาร์ท จำกัด ขอขอบพระคุณที่ท่านได้ใช้บริการห้องประชุมและพื้นที่ทำงาน B-WORK ทางเราได้ออกเอกสารใบกำกับภาษีสำหรับรายการของท่านเรียบร้อยแล้ว รายละเอียดดังตารางด้านล่างนี้:</p><div class="card"><div class="card-row"><span class="label">รหัสการจอง:</span><span class="value">${bookingCode}</span></div><div class="card-row"><span class="label">เลขที่ใบกำกับภาษี:</span><span class="value" style="color: #0284c7;">${invoiceNumber}</span></div><div class="card-row"><span class="label">วันที่ออกเอกสาร:</span><span class="value">${dateStr}</span></div><div class="card-row"><span class="label">ผู้เสียภาษี:</span><span class="value">${customerName}</span></div><div class="card-row"><span class="label">เลขประจำตัวผู้เสียภาษี:</span><span class="value">${taxId} (${branchText})</span></div><div class="card-row" style="padding-top: 12px;"><span class="label" style="font-size: 15px;">ยอดเงินรวมทั้งสิ้น:</span><span class="value" style="font-size: 18px; color: #059669;">฿${amount}</span></div></div><div class="attachment-box"><div style="font-size: 24px;">📄</div><div><div style="font-weight: 800; font-size: 14px; color: #0369a1;">เอกสารใบกำกับภาษี (ไฟล์แนบ PDF)</div><div style="font-size: 12px; color: #64748b;">กรุณาตรวจสอบเอกสารฉบับสมบูรณ์ที่แนบมากับอีเมลนี้</div></div></div><p style="font-size: 13px; color: #64748b; line-height: 1.5;">หากท่านต้องการสอบถามข้อมูลเพิ่มเติม หรือแก้ไขข้อมูลภาษี กรุณาติดต่อฝ่ายบริการลูกค้า โทร 02-000-0000 หรือ LINE: @bwork</p></div><div class="footer"><div>© ${new Date().getFullYear()} บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.) · สำนักงานใหญ่</div><div style="margin-top: 4px;">B-WORK Coworking Space & Meeting Rooms · ถนนสุขุมวิท กรุงเทพมหานคร</div><div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">อีเมลฉบับนี้ส่งโดยระบบอัตโนมัติ กรุณาอย่าตอบกลับ</div></div></div></body></html>`;
 
   return { subject, textBody, htmlBody };
+}
+
+async function getGmailAccessTokenWorker({ clientId, clientSecret, refreshToken, fetchFn = fetch }) {
+  const now = Date.now();
+  if (cachedWorkerAccessToken && cachedWorkerTokenExpiry > now + 60000) {
+    return cachedWorkerAccessToken;
+  }
+  const tokenUrl = 'https://oauth2.googleapis.com/token';
+  const params = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token'
+  });
+  const res = await fetchFn(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString()
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`การขอ Access Token จาก Google OAuth2 ล้มเหลว (HTTP ${res.status}): ${errText}`);
+  }
+  const data = await res.json();
+  if (!data.access_token) {
+    throw new Error('ไม่พบ access_token ในผลตอบกลับของ Google OAuth2');
+  }
+  cachedWorkerAccessToken = data.access_token;
+  cachedWorkerTokenExpiry = now + ((data.expires_in || 3600) * 1000);
+  return cachedWorkerAccessToken;
+}
+
+function buildMimeMessageWorker({
+  from,
+  to,
+  replyTo,
+  subject,
+  text,
+  html,
+  attachmentBytes,
+  attachmentFileName = 'Tax_Invoice.pdf'
+}) {
+  const mixedBoundary = 'mixed_bnd_' + Math.random().toString(36).substring(2);
+  const altBoundary = 'alt_bnd_' + Math.random().toString(36).substring(2);
+  const safeFilename = encodeMimeHeader(attachmentFileName);
+
+  let binary = '';
+  const uint8 = new Uint8Array(attachmentBytes);
+  for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+  const base64Attachment = btoa(binary).match(/.{1,76}/g).join('\r\n');
+
+  let mime = '';
+  mime += 'From: ' + from + '\r\n';
+  mime += 'To: ' + to + '\r\n';
+  if (replyTo) {
+    mime += 'Reply-To: ' + replyTo + '\r\n';
+  }
+  mime += 'Subject: ' + encodeMimeHeader(subject) + '\r\n';
+  mime += 'MIME-Version: 1.0\r\n';
+  mime += 'Content-Type: multipart/mixed; boundary="' + mixedBoundary + '"\r\n\r\n';
+
+  mime += '--' + mixedBoundary + '\r\n';
+  mime += 'Content-Type: multipart/alternative; boundary="' + altBoundary + '"\r\n\r\n';
+
+  mime += '--' + altBoundary + '\r\n';
+  mime += 'Content-Type: text/plain; charset=UTF-8\r\n';
+  mime += 'Content-Transfer-Encoding: base64\r\n\r\n';
+  const textBytes = new TextEncoder().encode(text);
+  let textBinary = '';
+  for (let i = 0; i < textBytes.length; i++) textBinary += String.fromCharCode(textBytes[i]);
+  mime += btoa(textBinary) + '\r\n\r\n';
+
+  mime += '--' + altBoundary + '\r\n';
+  mime += 'Content-Type: text/html; charset=UTF-8\r\n';
+  mime += 'Content-Transfer-Encoding: base64\r\n\r\n';
+  const htmlBytes = new TextEncoder().encode(html);
+  let htmlBinary = '';
+  for (let i = 0; i < htmlBytes.length; i++) htmlBinary += String.fromCharCode(htmlBytes[i]);
+  mime += btoa(htmlBinary) + '\r\n\r\n';
+
+  mime += '--' + altBoundary + '--\r\n\r\n';
+
+  mime += '--' + mixedBoundary + '\r\n';
+  mime += 'Content-Type: application/pdf; name="' + safeFilename + '"\r\n';
+  mime += 'Content-Disposition: attachment; filename="' + safeFilename + '"\r\n';
+  mime += 'Content-Transfer-Encoding: base64\r\n\r\n';
+  mime += base64Attachment + '\r\n\r\n';
+
+  mime += '--' + mixedBoundary + '--';
+  return mime;
 }
 
 // 1.15 ROOM WI-FI CREDENTIAL ENCRYPTION (WEB CRYPTO)
@@ -8455,30 +8595,46 @@ export default {
           }
         }
 
+        const senderName = env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+        const senderEmail = env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+        const replyTo = env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
+        const liveDispatchEnabled = isLiveDispatchEnabled(env);
+        const gmailConfigured = isGmailConfigured(env);
+        const appEnv = env.APP_ENV || 'development';
+        const stagingAllowed = isEmailAllowedInStaging(recipientEmail, env, appEnv);
+
         const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
           booking,
           invoice,
-          recipientEmail
+          recipientEmail,
+          senderEmail,
+          senderName,
+          replyTo
         });
 
         return new Response(JSON.stringify({
           success: true,
           email_preview: {
             to: recipientEmail,
-            from: env.GMAIL_USER_EMAIL || 'bwork.coworking@gmail.com',
+            from: `${senderName} <${senderEmail}>`,
+            reply_to: replyTo,
             subject,
             text: textBody,
             html: htmlBody,
             file_name: invoice.file_name || 'Tax_Invoice.pdf',
             file_size: pdfSize,
             invoice_number: invoice.invoice_number || ('INV-' + bookingId),
-            dry_run: true
+            dry_run: true,
+            live_dispatch_enabled: liveDispatchEnabled,
+            gmail_configured: gmailConfigured,
+            staging_allowed: stagingAllowed,
+            app_env: appEnv
           }
         }), { headers: corsHeaders });
       }
 
       // ----------------------------------------------------
-      // TAX INVOICE SEND EMAIL (SIMULATED DRY-RUN)
+      // TAX INVOICE SEND EMAIL (DRY-RUN DEFAULT & GMAIL DISPATCH)
       // ----------------------------------------------------
       if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice/send-email') && method === 'POST') {
         const auth = await authenticateUser(request, env);
@@ -8507,7 +8663,8 @@ export default {
         }
 
         const body = await request.json().catch(() => ({}));
-        const { invoice_id, recipient_email } = body;
+        const { invoice_id, recipient_email, dry_run } = body;
+        const isDryRun = dry_run !== false;
 
         let invoice = null;
         if (invoice_id) {
@@ -8532,12 +8689,33 @@ export default {
           return new Response(JSON.stringify({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
         }
 
+        // Live dispatch validations
+        const appEnv = env.APP_ENV || 'development';
+        if (!isDryRun) {
+          if (!isLiveDispatchEnabled(env)) {
+            return new Response(JSON.stringify({
+              error: 'ระบบยังไม่ได้เปิดสวิตช์ส่งอีเมลจริง (GMAIL_LIVE_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)'
+            }), { status: 400, headers: corsHeaders });
+          }
+          if (!isGmailConfigured(env)) {
+            return new Response(JSON.stringify({
+              error: 'ยังไม่ได้ตั้งค่า Gmail API OAuth2 Credentials ในระบบ กรุณาตรวจสอบการตั้งค่า'
+            }), { status: 400, headers: corsHeaders });
+          }
+          if (appEnv !== 'production' && !isEmailAllowedInStaging(targetEmail, env, appEnv)) {
+            return new Response(JSON.stringify({
+              error: `โหมด ${appEnv} อนุญาตให้ส่งอีเมลจริงเฉพาะอีเมลใน Staging Allowlist เท่านั้น (${targetEmail} ไม่อยู่ในรายการที่อนุญาต)`
+            }), { status: 400, headers: corsHeaders });
+          }
+        }
+
         if (!invoice.file_url) {
           return new Response(JSON.stringify({ error: 'ไม่พบไฟล์เอกสารใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
         }
 
         // Verify PDF in R2
         let pdfSize = invoice.file_size || 0;
+        let pdfArrayBuffer = null;
         if (env.BUCKET && invoice.file_url.startsWith('/uploads/')) {
           const r2Key = invoice.file_url.replace('/uploads/', '');
           const obj = await env.BUCKET.get(r2Key);
@@ -8548,97 +8726,288 @@ export default {
           if (pdfSize > 10 * 1024 * 1024) {
             return new Response(JSON.stringify({ error: 'ขนาดไฟล์เกิน 10MB' }), { status: 400, headers: corsHeaders });
           }
-          // Validate magic bytes (%PDF-)
-          const headerSlice = await obj.slice(0, 4).arrayBuffer();
-          const headerUint8 = new Uint8Array(headerSlice);
+          pdfArrayBuffer = await obj.arrayBuffer();
+          const headerUint8 = new Uint8Array(pdfArrayBuffer.slice(0, 4));
           if (headerUint8[0] !== 0x25 || headerUint8[1] !== 0x50 || headerUint8[2] !== 0x44 || headerUint8[3] !== 0x46) {
             return new Response(JSON.stringify({ error: 'เอกสารที่แนบไม่ใช่ไฟล์ PDF สำหรับการส่ง e-Tax Invoice' }), { status: 400, headers: corsHeaders });
           }
         }
 
+        // Atomic claim in D1
+        const claimRes = await env.DB.prepare(
+          `UPDATE tax_invoices
+           SET email_status = 'claiming',
+               email_sent_at = CURRENT_TIMESTAMP
+           WHERE id = ?
+             AND (
+               email_status IS NULL
+               OR email_status IN ('unsent', 'failed', 'uncertain', 'dry_run')
+               OR (email_status = 'claiming' AND (strftime('%s', 'now') - strftime('%s', email_sent_at)) > 60)
+             )`
+        ).bind(invoice.id).run();
+
+        const claimChanges = claimRes.meta?.changes ?? 0;
+        if (claimChanges === 0) {
+          const cur = await env.DB.prepare('SELECT email_status FROM tax_invoices WHERE id = ?').bind(invoice.id).first();
+          if (cur?.email_status === 'claiming') {
+            return new Response(JSON.stringify({ error: 'กำลังดำเนินการส่งอีเมลสำหรับเอกสารนี้ กรุณารอสักครู่ (In-flight)' }), { status: 429, headers: corsHeaders });
+          }
+          if (cur?.email_status === 'gmail_accepted') {
+            return new Response(JSON.stringify({ error: 'เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้' }), { status: 409, headers: corsHeaders });
+          }
+          return new Response(JSON.stringify({ error: `ไม่สามารถส่งอีเมลได้ในสถานะปัจจุบัน (${cur?.email_status || 'unknown'})` }), { status: 409, headers: corsHeaders });
+        }
+
         const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
-        const simulatedMsgId = 'dry_run_msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+        const senderName = env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+        const senderEmail = env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+        const replyTo = env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
         const nowIso = new Date().toISOString();
 
         const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
           booking,
           invoice,
-          recipientEmail: targetEmail
+          recipientEmail: targetEmail,
+          senderEmail,
+          senderName,
+          replyTo
         });
 
-        // Update tax_invoices table with dry_run status
+        // 1. Dry Run Dispatch
+        if (isDryRun) {
+          const simulatedMsgId = 'dry_run_msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+          try {
+            await env.DB.prepare(
+              `UPDATE tax_invoices
+               SET email_status = 'dry_run',
+                   email_sent_at = ?,
+                   email_dry_run = 1,
+                   email_message_id = ?,
+                   email_recipient = ?,
+                   email_error = NULL
+               WHERE id = ?`
+            ).bind(nowIso, simulatedMsgId, targetEmail, invoice.id).run();
+
+            await env.DB.prepare(
+              `INSERT INTO tax_invoice_email_logs (
+                booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+                message_id, file_name, file_size, dispatched_by, payload_preview, created_at
+              ) VALUES (?, ?, ?, ?, 'dry_run', 1, ?, ?, ?, ?, ?, ?)`
+            ).bind(
+              bookingId,
+              invoice.id,
+              targetEmail,
+              subject,
+              simulatedMsgId,
+              invoice.file_name || 'Tax_Invoice.pdf',
+              pdfSize,
+              staffName,
+              JSON.stringify({ to: targetEmail, subject, status: 'dry_run' }),
+              nowIso
+            ).run();
+
+            await env.DB.prepare(
+              `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+               VALUES (?, 'send_tax_invoice_email_dry_run', ?, ?, ?)`
+            ).bind(
+              bookingId,
+              ('จำลองส่งอีเมลใบกำกับภาษี (Dry-run) #' + (invoice.invoice_number || invoice.id) + ' ไปยัง ' + targetEmail),
+              staffName,
+              nowIso
+            ).run();
+          } catch (_) {}
+
+          return new Response(JSON.stringify({
+            success: true,
+            dry_run: true,
+            status: 'dry_run',
+            message: 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
+            data: {
+              booking_id: bookingId,
+              invoice_id: invoice.id,
+              invoice_number: invoice.invoice_number,
+              recipient: targetEmail,
+              message_id: simulatedMsgId,
+              file_name: invoice.file_name || 'Tax_Invoice.pdf',
+              file_size: pdfSize,
+              timestamp: nowIso,
+              email_preview: {
+                to: targetEmail,
+                from: `${senderName} <${senderEmail}>`,
+                reply_to: replyTo,
+                subject,
+                text: textBody,
+                html: htmlBody,
+                file_name: invoice.file_name || 'Tax_Invoice.pdf',
+                file_size: pdfSize
+              }
+            }
+          }), { headers: corsHeaders });
+        }
+
+        // 2. Live Gmail API Dispatch
         try {
+          const accessToken = await getGmailAccessTokenWorker({
+            clientId: env.GMAIL_CLIENT_ID,
+            clientSecret: env.GMAIL_CLIENT_SECRET,
+            refreshToken: env.GMAIL_REFRESH_TOKEN
+          });
+
+          const mimePayload = buildMimeMessageWorker({
+            from: `${senderName} <${senderEmail}>`,
+            to: targetEmail,
+            replyTo,
+            subject,
+            text: textBody,
+            html: htmlBody,
+            attachmentBytes: pdfArrayBuffer || new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+            attachmentFileName: invoice.file_name || `Tax_Invoice_${invoice.invoice_number || bookingId}.pdf`
+          });
+
+          const base64UrlRaw = base64UrlEncode(mimePayload);
+
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 15000);
+
+          let gmailRes;
+          try {
+            gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+              method: 'POST',
+              headers: {
+                'Authorization': 'Bearer ' + accessToken,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ raw: base64UrlRaw }),
+              signal: controller.signal
+            });
+          } catch (netErr) {
+            clearTimeout(timer);
+            // Mark uncertain
+            await env.DB.prepare(
+              `UPDATE tax_invoices
+               SET email_status = 'uncertain',
+                   email_error = ?,
+                   email_sent_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            ).bind(netErr.message || 'Timeout/Network error', invoice.id).run().catch(() => {});
+
+            await env.DB.prepare(
+              `INSERT INTO tax_invoice_email_logs (
+                booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+                file_name, file_size, dispatched_by, payload_preview, created_at
+              ) VALUES (?, ?, ?, ?, 'uncertain', 0, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+            ).bind(
+              bookingId,
+              invoice.id,
+              targetEmail,
+              subject,
+              invoice.file_name || 'Tax_Invoice.pdf',
+              pdfSize,
+              staffName,
+              JSON.stringify({ error: netErr.message, isUncertain: true })
+            ).run().catch(() => {});
+
+            return new Response(JSON.stringify({
+              success: false,
+              status: 'uncertain',
+              error: 'คำขอส่งอีเมลไปยัง Gmail API หมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกสถานะเป็น "uncertain" และจะไม่ส่งซ้ำอัตโนมัติ เพื่อความปลอดภัย กรุณาตรวจสอบก่อนทำรายการใหม่'
+            }), { status: 504, headers: corsHeaders });
+          }
+          clearTimeout(timer);
+
+          if (!gmailRes.ok) {
+            const errBody = await gmailRes.text().catch(() => '');
+            const errMsg = `Gmail API ส่งข้อความไม่สำเร็จ (HTTP ${gmailRes.status}): ${errBody}`;
+            await env.DB.prepare(
+              `UPDATE tax_invoices
+               SET email_status = 'failed',
+                   email_error = ?,
+                   email_sent_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            ).bind(errMsg, invoice.id).run().catch(() => {});
+
+            return new Response(JSON.stringify({
+              success: false,
+              status: 'failed',
+              error: errMsg
+            }), { status: 500, headers: corsHeaders });
+          }
+
+          const gmailData = await gmailRes.json().catch(() => ({}));
+          const finalMsgId = gmailData.id || ('gmail_' + Date.now());
+
           await env.DB.prepare(
             `UPDATE tax_invoices
-             SET email_status = 'dry_run',
+             SET email_status = 'gmail_accepted',
                  email_sent_at = ?,
-                 email_dry_run = 1,
+                 email_dry_run = 0,
                  email_message_id = ?,
                  email_recipient = ?,
                  email_error = NULL
              WHERE id = ?`
-          ).bind(nowIso, simulatedMsgId, targetEmail, invoice.id).run();
-        } catch (_) {}
+          ).bind(nowIso, finalMsgId, targetEmail, invoice.id).run().catch(() => {});
 
-        // Insert into tax_invoice_email_logs
-        try {
           await env.DB.prepare(
             `INSERT INTO tax_invoice_email_logs (
               booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
               message_id, file_name, file_size, dispatched_by, payload_preview, created_at
-            ) VALUES (?, ?, ?, ?, 'dry_run', 1, ?, ?, ?, ?, ?, ?)`
+            ) VALUES (?, ?, ?, ?, 'gmail_accepted', 0, ?, ?, ?, ?, ?, ?)`
           ).bind(
             bookingId,
             invoice.id,
             targetEmail,
             subject,
-            simulatedMsgId,
+            finalMsgId,
             invoice.file_name || 'Tax_Invoice.pdf',
             pdfSize,
             staffName,
-            JSON.stringify({ to: targetEmail, subject }),
+            JSON.stringify({ to: targetEmail, subject, status: 'gmail_accepted' }),
             nowIso
-          ).run();
-        } catch (_) {}
+          ).run().catch(() => {});
 
-        // Insert into booking_history
-        try {
           await env.DB.prepare(
             `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
-             VALUES (?, 'send_tax_invoice_email_dry_run', ?, ?, ?)`
+             VALUES (?, 'send_tax_invoice_email_gmail', ?, ?, ?)`
           ).bind(
             bookingId,
-            ('จำลองส่งอีเมลใบกำกับภาษี (Dry-run) #' + (invoice.invoice_number || invoice.id) + ' ไปยัง ' + targetEmail),
+            ('ส่งคำขออีเมลใบกำกับภาษีเข้า Gmail API สำเร็จ (Message ID: ' + finalMsgId + ') ไปยัง ' + targetEmail),
             staffName,
             nowIso
-          ).run();
-        } catch (_) {}
+          ).run().catch(() => {});
 
-        return new Response(JSON.stringify({
-          success: true,
-          dry_run: true,
-          status: 'dry_run',
-          message: 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
-          data: {
-            booking_id: bookingId,
-            invoice_id: invoice.id,
-            invoice_number: invoice.invoice_number,
-            recipient: targetEmail,
-            message_id: simulatedMsgId,
-            file_name: invoice.file_name || 'Tax_Invoice.pdf',
-            file_size: pdfSize,
-            timestamp: nowIso,
-            email_preview: {
-              to: targetEmail,
-              from: env.GMAIL_USER_EMAIL || 'bwork.coworking@gmail.com',
-              subject,
-              text: textBody,
-              html: htmlBody,
+          return new Response(JSON.stringify({
+            success: true,
+            dry_run: false,
+            status: 'gmail_accepted',
+            message: 'Gmail API รับคำขอส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (รอคิวส่งของ Gmail)',
+            data: {
+              booking_id: bookingId,
+              invoice_id: invoice.id,
+              invoice_number: invoice.invoice_number,
+              recipient: targetEmail,
+              message_id: finalMsgId,
               file_name: invoice.file_name || 'Tax_Invoice.pdf',
-              file_size: pdfSize
+              file_size: pdfSize,
+              timestamp: nowIso,
+              email_preview: {
+                to: targetEmail,
+                from: `${senderName} <${senderEmail}>`,
+                reply_to: replyTo,
+                subject,
+                text: textBody,
+                html: htmlBody,
+                file_name: invoice.file_name || 'Tax_Invoice.pdf',
+                file_size: pdfSize
+              }
             }
-          }
-        }), { headers: corsHeaders });
+          }), { headers: corsHeaders });
+        } catch (execErr) {
+          return new Response(JSON.stringify({
+            success: false,
+            status: 'failed',
+            error: execErr.message || 'เกิดข้อผิดพลาดในการเรียก Gmail API'
+          }), { status: 500, headers: corsHeaders });
+        }
       }
 
       if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/cancel') && method === 'POST') {

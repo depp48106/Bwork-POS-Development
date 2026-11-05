@@ -352,9 +352,13 @@ export default function TaxInvoiceManagementModal({
     }
   };
 
-  // Simulate Sending Email (Dry-run)
-  const handleSimulateSendEmail = async () => {
+  // Send Tax Invoice Email (Dry-run default or live Gmail)
+  const handleSendTaxEmail = async (isDryRun = true) => {
     if (!bookingId || !activePdfInvoice) return;
+    if (!isDryRun) {
+      const confirmed = window.confirm(`ยืนยันการส่งอีเมลใบกำกับภาษีจริงไปยัง ${recipientEmail}?\n\nระบบจะเรียก Gmail API เพื่อนำส่งเข้าคิวส่งจริง`);
+      if (!confirmed) return;
+    }
     try {
       setIsSendingEmail(true);
       setEmailFeedback(null);
@@ -368,25 +372,28 @@ export default function TaxInvoiceManagementModal({
         body: JSON.stringify({
           invoice_id: activePdfInvoice.id,
           recipient_email: recipientEmail,
-          dry_run: true
+          dry_run: isDryRun
         })
       });
       const data = await res.json();
       if (res.ok && data.success) {
+        const msg = data.message || (isDryRun ? 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)' : 'Gmail รับคำขอส่งอีเมลเรียบร้อยแล้ว (รอคิวส่งของ Gmail)');
         setEmailFeedback({
           type: 'success',
-          message: data.message || 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
+          message: msg,
           details: data.data
         });
-        if (sysAlert) sysAlert('จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)');
+        if (sysAlert) sysAlert(msg);
         await fetchTaxInvoiceData();
         if (onUpdated) onUpdated();
       } else {
+        const errMsg = data.error || (isDryRun ? 'เกิดข้อผิดพลาดในการจำลองส่งอีเมล' : 'เกิดข้อผิดพลาดในการส่งอีเมลผ่าน Gmail API');
         setEmailFeedback({
           type: 'error',
-          message: data.error || 'เกิดข้อผิดพลาดในการจำลองส่งอีเมล'
+          message: errMsg
         });
-        if (sysAlert) sysAlert(data.error || 'เกิดข้อผิดพลาดในการจำลองส่งอีเมล');
+        if (sysAlert) sysAlert(errMsg);
+        await fetchTaxInvoiceData();
       }
     } catch (err) {
       setEmailFeedback({
@@ -395,6 +402,138 @@ export default function TaxInvoiceManagementModal({
       });
     } finally {
       setIsSendingEmail(false);
+    }
+  };
+
+  const handleSimulateSendEmail = () => handleSendTaxEmail(true);
+  const handleLiveSendEmail = () => handleSendTaxEmail(false);
+
+  const renderEmailStatusBadge = (status) => {
+    switch (status) {
+      case 'gmail_accepted':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(16, 185, 129, 0.12)',
+              color: '#059669',
+              border: '1px solid #34d399',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            title="Gmail API รับคำขอส่งอีเมลเข้าคิวระบบแล้ว (รอการนำส่งตามคิวของ Gmail)"
+          >
+            <CheckCircle2 size={12} />
+            <span>Gmail รับคำขอแล้ว</span>
+          </span>
+        );
+      case 'uncertain':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(245, 158, 11, 0.12)',
+              color: '#d97706',
+              border: '1px solid #fcd34d',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            title="คำขอส่งหมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบไม่ส่งซ้ำอัตโนมัติเพื่อความปลอดภัย"
+          >
+            <AlertCircle size={12} />
+            <span>ผลส่งไม่แน่นอน (Uncertain)</span>
+          </span>
+        );
+      case 'failed':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(239, 68, 68, 0.12)',
+              color: '#dc2626',
+              border: '1px solid #f87171',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            title="ส่งไม่สำเร็จ (Failed)"
+          >
+            <AlertCircle size={12} />
+            <span>ส่งไม่สำเร็จ (Failed)</span>
+          </span>
+        );
+      case 'claiming':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(99, 102, 241, 0.12)',
+              color: '#4f46e5',
+              border: '1px solid #a5b4fc',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+          >
+            <RefreshCw size={12} />
+            <span>กำลังส่งเข้าคิว...</span>
+          </span>
+        );
+      case 'dry_run':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(2, 132, 199, 0.12)',
+              color: '#0284c7',
+              border: '1px solid #38bdf8',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+          >
+            <CheckCircle2 size={12} />
+            <span>จำลองส่งแล้ว (Dry-run)</span>
+          </span>
+        );
+      default:
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              backgroundColor: 'rgba(100, 116, 139, 0.1)',
+              color: 'var(--text-muted)',
+              padding: '3px 10px',
+              borderRadius: '999px'
+            }}
+          >
+            ยังไม่ได้ส่ง
+          </span>
+        );
     }
   };
 
@@ -1369,40 +1508,7 @@ export default function TaxInvoiceManagementModal({
                           </span>
                         </div>
                         <div>
-                          {activePdfInvoice?.email_status === 'dry_run' ? (
-                            <span
-                              id="badge-tax-email-status"
-                              style={{
-                                fontSize: '0.72rem',
-                                fontWeight: 800,
-                                backgroundColor: 'rgba(2, 132, 199, 0.12)',
-                                color: '#0284c7',
-                                border: '1px solid #38bdf8',
-                                padding: '3px 10px',
-                                borderRadius: '999px',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '4px'
-                              }}
-                            >
-                              <CheckCircle2 size={12} />
-                              <span>จำลองส่งแล้ว (Dry-run)</span>
-                            </span>
-                          ) : (
-                            <span
-                              id="badge-tax-email-status"
-                              style={{
-                                fontSize: '0.72rem',
-                                fontWeight: 700,
-                                backgroundColor: 'rgba(100, 116, 139, 0.1)',
-                                color: 'var(--text-muted)',
-                                padding: '3px 10px',
-                                borderRadius: '999px'
-                              }}
-                            >
-                              ยังไม่ได้ส่ง
-                            </span>
-                          )}
+                          {renderEmailStatusBadge(activePdfInvoice?.email_status)}
                         </div>
                       </div>
 
@@ -1462,6 +1568,41 @@ export default function TaxInvoiceManagementModal({
                           </div>
                         </div>
                       </div>
+
+                      {/* Live or Uncertain Status Notice */}
+                      {activePdfInvoice?.email_status === 'gmail_accepted' && (
+                        <div style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          fontSize: '0.74rem',
+                          backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                          color: '#047857',
+                          border: '1px solid #a7f3d0',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          <CheckCircle2 size={14} />
+                          <span>Gmail API รับคำขอส่งข้อความเรียบร้อยแล้ว (Message ID: {activePdfInvoice.email_message_id || '-'}) — ระบบ Gmail กำลังนำส่งตามคิว</span>
+                        </div>
+                      )}
+
+                      {activePdfInvoice?.email_status === 'uncertain' && (
+                        <div style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          fontSize: '0.74rem',
+                          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                          color: '#b45309',
+                          border: '1px solid #fde68a',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          <AlertCircle size={14} />
+                          <span>คำขอส่งหมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกเป็นผลไม่แน่นอนและจะไม่ส่งซ้ำอัตโนมัติ เพื่อป้องกันการส่งซ้ำซ้อน กรุณาตรวจสอบก่อนทำรายการใหม่</span>
+                        </div>
+                      )}
 
                       {/* Dispatch feedback alert */}
                       {emailFeedback && (
@@ -1878,6 +2019,9 @@ export default function TaxInvoiceManagementModal({
                       gap: '6px'
                     }}>
                       <div><strong style={{ color: '#64748b' }}>จาก:</strong> {previewData.from}</div>
+                      {previewData.reply_to && (
+                        <div><strong style={{ color: '#64748b' }}>ตอบกลับ (Reply-To):</strong> {previewData.reply_to}</div>
+                      )}
                       <div><strong style={{ color: '#64748b' }}>ถึง:</strong> <span style={{ color: '#0284c7', fontWeight: 700 }}>{previewData.to}</span></div>
                       <div><strong style={{ color: '#64748b' }}>หัวข้อ:</strong> <span style={{ fontWeight: 750 }}>{previewData.subject}</span></div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', paddingTop: '4px', borderTop: '1px dashed #cbd5e1' }}>

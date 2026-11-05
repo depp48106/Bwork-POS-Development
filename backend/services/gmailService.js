@@ -1,20 +1,38 @@
 /**
  * BWORK-POS | GMAIL API SERVICE MODULE
  * Handles RFC 2822 MIME message construction, email templating,
- * and secure dispatch (simulated Dry-run by default, modular for live Gmail API).
+ * OAuth2 token exchange with scope gmail.send, and secure dispatch
+ * (Dry-run by default, master safety switch, staging allowlist, and durable error handling).
  */
 
 const crypto = require('crypto');
 
+const DEFAULT_SENDER_NAME = 'บริษัท บิลท์ ฮาร์ท จำกัด';
+const DEFAULT_SENDER_EMAIL = 'coworkings.bwork@gmail.com';
+const DEFAULT_REPLY_TO = 'coworkings.bwork@gmail.com';
+const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+
+let cachedAccessToken = null;
+let cachedTokenExpiry = 0;
+
 /**
  * Checks if Gmail API credentials are configured in the environment.
  */
-function isGmailConfigured() {
+function isGmailConfigured(env = process.env) {
   return Boolean(
-    process.env.GMAIL_CLIENT_ID &&
-    process.env.GMAIL_CLIENT_SECRET &&
-    process.env.GMAIL_REFRESH_TOKEN
+    env.GMAIL_CLIENT_ID &&
+    env.GMAIL_CLIENT_SECRET &&
+    env.GMAIL_REFRESH_TOKEN
   );
+}
+
+/**
+ * Checks if live sending switch is enabled.
+ * Default is strictly FALSE.
+ * Merely configuring credentials must NOT enable live sending!
+ */
+function isLiveDispatchEnabled(env = process.env) {
+  return String(env.GMAIL_LIVE_DISPATCH_ENABLED || '').toLowerCase() === 'true';
 }
 
 /**
@@ -27,11 +45,36 @@ function isValidEmail(email) {
 }
 
 /**
+ * Staging recipient allowlist checker.
+ * On non-production (development, staging, test), only allows emails matching the allowlist.
+ */
+function isEmailAllowedInStaging(email, env = process.env, appEnv = (process.env.APP_ENV || 'development')) {
+  if (appEnv === 'production') return true;
+
+  const rawList = env.GMAIL_STAGING_ALLOWLIST || '';
+  if (!rawList.trim()) return false;
+
+  const target = String(email || '').trim().toLowerCase();
+  const allowed = rawList.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+  return allowed.some(pattern => {
+    if (pattern.startsWith('@')) {
+      return target.endsWith(pattern);
+    }
+    return target === pattern;
+  });
+}
+
+/**
  * Encodes string to UTF-8 base64 encoded-word for MIME headers (RFC 2047).
  */
 function encodeMimeHeader(text) {
   if (!text) return '';
-  return `=?UTF-8?B?${Buffer.from(String(text), 'utf8').toString('base64')}?=`;
+  const str = String(text);
+  if (!/[^\x20-\x7E]/.test(str)) {
+    return str;
+  }
+  return `=?UTF-8?B?${Buffer.from(str, 'utf8').toString('base64')}?=`;
 }
 
 /**
@@ -52,7 +95,9 @@ function generateTaxInvoiceEmailContent({
   booking,
   invoice,
   recipientEmail,
-  senderEmail = 'bwork.coworking@gmail.com'
+  senderEmail = process.env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL,
+  senderName = process.env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME,
+  replyTo = process.env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO
 }) {
   const bookingId = booking?.id || booking?.booking_id || '-';
   const bookingCode = booking?.receipt_number || booking?.booking_code || `BK-${String(bookingId).padStart(6, '0')}`;
@@ -87,11 +132,11 @@ function generateTaxInvoiceEmailContent({
 
 หากท่านมีข้อสงสัยหรือต้องการสอบถามข้อมูลเพิ่มเติม สามารถติดต่อเราได้ที่:
 โทร: 02-000-0000
-อีเมล: support@bwork.co
+อีเมล: ${replyTo}
 LINE Official: @bwork
 
 ขอแสดงความนับถือ,
-ทีมงาน B-WORK Coworking Space
+${senderName}
 บริษัท บิลท์ ฮาร์ท จำกัด
 `.trim();
 
@@ -121,7 +166,7 @@ LINE Official: @bwork
 <body>
   <div class="container">
     <div class="header">
-      <h1>B-WORK Coworking Space</h1>
+      <h1>${senderName}</h1>
       <p>ใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบอิเล็กทรอนิกส์</p>
     </div>
     <div class="body">
@@ -131,7 +176,6 @@ LINE Official: @bwork
       <p style="font-size: 14px; line-height: 1.6; color: #475569;">
         บริษัท บิลท์ ฮาร์ท จำกัด ขอขอบพระคุณที่ท่านได้ใช้บริการห้องประชุมและพื้นที่ทำงาน B-WORK ทางเราได้ออกเอกสารใบกำกับภาษีสำหรับรายการของท่านเรียบร้อยแล้ว รายละเอียดดังตารางด้านล่างนี้:
       </p>
-
       <div class="card">
         <div class="card-row">
           <span class="label">รหัสการจอง:</span>
@@ -158,7 +202,6 @@ LINE Official: @bwork
           <span class="value" style="font-size: 18px; color: #059669;">฿${amount}</span>
         </div>
       </div>
-
       <div class="attachment-box">
         <div style="font-size: 24px;">📄</div>
         <div>
@@ -166,15 +209,14 @@ LINE Official: @bwork
           <div style="font-size: 12px; color: #64748b;">กรุณาตรวจสอบเอกสารฉบับสมบูรณ์ที่แนบมากับอีเมลนี้</div>
         </div>
       </div>
-
       <p style="font-size: 13px; color: #64748b; line-height: 1.5;">
-        หากท่านต้องการสอบถามข้อมูลเพิ่มเติม หรือแก้ไขข้อมูลภาษี กรุณาติดต่อฝ่ายบริการลูกค้า โทร 02-000-0000 หรือ LINE: @bwork
+        หากท่านต้องการสอบถามข้อมูลเพิ่มเติม หรือแก้ไขข้อมูลภาษี กรุณาติดต่อฝ่ายบริการลูกค้า โทร 02-000-0000 หรือ LINE: @bwork หรืออีเมล: ${replyTo}
       </p>
     </div>
     <div class="footer">
       <div>© ${new Date().getFullYear()} บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.) · สำนักงานใหญ่</div>
       <div style="margin-top: 4px;">B-WORK Coworking Space & Meeting Rooms · ถนนสุขุมวิท กรุงเทพมหานคร</div>
-      <div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">อีเมลฉบับนี้ส่งโดยระบบอัตโนมัติ กรุณาอย่าตอบกลับ</div>
+      <div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">อีเมลฉบับนี้ส่งโดยระบบอัตโนมัติ กรุณาอย่าตอบกลับโดยตรง</div>
     </div>
   </div>
 </body>
@@ -186,9 +228,12 @@ LINE Official: @bwork
 
 /**
  * Builds RFC 2822 Multipart MIME Message with PDF attachment.
+ * Encodes Thai sender name correctly via RFC 2047.
  */
 function buildMimeMessage({
-  from,
+  from = process.env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL,
+  fromName = process.env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME,
+  replyTo = process.env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO,
   to,
   subject,
   text,
@@ -204,7 +249,8 @@ function buildMimeMessage({
 
   let mime = '';
   // Top Headers
-  mime += `From: ${encodeMimeHeader('B-WORK Coworking Space')} <${from}>\r\n`;
+  mime += `From: ${encodeMimeHeader(fromName)} <${from}>\r\n`;
+  mime += `Reply-To: <${replyTo}>\r\n`;
   mime += `To: ${to}\r\n`;
   mime += `Subject: ${encodeMimeHeader(subject)}\r\n`;
   mime += `MIME-Version: 1.0\r\n`;
@@ -243,8 +289,59 @@ function buildMimeMessage({
 }
 
 /**
+ * Exchanges OAuth2 refresh token for a short-lived access token.
+ */
+async function getGmailAccessToken({
+  clientId = process.env.GMAIL_CLIENT_ID,
+  clientSecret = process.env.GMAIL_CLIENT_SECRET,
+  refreshToken = process.env.GMAIL_REFRESH_TOKEN,
+  fetchFn = fetch
+} = {}) {
+  const now = Date.now();
+  if (cachedAccessToken && cachedTokenExpiry > now + 60000) {
+    return cachedAccessToken;
+  }
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error('Gmail API OAuth2 credentials ไม่ครบถ้วน (ต้องการ GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN)');
+  }
+
+  const tokenUrl = 'https://oauth2.googleapis.com/token';
+  const bodyParams = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token'
+  });
+
+  const res = await fetchFn(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: bodyParams.toString()
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Google OAuth2 Token Exchange ล้มเหลว (HTTP ${res.status}): ${errText}`);
+  }
+
+  const tokenData = await res.json();
+  if (!tokenData.access_token) {
+    throw new Error('Google OAuth2 ไม่ได้ส่ง access_token กลับมา');
+  }
+
+  cachedAccessToken = tokenData.access_token;
+  cachedTokenExpiry = now + (Number(tokenData.expires_in) || 3600) * 1000;
+  return cachedAccessToken;
+}
+
+/**
  * Sends or simulates sending tax invoice email via Gmail API.
- * Defaults to dry_run: true. Never dispatches live email if dry_run=true.
+ * Follows strict safety rules:
+ * 1. Defaults to dry_run: true.
+ * 2. Live dispatch requires GMAIL_LIVE_DISPATCH_ENABLED === 'true' AND valid credentials.
+ * 3. Staging / non-production checks GMAIL_STAGING_ALLOWLIST.
+ * 4. Timeout or network interruption during live send is marked uncertain (do not auto-retry).
  */
 async function sendTaxInvoiceEmail({
   booking,
@@ -254,7 +351,12 @@ async function sendTaxInvoiceEmail({
   fileName = 'Tax_Invoice.pdf',
   dry_run = true,
   dispatchedBy = 'staff',
-  senderEmail = process.env.GMAIL_USER_EMAIL || 'billing@bwork.co'
+  senderEmail = process.env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL,
+  senderName = process.env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME,
+  replyTo = process.env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO,
+  env = process.env,
+  fetchFn = fetch,
+  timeoutMs = 15000
 }) {
   // 1. Validation: Recipient Email
   const cleanEmail = (recipientEmail || '').trim();
@@ -288,11 +390,15 @@ async function sendTaxInvoiceEmail({
     booking,
     invoice,
     recipientEmail: cleanEmail,
-    senderEmail
+    senderEmail,
+    senderName,
+    replyTo
   });
 
   const rawMime = buildMimeMessage({
     from: senderEmail,
+    fromName: senderName,
+    replyTo,
     to: cleanEmail,
     subject,
     text: textBody,
@@ -304,12 +410,14 @@ async function sendTaxInvoiceEmail({
 
   const base64UrlRaw = base64UrlEncode(rawMime);
 
-  // 4. Dispatch Execution: DRY-RUN vs LIVE
-  if (dry_run || !isGmailConfigured()) {
+  // 4. DRY-RUN MODE:
+  // Default is dry_run: true. Simulated dispatch without external API calls.
+  if (dry_run) {
     const simulatedMsgId = `dry_run_msg_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const timestamp = new Date().toISOString();
 
     console.log(`[GmailService] [DRY-RUN] Simulated tax invoice dispatch to ${cleanEmail}`);
+    console.log(`  - Sender: "${senderName}" <${senderEmail}> | Reply-To: <${replyTo}>`);
     console.log(`  - Booking ID: ${booking?.id}`);
     console.log(`  - Invoice Number: ${invoice?.invoice_number || 'N/A'}`);
     console.log(`  - Subject: "${subject}"`);
@@ -319,6 +427,7 @@ async function sendTaxInvoiceEmail({
     return {
       success: true,
       dry_run: true,
+      status: 'dry_run',
       message_id: simulatedMsgId,
       recipient: cleanEmail,
       subject,
@@ -329,7 +438,8 @@ async function sendTaxInvoiceEmail({
       timestamp,
       email_preview: {
         to: cleanEmail,
-        from: senderEmail,
+        from: `${senderName} <${senderEmail}>`,
+        reply_to: replyTo,
         subject,
         text: textBody,
         html: htmlBody,
@@ -339,15 +449,104 @@ async function sendTaxInvoiceEmail({
     };
   }
 
-  // Live Gmail API Call (When credentials are fully provided in future release)
-  throw new Error('ระบบยังไม่อนุญาตให้ส่งอีเมลจริง กรุณาเลือกโหมดจำลองส่ง (Dry-run)');
+  // 5. LIVE GMAIL API DISPATCH
+  // Master Switch Check:
+  if (!isLiveDispatchEnabled(env)) {
+    throw new Error('ระบบยังไม่ได้เปิดสวิตช์ส่งอีเมลจริง (GMAIL_LIVE_DISPATCH_ENABLED != true) กรุณาเลือกโหมดจำลองส่ง (Dry-run)');
+  }
+
+  // Credentials Check:
+  if (!isGmailConfigured(env)) {
+    throw new Error('ไม่ได้กำหนดค่า Gmail API OAuth2 Credentials ในระบบ กรุณาตรวจสอบการตั้งค่า');
+  }
+
+  // Staging Allowlist Check:
+  const appEnv = env.APP_ENV || process.env.APP_ENV || 'development';
+  if (appEnv !== 'production' && !isEmailAllowedInStaging(cleanEmail, env, appEnv)) {
+    throw new Error(`โหมด ${appEnv} อนุญาตให้ส่งอีเมลจริงเฉพาะอีเมลใน Staging Allowlist เท่านั้น (${cleanEmail} ไม่อยู่ในรายการที่อนุญาต)`);
+  }
+
+  // Fetch OAuth2 Access Token
+  const accessToken = await getGmailAccessToken({
+    clientId: env.GMAIL_CLIENT_ID,
+    clientSecret: env.GMAIL_CLIENT_SECRET,
+    refreshToken: env.GMAIL_REFRESH_TOKEN,
+    fetchFn
+  });
+
+  // Call Gmail messages.send REST API with timeout
+  const gmailSendUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response;
+  try {
+    response = await fetchFn(gmailSendUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ raw: base64UrlRaw }),
+      signal: controller.signal
+    });
+  } catch (netErr) {
+    clearTimeout(timer);
+    // Uncertain timeout / socket reset after sending
+    const isTimeout = netErr.name === 'AbortError' || netErr.code === 'ETIMEDOUT' || netErr.code === 'ECONNRESET';
+    const uncertainError = new Error(`คำขอส่งอีเมลไปยัง Gmail API หมดเวลา (Timeout) หรือเครือข่ายขัดข้อง (${netErr.message})`);
+    uncertainError.isUncertain = true;
+    uncertainError.code = 'DISPATCH_UNCERTAIN';
+    throw uncertainError;
+  }
+  clearTimeout(timer);
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    throw new Error(`Gmail API ส่งข้อความไม่สำเร็จ (HTTP ${response.status}): ${errBody}`);
+  }
+
+  const gmailResult = await response.json().catch(() => ({}));
+  const timestamp = new Date().toISOString();
+
+  console.log(`[GmailService] [LIVE] Successfully accepted by Gmail API for ${cleanEmail} (Message ID: ${gmailResult.id})`);
+
+  return {
+    success: true,
+    dry_run: false,
+    status: 'gmail_accepted',
+    message_id: gmailResult.id || `gmail_${Date.now()}`,
+    thread_id: gmailResult.threadId || null,
+    recipient: cleanEmail,
+    subject,
+    file_name: fileName,
+    file_size: pdfBuffer.length,
+    dispatched_by: dispatchedBy,
+    timestamp,
+    email_preview: {
+      to: cleanEmail,
+      from: `${senderName} <${senderEmail}>`,
+      reply_to: replyTo,
+      subject,
+      file_name: fileName,
+      file_size: pdfBuffer.length
+    }
+  };
 }
 
 module.exports = {
+  DEFAULT_SENDER_NAME,
+  DEFAULT_SENDER_EMAIL,
+  DEFAULT_REPLY_TO,
+  GMAIL_SEND_SCOPE,
   isGmailConfigured,
+  isLiveDispatchEnabled,
+  isEmailAllowedInStaging,
   isValidEmail,
+  encodeMimeHeader,
+  base64UrlEncode,
   generateTaxInvoiceEmailContent,
   buildMimeMessage,
-  sendTaxInvoiceEmail,
-  base64UrlEncode
+  getGmailAccessToken,
+  sendTaxInvoiceEmail
 };

@@ -36,7 +36,12 @@ const {
   isValidKey
 } = require('./wifiCryptoHelper');
 const {
+  DEFAULT_SENDER_NAME,
+  DEFAULT_SENDER_EMAIL,
+  DEFAULT_REPLY_TO,
   isGmailConfigured,
+  isLiveDispatchEnabled,
+  isEmailAllowedInStaging,
   isValidEmail,
   generateTaxInvoiceEmailContent,
   buildMimeMessage,
@@ -5195,24 +5200,40 @@ app.get('/api/bookings/:id/tax-invoice/email-preview', authenticateToken, requir
       return res.status(400).json({ error: 'เอกสารที่แนบไม่ใช่ไฟล์ PDF สำหรับการส่ง e-Tax Invoice' });
     }
 
+    const senderName = process.env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+    const senderEmail = process.env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+    const replyTo = process.env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
+    const liveDispatchEnabled = isLiveDispatchEnabled(process.env);
+    const gmailConfigured = isGmailConfigured(process.env);
+    const appEnv = process.env.APP_ENV || 'development';
+    const stagingAllowed = isEmailAllowedInStaging(recipientEmail, process.env, appEnv);
+
     const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
       booking,
       invoice,
-      recipientEmail
+      recipientEmail,
+      senderEmail,
+      senderName,
+      replyTo
     });
 
     res.json({
       success: true,
       email_preview: {
         to: recipientEmail,
-        from: process.env.GMAIL_USER_EMAIL || 'bwork.coworking@gmail.com',
+        from: `${senderName} <${senderEmail}>`,
+        reply_to: replyTo,
         subject,
         text: textBody,
         html: htmlBody,
         file_name: invoice.file_name || 'Tax_Invoice.pdf',
         file_size: stat.size,
         invoice_number: invoice.invoice_number || `INV-${bookingId}`,
-        dry_run: true
+        dry_run: true,
+        live_dispatch_enabled: liveDispatchEnabled,
+        gmail_configured: gmailConfigured,
+        staging_allowed: stagingAllowed,
+        app_env: appEnv
       }
     });
   } catch (err) {
@@ -5220,7 +5241,7 @@ app.get('/api/bookings/:id/tax-invoice/email-preview', authenticateToken, requir
   }
 });
 
-// Send Tax Invoice Email (Simulated Dry-run by default)
+// Send Tax Invoice Email (Simulated Dry-run by default, OAuth2 Gmail live dispatch with atomic claim & uncertainty handling)
 app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireAnyPermission('pos', 'manage', 'admin'), async (req, res) => {
   try {
     const bookingId = Number(req.params.id);
@@ -5247,7 +5268,10 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
     }
 
-    const { invoice_id, recipient_email } = req.body || {};
+    const { invoice_id, recipient_email, dry_run } = req.body || {};
+    // Strict default: dry_run is TRUE unless explicitly passed false
+    const isDryRun = dry_run !== false;
+
     let invoice = null;
     if (invoice_id) {
       const parsedInvoiceId = Number(invoice_id);
@@ -5272,6 +5296,26 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
       return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง' });
     }
 
+    // Live dispatch validations (if dry_run is false)
+    const appEnv = process.env.APP_ENV || 'development';
+    if (!isDryRun) {
+      if (!isLiveDispatchEnabled(process.env)) {
+        return res.status(400).json({
+          error: 'ระบบยังไม่ได้เปิดสวิตช์ส่งอีเมลจริง (GMAIL_LIVE_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)'
+        });
+      }
+      if (!isGmailConfigured(process.env)) {
+        return res.status(400).json({
+          error: 'ยังไม่ได้ตั้งค่า Gmail API OAuth2 Credentials ในระบบ กรุณาตรวจสอบการตั้งค่า'
+        });
+      }
+      if (appEnv !== 'production' && !isEmailAllowedInStaging(targetEmail, process.env, appEnv)) {
+        return res.status(400).json({
+          error: `โหมด ${appEnv} อนุญาตให้ส่งอีเมลจริงเฉพาะอีเมลใน Staging Allowlist เท่านั้น (${targetEmail} ไม่อยู่ในรายการที่อนุญาต)`
+        });
+      }
+    }
+
     // Read and validate PDF
     if (!invoice.file_url) {
       return res.status(400).json({ error: 'ไม่พบไฟล์เอกสารใบกำกับภาษี' });
@@ -5283,34 +5327,134 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
     }
 
     const pdfBuffer = fs.readFileSync(diskPath);
+    if (pdfBuffer.length === 0) {
+      return res.status(400).json({ error: 'ไฟล์เอกสารว่างเปล่า' });
+    }
+    if (pdfBuffer.length > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: 'ขนาดไฟล์เกิน 10MB' });
+    }
+
+    // Validate PDF magic bytes
+    if (pdfBuffer.length < 4 || pdfBuffer.toString('utf8', 0, 4) !== '%PDF') {
+      return res.status(400).json({ error: 'เอกสารที่แนบไม่ใช่ไฟล์ PDF สำหรับการส่ง e-Tax Invoice' });
+    }
+
+    // Durable Idempotency / Atomic Database Claim
+    // Prevents duplicate sends from rapid clicks or race conditions
+    const claimRes = await dbQuery.run(
+      `UPDATE tax_invoices
+       SET email_status = 'claiming',
+           email_sent_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND (
+           email_status IS NULL
+           OR email_status IN ('unsent', 'failed', 'uncertain', 'dry_run')
+           OR (email_status = 'claiming' AND (strftime('%s', 'now') - strftime('%s', email_sent_at)) > 60)
+         )`,
+      [invoice.id]
+    );
+
+    if (claimRes.changes === 0) {
+      const currentInvoice = await dbQuery.get('SELECT email_status, email_sent_at FROM tax_invoices WHERE id = ?', [invoice.id]);
+      if (currentInvoice?.email_status === 'claiming') {
+        return res.status(429).json({ error: 'กำลังดำเนินการส่งอีเมลสำหรับเอกสารนี้ กรุณารอสักครู่ (In-flight)' });
+      }
+      if (currentInvoice?.email_status === 'gmail_accepted') {
+        return res.status(409).json({ error: 'เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้' });
+      }
+      return res.status(409).json({ error: `ไม่สามารถส่งอีเมลได้ในสถานะปัจจุบัน (${currentInvoice?.email_status || 'unknown'})` });
+    }
 
     const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
 
-    // Dispatch simulated dry-run (dry_run: true)
-    const result = await sendTaxInvoiceEmail({
-      booking,
-      invoice,
-      recipientEmail: targetEmail,
-      pdfBuffer,
-      fileName: invoice.file_name || `Tax_Invoice_${invoice.invoice_number || bookingId}.pdf`,
-      dry_run: true,
-      dispatchedBy: staffName
-    });
+    // Dispatch email (dry-run or live Gmail)
+    let result;
+    try {
+      result = await sendTaxInvoiceEmail({
+        booking,
+        invoice,
+        recipientEmail: targetEmail,
+        pdfBuffer,
+        fileName: invoice.file_name || `Tax_Invoice_${invoice.invoice_number || bookingId}.pdf`,
+        dry_run: isDryRun,
+        dispatchedBy: staffName,
+        env: process.env
+      });
+    } catch (dispatchErr) {
+      const isUncertain = Boolean(dispatchErr.isUncertain || dispatchErr.code === 'DISPATCH_UNCERTAIN');
+      const errorStatus = isUncertain ? 'uncertain' : 'failed';
+      const errMsg = dispatchErr.message || 'ส่งอีเมลไม่สำเร็จ';
 
+      // Update invoice status on failure/uncertain
+      try {
+        await dbQuery.run(
+          `UPDATE tax_invoices
+           SET email_status = ?,
+               email_error = ?,
+               email_sent_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [errorStatus, errMsg, invoice.id]
+        );
+      } catch (uErr) {
+        console.warn('[Server] Could not update tax_invoices on dispatch failure:', uErr.message);
+      }
+
+      // Log dispatch failure/uncertainty
+      try {
+        await dbQuery.run(
+          `INSERT INTO tax_invoice_email_logs (
+            booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+            file_name, file_size, dispatched_by, payload_preview, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          [
+            bookingId,
+            invoice.id,
+            targetEmail,
+            `[B-WORK] ใบกำกับภาษี #${invoice.invoice_number || invoice.id}`,
+            errorStatus,
+            isDryRun ? 1 : 0,
+            invoice.file_name || 'Tax_Invoice.pdf',
+            pdfBuffer.length,
+            staffName,
+            JSON.stringify({ error: errMsg, isUncertain })
+          ]
+        );
+      } catch (lErr) {
+        console.warn('[Server] Could not log tax_invoice_email_logs failure:', lErr.message);
+      }
+
+      if (isUncertain) {
+        return res.status(504).json({
+          success: false,
+          status: 'uncertain',
+          error: 'คำขอส่งอีเมลไปยัง Gmail API หมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกสถานะเป็น "uncertain" และจะไม่ส่งซ้ำอัตโนมัติ เพื่อป้องกันอีเมลซ้ำซ้อน กรุณาตรวจสอบก่อนทำรายการใหม่',
+          details: errMsg
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        status: 'failed',
+        error: errMsg
+      });
+    }
+
+    const finalStatus = result.status; // 'gmail_accepted' | 'dry_run'
+    const isDryRunResult = result.dry_run ? 1 : 0;
     const nowIso = getBangkokLocalISO(new Date());
 
-    // Update tax_invoices table with dry_run status
+    // Update tax_invoices table with accepted / dry_run status
     try {
       await dbQuery.run(
         `UPDATE tax_invoices
-         SET email_status = 'dry_run',
+         SET email_status = ?,
              email_sent_at = ?,
-             email_dry_run = 1,
+             email_dry_run = ?,
              email_message_id = ?,
              email_recipient = ?,
              email_error = NULL
          WHERE id = ?`,
-        [nowIso, result.message_id, targetEmail, invoice.id]
+        [finalStatus, nowIso, isDryRunResult, result.message_id, targetEmail, invoice.id]
       );
     } catch (updateErr) {
       console.warn('[Server] Could not update tax_invoices email status:', updateErr.message);
@@ -5322,17 +5466,19 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
         `INSERT INTO tax_invoice_email_logs (
           booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
           message_id, file_name, file_size, dispatched_by, payload_preview, created_at
-        ) VALUES (?, ?, ?, ?, 'dry_run', 1, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           bookingId,
           invoice.id,
           targetEmail,
           result.subject,
+          finalStatus,
+          isDryRunResult,
           result.message_id,
           result.file_name,
           result.file_size,
           staffName,
-          JSON.stringify({ to: targetEmail, subject: result.subject, file_name: result.file_name }),
+          JSON.stringify({ to: targetEmail, subject: result.subject, status: finalStatus }),
           nowIso
         ]
       );
@@ -5342,23 +5488,25 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
 
     // Insert into booking_history
     try {
+      const historyAction = finalStatus === 'gmail_accepted' ? 'send_tax_invoice_email_gmail' : 'send_tax_invoice_email_dry_run';
+      const historyDetail = finalStatus === 'gmail_accepted'
+        ? `ส่งคำขออีเมลใบกำกับภาษีเข้า Gmail API สำเร็จ (Message ID: ${result.message_id}) ไปยัง ${targetEmail}`
+        : `จำลองส่งอีเมลใบกำกับภาษี (Dry-run) #${invoice.invoice_number || invoice.id} ไปยัง ${targetEmail}`;
+
       await dbQuery.run(
         `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
-         VALUES (?, 'send_tax_invoice_email_dry_run', ?, ?, ?)`,
-        [
-          bookingId,
-          `จำลองส่งอีเมลใบกำกับภาษี (Dry-run) #${invoice.invoice_number || invoice.id} ไปยัง ${targetEmail}`,
-          staffName,
-          nowIso
-        ]
+         VALUES (?, ?, ?, ?, ?)`,
+        [bookingId, historyAction, historyDetail, staffName, nowIso]
       );
     } catch (_) {}
 
     res.json({
       success: true,
-      dry_run: true,
-      status: 'dry_run',
-      message: 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
+      dry_run: result.dry_run,
+      status: finalStatus,
+      message: finalStatus === 'gmail_accepted'
+        ? 'Gmail API รับคำขอส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (รอคิวส่งของ Gmail)'
+        : 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
       data: {
         booking_id: bookingId,
         invoice_id: invoice.id,
