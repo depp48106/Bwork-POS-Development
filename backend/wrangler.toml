@@ -19,6 +19,7 @@ crons = ["* * * * *", "0 17 * * *"] # * * * * * = Auto-Cancel Expired Bookings (
 ENVIRONMENT = "production"
 APP_ENV = "production"
 GMAIL_LIVE_DISPATCH_ENABLED = "false"
+GMAIL_TEST_DISPATCH_ENABLED = "false"
 GMAIL_SENDER_NAME = "บริษัท บิลท์ ฮาร์ท จำกัด"
 GMAIL_USER_EMAIL = "coworkings.bwork@gmail.com"
 GMAIL_REPLY_TO = "coworkings.bwork@gmail.com"
