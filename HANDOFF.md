@@ -1,11 +1,11 @@
 # BWORK-POS | DEVELOPMENT HANDOFF REPORT
 
-> **Document Version:** 1.8.1  
+> **Document Version:** 1.9.0  
 > **Date:** 5 พฤศจิกายน 2026  
 > **Workspace:** Development (`D:\Project BL\Bwork-POS-Development-Home`)  
 > **Branch:** `integration/home-office-20261021`  
 > **Remote Repository:** `https://github.com/depp48106/Bwork-POS-Development.git`  
-> **Status:** **RECIPIENT SINGLE TRUTH ENFORCED (`booking.tax_email`) / HISTORICAL INVOICE MUTATION REMOVED / CONFIRMATION SNAPSHOT & BACKEND MISMATCH REJECTION VERIFIED / 6/6 TEST SCENARIOS PASSED / DEVELOPMENT ONLY**
+> **Status:** **TAX INVOICE REDESIGN & RECIPIENT TRUTH SUCCESSFULLY DEPLOYED TO PRODUCTION VIA SELECTIVE PATCH / READ-ONLY VERIFIED ON LIVE PAGES & WORKER / GMAIL SWITCH PRESERVED / ZERO DATA MUTATION**
 
 ---
 
@@ -600,3 +600,79 @@
   - สวิตช์ `GMAIL_LIVE_DISPATCH_ENABLED` คงค่า `"false"` ไว้ตลอดเวลา ไม่เปิดส่งจริงในรอบนี้
   - ไม่มีการเปลี่ยนแปลง Database Schema หรือ Migration ไฟล์ D1 ใด ๆ
   - ไม่มีผลกระทบต่องานฟีเจอร์ RC Customer Type ที่พักไว้
+
+
+---
+
+## 11. การ Deploy หน้า Tax Invoice Redesign และ Recipient Safety ขึ้น Production แบบ Selective
+
+> **วัน-เวลาที่ดำเนินการ:** 5 พฤศจิกายน 2026 เวลา 22:11 น. (15:11 UTC)  
+> **Development Commits:** `146fd457` และ `1dc8537d`  
+> **Release Branch:** `release/selective-gmail-tax-invoice-20261105`  
+> **Release Baseline:** `cd9a4b44`  
+> **Release Commits Added:** `87b18e56`, `9a9b0994`, `a361c642`, `4eb96a95`
+
+### 11.1 รายละเอียดการ Deploy บน Production Environment
+1. **Production POS Pages (`bwork-pos`):**
+   - **Deployment ID ใหม่:** `b26e1616-1004-4d2c-b859-a816a1153d72`
+   - **Deployment ID เดิมก่อนหน้า:** `97350101-5445-40a0-a01d-b5cb331c1d2e`
+   - **Target Branch / Environment:** `main` (Production)
+   - **Live Production URLs:**
+     - https://bwork-pos.pages.dev
+     - https://b26e1616.bwork-pos.pages.dev
+   - **Fresh Production Frontend Bundle (Built from Release Branch):**
+     - JS Bundle: `dist/assets/index-B4PyxfGB.js` (2,014.86 KB / gzip: 534.43 KB)
+     - CSS Bundle: `dist/assets/index-CdfFESVk.css` (204.01 KB / gzip: 31.66 KB)
+     - ยืนยัน: Build สดใหม่จาก `release/selective-gmail-tax-invoice-20261105` ไม่ได้ใช้ bundle เก่าจาก Development
+2. **Production Cloudflare Worker (`bwork-pos-api`):**
+   - **Version ID ใหม่:** `a68b57b8-e161-47d1-86aa-19a7cbd097e1`
+   - **Version ID เดิมก่อนหน้า:** `a34e371b-bd74-4364-b84c-4df4099dc59b`
+   - **Live Service URL:** `https://bwork-pos-api.ohnatza74185-ky.workers.dev`
+   - **Active Cron Triggers:**
+     - `* * * * *` (Auto-cancel expired bookings ทุก 1 นาที)
+     - `0 17 * * *` (Daily cloud backup เที่ยงคืนเวลาไทย)
+
+### 11.2 การรักษาค่าสวิตช์ความปลอดภัยและ Secrets (Pre/Post Deploy Verified)
+- ตรวจสอบสถานะจริงบน Worker ก่อน Deploy และรักษาสภาพเดิม 100% หลัง Deploy:
+  - `GMAIL_LIVE_DISPATCH_ENABLED`: **`true`** (คงสถานะเดิมตามค่าบน Worker ก่อน Deploy โดยไม่เปิด/ปิดเอง)
+  - `GMAIL_TEST_DISPATCH_ENABLED`: **`false`** (สวิตช์ทดสอบปิดสนิท)
+  - `GMAIL_SENDER_NAME`: **`บริษัท บิลท์ ฮาร์ท จำกัด`** (คงการเข้ารหัส RFC 2047)
+  - `GMAIL_USER_EMAIL`: **`coworkings.bwork@gmail.com`**
+  - `GMAIL_REPLY_TO`: **`coworkings.bwork@gmail.com`**
+  - **Secrets ครบถ้วน:** `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `WIFI_CREDENTIAL_ENCRYPTION_KEY`
+  - **Bindings ครบถ้วน:** `DB` (D1 Database `bworkpos_db`), `BUCKET` (R2 Bucket `bwork-uploads`)
+
+### 11.3 ผลการตรวจ Production แบบอ่านอย่างเดียว (Read-Only Verification)
+- **CDN Bundle Verification:** ตรวจสอบผ่าน HTTP fetch ไปยัง `https://bwork-pos.pages.dev/assets/index-B4PyxfGB.js` โหลดสำเร็จ HTTP 200 พบข้อความ `"ส่งเอกสารทางอีเมล"` ครบถ้วน
+- **Worker Health & Auth:** เข้าสู่ระบบ Admin ผ่าน `POST /api/auth/login` ได้รับ JWT ปกติ
+- **Tax Invoice Endpoint:** เรียก `GET /api/bookings/47/tax-invoice` ได้รับ HTTP 200 ข้อมูลเอกสารครบถ้วน
+- **Email Preview Endpoint:** เรียก `GET /api/bookings/47/tax-invoice/email-preview` ได้รับ HTTP 200 ทำงานได้ถูกต้อง
+- **UI Inspection ผ่าน Headless Chrome CDP บน Live Production:**
+  - เข้าสู่หน้าประวัติการจอง (History) และเปิด Modal ใบกำกับภาษีของรายการจริงได้สำเร็จ
+  - หัวข้อส่วนจัดส่งเอกสารแสดงชื่อ: **"ส่งเอกสารทางอีเมล"** ตามที่กำหนด
+  - Desktop (1280px): โครงสร้าง 2 คอลัมน์ สี Royal Blue สอดคล้องกับ POS Palette สวยงาม
+  - Mobile (390px): ตรวจวัดจริง `scrollW: 390 === clientW: 390` (Zero horizontal overflow ไม่มีส่วนใดล้นจอ)
+  - Console Errors: **0 รายการ**
+- **Read-Only Safety Guarantee:**
+  - ไม่มีการกดปุ่มบันทึกข้อมูลภาษีของลูกค้าบน Production
+  - ไม่มีการกดปุ่มจำลองส่ง (Dry-run) บนรายการของลูกค้าจริง
+  - ไม่มีการเรียกคำขอส่งอีเมลจริงไปยังลูกค้าหรือ LINE
+  - ไม่มีการรันคำสั่งแก้ไขข้อมูลหรือ Migration บนฐานข้อมูล D1
+
+### 11.4 แผนและคำสั่ง Rollback ฉุกเฉิน (Emergency Rollback Runbook)
+1. **Rollback Production Worker กลับเวอร์ชันก่อนหน้าทันที:**
+   ```bash
+   npx wrangler rollback a34e371b-bd74-4364-b84c-4df4099dc59b --config backend/wrangler.toml
+   ```
+2. **Rollback Production POS Pages กลับเวอร์ชันก่อนหน้าทันที:**
+   ```bash
+   npx wrangler pages deployment rollback 97350101-5445-40a0-a01d-b5cb331c1d2e --project-name bwork-pos
+   ```
+3. **Database Integrity:**
+   ไม่มีการเปลี่ยนแปลง Database Schema หรือรัน D1 Migration ในรอบนี้ ฐานข้อมูล Production คงเดิม 100%
+
+### 11.5 สรุปไฟล์หลักฐานการตรวจสอบ (Artifacts)
+- `pos_production_live_desktop.png`: ภาพหน้าจอรวม POS บน Production Live (Desktop 1280px)
+- `pos_production_live_mobile_390.png`: ภาพหน้าจอ POS บน Production Live (Mobile 390px)
+- `pos_production_tax_modal_desktop.png`: ภาพหน้าจอเปิด Modal ใบกำกับภาษีใหม่จริงบน Production (Desktop 1280px)
+- `pos_production_tax_modal_mobile_390.png`: ภาพหน้าจอเปิด Modal ใบกำกับภาษีใหม่จริงบน Production (Mobile 390px)
