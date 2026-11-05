@@ -5221,7 +5221,8 @@ app.get('/api/bookings/:id/tax-invoice/email-preview', authenticateToken, requir
       success: true,
       email_preview: {
         to: recipientEmail,
-        from: `${senderName} <${senderEmail}>`,
+        from: senderEmail,
+      fromName: senderName,
         reply_to: replyTo,
         subject,
         text: textBody,

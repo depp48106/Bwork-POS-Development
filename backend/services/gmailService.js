@@ -76,14 +76,89 @@ function isEmailAllowedInStaging(email, env = process.env, appEnv = getEffective
 
 /**
  * Encodes string to UTF-8 base64 encoded-word for MIME headers (RFC 2047).
+ * Ensures encoded-word length does not exceed 75 characters by chunking UTF-8 bytes safely without breaking code points.
  */
-function encodeMimeHeader(text) {
+function encodeMimeHeader(text, maxBytesPerWord = 45) {
   if (!text) return '';
   const str = String(text);
-  if (!/[^\x20-\x7E]/.test(str)) {
+
+  // Avoid re-encoding if already RFC 2047 encoded
+  if (/^=\?UTF-8\?[BQ]\?[^?]+\?=(\s+=\?UTF-8\?[BQ]\?[^?]+\?=)*$/i.test(str.trim())) {
+    return str.trim();
+  }
+
+  // Pure printable ASCII (0x20 to 0x7E) does not require RFC 2047 encoding
+  if (/^[\x20-\x7E]+$/.test(str)) {
     return str;
   }
-  return `=?UTF-8?B?${Buffer.from(str, 'utf8').toString('base64')}?=`;
+
+  const codePoints = Array.from(str);
+  const words = [];
+  let currentBytes = [];
+
+  for (const char of codePoints) {
+    const charBytes = Buffer.from(char, 'utf8');
+    if (currentBytes.length + charBytes.length > maxBytesPerWord) {
+      if (currentBytes.length > 0) {
+        words.push(makeEncodedWord(currentBytes));
+        currentBytes = [];
+      }
+    }
+    for (let i = 0; i < charBytes.length; i++) {
+      currentBytes.push(charBytes[i]);
+    }
+  }
+
+  if (currentBytes.length > 0) {
+    words.push(makeEncodedWord(currentBytes));
+  }
+
+  return words.join(' ');
+}
+
+function makeEncodedWord(bytesArray) {
+  const buf = Buffer.from(bytesArray);
+  const b64 = buf.toString('base64');
+  const word = `=?UTF-8?B?${b64}?=`;
+  if (word.length > 75) {
+    throw new Error(`RFC 2047 violation: encoded-word length ${word.length} exceeds 75 characters`);
+  }
+  return word;
+}
+
+/**
+ * Formats a RFC 5322 From header with an optional display name encoded via RFC 2047.
+ */
+function formatFromHeader(from, fromName) {
+  let name = String(fromName || '').trim();
+  let email = String(from || '').trim();
+
+  const match = email.match(/^(.*?)\s*<([^>]+)>$/);
+  if (match) {
+    if (!name) name = match[1].trim();
+    email = match[2].trim();
+  } else {
+    email = email.replace(/[<>]/g, '').trim();
+  }
+
+  name = name.replace(/^["']|["']$/g, '').trim();
+
+  if (!name) {
+    return `<${email}>`;
+  }
+
+  return `${encodeMimeHeader(name)} <${email}>`;
+}
+
+/**
+ * Decodes RFC 2047 encoded-words back to UTF-8 string.
+ */
+function decodeMimeHeader(header) {
+  if (!header) return '';
+  const collapsed = String(header).replace(/(=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=)\s+(?==\?UTF-8\?B\?)/gi, '$1');
+  return collapsed.replace(/=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=/gi, (_, b64) => {
+    return Buffer.from(b64, 'base64').toString('utf8');
+  });
 }
 
 /**
@@ -258,8 +333,10 @@ function buildMimeMessage({
 
   let mime = '';
   // Top Headers
-  mime += `From: ${encodeMimeHeader(fromName)} <${from}>\r\n`;
-  mime += `Reply-To: <${replyTo}>\r\n`;
+  const formattedFrom = formatFromHeader(from, fromName);
+  mime += `From: ${formattedFrom}\r\n`;
+  const cleanReplyTo = String(replyTo || '').trim().replace(/[<>]/g, '');
+  mime += `Reply-To: <${cleanReplyTo}>\r\n`;
   mime += `To: ${to}\r\n`;
   mime += `Subject: ${encodeMimeHeader(subject)}\r\n`;
   mime += `MIME-Version: 1.0\r\n`;
@@ -632,6 +709,8 @@ module.exports = {
   isEmailAllowedInStaging,
   isValidEmail,
   encodeMimeHeader,
+  decodeMimeHeader,
+  formatFromHeader,
   base64UrlEncode,
   generateTaxInvoiceEmailContent,
   generateTestEmailContent,

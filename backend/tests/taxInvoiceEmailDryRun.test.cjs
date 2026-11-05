@@ -19,6 +19,7 @@ const {
   isEmailAllowedInStaging,
   isValidEmail,
   encodeMimeHeader,
+  decodeMimeHeader,
   generateTaxInvoiceEmailContent,
   buildMimeMessage,
   getGmailAccessToken,
@@ -54,9 +55,8 @@ test('GmailService - Thai sender name MIME encoding RFC 2047', () => {
   assert.ok(encoded.startsWith('=?UTF-8?B?'));
   assert.ok(encoded.endsWith('?='));
 
-  // Decoding the base64 word yields the original Thai text
-  const base64Part = encoded.replace('=?UTF-8?B?', '').replace('?=', '');
-  const decoded = Buffer.from(base64Part, 'base64').toString('utf8');
+  // Decoding the RFC 2047 encoded words yields the original Thai text
+  const decoded = decodeMimeHeader(encoded);
   assert.strictEqual(decoded, thaiSender);
 });
 

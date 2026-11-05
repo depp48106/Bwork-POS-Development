@@ -17,7 +17,10 @@ const {
   isTestDispatchEnabled,
   createTestSamplePdfBuffer,
   generateTestEmailContent,
-  buildMimeMessage
+  buildMimeMessage,
+  encodeMimeHeader,
+  decodeMimeHeader,
+  formatFromHeader
 } = require('../services/gmailService');
 
 // ========================================================
@@ -61,7 +64,105 @@ test('GmailService - generateTestEmailContent contains clear disclaimers', () =>
 });
 
 // ========================================================
-// 2. INTEGRATION TESTS: EXPRESS ADMIN TEST ENDPOINTS
+// 2. REGRESSION TESTS: RFC 2047 SENDER NAME & FROM HEADER
+// ========================================================
+test('GmailService - RFC 2047 chunking preserves Thai sender name without exceeding 75 chars', () => {
+  const thaiSender = 'บริษัท บิลท์ ฮาร์ท จำกัด';
+  const encoded = encodeMimeHeader(thaiSender);
+
+  // Must be split into encoded-words each <= 75 chars
+  const words = encoded.split(' ');
+  assert.ok(words.length >= 2, 'Must be split into multiple encoded-words');
+  for (const w of words) {
+    assert.ok(w.length <= 75, `Word length ${w.length} must be <= 75 chars (RFC 2047): ${w}`);
+    assert.ok(w.startsWith('=?UTF-8?B?'), 'Must start with =?UTF-8?B?');
+    assert.ok(w.endsWith('?='), 'Must end with ?=');
+  }
+
+  // Must decode back exactly to original Thai text byte-for-byte
+  const decoded = decodeMimeHeader(encoded);
+  assert.strictEqual(decoded, thaiSender, 'Decoded text must match original Thai text exactly');
+});
+
+test('GmailService - formatFromHeader creates valid RFC 5322 From line', () => {
+  const thaiSender = 'บริษัท บิลท์ ฮาร์ท จำกัด';
+  const email = 'coworkings.bwork@gmail.com';
+
+  // 1. Separate args
+  const from1 = formatFromHeader(email, thaiSender);
+  assert.ok(from1.endsWith(`<${email}>`));
+  assert.ok(from1.includes('=?UTF-8?B?'));
+  const match1 = from1.match(/^(.*?)\s*<([^>]+)>$/);
+  assert.ok(match1);
+  assert.strictEqual(decodeMimeHeader(match1[1]), thaiSender);
+  assert.strictEqual(match1[2], email);
+
+  // 2. Combined string arg
+  const from2 = formatFromHeader(`${thaiSender} <${email}>`);
+  assert.strictEqual(from2, from1, 'Combined input must produce identical header');
+
+  // 3. No double encoding
+  const from3 = formatFromHeader(from1);
+  assert.strictEqual(decodeMimeHeader(from3.match(/^(.*?)\s*<([^>]+)>$/)[1]), thaiSender);
+});
+
+test('GmailService - buildMimeMessage produces compliant From, Subject, and Reply-To headers', () => {
+  const thaiSender = 'บริษัท บิลท์ ฮาร์ท จำกัด';
+  const email = 'coworkings.bwork@gmail.com';
+  const subject = '[BWORK TEST] ทดสอบส่งเอกสาร PDF — ไม่ใช่ใบกำกับภาษีจริง';
+
+  const mime = buildMimeMessage({
+    from: email,
+    fromName: thaiSender,
+    to: TARGET_TEST_RECIPIENT,
+    replyTo: email,
+    subject,
+    text: 'Test',
+    html: '<p>Test</p>',
+    attachmentBuffer: Buffer.from('%PDF-1.4\n%%EOF')
+  });
+
+  // Check From header line
+  const fromLineMatch = mime.match(/^From:\s*(.+)$/m);
+  assert.ok(fromLineMatch, 'MIME must contain From line');
+  const fromVal = fromLineMatch[1].trim();
+  const addrMatch = fromVal.match(/^(.*?)\s*<([^>]+)>$/);
+  assert.ok(addrMatch, 'From line must match Name <email> pattern');
+  assert.strictEqual(decodeMimeHeader(addrMatch[1]), thaiSender);
+  assert.strictEqual(addrMatch[2], email);
+
+  // Check Reply-To line
+  const replyLineMatch = mime.match(/^Reply-To:\s*(.+)$/m);
+  assert.ok(replyLineMatch, 'MIME must contain Reply-To line');
+  assert.strictEqual(replyLineMatch[1].trim(), `<${email}>`);
+
+  // Check Subject line
+  const subjLineMatch = mime.match(/^Subject:\s*(.+)$/m);
+  assert.ok(subjLineMatch, 'MIME must contain Subject line');
+  assert.strictEqual(decodeMimeHeader(subjLineMatch[1].trim()), subject);
+
+  // Check no unencoded 8-bit bytes in headers section
+  const headerSection = mime.split('\r\n\r\n')[0];
+  const hasRawNonAscii = /[^\x00-\x7F]/.test(headerSection);
+  assert.strictEqual(hasRawNonAscii, false, 'Headers section must contain only 7-bit US-ASCII');
+});
+
+test('Cloudflare Worker - Parity: worker MIME formatting produces matching RFC 2047 From header', () => {
+  const workerContent = fs.readFileSync(path.join(__dirname, '../worker.js'), 'utf8');
+  const normalized = workerContent.replace(/\r\n/g, '\n');
+
+  // Verify worker has formatFromHeaderWorker
+  assert.ok(normalized.includes('function formatFromHeaderWorker'), 'Worker must define formatFromHeaderWorker');
+  assert.ok(normalized.includes('const formattedFrom = formatFromHeaderWorker(from, fromName);'), 'Worker buildMimeMessageWorker must use formatFromHeaderWorker');
+  assert.ok(normalized.includes("mime += 'From: ' + formattedFrom + '\\r\\n';"), 'Worker must output formattedFrom');
+
+  // Verify worker calls pass from: senderEmail, fromName: senderName
+  assert.ok(normalized.includes('from: senderEmail,\n            fromName: senderName,'), 'Worker test-send must pass senderEmail and senderName');
+  assert.ok(normalized.includes('from: senderEmail,\n            fromName: senderName,\n            to: targetEmail,\n            replyTo,'), 'Worker tax invoice send must pass senderEmail and senderName');
+});
+
+// ========================================================
+// 3. INTEGRATION TESTS: EXPRESS ADMIN TEST ENDPOINTS
 // ========================================================
 test('Admin Gmail Test Send - API integration with mock DB and mock Gmail API', async (t) => {
   const memDb = new sqlite3.Database(':memory:');
