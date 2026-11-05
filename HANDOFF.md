@@ -187,8 +187,8 @@
 ### 7.2 Deployment IDs & Live Targets
 1. **Production Worker (`bwork-pos-api`):**
    - **URL:** `https://bwork-pos-api.ohnatza74185-ky.workers.dev`
-   - **Previous Version ID:** `3b3da539-50dd-4f15-b47b-7b5e49dc8877` (Rollback ID สำหรับถอยกลับ)
-   - **Deployed Version ID:** `e844cc93-5f48-4a6d-8d9f-7de6a503b956` (Active พร้อม selective patch Admin test-send)
+   - **Previous Version ID:** `e844cc93-5f48-4a6d-8d9f-7de6a503b956` (Rollback ID สำหรับถอยกลับ)
+   - **Deployed Version ID:** `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4` (Active พร้อม hotfix RFC 2047 From header chunking <=75 chars)
 2. **Production POS Pages (`bwork-pos`):**
    - **Live URL:** `https://bwork-pos.pages.dev`
    - **Previous Deployment ID:** `8bcde5bb-23d6-43b3-96f6-92cd03d1be59`
@@ -239,7 +239,7 @@
 ### 7.6 แผนและคำสั่ง Rollback ฉุกเฉิน (Emergency Rollback Runbook)
 1. **Rollback Production Worker ทันที:**
    ```bash
-   npx wrangler rollback 3b3da539-50dd-4f15-b47b-7b5e49dc8877 --config backend/wrangler.toml
+   npx wrangler rollback e844cc93-5f48-4a6d-8d9f-7de6a503b956 --config backend/wrangler.toml
    ```
 2. **Rollback Production POS Pages ทันที:**
    ```bash
@@ -269,3 +269,16 @@
   - `GMAIL_TEST_DISPATCH_ENABLED`: กลับสู่สถานะ `false` เรียบร้อย (Auto-disarmed via finally block)
   - `GMAIL_LIVE_DISPATCH_ENABLED`: ยังคงเป็น `false` อย่างเคร่งครัด
   - ไม่มีการรั่วไหลของ Token หรือ Secret
+
+### 7.8 การแก้ไขชื่อผู้ส่ง Gmail ภาษาไทยเพี้ยน (Hotfix RFC 2047 From Header Encoding)
+- **สาเหตุที่ตรวจพบอย่างแน่ชัด:**
+  1. ใน `worker.js` เดิม ฟังก์ชัน `buildMimeMessageWorker()` นำสตริง `from` (`บริษัท บิลท์ ฮาร์ท จำกัด <coworkings.bwork@gmail.com>`) มาต่อลงใน MIME header โดยตรงโดยไม่ได้เข้ารหัส RFC 2047 สำหรับชื่อผู้ส่ง (Display Name) ทำให้กลายเป็น 8-bit UTF-8 ดิบใน Header
+  2. เมื่อ Gmail / Mail User Agent ประมวลผล Header ตามมาตรฐาน RFC 822 / 5322 (ซึ่งอนุญาตเฉพาะ 7-bit ASCII) ไบต์ UTF-8 ของภาษาไทยจึงถูกตีความเป็น ISO-8859-1 (Latin-1) ส่งผลให้แสดงผลเป็นตัวอักษรเพี้ยน (Mojibake)
+  3. ฟังก์ชัน `encodeMimeHeader()` เดิมไม่ได้ทำการแบ่งส่วน (Chunking) เมื่อชื่อมีความยาว UTF-8 เกิน 45 ไบต์ (ชื่อบริษัทมีความยาว 66 ไบต์ ทำให้ Base64 ยาว 88 ตัวอักษร รวม Header เป็น 100 ตัวอักษร) ซึ่งขัดกับมาตรฐาน RFC 2047 Section 2 ที่กำหนดว่า encoded-word ต้องไม่เกิน 75 ตัวอักษร
+- **การแก้ไขที่ดำเนินการ:**
+  1. อัปเกรด `encodeMimeHeader()` ให้รองรับการแบ่งคำ encoded-word อัตโนมัติ (ความยาวไม่เกิน 75 ตัวอักษรต่อคำ) โดยตัดแบ่งตามขอบเขตของ Unicode Code Point อย่างปลอดภัย ไม่ตัดกลางตัวอักษรหลายไบต์
+  2. เพิ่มฟังก์ชัน `formatFromHeader()` / `formatFromHeaderWorker()` เพื่อแยก display name และอีเมล โดยเข้ารหัส RFC 2047 เฉพาะ display name และคงรูปแบบ `<email>` ไว้อย่างถูกต้อง
+  3. ป้องกันการ Encode ซ้ำซ้อน (Idempotent RFC 2047 check)
+  4. เพิ่ม Regression Tests ทั้งใน Express (`gmailService.js`) และ Worker (`worker.js`) ตรวจสอบว่า `From:` ถอดรหัสกลับมาตรงกับ "บริษัท บิลท์ ฮาร์ท จำกัด" 100% (ผ่าน 22/22 tests)
+  5. Deploy Selective Hotfix ขึ้น Production Worker (Version ID: `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4`) โดยรักษา Secrets ทั้งหมดและสวิตช์ส่งงานลูกค้า `GMAIL_LIVE_DISPATCH_ENABLED="false"` อย่างเคร่งครัด
+  6. ทดสอบความถูกต้องด้วย Dry-run บน Production เรียบร้อย (ไม่มีการส่งอีเมลจริงเพิ่มเติม)
