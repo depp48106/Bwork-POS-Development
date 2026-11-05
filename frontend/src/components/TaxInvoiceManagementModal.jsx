@@ -4,7 +4,7 @@ import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import {
   X, FileText, CheckCircle2, AlertCircle, Building, User, Mail, Phone,
   MapPin, Copy, Edit2, Save, Trash2, ExternalLink, Download, Upload,
-  Plus, Clock, RefreshCw, FileCheck
+  Plus, Clock, RefreshCw, FileCheck, Eye, Send
 } from 'lucide-react';
 
 /**
@@ -82,6 +82,15 @@ export default function TaxInvoiceManagementModal({
   const [uploadNotes, setUploadNotes] = useState('');
   const [uploadError, setUploadError] = useState(null);
   const [isDraggingDoc, setIsDraggingDoc] = useState(false);
+
+  // Email Dispatch & Preview State
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewTab, setPreviewTab] = useState('html'); // 'html' | 'text'
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewData, setPreviewData] = useState(null);
+  const [previewError, setPreviewError] = useState(null);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [emailFeedback, setEmailFeedback] = useState(null);
   const fileInputRef = useRef(null);
   const scrollBodyRef = useRef(null);
   const initialTaxFormRef = useRef(null);
@@ -206,10 +215,13 @@ export default function TaxInvoiceManagementModal({
   const handleCopyTaxDetails = () => {
     if (!taxData) return;
     const lines = [];
-    lines.push(`ประเภท: ${taxData.tax_payer_type === 'individual' ? 'บุคคลธรรมดา' : 'นิติบุคคล'}`);
+    const payerLabel = taxData.tax_payer_type === 'individual' ? 'บุคคลธรรมดา' : (taxData.tax_payer_type === 'corporate' ? 'นิติบุคคล' : 'ไม่ระบุประเภท');
+    lines.push(`ประเภท: ${payerLabel}`);
     if (taxData.tax_name) lines.push(`ชื่อผู้เสียภาษี: ${taxData.tax_name}`);
     if (taxData.tax_id) lines.push(`เลขประจำตัวผู้เสียภาษี: ${taxData.tax_id}`);
-    lines.push(`สาขา: ${taxData.tax_branch_type === 'branch' ? `สาขา ${taxData.tax_branch_number || '-'}` : 'สำนักงานใหญ่'}`);
+    if (taxData.tax_payer_type !== 'individual') {
+      lines.push(`สาขา: ${taxData.tax_branch_type === 'branch' ? `สาขา ${taxData.tax_branch_number || '-'}` : 'สำนักงานใหญ่'}`);
+    }
     if (taxData.tax_address) lines.push(`ที่อยู่: ${taxData.tax_address}`);
     if (taxData.tax_email) lines.push(`อีเมล: ${taxData.tax_email}`);
     if (taxData.tax_phone) lines.push(`เบอร์โทรศัพท์: ${taxData.tax_phone}`);
@@ -291,6 +303,237 @@ export default function TaxInvoiceManagementModal({
       if (sysAlert) sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
     } finally {
       setIsSavingTaxInfo(false);
+    }
+  };
+
+  // Find the primary/latest PDF invoice
+  const activePdfInvoice = invoices.find(inv =>
+    inv.content_type?.toLowerCase().includes('pdf') ||
+    inv.file_name?.toLowerCase().endsWith('.pdf') ||
+    inv.file_url?.toLowerCase().endsWith('.pdf')
+  ) || (invoices.length > 0 ? invoices[0] : null);
+
+  const isPdfAttached = Boolean(
+    activePdfInvoice && (
+      activePdfInvoice.content_type?.toLowerCase().includes('pdf') ||
+      activePdfInvoice.file_name?.toLowerCase().endsWith('.pdf') ||
+      activePdfInvoice.file_url?.toLowerCase().endsWith('.pdf')
+    )
+  );
+
+  const recipientEmail = (taxData?.tax_email || booking?.tax_email || '').trim();
+  const isEmailValid = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(recipientEmail);
+
+  // Open Email Preview Modal
+  const handleOpenEmailPreview = async () => {
+    if (!bookingId) return;
+    try {
+      setPreviewLoading(true);
+      setPreviewError(null);
+      setIsPreviewOpen(true);
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const invoiceParam = activePdfInvoice?.id ? `?invoice_id=${activePdfInvoice.id}` : '';
+      const res = await fetch(`/api/bookings/${bookingId}/tax-invoice/email-preview${invoiceParam}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPreviewData(data.email_preview);
+      } else {
+        setPreviewError(data.error || 'ไม่สามารถโหลดตัวอย่างอีเมลได้');
+      }
+    } catch (err) {
+      setPreviewError('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  // Send Tax Invoice Email (Dry-run default or live Gmail)
+  const handleSendTaxEmail = async (isDryRun = true) => {
+    if (!bookingId || !activePdfInvoice) return;
+    if (!isDryRun) {
+      const confirmed = window.confirm(`ยืนยันการส่งอีเมลใบกำกับภาษีจริงไปยัง ${recipientEmail}?\n\nระบบจะเรียก Gmail API เพื่อนำส่งเข้าคิวส่งจริง`);
+      if (!confirmed) return;
+    }
+    try {
+      setIsSendingEmail(true);
+      setEmailFeedback(null);
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const res = await fetch(`/api/bookings/${bookingId}/tax-invoice/send-email`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          invoice_id: activePdfInvoice.id,
+          recipient_email: recipientEmail,
+          dry_run: isDryRun
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const msg = data.message || (isDryRun ? 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)' : 'Gmail รับคำขอส่งอีเมลเรียบร้อยแล้ว (รอคิวส่งของ Gmail)');
+        setEmailFeedback({
+          type: 'success',
+          message: msg,
+          details: data.data
+        });
+        if (sysAlert) sysAlert(msg);
+        await fetchTaxInvoiceData();
+        if (onUpdated) onUpdated();
+      } else {
+        const errMsg = data.error || (isDryRun ? 'เกิดข้อผิดพลาดในการจำลองส่งอีเมล' : 'เกิดข้อผิดพลาดในการส่งอีเมลผ่าน Gmail API');
+        setEmailFeedback({
+          type: 'error',
+          message: errMsg
+        });
+        if (sysAlert) sysAlert(errMsg);
+        await fetchTaxInvoiceData();
+      }
+    } catch (err) {
+      setEmailFeedback({
+        type: 'error',
+        message: 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์'
+      });
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const handleSimulateSendEmail = () => handleSendTaxEmail(true);
+  const handleLiveSendEmail = () => handleSendTaxEmail(false);
+
+  const renderEmailStatusBadge = (status) => {
+    switch (status) {
+      case 'gmail_accepted':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(16, 185, 129, 0.12)',
+              color: '#059669',
+              border: '1px solid #34d399',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            title="Gmail API รับคำขอส่งอีเมลเข้าคิวระบบแล้ว (รอการนำส่งตามคิวของ Gmail)"
+          >
+            <CheckCircle2 size={12} />
+            <span>Gmail รับคำขอแล้ว</span>
+          </span>
+        );
+      case 'uncertain':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(245, 158, 11, 0.12)',
+              color: '#d97706',
+              border: '1px solid #fcd34d',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            title="คำขอส่งหมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบไม่ส่งซ้ำอัตโนมัติเพื่อความปลอดภัย"
+          >
+            <AlertCircle size={12} />
+            <span>ผลส่งไม่แน่นอน (Uncertain)</span>
+          </span>
+        );
+      case 'failed':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(239, 68, 68, 0.12)',
+              color: '#dc2626',
+              border: '1px solid #f87171',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+            title="ส่งไม่สำเร็จ (Failed)"
+          >
+            <AlertCircle size={12} />
+            <span>ส่งไม่สำเร็จ (Failed)</span>
+          </span>
+        );
+      case 'claiming':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(99, 102, 241, 0.12)',
+              color: '#4f46e5',
+              border: '1px solid #a5b4fc',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+          >
+            <RefreshCw size={12} />
+            <span>กำลังส่งเข้าคิว...</span>
+          </span>
+        );
+      case 'dry_run':
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              backgroundColor: 'rgba(2, 132, 199, 0.12)',
+              color: '#0284c7',
+              border: '1px solid #38bdf8',
+              padding: '3px 10px',
+              borderRadius: '999px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+          >
+            <CheckCircle2 size={12} />
+            <span>จำลองส่งแล้ว (Dry-run)</span>
+          </span>
+        );
+      default:
+        return (
+          <span
+            id="badge-tax-email-status"
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              backgroundColor: 'rgba(100, 116, 139, 0.1)',
+              color: 'var(--text-muted)',
+              padding: '3px 10px',
+              borderRadius: '999px'
+            }}
+          >
+            ยังไม่ได้ส่ง
+          </span>
+        );
     }
   };
 
@@ -686,8 +929,17 @@ export default function TaxInvoiceManagementModal({
                     ) : (
                       /* Read-Only Display */
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px', fontSize: '0.84rem' }}>
-                        <div style={{ gridColumn: 'span 2' }}>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ชื่อผู้เสียภาษี:</span>
+                        <div>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ประเภทผู้เสียภาษี:</span>
+                          <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
+                            {taxData?.tax_payer_type === 'individual' ? 'บุคคลธรรมดา' : (taxData?.tax_payer_type === 'corporate' ? 'นิติบุคคล' : 'ไม่ระบุประเภท')}
+                          </div>
+                        </div>
+
+                        <div>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+                            {taxData?.tax_payer_type === 'individual' ? 'ชื่อ–นามสกุล:' : 'ชื่อผู้เสียภาษี / บริษัท:'}
+                          </span>
                           <div style={{ fontSize: '0.98rem', fontWeight: 800, color: 'var(--text-main)', marginTop: '2px' }}>
                             {taxData?.tax_name || '-'}
                           </div>
@@ -700,14 +952,16 @@ export default function TaxInvoiceManagementModal({
                           </div>
                         </div>
 
-                        <div>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>สำนักงานใหญ่ / สาขา:</span>
-                          <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
-                            {taxData?.tax_branch_type === 'branch'
-                              ? `สาขา (เลขที่สาขา: ${taxData.tax_branch_number || '-'})`
-                              : 'สำนักงานใหญ่ (Head Office)'}
+                        {taxData?.tax_payer_type !== 'individual' && (
+                          <div>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>สำนักงานใหญ่ / สาขา:</span>
+                            <div style={{ fontWeight: 700, color: 'var(--text-main)', marginTop: '2px' }}>
+                              {taxData?.tax_branch_type === 'branch'
+                                ? `สาขา (เลขที่สาขา: ${taxData.tax_branch_number || '-'})`
+                                : 'สำนักงานใหญ่ (Head Office)'}
+                            </div>
                           </div>
-                        </div>
+                        )}
 
                         <div style={{ gridColumn: 'span 2' }}>
                           <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>ที่อยู่ออกใบกำกับภาษี:</span>
@@ -1231,6 +1485,208 @@ export default function TaxInvoiceManagementModal({
                     </div>
                   )}
 
+                  {/* e-Tax Invoice Email Dispatch Card */}
+                  {taxData?.tax_delivery_method === 'email' && (
+                    <div
+                      id="tax-email-dispatch-card"
+                      style={{
+                        backgroundColor: 'var(--bg-main, #f8fafc)',
+                        border: '1.5px solid #38bdf8',
+                        borderRadius: '12px',
+                        padding: '14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '12px',
+                        boxShadow: '0 2px 8px rgba(2, 132, 199, 0.06)'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <Mail size={18} color="#0284c7" />
+                          <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)' }}>
+                            ระบบจัดส่งใบกำกับภาษีทางอีเมล (e-Tax Invoice Delivery)
+                          </span>
+                        </div>
+                        <div>
+                          {renderEmailStatusBadge(activePdfInvoice?.email_status)}
+                        </div>
+                      </div>
+
+                      {/* Details grid: Recipient Email & Attached Document */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
+                        <div style={{
+                          padding: '10px 12px',
+                          backgroundColor: 'var(--bg-card, #ffffff)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '8px'
+                        }}>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <Mail size={12} />
+                            <span>อีเมลผู้รับเอกสาร:</span>
+                          </div>
+                          <div style={{
+                            fontSize: '0.82rem',
+                            fontWeight: 750,
+                            color: recipientEmail ? 'var(--text-main)' : '#ef4444',
+                            marginTop: '3px',
+                            wordBreak: 'break-all'
+                          }}>
+                            {recipientEmail || 'ยังไม่ได้ระบุอีเมลผู้รับ'}
+                          </div>
+                        </div>
+
+                        <div style={{
+                          padding: '10px 12px',
+                          backgroundColor: 'var(--bg-card, #ffffff)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '8px'
+                        }}>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <FileText size={12} />
+                            <span>เอกสารแนบ (PDF):</span>
+                          </div>
+                          <div style={{
+                            fontSize: '0.82rem',
+                            fontWeight: 750,
+                            color: isPdfAttached ? '#059669' : '#eab308',
+                            marginTop: '3px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px'
+                          }}>
+                            {isPdfAttached ? (
+                              <>
+                                <CheckCircle2 size={13} color="#059669" />
+                                <span>{activePdfInvoice.invoice_number ? `เลขที่ ${activePdfInvoice.invoice_number} (PDF)` : 'พร้อมส่ง (PDF)'}</span>
+                              </>
+                            ) : (
+                              <>
+                                <AlertCircle size={13} color="#eab308" />
+                                <span>ยังไม่มีเอกสาร PDF แนบในระบบ</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Live or Uncertain Status Notice */}
+                      {activePdfInvoice?.email_status === 'gmail_accepted' && (
+                        <div style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          fontSize: '0.74rem',
+                          backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                          color: '#047857',
+                          border: '1px solid #a7f3d0',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          <CheckCircle2 size={14} />
+                          <span>Gmail API รับคำขอส่งข้อความเรียบร้อยแล้ว (Message ID: {activePdfInvoice.email_message_id || '-'}) — ระบบ Gmail กำลังนำส่งตามคิว</span>
+                        </div>
+                      )}
+
+                      {activePdfInvoice?.email_status === 'uncertain' && (
+                        <div style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          fontSize: '0.74rem',
+                          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+                          color: '#b45309',
+                          border: '1px solid #fde68a',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          <AlertCircle size={14} />
+                          <span>คำขอส่งหมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกเป็นผลไม่แน่นอนและจะไม่ส่งซ้ำอัตโนมัติ เพื่อป้องกันการส่งซ้ำซ้อน กรุณาตรวจสอบก่อนทำรายการใหม่</span>
+                        </div>
+                      )}
+
+                      {/* Dispatch feedback alert */}
+                      {emailFeedback && (
+                        <div style={{
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          fontSize: '0.75rem',
+                          fontWeight: 650,
+                          backgroundColor: emailFeedback.type === 'success' ? 'rgba(2, 132, 199, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                          color: emailFeedback.type === 'success' ? '#0369a1' : '#b91c1c',
+                          border: emailFeedback.type === 'success' ? '1px solid #7dd3fc' : '1px solid #fca5a5',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}>
+                          {emailFeedback.type === 'success' ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
+                          <span>{emailFeedback.message}</span>
+                        </div>
+                      )}
+
+                      {/* Action buttons */}
+                      <div style={{
+                        display: 'flex',
+                        gap: '8px',
+                        justifyContent: 'flex-end',
+                        flexWrap: 'wrap',
+                        paddingTop: '4px'
+                      }}>
+                        <button
+                          type="button"
+                          id="btn-tax-email-preview"
+                          onClick={handleOpenEmailPreview}
+                          disabled={!isPdfAttached || !isEmailValid || previewLoading}
+                          style={{
+                            height: '34px',
+                            padding: '0 14px',
+                            borderRadius: '8px',
+                            border: '1px solid #38bdf8',
+                            backgroundColor: '#f0f9ff',
+                            color: '#0284c7',
+                            fontSize: '0.78rem',
+                            fontWeight: 750,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            cursor: (!isPdfAttached || !isEmailValid || previewLoading) ? 'not-allowed' : 'pointer',
+                            opacity: (!isPdfAttached || !isEmailValid) ? 0.6 : 1
+                          }}
+                          title={!isPdfAttached ? 'กรุณาแนบไฟล์ PDF ก่อนดูตัวอย่าง' : (!isEmailValid ? 'กรุณาระบุอีเมลที่ถูกต้อง' : 'เปิดดูตัวอย่างอีเมลที่ลูกค้าจะได้รับ')}
+                        >
+                          <Eye size={14} />
+                          <span>{previewLoading ? 'กำลังโหลดตัวอย่าง...' : 'ดูตัวอย่างอีเมล'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          id="btn-tax-simulate-send-email"
+                          onClick={handleSimulateSendEmail}
+                          disabled={!isPdfAttached || !isEmailValid || isSendingEmail}
+                          style={{
+                            height: '34px',
+                            padding: '0 16px',
+                            borderRadius: '8px',
+                            border: 'none',
+                            backgroundColor: '#0284c7',
+                            color: '#ffffff',
+                            fontSize: '0.78rem',
+                            fontWeight: 800,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            cursor: (!isPdfAttached || !isEmailValid || isSendingEmail) ? 'not-allowed' : 'pointer',
+                            opacity: (!isPdfAttached || !isEmailValid) ? 0.6 : 1,
+                            boxShadow: '0 2px 6px rgba(2, 132, 199, 0.25)'
+                          }}
+                          title={!isPdfAttached ? 'กรุณาแนบไฟล์ PDF ก่อนจำลองการส่ง' : (!isEmailValid ? 'กรุณาระบุอีเมลที่ถูกต้อง' : 'จำลองขั้นตอนส่งอีเมลโดยไม่เรียก Gmail API จริง')}
+                        >
+                          <Send size={14} />
+                          <span>{isSendingEmail ? 'กำลังจำลองส่ง...' : 'จำลองส่งอีเมล (Dry-run)'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Upload Box for New Attachment */}
                   <div
                     onDragOver={(e) => { e.preventDefault(); setIsDraggingDoc(true); }}
@@ -1471,6 +1927,242 @@ export default function TaxInvoiceManagementModal({
             </button>
           </div>
         </div>
+
+        {/* Email Preview Drawer / Sub-modal */}
+        {isPreviewOpen && (
+          <div
+            id="tax-email-preview-modal"
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(15, 23, 42, 0.6)',
+              backdropFilter: 'blur(4px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 10001,
+              padding: '16px'
+            }}
+            onClick={() => setIsPreviewOpen(false)}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                backgroundColor: '#ffffff',
+                width: '100%',
+                maxWidth: '640px',
+                maxHeight: '90vh',
+                borderRadius: '16px',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden'
+              }}
+            >
+              {/* Preview Header */}
+              <div style={{
+                padding: '14px 20px',
+                borderBottom: '1px solid var(--border-color)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                backgroundColor: '#f8fafc'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Mail size={18} color="#0284c7" />
+                  <h3 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 800, color: '#0f172a' }}>
+                    ตัวอย่างอีเมลใบกำกับภาษี (Email Preview - Dry-run)
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  id="btn-close-email-preview-x"
+                  onClick={() => setIsPreviewOpen(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#64748b',
+                    cursor: 'pointer',
+                    padding: '4px',
+                    borderRadius: '6px'
+                  }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Preview Content */}
+              <div style={{ padding: '16px 20px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {previewLoading ? (
+                  <div style={{ padding: '40px 0', textAlign: 'center', color: '#64748b', fontSize: '0.85rem' }}>
+                    กำลังโหลดข้อมูลตัวอย่างอีเมล...
+                  </div>
+                ) : previewError ? (
+                  <div style={{ padding: '20px', backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: '10px', color: '#b91c1c', fontSize: '0.8rem' }}>
+                    <AlertCircle size={16} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
+                    {previewError}
+                  </div>
+                ) : previewData ? (
+                  <>
+                    {/* Metadata Box */}
+                    <div style={{
+                      backgroundColor: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '10px',
+                      padding: '12px',
+                      fontSize: '0.78rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '6px'
+                    }}>
+                      <div><strong style={{ color: '#64748b' }}>จาก:</strong> {previewData.from}</div>
+                      {previewData.reply_to && (
+                        <div><strong style={{ color: '#64748b' }}>ตอบกลับ (Reply-To):</strong> {previewData.reply_to}</div>
+                      )}
+                      <div><strong style={{ color: '#64748b' }}>ถึง:</strong> <span style={{ color: '#0284c7', fontWeight: 700 }}>{previewData.to}</span></div>
+                      <div><strong style={{ color: '#64748b' }}>หัวข้อ:</strong> <span style={{ fontWeight: 750 }}>{previewData.subject}</span></div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', paddingTop: '4px', borderTop: '1px dashed #cbd5e1' }}>
+                        <strong style={{ color: '#64748b' }}>ไฟล์แนบ:</strong>
+                        <span style={{
+                          backgroundColor: 'rgba(2, 132, 199, 0.1)',
+                          color: '#0369a1',
+                          padding: '2px 8px',
+                          borderRadius: '6px',
+                          fontWeight: 700,
+                          fontSize: '0.72rem'
+                        }}>
+                          📄 {previewData.file_name} ({((previewData.file_size || 0) / 1024).toFixed(1)} KB)
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* View Mode Switch */}
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        type="button"
+                        id="btn-preview-tab-html"
+                        onClick={() => setPreviewTab('html')}
+                        style={{
+                          padding: '6px 14px',
+                          borderRadius: '6px',
+                          border: previewTab === 'html' ? '1px solid #0284c7' : '1px solid #e2e8f0',
+                          backgroundColor: previewTab === 'html' ? '#f0f9ff' : '#ffffff',
+                          color: previewTab === 'html' ? '#0284c7' : '#64748b',
+                          fontSize: '0.76rem',
+                          fontWeight: previewTab === 'html' ? 800 : 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        รูปแบบ HTML (เหมือนที่ลูกค้าเห็น)
+                      </button>
+                      <button
+                        type="button"
+                        id="btn-preview-tab-text"
+                        onClick={() => setPreviewTab('text')}
+                        style={{
+                          padding: '6px 14px',
+                          borderRadius: '6px',
+                          border: previewTab === 'text' ? '1px solid #0284c7' : '1px solid #e2e8f0',
+                          backgroundColor: previewTab === 'text' ? '#f0f9ff' : '#ffffff',
+                          color: previewTab === 'text' ? '#0284c7' : '#64748b',
+                          fontSize: '0.76rem',
+                          fontWeight: previewTab === 'text' ? 800 : 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        ข้อความธรรมดา (Plain Text)
+                      </button>
+                    </div>
+
+                    {/* Preview Content Area */}
+                    {previewTab === 'html' ? (
+                      <div style={{
+                        border: '1px solid #e2e8f0',
+                        borderRadius: '10px',
+                        overflow: 'hidden',
+                        backgroundColor: '#ffffff'
+                      }}>
+                        <iframe
+                          title="HTML Email Preview"
+                          srcDoc={previewData.html}
+                          style={{
+                            width: '100%',
+                            height: '380px',
+                            border: 'none',
+                            display: 'block'
+                          }}
+                          sandbox="allow-same-origin"
+                        />
+                      </div>
+                    ) : (
+                      <pre style={{
+                        margin: 0,
+                        padding: '14px',
+                        backgroundColor: '#f8fafc',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: '10px',
+                        fontSize: '0.75rem',
+                        fontFamily: 'monospace',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        maxHeight: '380px',
+                        overflowY: 'auto'
+                      }}>
+                        {previewData.text}
+                      </pre>
+                    )}
+
+                    <div style={{
+                      fontSize: '0.72rem',
+                      color: '#64748b',
+                      backgroundColor: '#f8fafc',
+                      border: '1px dashed #cbd5e1',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}>
+                      <span>ℹ️</span>
+                      <span>โหมดจำลอง (Dry-run): เอกสารนี้จัดทำขึ้นสำหรับการตรวจสอบตัวอย่างเท่านั้น ไม่มีการส่งอีเมลจริง</span>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+
+              {/* Preview Footer */}
+              <div style={{
+                padding: '12px 20px',
+                borderTop: '1px solid var(--border-color)',
+                display: 'flex',
+                justifyContent: 'flex-end',
+                backgroundColor: '#f8fafc'
+              }}>
+                <button
+                  type="button"
+                  id="btn-close-email-preview-footer"
+                  onClick={() => setIsPreviewOpen(false)}
+                  style={{
+                    height: '32px',
+                    padding: '0 16px',
+                    borderRadius: '6px',
+                    border: '1px solid #cbd5e1',
+                    backgroundColor: '#ffffff',
+                    color: '#334155',
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  ปิดตัวอย่าง
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
