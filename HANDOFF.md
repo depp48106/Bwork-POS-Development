@@ -188,7 +188,7 @@
 1. **Production Worker (`bwork-pos-api`):**
    - **URL:** `https://bwork-pos-api.ohnatza74185-ky.workers.dev`
    - **Previous Version ID:** `c2e7f688-9000-444c-bc88-3cb02093bab2`
-   - **Deployed Version ID:** `d7b3e1e0-1c12-425c-ad03-ab682d27d4b5`
+   - **Deployed Version ID:** `d7b3e1e0-1c12-425c-ad03-ab682d27d4b5` (Initial deploy) / `3b3da539-50dd-4f15-b47b-7b5e49dc8877` (Active พร้อม Secrets ครบ)
 2. **Production POS Pages (`bwork-pos`):**
    - **Live URL:** `https://bwork-pos.pages.dev`
    - **Previous Deployment ID:** `8bcde5bb-23d6-43b3-96f6-92cd03d1be59`
@@ -215,18 +215,26 @@
   - `GMAIL_REPLY_TO="coworkings.bwork@gmail.com"`
 - **สถานะ Worker Secrets:**
   - คงค่าเดิม: `WIFI_CREDENTIAL_ENCRYPTION_KEY`
-  - **จุดกรอก Secrets สำหรับ Production:** ไปที่ Cloudflare Dashboard -> Workers & Pages -> `bwork-pos-api` -> Settings -> Variables and Secrets แล้วเพิ่ม Secret 3 ชื่อดังต่อไปนี้เมื่อพร้อม:
+  - ตั้งค่าครบถ้วนแล้วบน Cloudflare Dashboard (Active Version: `3b3da539-50dd-4f15-b47b-7b5e49dc8877`):
     1. `GMAIL_CLIENT_ID`
     2. `GMAIL_CLIENT_SECRET`
     3. `GMAIL_REFRESH_TOKEN`
+  - ยืนยันไม่มีการบันทึกค่า Secret หรือ Token ลงในซอร์สโค้ด, Git, log หรือรายงานใด ๆ ทั้งสิ้น
 
 ### 7.5 ผลการทดสอบสดบน Production (Live Verification)
 - **Live Login (`POST /api/auth/login`):** HTTP 200 OK ได้รับ Admin JWT
-- **OAuth Diagnostic (`POST /api/admin/gmail/test-oauth`):** HTTP 400 ตอบกลับอย่างปลอดภัยว่ายังไม่ได้ตั้งค่า Gmail OAuth2 Secrets ใน Production Worker (ไม่มีการแครชและไม่มี token รั่วไหล)
+- **OAuth Diagnostic (`POST /api/admin/gmail/test-oauth`):**
+  - **HTTP Status:** 200 OK
+  - **OAuth Connected:** `true`
+  - **Live Dispatch Enabled:** `false` (ปิดสวิตช์ส่งจริงตามนโยบายความปลอดภัย)
+  - **App Env:** `production`
+  - **Sender Email:** `coworkings.bwork@gmail.com`
+  - **Message:** `"เชื่อมต่อและแลกเปลี่ยน Google OAuth2 Token สำเร็จ (ไม่มีการส่งอีเมล)"`
+  - ยืนยันเชื่อมต่อและแลกเปลี่ยน Token กับ Google OAuth2 API สำเร็จ 100% ปลอดภัย ไม่มีการแครช และไม่มี Token รั่วไหล
 - **Tax Invoice Management & Preview (`GET /api/bookings/47/tax-invoice/email-preview`):** HTTP 200 OK เรนเดอร์ตัวอย่างอีเมลส่งให้ `th.admin@tradequo.com` สำเร็จ พร้อมแสดง `live_dispatch_enabled: false`
 - **การบล็อกเมื่อพยายามส่งจริง (`POST /api/bookings/47/tax-invoice/send-email` with `dry_run: false`):**
   HTTP 400 Bad Request บล็อกทันทีด้วยข้อความ *"ระบบยังไม่ได้เปิดสวิตช์ส่งอีเมลจริง (GMAIL_LIVE_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)"*
-- **ยืนยันเด็ดขาด:** ไม่มีการส่งอีเมลหรือ LINE ออกไปยังผู้รับจริง
+- **ยืนยันเด็ดขาด:** ไม่มีการส่งอีเมลหรือ LINE ออกไปยังผู้รับจริง ไม่มีการรัน Migration ซ้ำ และไม่มีการ deploy ซ้ำ
 
 ### 7.6 แผนและคำสั่ง Rollback ฉุกเฉิน (Emergency Rollback Runbook)
 1. **Rollback Production Worker ทันที:**
