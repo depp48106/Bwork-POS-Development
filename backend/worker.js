@@ -139,16 +139,77 @@ function isEmailAllowedInStaging(email, env, appEnv = getEffectiveEnvironment(en
   });
 }
 
-function encodeMimeHeader(text) {
+function encodeMimeHeader(text, maxBytesPerWord = 45) {
   if (!text) return '';
-  if (/^[\x20-\x7E]+$/.test(text)) return text;
-  const utf8Bytes = new TextEncoder().encode(text);
-  let binary = '';
-  for (let i = 0; i < utf8Bytes.length; i++) {
-    binary += String.fromCharCode(utf8Bytes[i]);
+  const str = String(text);
+
+  // Avoid re-encoding if already RFC 2047 encoded
+  if (/^=\?UTF-8\?[BQ]\?[^?]+\?=(\s+=\?UTF-8\?[BQ]\?[^?]+\?=)*$/i.test(str.trim())) {
+    return str.trim();
   }
-  const base64 = btoa(binary);
-  return `=?UTF-8?B?${base64}?=`;
+
+  // Pure printable ASCII (0x20 to 0x7E) does not require RFC 2047 encoding
+  if (/^[\x20-\x7E]+$/.test(str)) {
+    return str;
+  }
+
+  const codePoints = Array.from(str);
+  const words = [];
+  let currentBytes = [];
+
+  for (const char of codePoints) {
+    const charBytes = new TextEncoder().encode(char);
+    if (currentBytes.length + charBytes.length > maxBytesPerWord) {
+      if (currentBytes.length > 0) {
+        words.push(makeEncodedWordWorker(currentBytes));
+        currentBytes = [];
+      }
+    }
+    for (let i = 0; i < charBytes.length; i++) {
+      currentBytes.push(charBytes[i]);
+    }
+  }
+
+  if (currentBytes.length > 0) {
+    words.push(makeEncodedWordWorker(currentBytes));
+  }
+
+  return words.join(' ');
+}
+
+function makeEncodedWordWorker(bytesArray) {
+  const uint8 = new Uint8Array(bytesArray);
+  let binary = '';
+  for (let i = 0; i < uint8.length; i++) {
+    binary += String.fromCharCode(uint8[i]);
+  }
+  const b64 = btoa(binary);
+  const word = `=?UTF-8?B?${b64}?=`;
+  if (word.length > 75) {
+    throw new Error(`RFC 2047 violation: encoded-word length ${word.length} exceeds 75 characters`);
+  }
+  return word;
+}
+
+function formatFromHeaderWorker(from, fromName) {
+  let name = String(fromName || '').trim();
+  let email = String(from || '').trim();
+
+  const match = email.match(/^(.*?)\s*<([^>]+)>$/);
+  if (match) {
+    if (!name) name = match[1].trim();
+    email = match[2].trim();
+  } else {
+    email = email.replace(/[<>]/g, '').trim();
+  }
+
+  name = name.replace(/^["']|["']$/g, '').trim();
+
+  if (!name) {
+    return `<${email}>`;
+  }
+
+  return `${encodeMimeHeader(name)} <${email}>`;
 }
 
 function base64UrlEncode(strOrBytes) {
@@ -251,6 +312,7 @@ async function getGmailAccessTokenWorker({ clientId, clientSecret, refreshToken,
 
 function buildMimeMessageWorker({
   from,
+  fromName,
   to,
   replyTo,
   subject,
@@ -266,13 +328,15 @@ function buildMimeMessageWorker({
   let binary = '';
   const uint8 = new Uint8Array(attachmentBytes);
   for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
-  const base64Attachment = btoa(binary).match(/.{1,76}/g).join('\r\n');
+  const base64Attachment = (btoa(binary).match(/.{1,76}/g) || []).join('\r\n');
 
   let mime = '';
-  mime += 'From: ' + from + '\r\n';
+  const formattedFrom = formatFromHeaderWorker(from, fromName);
+  mime += 'From: ' + formattedFrom + '\r\n';
   mime += 'To: ' + to + '\r\n';
   if (replyTo) {
-    mime += 'Reply-To: ' + replyTo + '\r\n';
+    const cleanReplyTo = String(replyTo).trim().replace(/[<>]/g, '');
+    mime += 'Reply-To: <' + cleanReplyTo + '>\r\n';
   }
   mime += 'Subject: ' + encodeMimeHeader(subject) + '\r\n';
   mime += 'MIME-Version: 1.0\r\n';
@@ -8933,7 +8997,8 @@ export default {
           });
 
           const mimePayload = buildMimeMessageWorker({
-            from: `${senderName} <${senderEmail}>`,
+            from: senderEmail,
+            fromName: senderName,
             to: targetEmail,
             replyTo,
             subject,
@@ -9241,7 +9306,8 @@ export default {
           });
 
           const mimePayload = buildMimeMessageWorker({
-            from: `${senderName} <${senderEmail}>`,
+            from: senderEmail,
+            fromName: senderName,
             to: targetEmail,
             replyTo,
             subject,
