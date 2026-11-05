@@ -161,10 +161,13 @@
 
 ### 6.4 ผลการตรวจ OAuth Token Exchange จากเซิร์ฟเวอร์
 - ตรวจสอบผ่าน Admin diagnostic endpoint (`/api/admin/gmail/test-oauth`) บน Staging Worker โดยตรง
-- เซิร์ฟเวอร์ส่งคำขอแลกเปลี่ยน Token ไปยัง Google OAuth2 (`https://oauth2.googleapis.com/token`) ได้จริง
-- ผลตอบกลับจาก Google OAuth2: **HTTP 401 Unauthorized**
-  `{"error": "invalid_client", "error_description": "The OAuth client was not found."}`
+- **ประวัติการทดสอบรอบที่ 1 (Version `da9e3d77`):**
+  - ผลตอบกลับจาก Google: **HTTP 401 Unauthorized** (`invalid_client`: The OAuth client was not found)
+- **ผลการทดสอบรอบล่าสุด (หลังผู้ใช้อัปเดต `GMAIL_CLIENT_ID` และ `GMAIL_CLIENT_SECRET` — Version `9f42f826`):**
+  - Google OAuth2 Server ตรวจพบและยอมรับ Client ID แล้ว (**ไม่พบ error `invalid_client` อีกต่อไป**)
+  - ผลตอบกลับรอบใหม่: **HTTP 400 Bad Request**
+    `{"error": "invalid_grant", "error_description": "Bad Request"}`
 - **ข้อสรุปและการแยกส่วนรายงาน:**
-  - ระบบเชื่อมต่อและโค้ดแลกเปลี่ยน Token ของ Worker ทำงานถูกต้อง
-  - **รายการที่ยังติด:** ค่า `GMAIL_CLIENT_ID` ที่บันทึกไว้ใน Cloudflare Worker Secrets ยังไม่ตรงกับ Client ID ที่มีอยู่ใน Google Cloud Console หรือยังสร้างไม่เสร็จ / โปรเจกต์ถูกลบ
-  - ไม่มีการส่งอีเมลและไม่มีการเปิดเผย Token หรือ Secret ใด ๆ
+  - โค้ดเชื่อมต่อของ Worker ทำงานถูกต้องสมบูรณ์ และ Client ID/Secret ชุดใหม่ถูกต้องตามระบบของ Google
+  - **รายการที่ยังติด:** ข้อผิดพลาด `invalid_grant` ชี้ว่าค่า `GMAIL_REFRESH_TOKEN` ใน Worker Secrets เดิม ถูกสร้างขึ้นโดยผูกกับ Client ID ชุดเก่า จำเป็นต้องสร้าง Refresh Token ใหม่โดยใช้คู่ Client ID & Client Secret ปัจจุบัน (ผ่าน OAuth Playground) แล้วรัน `wrangler secret put GMAIL_REFRESH_TOKEN`
+  - สวิตช์ `GMAIL_LIVE_DISPATCH_ENABLED` ยังคงเป็น `false` โดยเด็ดขาด ไม่มีการส่งอีเมล และไม่มีการเปิดเผย Token หรือ Secret
