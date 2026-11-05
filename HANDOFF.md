@@ -187,8 +187,8 @@
 ### 7.2 Deployment IDs & Live Targets
 1. **Production Worker (`bwork-pos-api`):**
    - **URL:** `https://bwork-pos-api.ohnatza74185-ky.workers.dev`
-   - **Previous Version ID:** `c2e7f688-9000-444c-bc88-3cb02093bab2`
-   - **Deployed Version ID:** `d7b3e1e0-1c12-425c-ad03-ab682d27d4b5` (Initial deploy) / `3b3da539-50dd-4f15-b47b-7b5e49dc8877` (Active พร้อม Secrets ครบ)
+   - **Previous Version ID:** `3b3da539-50dd-4f15-b47b-7b5e49dc8877` (Rollback ID สำหรับถอยกลับ)
+   - **Deployed Version ID:** `e844cc93-5f48-4a6d-8d9f-7de6a503b956` (Active พร้อม selective patch Admin test-send)
 2. **Production POS Pages (`bwork-pos`):**
    - **Live URL:** `https://bwork-pos.pages.dev`
    - **Previous Deployment ID:** `8bcde5bb-23d6-43b3-96f6-92cd03d1be59`
@@ -239,7 +239,7 @@
 ### 7.6 แผนและคำสั่ง Rollback ฉุกเฉิน (Emergency Rollback Runbook)
 1. **Rollback Production Worker ทันที:**
    ```bash
-   npx wrangler rollback c2e7f688-9000-444c-bc88-3cb02093bab2 --config backend/wrangler.toml
+   npx wrangler rollback 3b3da539-50dd-4f15-b47b-7b5e49dc8877 --config backend/wrangler.toml
    ```
 2. **Rollback Production POS Pages ทันที:**
    ```bash
@@ -247,3 +247,25 @@
    ```
 3. **Rollback D1 Database (กรณีฉุกเฉิน):**
    คอลัมน์และตารางของ Migration 017 เป็นส่วนต่อขยาย (Additive) ที่มีค่า Default ไม่กระทบโค้ดเดิม หากต้องการย้อนกลับฐานข้อมูลทั้งหมด สามารถใช้ไฟล์สำรองก่อน deploy: `backend/backups/production_db_backup_2026-11-05T06-01-45-727Z.sql`
+
+### 7.7 การทดสอบส่ง Gmail จริงจำนวน 1 ฉบับตามการอนุมัติ (Approved 1-Shot Live Test Verification)
+- **วัตถุประสงค์:** ตรวจสอบการส่งอีเมลจริงผ่าน Gmail API ไปยังผู้รับที่ได้รับอนุมัติ โดยแยกอิสระจากข้อมูลลูกค้า 100%
+- **Endpoint:** `POST /api/admin/gmail/test-send` (Admin only)
+- **สวิตช์ควบคุมแยก:** `GMAIL_TEST_DISPATCH_ENABLED` (ค่าเริ่มต้น `false` และรีเซ็ตกลับ `false` อัตโนมัติทันทีหลังส่งหรือเกิดข้อผิดพลาด)
+- **สวิตช์ส่งงานลูกค้า:** `GMAIL_LIVE_DISPATCH_ENABLED="false"` (คงสถานะ `false` ตลอดเวลา ไม่มีการแตะต้อง)
+- **รายละเอียดการส่งจริง 1 ฉบับ:**
+  - **HTTP Status:** 200 OK
+  - **Gmail Status:** `gmail_accepted` (Gmail API รับคำขอส่งเข้าคิวเรียบร้อย)
+  - **Message ID:** `1a1aa7efe0abcc8a`
+  - **ผู้ส่ง:** บริษัท บิลท์ ฮาร์ท จำกัด `<coworkings.bwork@gmail.com>`
+  - **ผู้รับ:** `kunakornwhynatt@gmail.com` (ล็อกตายตัวจาก server-side ห้าม CC/BCC)
+  - **หัวข้อ:** `[BWORK TEST] ทดสอบส่งเอกสาร PDF — ไม่ใช่ใบกำกับภาษีจริง`
+  - **ไฟล์แนบ:** `BWORK_TEST_SAMPLE.pdf` (ขนาด 959 bytes สร้างในหน่วยความจำ มีข้อความแจ้งเตือน "เอกสารข้อมูลสมมติเพื่อการทดสอบระบบเท่านั้น ไม่ใช่ใบกำกับภาษีจริง")
+- **การบันทึก Audit และ Concurrency:**
+  - บันทึกแยกต่างหากในตาราง `settings` (`gmail_test_send_claim` และ `gmail_test_send_audit_logs`)
+  - ไม่อ่าน ไม่เขียน และไม่แก้ไขตาราง `bookings`, `tax_invoices`, หรือ `booking_history` ของลูกค้าจริง
+  - ไม่มีการอัปโหลดไฟล์ไปยัง R2 Storage
+- **สถานะสวิตช์หลังการส่ง:**
+  - `GMAIL_TEST_DISPATCH_ENABLED`: กลับสู่สถานะ `false` เรียบร้อย (Auto-disarmed via finally block)
+  - `GMAIL_LIVE_DISPATCH_ENABLED`: ยังคงเป็น `false` อย่างเคร่งครัด
+  - ไม่มีการรั่วไหลของ Token หรือ Secret
