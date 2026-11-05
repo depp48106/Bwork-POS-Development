@@ -4841,6 +4841,7 @@ app.get('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => 
     res.json({
       success: true,
       booking_id: bookingId,
+      live_dispatch_enabled: isLiveDispatchEnabled(),
       tax_data: {
         tax_invoice_required: Number(booking.tax_invoice_required) || 0,
         tax_payer_type: booking.tax_payer_type || null,
