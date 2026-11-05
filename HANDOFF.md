@@ -282,3 +282,27 @@
   4. เพิ่ม Regression Tests ทั้งใน Express (`gmailService.js`) และ Worker (`worker.js`) ตรวจสอบว่า `From:` ถอดรหัสกลับมาตรงกับ "บริษัท บิลท์ ฮาร์ท จำกัด" 100% (ผ่าน 22/22 tests)
   5. Deploy Selective Hotfix ขึ้น Production Worker (Version ID: `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4`) โดยรักษา Secrets ทั้งหมดและสวิตช์ส่งงานลูกค้า `GMAIL_LIVE_DISPATCH_ENABLED="false"` อย่างเคร่งครัด
   6. ทดสอบความถูกต้องด้วย Dry-run บน Production เรียบร้อย (ไม่มีการส่งอีเมลจริงเพิ่มเติม)
+
+### 7.9 การทดสอบส่ง Gmail จริงรอบที่ 2 บน Production เพื่อยืนยันการแก้ชื่อผู้ส่งภาษาไทย (Approved 2nd Live Test Verification)
+- **วัตถุประสงค์:** ตรวจสอบการแสดงผลชื่อผู้ส่งภาษาไทยจริงในกล่องข้อความของผู้รับ หลังจาก Deploy Hotfix RFC 2047 Chunking (Version: `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4`)
+- **การตรวจสอบความปลอดภัยก่อนส่ง (Pre-flight Safety Checks):**
+  - ยืนยัน Worker Version เป็น `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4` (100% active traffic)
+  - ยืนยัน `GMAIL_LIVE_DISPATCH_ENABLED="false"` ตลอดเวลา
+  - ยืนยันกลไก Concurrency Claim: สถานะเดิมใน `gmail_test_send_claim` ไม่ค้างในสถานะ `claiming` ระบบอนุญาตให้ส่งรอบถัดไปได้อย่างราบรื่นโดยไม่ลบ audit logs หรือแก้ไข DB
+  - ยืนยัน MIME `From` header เข้ารหัส RFC 2047: แบ่งเป็น 2 encoded-words (ความยาว 72 และ 44 ตัวอักษรตามลำดับ ไม่เกิน 75 ตัวอักษร) ถอดรหัสกลับมาตรงกับ "บริษัท บิลท์ ฮาร์ท จำกัด" ถูกต้อง 100%
+- **รายละเอียดการส่งจริง 1 ฉบับ (Single Request):**
+  - **วัน-เวลาที่ส่ง:** 5 พฤศจิกายน 2026 เวลา 15:40:54 น. (08:40:54 UTC)
+  - **HTTP Status:** 200 OK
+  - **Gmail API Status:** `gmail_accepted` (Gmail API รับคำขอส่งเข้าคิวเรียบร้อย)
+  - **Message ID:** `1a1aade3c63adccc`
+  - **ผู้ส่ง:** บริษัท บิลท์ ฮาร์ท จำกัด `<coworkings.bwork@gmail.com>`
+  - **ผู้รับ:** `kunakornwhynatt@gmail.com` (เฉพาะบุคคลที่ได้รับอนุมัติ ไม่มี CC/BCC)
+  - **หัวข้อ:** `[BWORK TEST] ทดสอบส่งเอกสาร PDF — ไม่ใช่ใบกำกับภาษีจริง`
+  - **ไฟล์แนบ:** `BWORK_TEST_SAMPLE.pdf` (ขนาด 959 bytes สร้างในหน่วยความจำ มีข้อความแจ้งเตือน "เอกสารข้อมูลสมมติเพื่อการทดสอบระบบเท่านั้น ไม่ใช่ใบกำกับภาษีจริง")
+- **สถานะสวิตช์ความปลอดภัยหลังการส่ง (Post-send Verification):**
+  - `GMAIL_TEST_DISPATCH_ENABLED`: กลับสู่สถานะ `false` เรียบร้อย (Auto-disarmed via finally block) และยืนยันในฐานข้อมูล D1
+  - `GMAIL_LIVE_DISPATCH_ENABLED`: ยังคงเป็น `false` อย่างเคร่งครัด
+  - ไม่มีการแตะต้องข้อมูลลูกค้า (`bookings`, `tax_invoices`, `booking_history`) และไม่มีการอัปโหลด R2
+- **การประเมินผลการแสดงผล:**
+  - **สถานะทางระบบ:** Gmail API รับคำขอแล้ว (`gmail_accepted`) เข้าสู่คิวส่งจดหมายของ Google
+  - **รอการยืนยันทางสายตา (Visual Verification Needed):** ผู้รับ (`kunakornwhynatt@gmail.com`) ตรวจสอบกล่องจดหมายของอีเมลฉบับล่าสุด (Message ID: `1a1aade3c63adccc`) เพื่อยืนยันว่าชื่อผู้ส่งแสดงเป็น **"บริษัท บิลท์ ฮาร์ท จำกัด"** โดยสมบูรณ์
