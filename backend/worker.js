@@ -16,6 +16,75 @@ async function hashPassword(password) {
 }
 
 // ==========================================
+// 1.14 TAX INVOICE EMAIL DISPATCH HELPERS (DRY-RUN / GMAIL)
+function isValidEmail(email) {
+  if (!email || typeof email !== 'string') return false;
+  const re = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+  return re.test(email.trim());
+}
+
+function generateTaxInvoiceEmailContent({
+  booking,
+  invoice,
+  recipientEmail,
+  senderEmail = 'bwork.coworking@gmail.com'
+}) {
+  const bookingId = booking?.id || booking?.booking_id || '-';
+  const bookingCode = booking?.receipt_number || booking?.booking_code || ('BK-' + String(bookingId).padStart(6, '0'));
+  const invoiceNumber = invoice?.invoice_number || ('INV-' + bookingId);
+  const customerName = invoice?.tax_name || booking?.tax_name || booking?.customer_name || 'ท่านผู้มีอุปการคุณ';
+  const taxId = invoice?.tax_id || booking?.tax_id || '-';
+  const branchText = invoice?.tax_payer_type === 'individual'
+    ? 'บุคคลธรรมดา'
+    : (invoice?.tax_branch_type === 'branch' ? ('สาขา ' + (invoice?.tax_branch_number || '')) : 'สำนักงานใหญ่');
+  const amount = Number(booking?.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 });
+  const dateStr = invoice?.created_at ? new Date(invoice.created_at).toLocaleDateString('th-TH', {
+    year: 'numeric', month: 'long', day: 'numeric'
+  }) : new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  const subject = '[B-WORK] ใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบ เลขที่ ' + invoiceNumber + ' (' + bookingCode + ')';
+
+  const textBody = `เรียน ${customerName},
+
+` +
+    `บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่) ขอขอบพระคุณที่ท่านได้ใช้บริการ บีเวิร์ค โคเวิร์กกิ้ง สเปซ (B-WORK Coworking Space & Meeting Rooms)
+
+` +
+    `ทางเราได้จัดทำเอกสารใบกำกับภาษี / ใบเสร็จรับเงินอิเล็กทรอนิกส์ (e-Tax Invoice / Receipt) สำหรับรายการจองของท่านเรียบร้อยแล้ว โดยมีรายละเอียดดังต่อไปนี้:
+
+` +
+    `- รหัสการจอง: ${bookingCode}
+` +
+    `- เลขที่ใบกำกับภาษี: ${invoiceNumber}
+` +
+    `- วันที่ออกเอกสาร: ${dateStr}
+` +
+    `- ผู้เสียภาษี: ${customerName}
+` +
+    `- เลขประจำตัวผู้เสียภาษี: ${taxId} (${branchText})
+` +
+    `- ยอดเงินรวมทั้งสิ้น: ฿${amount} บาท
+
+` +
+    `ท่านสามารถเปิดดูหรือดาวน์โหลดไฟล์เอกสารใบกำกับภาษีอิเล็กทรอนิกส์ (ไฟล์แนบ PDF) ที่แนบมาพร้อมกับอีเมลฉบับนี้
+
+` +
+    `หากท่านมีข้อสงสัยหรือต้องการสอบถามข้อมูลเพิ่มเติม สามารถติดต่อเราได้ที่:
+` +
+    `โทร: 02-000-0000
+อีเมล: support@bwork.co
+LINE Official: @bwork
+
+` +
+    `ขอแสดงความนับถือ,
+ทีมงาน B-WORK Coworking Space
+บริษัท บิลท์ ฮาร์ท จำกัด`;
+
+  const htmlBody = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${subject}</title><style>body { font-family: -apple-system, BlinkMacSystemFont, 'Prompt', 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f1f5f9; color: #1e293b; } .container { max-width: 600px; margin: 24px auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; } .header { background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: #ffffff; padding: 32px 24px; text-align: center; } .header h1 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px; } .header p { margin: 8px 0 0; font-size: 14px; opacity: 0.9; } .body { padding: 32px 24px; } .card { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 20px 0; } .card-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #cbd5e1; font-size: 14px; } .card-row:last-child { border-bottom: none; } .label { color: #64748b; font-weight: 600; } .value { color: #0f172a; font-weight: 700; text-align: right; } .attachment-box { display: flex; align-items: center; gap: 12px; background: rgba(2, 132, 199, 0.08); border: 1.5px solid #38bdf8; border-radius: 10px; padding: 14px 18px; margin: 20px 0; } .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px; text-align: center; font-size: 12px; color: #64748b; }</style></head><body><div class="container"><div class="header"><h1>B-WORK Coworking Space</h1><p>ใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบอิเล็กทรอนิกส์</p></div><div class="body"><p style="font-size: 16px; line-height: 1.6; margin-top: 0;">เรียน <strong>${customerName}</strong>,</p><p style="font-size: 14px; line-height: 1.6; color: #475569;">บริษัท บิลท์ ฮาร์ท จำกัด ขอขอบพระคุณที่ท่านได้ใช้บริการห้องประชุมและพื้นที่ทำงาน B-WORK ทางเราได้ออกเอกสารใบกำกับภาษีสำหรับรายการของท่านเรียบร้อยแล้ว รายละเอียดดังตารางด้านล่างนี้:</p><div class="card"><div class="card-row"><span class="label">รหัสการจอง:</span><span class="value">${bookingCode}</span></div><div class="card-row"><span class="label">เลขที่ใบกำกับภาษี:</span><span class="value" style="color: #0284c7;">${invoiceNumber}</span></div><div class="card-row"><span class="label">วันที่ออกเอกสาร:</span><span class="value">${dateStr}</span></div><div class="card-row"><span class="label">ผู้เสียภาษี:</span><span class="value">${customerName}</span></div><div class="card-row"><span class="label">เลขประจำตัวผู้เสียภาษี:</span><span class="value">${taxId} (${branchText})</span></div><div class="card-row" style="padding-top: 12px;"><span class="label" style="font-size: 15px;">ยอดเงินรวมทั้งสิ้น:</span><span class="value" style="font-size: 18px; color: #059669;">฿${amount}</span></div></div><div class="attachment-box"><div style="font-size: 24px;">📄</div><div><div style="font-weight: 800; font-size: 14px; color: #0369a1;">เอกสารใบกำกับภาษี (ไฟล์แนบ PDF)</div><div style="font-size: 12px; color: #64748b;">กรุณาตรวจสอบเอกสารฉบับสมบูรณ์ที่แนบมากับอีเมลนี้</div></div></div><p style="font-size: 13px; color: #64748b; line-height: 1.5;">หากท่านต้องการสอบถามข้อมูลเพิ่มเติม หรือแก้ไขข้อมูลภาษี กรุณาติดต่อฝ่ายบริการลูกค้า โทร 02-000-0000 หรือ LINE: @bwork</p></div><div class="footer"><div>© ${new Date().getFullYear()} บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.) · สำนักงานใหญ่</div><div style="margin-top: 4px;">B-WORK Coworking Space & Meeting Rooms · ถนนสุขุมวิท กรุงเทพมหานคร</div><div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">อีเมลฉบับนี้ส่งโดยระบบอัตโนมัติ กรุณาอย่าตอบกลับ</div></div></div></body></html>`;
+
+  return { subject, textBody, htmlBody };
+}
+
 // 1.15 ROOM WI-FI CREDENTIAL ENCRYPTION (WEB CRYPTO)
 // ==========================================
 const WIFI_PAYLOAD_REGEX = /^v1:([0-9a-fA-F]{24}):([0-9a-fA-F]{32}):([0-9a-fA-F]+)$/;
@@ -3233,6 +3302,33 @@ async function ensureD1Schema(env) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`).run();
+
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_status TEXT DEFAULT 'unsent'`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_sent_at DATETIME`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_dry_run INTEGER DEFAULT 0`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_message_id TEXT`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_recipient TEXT`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_error TEXT`).run(); } catch (_) {}
+
+    try {
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tax_invoice_email_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+        tax_invoice_id INTEGER REFERENCES tax_invoices(id) ON DELETE CASCADE,
+        recipient_email TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'dry_run',
+        is_dry_run INTEGER DEFAULT 1,
+        message_id TEXT,
+        file_name TEXT,
+        file_size INTEGER,
+        dispatched_by TEXT,
+        payload_preview TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`).run();
+      try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_tax_invoice_email_logs_booking ON tax_invoice_email_logs(booking_id)`).run(); } catch (_) {}
+      try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_tax_invoice_email_logs_status ON tax_invoice_email_logs(status)`).run(); } catch (_) {}
+    } catch (_) {}
   } catch (e) {}
 
   if (env.ENABLE_SUPPORT_TICKETS === "true") {
@@ -7982,12 +8078,24 @@ export default {
 
         let invoices = [];
         try {
-          const invRes = await env.DB.prepare(
-            `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
-                    tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
-                    file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
-             FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`
-          ).bind(bookingId).all();
+          let invRes = null;
+          try {
+            invRes = await env.DB.prepare(
+              `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                      tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                      file_url, file_name, content_type, file_size, status, notes, uploaded_by,
+                      email_status, email_sent_at, email_dry_run, email_message_id, email_recipient, email_error,
+                      created_at, updated_at
+               FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`
+            ).bind(bookingId).all();
+          } catch (_) {
+            invRes = await env.DB.prepare(
+              `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                      tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                      file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
+               FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`
+            ).bind(bookingId).all();
+          }
           invoices = invRes?.results || [];
         } catch (_) {}
 
@@ -8273,6 +8381,263 @@ export default {
           success: true,
           message: 'ลบเอกสารใบกำกับภาษีเรียบร้อยแล้ว',
           tax_invoice_status: newStatus
+        }), { headers: corsHeaders });
+      }
+
+      // ----------------------------------------------------
+      // TAX INVOICE EMAIL PREVIEW (DRY-RUN / GMAIL SERVICE)
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice/email-preview') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const permissions = new Set(String(auth.user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+        if (auth.user?.role !== 'admin' && !permissions.has('pos') && !permissions.has('manage')) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงฟังก์ชันนี้' }), { status: 403, headers: corsHeaders });
+        }
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare(
+          `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+                  tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+                  tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+           FROM bookings WHERE id = ?`
+        ).bind(bookingId).first();
+
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        const urlObj = new URL(request.url);
+        const invoiceId = urlObj.searchParams.get('invoice_id') ? Number(urlObj.searchParams.get('invoice_id')) : null;
+
+        let invoice = null;
+        if (invoiceId) {
+          invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE id = ?').bind(invoiceId).first();
+          if (!invoice) {
+            return new Response(JSON.stringify({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' }), { status: 404, headers: corsHeaders });
+          }
+          if (Number(invoice.booking_id) !== bookingId) {
+            return new Response(JSON.stringify({ error: 'เอกสารใบกำกับภาษีไม่ตรงกับรายการจองนี้' }), { status: 400, headers: corsHeaders });
+          }
+        } else {
+          invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC LIMIT 1').bind(bookingId).first();
+        }
+
+        if (!invoice) {
+          return new Response(JSON.stringify({ error: 'ยังไม่มีเอกสารใบกำกับภาษีสำหรับรายการจองนี้ กรุณาแนบเอกสารก่อนดูตัวอย่าง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const recipientEmail = (invoice.tax_email || booking.tax_email || '').trim();
+        if (!recipientEmail || !isValidEmail(recipientEmail)) {
+          return new Response(JSON.stringify({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง กรุณาตรวจสอบอีเมลในข้อมูลใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (!invoice.file_url) {
+          return new Response(JSON.stringify({ error: 'ไม่พบลิงก์ไฟล์เอกสารใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+        }
+
+        let pdfSize = invoice.file_size || 0;
+        if (env.BUCKET && invoice.file_url.startsWith('/uploads/')) {
+          const r2Key = invoice.file_url.replace('/uploads/', '');
+          const obj = await env.BUCKET.get(r2Key);
+          if (!obj) {
+            return new Response(JSON.stringify({ error: 'ไม่พบไฟล์เอกสาร PDF บนเซิร์ฟเวอร์' }), { status: 404, headers: corsHeaders });
+          }
+          pdfSize = obj.size;
+          if (pdfSize > 10 * 1024 * 1024) {
+            return new Response(JSON.stringify({ error: 'ขนาดไฟล์เกิน 10MB' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
+          booking,
+          invoice,
+          recipientEmail
+        });
+
+        return new Response(JSON.stringify({
+          success: true,
+          email_preview: {
+            to: recipientEmail,
+            from: env.GMAIL_USER_EMAIL || 'bwork.coworking@gmail.com',
+            subject,
+            text: textBody,
+            html: htmlBody,
+            file_name: invoice.file_name || 'Tax_Invoice.pdf',
+            file_size: pdfSize,
+            invoice_number: invoice.invoice_number || ('INV-' + bookingId),
+            dry_run: true
+          }
+        }), { headers: corsHeaders });
+      }
+
+      // ----------------------------------------------------
+      // TAX INVOICE SEND EMAIL (SIMULATED DRY-RUN)
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice/send-email') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const permissions = new Set(String(auth.user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+        if (auth.user?.role !== 'admin' && !permissions.has('pos') && !permissions.has('manage')) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงฟังก์ชันนี้' }), { status: 403, headers: corsHeaders });
+        }
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare(
+          `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+                  tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+                  tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+           FROM bookings WHERE id = ?`
+        ).bind(bookingId).first();
+
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const { invoice_id, recipient_email } = body;
+
+        let invoice = null;
+        if (invoice_id) {
+          const parsedInvoiceId = Number(invoice_id);
+          invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE id = ?').bind(parsedInvoiceId).first();
+          if (!invoice) {
+            return new Response(JSON.stringify({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' }), { status: 404, headers: corsHeaders });
+          }
+          if (Number(invoice.booking_id) !== bookingId) {
+            return new Response(JSON.stringify({ error: 'ข้อมูลเอกสารใบกำกับภาษีไม่ตรงกับรายการจองนี้' }), { status: 400, headers: corsHeaders });
+          }
+        } else {
+          invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC LIMIT 1').bind(bookingId).first();
+        }
+
+        if (!invoice) {
+          return new Response(JSON.stringify({ error: 'ไม่พบเอกสารใบกำกับภาษีสำหรับรายการจองนี้' }), { status: 400, headers: corsHeaders });
+        }
+
+        const targetEmail = (recipient_email || invoice.tax_email || booking.tax_email || '').trim();
+        if (!targetEmail || !isValidEmail(targetEmail)) {
+          return new Response(JSON.stringify({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (!invoice.file_url) {
+          return new Response(JSON.stringify({ error: 'ไม่พบไฟล์เอกสารใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Verify PDF in R2
+        let pdfSize = invoice.file_size || 0;
+        if (env.BUCKET && invoice.file_url.startsWith('/uploads/')) {
+          const r2Key = invoice.file_url.replace('/uploads/', '');
+          const obj = await env.BUCKET.get(r2Key);
+          if (!obj) {
+            return new Response(JSON.stringify({ error: 'ไม่พบไฟล์เอกสาร PDF บนเซิร์ฟเวอร์' }), { status: 404, headers: corsHeaders });
+          }
+          pdfSize = obj.size;
+          if (pdfSize > 10 * 1024 * 1024) {
+            return new Response(JSON.stringify({ error: 'ขนาดไฟล์เกิน 10MB' }), { status: 400, headers: corsHeaders });
+          }
+          // Validate magic bytes (%PDF-)
+          const headerSlice = await obj.slice(0, 4).arrayBuffer();
+          const headerUint8 = new Uint8Array(headerSlice);
+          if (headerUint8[0] !== 0x25 || headerUint8[1] !== 0x50 || headerUint8[2] !== 0x44 || headerUint8[3] !== 0x46) {
+            return new Response(JSON.stringify({ error: 'เอกสารที่แนบไม่ใช่ไฟล์ PDF สำหรับการส่ง e-Tax Invoice' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const simulatedMsgId = 'dry_run_msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+        const nowIso = new Date().toISOString();
+
+        const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
+          booking,
+          invoice,
+          recipientEmail: targetEmail
+        });
+
+        // Update tax_invoices table with dry_run status
+        try {
+          await env.DB.prepare(
+            `UPDATE tax_invoices
+             SET email_status = 'dry_run',
+                 email_sent_at = ?,
+                 email_dry_run = 1,
+                 email_message_id = ?,
+                 email_recipient = ?,
+                 email_error = NULL
+             WHERE id = ?`
+          ).bind(nowIso, simulatedMsgId, targetEmail, invoice.id).run();
+        } catch (_) {}
+
+        // Insert into tax_invoice_email_logs
+        try {
+          await env.DB.prepare(
+            `INSERT INTO tax_invoice_email_logs (
+              booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+              message_id, file_name, file_size, dispatched_by, payload_preview, created_at
+            ) VALUES (?, ?, ?, ?, 'dry_run', 1, ?, ?, ?, ?, ?, ?)`
+          ).bind(
+            bookingId,
+            invoice.id,
+            targetEmail,
+            subject,
+            simulatedMsgId,
+            invoice.file_name || 'Tax_Invoice.pdf',
+            pdfSize,
+            staffName,
+            JSON.stringify({ to: targetEmail, subject }),
+            nowIso
+          ).run();
+        } catch (_) {}
+
+        // Insert into booking_history
+        try {
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'send_tax_invoice_email_dry_run', ?, ?, ?)`
+          ).bind(
+            bookingId,
+            ('จำลองส่งอีเมลใบกำกับภาษี (Dry-run) #' + (invoice.invoice_number || invoice.id) + ' ไปยัง ' + targetEmail),
+            staffName,
+            nowIso
+          ).run();
+        } catch (_) {}
+
+        return new Response(JSON.stringify({
+          success: true,
+          dry_run: true,
+          status: 'dry_run',
+          message: 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
+          data: {
+            booking_id: bookingId,
+            invoice_id: invoice.id,
+            invoice_number: invoice.invoice_number,
+            recipient: targetEmail,
+            message_id: simulatedMsgId,
+            file_name: invoice.file_name || 'Tax_Invoice.pdf',
+            file_size: pdfSize,
+            timestamp: nowIso,
+            email_preview: {
+              to: targetEmail,
+              from: env.GMAIL_USER_EMAIL || 'bwork.coworking@gmail.com',
+              subject,
+              text: textBody,
+              html: htmlBody,
+              file_name: invoice.file_name || 'Tax_Invoice.pdf',
+              file_size: pdfSize
+            }
+          }
         }), { headers: corsHeaders });
       }
 

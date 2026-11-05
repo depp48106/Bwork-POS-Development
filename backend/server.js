@@ -35,6 +35,13 @@ const {
   isEncryptedWifiPayload,
   isValidKey
 } = require('./wifiCryptoHelper');
+const {
+  isGmailConfigured,
+  isValidEmail,
+  generateTaxInvoiceEmailContent,
+  buildMimeMessage,
+  sendTaxInvoiceEmail
+} = require('./services/gmailService');
 const crypto = require('crypto');
 
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
@@ -4806,13 +4813,26 @@ app.get('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => 
     if (!booking) {
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
     }
-    const invoices = await dbQuery.all(
-      `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
-              tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
-              file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
-       FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`,
-      [bookingId]
-    );
+    let invoices = [];
+    try {
+      invoices = await dbQuery.all(
+        `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                file_url, file_name, content_type, file_size, status, notes, uploaded_by,
+                email_status, email_sent_at, email_dry_run, email_message_id, email_recipient, email_error,
+                created_at, updated_at
+         FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`,
+        [bookingId]
+      );
+    } catch (_) {
+      invoices = await dbQuery.all(
+        `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
+         FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`,
+        [bookingId]
+      );
+    }
     res.json({
       success: true,
       booking_id: bookingId,
@@ -5097,6 +5117,259 @@ app.delete('/api/bookings/:id/tax-invoice/attachment/:invoiceId', authenticateTo
       success: true,
       message: 'ลบเอกสารใบกำกับภาษีเรียบร้อยแล้ว',
       tax_invoice_status: newStatus
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const taxEmailDispatchDebounce = new Map();
+
+// Preview Tax Invoice Email (Bilingual template & attachment check)
+app.get('/api/bookings/:id/tax-invoice/email-preview', authenticateToken, requireAnyPermission('pos', 'manage', 'admin'), async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ error: 'รหัสการจองไม่ถูกต้อง' });
+    }
+
+    const booking = await dbQuery.get(
+      `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+              tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+              tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+       FROM bookings WHERE id = ?`,
+      [bookingId]
+    );
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    const invoiceId = req.query.invoice_id ? Number(req.query.invoice_id) : null;
+    let invoice = null;
+    if (invoiceId) {
+      invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE id = ?', [invoiceId]);
+      if (!invoice) {
+        return res.status(404).json({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' });
+      }
+      if (Number(invoice.booking_id) !== bookingId) {
+        return res.status(400).json({ error: 'เอกสารใบกำกับภาษีไม่ตรงกับรายการจองนี้' });
+      }
+    } else {
+      invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC LIMIT 1', [bookingId]);
+    }
+
+    if (!invoice) {
+      return res.status(400).json({ error: 'ยังไม่มีเอกสารใบกำกับภาษีสำหรับรายการจองนี้ กรุณาแนบเอกสารก่อนดูตัวอย่าง' });
+    }
+
+    // Check recipient email
+    const recipientEmail = (invoice.tax_email || booking.tax_email || '').trim();
+    if (!recipientEmail || !isValidEmail(recipientEmail)) {
+      return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง กรุณาตรวจสอบอีเมลในข้อมูลใบกำกับภาษี' });
+    }
+
+    // Verify PDF attachment on server
+    if (!invoice.file_url) {
+      return res.status(400).json({ error: 'ไม่พบลิงก์ไฟล์เอกสารใบกำกับภาษี' });
+    }
+    const cleanUrl = invoice.file_url.replace(/^\//, '');
+    const diskPath = path.join(__dirname, cleanUrl);
+    if (!fs.existsSync(diskPath)) {
+      return res.status(404).json({ error: 'ไม่พบไฟล์เอกสาร PDF บนเซิร์ฟเวอร์' });
+    }
+
+    const stat = fs.statSync(diskPath);
+    if (stat.size === 0) {
+      return res.status(400).json({ error: 'ไฟล์เอกสารว่างเปล่า' });
+    }
+    if (stat.size > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: 'ขนาดไฟล์เกิน 10MB' });
+    }
+
+    // Check magic bytes %PDF-
+    const fd = fs.openSync(diskPath, 'r');
+    const headerBuf = Buffer.alloc(4);
+    fs.readSync(fd, headerBuf, 0, 4, 0);
+    fs.closeSync(fd);
+    if (headerBuf.toString('utf8', 0, 4) !== '%PDF') {
+      return res.status(400).json({ error: 'เอกสารที่แนบไม่ใช่ไฟล์ PDF สำหรับการส่ง e-Tax Invoice' });
+    }
+
+    const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
+      booking,
+      invoice,
+      recipientEmail
+    });
+
+    res.json({
+      success: true,
+      email_preview: {
+        to: recipientEmail,
+        from: process.env.GMAIL_USER_EMAIL || 'bwork.coworking@gmail.com',
+        subject,
+        text: textBody,
+        html: htmlBody,
+        file_name: invoice.file_name || 'Tax_Invoice.pdf',
+        file_size: stat.size,
+        invoice_number: invoice.invoice_number || `INV-${bookingId}`,
+        dry_run: true
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Send Tax Invoice Email (Simulated Dry-run by default)
+app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireAnyPermission('pos', 'manage', 'admin'), async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ error: 'รหัสการจองไม่ถูกต้อง' });
+    }
+
+    // Rapid-click / Double-submission debounce protection (4 seconds per booking)
+    const now = Date.now();
+    const lastAttempt = taxEmailDispatchDebounce.get(bookingId);
+    if (lastAttempt && (now - lastAttempt < 4000)) {
+      return res.status(429).json({ error: 'กำลังดำเนินการส่งอีเมล กรุณารอสักครู่ (Debounced)' });
+    }
+    taxEmailDispatchDebounce.set(bookingId, now);
+
+    const booking = await dbQuery.get(
+      `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+              tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+              tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+       FROM bookings WHERE id = ?`,
+      [bookingId]
+    );
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    const { invoice_id, recipient_email } = req.body || {};
+    let invoice = null;
+    if (invoice_id) {
+      const parsedInvoiceId = Number(invoice_id);
+      invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE id = ?', [parsedInvoiceId]);
+      if (!invoice) {
+        return res.status(404).json({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' });
+      }
+      if (Number(invoice.booking_id) !== bookingId) {
+        return res.status(400).json({ error: 'ข้อมูลเอกสารใบกำกับภาษีไม่ตรงกับรายการจองนี้' });
+      }
+    } else {
+      invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC LIMIT 1', [bookingId]);
+    }
+
+    if (!invoice) {
+      return res.status(400).json({ error: 'ไม่พบเอกสารใบกำกับภาษีสำหรับรายการจองนี้' });
+    }
+
+    // Validate recipient email
+    const targetEmail = (recipient_email || invoice.tax_email || booking.tax_email || '').trim();
+    if (!targetEmail || !isValidEmail(targetEmail)) {
+      return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง' });
+    }
+
+    // Read and validate PDF
+    if (!invoice.file_url) {
+      return res.status(400).json({ error: 'ไม่พบไฟล์เอกสารใบกำกับภาษี' });
+    }
+    const cleanUrl = invoice.file_url.replace(/^\//, '');
+    const diskPath = path.join(__dirname, cleanUrl);
+    if (!fs.existsSync(diskPath)) {
+      return res.status(404).json({ error: 'ไม่พบไฟล์เอกสาร PDF บนเซิร์ฟเวอร์' });
+    }
+
+    const pdfBuffer = fs.readFileSync(diskPath);
+
+    const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
+
+    // Dispatch simulated dry-run (dry_run: true)
+    const result = await sendTaxInvoiceEmail({
+      booking,
+      invoice,
+      recipientEmail: targetEmail,
+      pdfBuffer,
+      fileName: invoice.file_name || `Tax_Invoice_${invoice.invoice_number || bookingId}.pdf`,
+      dry_run: true,
+      dispatchedBy: staffName
+    });
+
+    const nowIso = getBangkokLocalISO(new Date());
+
+    // Update tax_invoices table with dry_run status
+    try {
+      await dbQuery.run(
+        `UPDATE tax_invoices
+         SET email_status = 'dry_run',
+             email_sent_at = ?,
+             email_dry_run = 1,
+             email_message_id = ?,
+             email_recipient = ?,
+             email_error = NULL
+         WHERE id = ?`,
+        [nowIso, result.message_id, targetEmail, invoice.id]
+      );
+    } catch (updateErr) {
+      console.warn('[Server] Could not update tax_invoices email status:', updateErr.message);
+    }
+
+    // Insert into tax_invoice_email_logs
+    try {
+      await dbQuery.run(
+        `INSERT INTO tax_invoice_email_logs (
+          booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+          message_id, file_name, file_size, dispatched_by, payload_preview, created_at
+        ) VALUES (?, ?, ?, ?, 'dry_run', 1, ?, ?, ?, ?, ?, ?)`,
+        [
+          bookingId,
+          invoice.id,
+          targetEmail,
+          result.subject,
+          result.message_id,
+          result.file_name,
+          result.file_size,
+          staffName,
+          JSON.stringify({ to: targetEmail, subject: result.subject, file_name: result.file_name }),
+          nowIso
+        ]
+      );
+    } catch (logErr) {
+      console.warn('[Server] Could not insert into tax_invoice_email_logs:', logErr.message);
+    }
+
+    // Insert into booking_history
+    try {
+      await dbQuery.run(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, 'send_tax_invoice_email_dry_run', ?, ?, ?)`,
+        [
+          bookingId,
+          `จำลองส่งอีเมลใบกำกับภาษี (Dry-run) #${invoice.invoice_number || invoice.id} ไปยัง ${targetEmail}`,
+          staffName,
+          nowIso
+        ]
+      );
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      dry_run: true,
+      status: 'dry_run',
+      message: 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
+      data: {
+        booking_id: bookingId,
+        invoice_id: invoice.id,
+        invoice_number: invoice.invoice_number,
+        recipient: targetEmail,
+        message_id: result.message_id,
+        file_name: result.file_name,
+        file_size: result.file_size,
+        timestamp: result.timestamp,
+        email_preview: result.email_preview
+      }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -98,7 +98,54 @@
 
 ---
 
-## 7. คิวงานถัดไป (Next Queue)
+## 7. สถานะระบบส่งใบกำกับภาษีผ่าน Gmail แบบ Dry-run (Current Queue Completed)
 
-1. **ระบบส่งใบกำกับภาษีผ่าน Gmail API:** พัฒนาการส่ง e-Tax Invoice / เอกสารใบกำกับภาษีหาลูกค้าทาง Gmail
-2. **เตรียม Release สำหรับฟีเจอร์รูปภาพห้องประชุม:** เมื่อผู้ใช้มีคำสั่งให้รวมเป็น RC ถัดไป
+- ✅ **Additive Migration 017 (`017_tax_invoice_email_dispatch.sql`):**
+  - เพิ่มฟิลด์ในตาราง `tax_invoices`: `email_status`, `email_sent_at`, `email_dry_run`, `email_message_id`, `email_recipient`, `email_error`
+  - สร้างตาราง Audit Trail `tax_invoice_email_logs` บันทึกประวัติการส่งอีเมลทุกครั้ง (ทั้ง Dry-run และ Live ในอนาคต)
+  - รองรับทั้ง SQLite (`backend/server.js`) และ Cloudflare D1 (`backend/worker.js`)
+- ✅ **Decoupled Gmail API Service Module (`backend/services/gmailService.js`):**
+  - `isGmailConfigured()` ตรวจสอบค่าคอนฟิก OAuth2 credentials
+  - `isValidEmail()` ตรวจสอบรูปแบบอีเมลตามมาตรฐาน RFC 5322
+  - `generateTaxInvoiceEmailContent()` สร้างเนื้อหาอีเมลทางการสองภาษา (Thai/English) พร้อมรายละเอียดเลขที่ใบกำกับภาษี รหัสการจอง และแจ้งเอกสารแนบ PDF
+  - `buildMimeMessage()` สร้างโครงสร้าง RFC 2822 Multipart MIME พร้อมแนบไฟล์ PDF base64 chunked
+  - `sendTaxInvoiceEmail()` ทำงานแบบ Dry-run โดยค่าเริ่มต้น ตรวจสอบ magic bytes (`%PDF-`) และขนาดไฟล์ไม่เกิน 10MB พร้อมบันทึก `dry_run_msg_*`
+- ✅ **Backend Endpoints Parity (`server.js` & `worker.js`):**
+  - `GET /api/bookings/:id/tax-invoice/email-preview`: ตรวจสอบสิทธิ์ผู้ใช้ (`pos`, `manage`, `admin`), ตรวจสอบความถูกต้องของรายการจอง, ความเป็นเจ้าของเอกสาร (Document Ownership Mismatch Check), ความถูกต้องของอีเมลผู้รับ และความสมบูรณ์ของไฟล์ PDF บนระบบไฟล์ Private/R2
+  - `POST /api/bookings/:id/tax-invoice/send-email`: ตรวจสอบสิทธิ์, ตรวจสอบเอกสาร, ป้องกันการส่งซ้ำ/รัว (Double-click Debounce 4 วินาที), ส่งแบบ Dry-run, บันทึกสถานะ `dry_run` (**ห้ามขึ้น "ส่งแล้ว" เด็ดขาด**), บันทึกลง `tax_invoice_email_logs` และ `booking_history`
+  - เข้าถึงไฟล์ PDF ผ่าน Private Path เดิม ห้ามเปิด R2 หรือระบบไฟล์เป็น Public เด็ดขาด
+- ✅ **Frontend UI (`TaxInvoiceManagementModal.jsx`):**
+  - เมื่อช่องทางจัดส่งเป็น `email`: แสดงการ์ด e-Tax Invoice Delivery พร้อมอีเมลผู้รับ และสถานะไฟล์ PDF แนบ
+  - Badge สถานะ: แสดง `"จำลองส่งแล้ว (Dry-run)"` หรือ `"ยังไม่ได้ส่ง"` (**ไม่แสดงคำว่า "ส่งแล้ว"**)
+  - ปุ่ม `"ดูตัวอย่างอีเมล"` (`#btn-tax-email-preview`) เปิด Sub-modal ตัวอย่างอีเมลพร้อมสลับแท็บ HTML และ Plain Text
+  - ปุ่ม `"จำลองส่งอีเมล (Dry-run)"` (`#btn-tax-simulate-send-email`) ทำงานปลอดภัยพร้อม Disabled state เมื่อไม่มี PDF หรือไม่มีอีเมล
+  - รองรับหน้าจอมือถือความกว้าง 390px (iPhone 12/13/14) แบบ Responsive และ Desktop 1280px
+- ✅ **ผลการทดสอบ Automated Test Suite (`taxInvoiceEmailDryRun.test.cjs`):** 6/6 PASS
+  - Test 1: Unauthenticated -> 401
+  - Test 2: Unauthorized (พนักงานไม่มีสิทธิ์ pos/manage) -> 403
+  - Test 3: รายการจองไม่มีอยู่จริง -> 404
+  - Test 4: รายการจองที่ไม่มีไฟล์ PDF ใบกำกับภาษี -> 400
+  - Test 5: รูปแบบอีเมลผู้รับไม่ถูกต้อง -> 400
+  - Test 6: Document Mismatch (`invoice_id` ของรายการจองอื่น) -> 400
+  - Test 7: Double-click Debounce ทันที -> 429
+  - Test 8: จำลองส่ง Dry-run สำเร็จ -> บันทึกสถานะ `dry_run`, audit trail ครบถ้วน
+  - Test 9: ตัวอย่างอีเมล (Preview endpoint) ทำงานถูกต้อง
+  - Test 10: Cloudflare Worker D1 & R2 simulation parity ทำงานถูกต้อง
+- ✅ **ผลการทดสอบ Browser UI UAT (Headless Chrome CDP):**
+  - บันทึกภาพจริงครบ 4 ภาพใน Artifact Directory:
+    1. `pos_tax_email_dispatch_mobile_390.png` (Mobile 390px Initial Load)
+    2. `pos_tax_email_preview_mobile_390.png` (Mobile 390px Email Preview Modal)
+    3. `pos_tax_email_dispatch_sent_mobile_390.png` (Mobile 390px Post Dry-run Sent Status)
+    4. `pos_tax_email_dispatch_desktop.png` (Desktop 1280px View)
+- 🔒 **สิ่งที่ต้องกรอกเมื่อพร้อมขึ้นระบบส่งจริง (Live Gmail Activation):**
+  - `GMAIL_CLIENT_ID`: OAuth 2.0 Client ID จาก Google Cloud Console
+  - `GMAIL_CLIENT_SECRET`: OAuth 2.0 Client Secret
+  - `GMAIL_REFRESH_TOKEN`: Authorized Refresh Token พร้อม Scope `https://www.googleapis.com/auth/gmail.send`
+  - `GMAIL_USER_EMAIL`: อีเมลบัญชีผู้ส่ง เช่น `billing@bwork.co`
+
+---
+
+## 8. คิวงานถัดไป (Next Queue)
+
+1. **พักงาน Release/Deploy ตามคำสั่ง:** ยังไม่ Deploy Production และไม่รัน Migration บน Production DB
+2. **เตรียม Credentials สำหรับเปิด Live Gmail:** เมื่อผู้บริหารอนุมัติให้ต่อบัญชีจริง
