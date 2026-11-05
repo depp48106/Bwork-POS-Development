@@ -4952,23 +4952,6 @@ app.put('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => 
 
     const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
     const nowIso = getBangkokLocalISO(new Date());
-    // Synchronize tax_invoices records for this booking so there is no split-brain on recipient or tax info
-    try {
-      await dbQuery.run(
-        `UPDATE tax_invoices
-         SET tax_name = ?,
-             tax_id = ?,
-             tax_payer_type = ?,
-             tax_branch_type = ?,
-             tax_branch_number = ?,
-             tax_address = ?,
-             tax_email = ?,
-             tax_phone = ?,
-             updated_at = ?
-         WHERE booking_id = ?`,
-        [cleanTaxName, cleanTaxId, payerType, branchType, cleanBranchNo, cleanAddress, cleanEmail, cleanPhone, nowIso, bookingId]
-      );
-    } catch (_) {}
 
     try {
       await dbQuery.run(
@@ -5200,8 +5183,8 @@ app.get('/api/bookings/:id/tax-invoice/email-preview', authenticateToken, requir
       return res.status(400).json({ error: 'ยังไม่มีเอกสารใบกำกับภาษีสำหรับรายการจองนี้ กรุณาแนบเอกสารก่อนดูตัวอย่าง' });
     }
 
-    // Check recipient email (authoritative from booking tax info or invoice)
-    const recipientEmail = (booking.tax_email || invoice.tax_email || '').trim();
+    // Check recipient email (authoritative strictly from booking tax info)
+    const recipientEmail = (booking.tax_email || '').trim();
     if (!recipientEmail) {
       return res.status(400).json({ error: 'ยังไม่ได้ระบุอีเมลผู้รับ กรุณากรอกและบันทึกอีเมลในข้อมูลใบกำกับภาษีก่อนดูตัวอย่าง' });
     }
@@ -5666,17 +5649,17 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
       return res.status(400).json({ error: 'ไม่พบเอกสารใบกำกับภาษีสำหรับรายการจองนี้' });
     }
 
-    // Validate recipient email
-    const authoritativeEmail = (booking.tax_email || invoice.tax_email || '').trim();
+    // Validate recipient email (authoritative strictly from booking tax info)
+    const authoritativeEmail = (booking.tax_email || '').trim();
     if (!authoritativeEmail) {
       return res.status(400).json({ error: 'ยังไม่ได้ระบุอีเมลผู้รับในระบบ กรุณากรอกและบันทึกข้อมูลก่อนส่ง' });
     }
     if (!isValidEmail(authoritativeEmail)) {
       return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับในระบบไม่ถูกต้อง กรุณาแก้ไขและบันทึกข้อมูลใหม่' });
     }
-    if (recipient_email && recipient_email.trim().toLowerCase() !== authoritativeEmail.toLowerCase()) {
+    if (!recipient_email || recipient_email.trim().toLowerCase() !== authoritativeEmail.toLowerCase()) {
       return res.status(400).json({
-        error: `อีเมลผู้รับที่ส่งมา (${recipient_email}) ไม่ตรงกับข้อมูลล่าสุดที่บันทึกไว้ในระบบ (${authoritativeEmail}) กรุณาตรวจสอบและยืนยันใหม่`
+        error: `อีเมลผู้รับที่ยืนยัน (${recipient_email || 'ไม่ระบุ'}) ไม่ตรงกับข้อมูลล่าสุดที่บันทึกไว้ในระบบ (${authoritativeEmail}) กรุณาตรวจสอบและยืนยันใหม่`
       });
     }
     const targetEmail = authoritativeEmail;

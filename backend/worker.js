@@ -8504,34 +8504,6 @@ export default {
           bookingId
         ).run();
 
-        // Synchronize tax_invoices records
-        try {
-          await env.DB.prepare(
-            `UPDATE tax_invoices
-             SET tax_name = ?,
-                 tax_id = ?,
-                 tax_payer_type = ?,
-                 tax_branch_type = ?,
-                 tax_branch_number = ?,
-                 tax_address = ?,
-                 tax_email = ?,
-                 tax_phone = ?,
-                 updated_at = ?
-             WHERE booking_id = ?`
-          ).bind(
-            cleanTaxName,
-            cleanTaxId,
-            payerType,
-            branchType,
-            cleanBranchNo,
-            cleanAddress,
-            cleanEmail,
-            cleanPhone,
-            new Date().toISOString(),
-            bookingId
-          ).run();
-        } catch (_) {}
-
         const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
         const nowIso = new Date().toISOString();
         try {
@@ -8764,7 +8736,7 @@ export default {
           return new Response(JSON.stringify({ error: 'ยังไม่มีเอกสารใบกำกับภาษีสำหรับรายการจองนี้ กรุณาแนบเอกสารก่อนดูตัวอย่าง' }), { status: 400, headers: corsHeaders });
         }
 
-        const recipientEmail = (booking.tax_email || invoice.tax_email || '').trim();
+        const recipientEmail = (booking.tax_email || '').trim();
         if (!recipientEmail) {
           return new Response(JSON.stringify({ error: 'ยังไม่ได้ระบุอีเมลผู้รับ กรุณากรอกและบันทึกอีเมลในข้อมูลใบกำกับภาษีก่อนดูตัวอย่าง' }), { status: 400, headers: corsHeaders });
         }
@@ -9182,16 +9154,16 @@ export default {
           return new Response(JSON.stringify({ error: 'ไม่พบเอกสารใบกำกับภาษีสำหรับรายการจองนี้' }), { status: 400, headers: corsHeaders });
         }
 
-        const authoritativeEmail = (booking.tax_email || invoice.tax_email || '').trim();
+        const authoritativeEmail = (booking.tax_email || '').trim();
         if (!authoritativeEmail) {
           return new Response(JSON.stringify({ error: 'ยังไม่ได้ระบุอีเมลผู้รับในระบบ กรุณากรอกและบันทึกข้อมูลก่อนส่ง' }), { status: 400, headers: corsHeaders });
         }
         if (!isValidEmail(authoritativeEmail)) {
           return new Response(JSON.stringify({ error: 'รูปแบบอีเมลผู้รับในระบบไม่ถูกต้อง กรุณาแก้ไขและบันทึกข้อมูลใหม่' }), { status: 400, headers: corsHeaders });
         }
-        if (recipient_email && recipient_email.trim().toLowerCase() !== authoritativeEmail.toLowerCase()) {
+        if (!recipient_email || recipient_email.trim().toLowerCase() !== authoritativeEmail.toLowerCase()) {
           return new Response(JSON.stringify({
-            error: `อีเมลผู้รับที่ส่งมา (${recipient_email}) ไม่ตรงกับข้อมูลล่าสุดที่บันทึกไว้ในระบบ (${authoritativeEmail}) กรุณาตรวจสอบและยืนยันใหม่`
+            error: `อีเมลผู้รับที่ยืนยัน (${recipient_email || 'ไม่ระบุ'}) ไม่ตรงกับข้อมูลล่าสุดที่บันทึกไว้ในระบบ (${authoritativeEmail}) กรุณาตรวจสอบและยืนยันใหม่`
           }), { status: 400, headers: corsHeaders });
         }
         const targetEmail = authoritativeEmail;
