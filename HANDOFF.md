@@ -1,11 +1,11 @@
 # BWORK-POS | DEVELOPMENT HANDOFF REPORT
 
-> **Document Version:** 1.5.0  
+> **Document Version:** 1.6.0  
 > **Date:** 5 พฤศจิกายน 2026  
 > **Workspace:** Development (`D:\Project BL\Bwork-POS-Development`)  
 > **Branch:** `integration/home-office-20261021`  
 > **Remote Repository:** `https://github.com/depp48106/Bwork-POS-Development.git`  
-> **Status:** **PRODUCTION DEPLOYED / GMAIL TAX INVOICE SELECTIVE RELEASE (DRY-RUN DEFAULT & SAFE OAUTH PREPARED)**  
+> **Status:** **UI LIVE DISPATCH & CONFIRMATION MODAL PREPARED / SELECTIVE PATCH STAGED (NOT DEPLOYED / SWITCHES STRICTLY FALSE)**  
 
 ---
 
@@ -310,19 +310,56 @@
 ### 7.10 การตรวจและเตรียมปุ่มส่งใบกำกับภาษีจริงใน POS (Tax Invoice Live Dispatch UI Preparation)
 - **สาเหตุที่ไม่เห็นปุ่มส่งจริงในโค้ดเดิม:**
   - โค้ดเดิมมีการประกาศฟังก์ชัน handler `handleLiveSendEmail()` ไว้แล้ว แต่ใน JSX ส่วน Render Action buttons มีเพียง 2 ปุ่ม ได้แก่ `btn-tax-email-preview` ("ดูตัวอย่างอีเมล") และ `btn-tax-simulate-send-email` ("จำลองส่งอีเมล (Dry-run)") โดยยังไม่ได้วางปุ่มสำหรับส่งจริง (`btn-tax-live-send-email`)
-- **การปรับปรุงและคุณสมบัติใหม่:**
-  1. **ปุ่มควบคุม 3 ปุ่ม:** จัดวาง Preview, Dry-run และ Live Send ครบถ้วน
+- **การปรับปรุงและพัฒนาเสร็จสมบูรณ์แล้ว:**
+  1. **ปุ่มควบคุม 3 ปุ่มพัฒนาเสร็จแล้ว:**
+     - ปุ่ม "ดูตัวอย่างอีเมล" (`#btn-tax-email-preview`)
+     - ปุ่ม "จำลองส่งอีเมล (Dry-run)" (`#btn-tax-simulate-send-email`)
+     - ปุ่ม "ส่งอีเมล" (`#btn-tax-live-send-email`) สีเขียวมรกต (`#059669`)
   2. **สวิตช์ความปลอดภัยและ Safety Gates:**
      - ปุ่ม "ส่งอีเมล" จะเปิดใช้งานเมื่อ: มีสิทธิ์ (`admin`/`manage`/`pos`), มีอีเมลถูกต้อง, มีไฟล์ PDF แนบ, backend แจ้งว่าเปิดส่งจริงแล้ว (`live_dispatch_enabled === true`), และไม่ได้กำลังส่ง
      - หากสวิตช์ส่งจริงปิดอยู่ (`GMAIL_LIVE_DISPATCH_ENABLED=false`): ปุ่มส่งจริงจะถูก disable พร้อมแสดงแถบเตือนสีเทาอ่อนชี้แจงเหตุผลและแนะนำให้ใช้ Dry-run
-  3. **หน้าต่างยืนยันก่อนส่งจริง (Dedicated Confirmation Modal):**
-     - ตรวจสอบอีเมลผู้รับ, เลขที่ใบกำกับภาษี, ชื่อไฟล์ PDF และขนาดไฟล์ พร้อมปุ่มยกเลิกและปุ่มยืนยันส่งจริง
+  3. **หน้าต่างยืนยันก่อนส่งจริงพัฒนาเสร็จแล้ว (Dedicated Confirmation Modal):**
+     - ตรวจสอบอีเมลผู้รับ (`#confirm-recipient-email`), เลขที่ใบกำกับภาษี (`#confirm-invoice-number`), ชื่อและขนาดไฟล์ PDF แนบ (`#confirm-file-name`), รหัสการจอง และชื่อผู้เสียภาษี พร้อมปุ่มยกเลิกและปุ่มยืนยันส่งจริง
   4. **การป้องกันกดซ้ำและสถานะ Uncertain:**
      - ปิดปุ่มทั้งหมดขณะส่ง แสดงสถานะกำลังหมุน และไม่ retry อัตโนมัติเมื่อเกิด timeout/uncertain
   5. **การอัปเดตสถานะ:** แสดง Badge "Gmail รับคำขอแล้ว" (`gmail_accepted`) ทันทีที่ backend ตอบกลับ
-- **ผลการทดสอบส่วนติดต่อผู้ใช้ (UAT):**
-  - ผ่านชุดทดสอบอัตโนมัติบน Chrome CDP (`backend/tests/verifyTaxInvoiceModalUI.cjs`) ทั้ง Desktop และ Mobile Viewport (390px)
-  - บันทึกภาพหลักฐานใน Artifacts Directory ครบถ้วน
-- **สถานะ Selective Patch:**
-  - อัปเดตและบันทึกลงใน Development (`integration/home-office-20261021`) และ Release (`release/selective-gmail-tax-invoice-20261105`)
-  - **คงสถานะปลอดภัย:** ยังไม่มีการ Deploy เพิ่มเติม, ไม่เปิดสวิตช์ส่งจริงบน Production, และไม่ส่งอีเมลไปยังลูกค้าจริง
+- **ผลการทดสอบที่ทำจริง (Automated UAT & Regression):**
+  - ชุดทดสอบอัตโนมัติบน Chrome CDP (`backend/tests/verifyTaxInvoiceModalUI.cjs`):
+    - **Scenario 1 (Default Disabled):** ตรวจพบปุ่มครบ 3 ปุ่ม, ปุ่มส่งจริง disabled ถูกต้อง, แสดงแถบเตือนชี้แจงเหตุผล ผ่าน 100% ทั้ง Desktop และ Mobile Viewport (390px)
+    - **Scenario 2 (Dry-Run Click):** จำลองส่งสำเร็จ อัปเดต Badge เป็น "จำลองส่งแล้ว (Dry-run)" ผ่าน 100%
+    - **Scenario 3 (Live Send & Confirmation):** ปลดล็อกปุ่มสีเขียวเมื่อเปิดสวิตช์, หน้าต่างยืนยันแสดงข้อมูลผู้รับ/เลขที่/PDF ถูกต้อง, ทดสอบกดยกเลิกปิดหน้าต่างได้ปกติ, กดยืนยันส่งจริงอัปเดต Badge เป็น "Gmail รับคำขอแล้ว" (`gmail_accepted`) ผ่าน 100%
+  - ชุดทดสอบ Backend Regression (`backend/tests/taxInvoiceEmailDryRun.test.cjs`): ผ่าน 13/13 tests (100%)
+- **สถานะ Selective Release Patch:**
+  - **Release Patch Commit:** `7ba523ef` บน branch `release/selective-gmail-tax-invoice-20261105`
+  - **Development Commit:** `a05fc38b` บน branch `integration/home-office-20261021`
+  - **ยังไม่ได้ Deploy patch นี้ขึ้นระบบจริง:**
+    - Production Worker ปัจจุบันคงเดิมที่ Version ID: `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4`
+    - Production POS Pages ปัจจุบันคงเดิมที่ Deployment ID: `d4598e58-92e9-4476-ac7c-47bdae0ec14a`
+- **สถานะสวิตช์ความปลอดภัยที่ตรวจยืนยันล่าสุด:**
+  - `GMAIL_LIVE_DISPATCH_ENABLED`: **`false`** (สวิตช์ส่งลูกค้าปิดสนิทบน Production Worker)
+  - `GMAIL_TEST_DISPATCH_ENABLED`: **`false`** (สวิตช์ทดสอบปิดสนิท ตรวจยืนยันในตาราง `settings` ของ Production D1)
+  - ไม่มีการส่งอีเมลหาลูกค้าจริง และไม่มีการแตะต้องข้อมูลลูกค้าใด ๆ
+
+---
+
+## 8. แผนงานสำหรับดำเนินการต่อที่บ้าน (Home Office Continuity Runbook)
+
+- **สถานะความพร้อม:**
+  - โค้ดทั้งหมดได้รับการบันทึกและซิงก์ขึ้น GitHub Remote Repository บน branch `integration/home-office-20261021` และ `release/selective-gmail-tax-invoice-20261105` อย่างสมบูรณ์
+  - ไฟล์ทดสอบอัตโนมัติ `backend/tests/verifyTaxInvoiceModalUI.cjs` ถูกบันทึกลงใน repository พร้อมใช้งาน
+- **ขั้นตอนการทำงานถัดไปที่บ้าน (Next Steps):**
+  1. **ตรวจ Selective Patch ก่อน Deploy:**
+     - ตรวจสอบ HEAD commit บน `release/selective-gmail-tax-invoice-20261105` (SHA: `7ba523ef`)
+     - รัน `npm run build` ใน `frontend/` และรัน `node backend/tests/taxInvoiceEmailDryRun.test.cjs` เพื่อยืนยันความสมบูรณ์ของ Build Artifacts
+  2. **ดำเนินการ Deploy ตามคำสั่งอนุมัติภายหลัง:**
+     - Deploy Selective Patch ขึ้น Production POS Pages (`bwork-pos`):
+       ```bash
+       npx wrangler pages deploy backend/public --project-name bwork-pos --commit-dirty=true
+       ```
+     - Deploy Selective Patch ขึ้น Production Worker (`bwork-pos-api`):
+       ```bash
+       npx wrangler deploy --name bwork-pos-api backend/worker.js --compatibility-date 2026-08-08 --compatibility-flags nodejs_compat
+       ```
+  3. **การเปิดใช้งานสวิตช์ส่งจริง:**
+     - รอคำสั่งอนุมัติจากผู้ใช้ก่อนปรับค่า `GMAIL_LIVE_DISPATCH_ENABLED="true"` บน Cloudflare Worker Secrets / Environment Variables
+     - ห้ามเปิดสวิตช์ส่งจริงจนกว่าจะได้รับการอนุมัติอย่างเป็นลายลักษณ์อักษร
