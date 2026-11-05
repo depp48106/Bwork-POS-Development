@@ -1,11 +1,11 @@
 # BWORK-POS | DEVELOPMENT HANDOFF REPORT
 
-> **Document Version:** 1.6.0  
+> **Document Version:** 1.7.0  
 > **Date:** 5 พฤศจิกายน 2026  
 > **Workspace:** Development (`D:\Project BL\Bwork-POS-Development`)  
 > **Branch:** `integration/home-office-20261021`  
 > **Remote Repository:** `https://github.com/depp48106/Bwork-POS-Development.git`  
-> **Status:** **UI LIVE DISPATCH & CONFIRMATION MODAL PREPARED / SELECTIVE PATCH STAGED (NOT DEPLOYED / SWITCHES STRICTLY FALSE)**  
+> **Status:** **SELECTIVE PATCH DEPLOYED TO PRODUCTION (POS PAGES + WORKER) / EMPLOYEE UI NOTICE REFINED / DUPLICATE PROTECTION HARDENED / SWITCHES STRICTLY FALSE**  
 
 ---
 
@@ -342,24 +342,62 @@
 
 ---
 
-## 8. แผนงานสำหรับดำเนินการต่อที่บ้าน (Home Office Continuity Runbook)
+### 7.11 การ Deploy Selective Patch ขึ้น Production (Production Deployment Execution & Verification)
+- **วัน-เวลาที่ดำเนินการ:** 5 พฤศจิกายน 2026 เวลา 20:17 น. (13:17 UTC)
+- **Production POS Pages Deployment:**
+  - **Deployment ID ใหม่:** `97350101-5445-40a0-a01d-b5cb331c1d2e`
+  - **Deployment ID เดิมก่อนหน้า:** `d4598e58-92e9-4476-ac7c-47bdae0ec14a`
+  - **Active Environment:** Production (`main` branch)
+  - **Production URL:** https://bwork-pos.pages.dev / https://97350101.bwork-pos.pages.dev
+  - **Active JS Bundle:** `dist/assets/index-CmMFtB4H.js` (ขนาด 2,015.46 KB)
+  - **Active CSS Bundle:** `dist/assets/index-CdfFESVk.css` (ขนาด 204.01 KB)
+  - **การตรวจยืนยัน Bundle จริงบน CDN:** โหลด `index-CmMFtB4H.js` สำเร็จ มีข้อความ “ระบบยังไม่เปิดให้ส่งอีเมลจริง กรุณาติดต่อผู้ดูแลระบบ” ครบถ้วน
+- **Production Worker Deployment:**
+  - **Version ID ใหม่:** `a2e97882-49cf-4e7d-abc8-4a2661303939`
+  - **Version ID เดิมก่อนหน้า:** `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4`
+  - **Service Name:** `bwork-pos-api`
+  - **Traffic Allocation:** 100% active
+  - **Worker Triggers:** Crons `* * * * *` (Auto-cancel) และ `0 17 * * *` (Cloud backup)
+- **สถานะสวิตช์ความปลอดภัยและ Secrets บน Production Worker (Verified):**
+  - `GMAIL_LIVE_DISPATCH_ENABLED="false"` (สวิตช์ส่งลูกค้าปิดสนิท 100%)
+  - `GMAIL_TEST_DISPATCH_ENABLED="false"` (สวิตช์ทดสอบปิดสนิท 100%)
+  - `GMAIL_SENDER_NAME="บริษัท บิลท์ ฮาร์ท จำกัด"` (คงการเข้ารหัส RFC 2047 display name)
+  - `GMAIL_USER_EMAIL="coworkings.bwork@gmail.com"`
+  - `GMAIL_REPLY_TO="coworkings.bwork@gmail.com"`
+  - Secrets ครบถ้วน: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `WIFI_CREDENTIAL_ENCRYPTION_KEY`
+- **ผลการตรวจ Production แบบอ่านอย่างเดียว (Read-Only Verification):**
+  - **Worker Health & Public Rooms (`GET /api/public/rooms`):** HTTP 200 OK (10 rooms)
+  - **Live Auth Login (`POST /api/auth/login`):** HTTP 200 OK (Admin JWT obtained)
+  - **Tax Invoice Endpoint (`GET /api/bookings/47/tax-invoice`):** HTTP 200 OK, รายงาน `live_dispatch_enabled: false`
+  - **Email Preview (`GET /api/bookings/47/tax-invoice/email-preview`):**
+    - HTTP Status: 200 OK
+    - To: `th.admin@tradequo.com`
+    - From: `บริษัท บิลท์ ฮาร์ท จำกัด <coworkings.bwork@gmail.com>`
+    - `live_dispatch_enabled: false`
+  - **การป้องกันการแตะต้องข้อมูล:** ไม่มีการกด Dry-run บนรายการลูกค้าจริง ไม่มีการเรียก endpoint ส่งจริง ไม่มีการรัน Migration บน D1 และไม่มีการส่งอีเมลหรือ LINE ออกจากระบบเด็ดขาด
 
-- **สถานะความพร้อม:**
-  - โค้ดทั้งหมดได้รับการบันทึกและซิงก์ขึ้น GitHub Remote Repository บน branch `integration/home-office-20261021` และ `release/selective-gmail-tax-invoice-20261105` อย่างสมบูรณ์
-  - ไฟล์ทดสอบอัตโนมัติ `backend/tests/verifyTaxInvoiceModalUI.cjs` ถูกบันทึกลงใน repository พร้อมใช้งาน
-- **ขั้นตอนการทำงานถัดไปที่บ้าน (Next Steps):**
-  1. **ตรวจ Selective Patch ก่อน Deploy:**
-     - ตรวจสอบ HEAD commit บน `release/selective-gmail-tax-invoice-20261105` (SHA: `7ba523ef`)
-     - รัน `npm run build` ใน `frontend/` และรัน `node backend/tests/taxInvoiceEmailDryRun.test.cjs` เพื่อยืนยันความสมบูรณ์ของ Build Artifacts
-  2. **ดำเนินการ Deploy ตามคำสั่งอนุมัติภายหลัง:**
-     - Deploy Selective Patch ขึ้น Production POS Pages (`bwork-pos`):
-       ```bash
-       npx wrangler pages deploy backend/public --project-name bwork-pos --commit-dirty=true
-       ```
-     - Deploy Selective Patch ขึ้น Production Worker (`bwork-pos-api`):
-       ```bash
-       npx wrangler deploy --name bwork-pos-api backend/worker.js --compatibility-date 2026-08-08 --compatibility-flags nodejs_compat
-       ```
-  3. **การเปิดใช้งานสวิตช์ส่งจริง:**
-     - รอคำสั่งอนุมัติจากผู้ใช้ก่อนปรับค่า `GMAIL_LIVE_DISPATCH_ENABLED="true"` บน Cloudflare Worker Secrets / Environment Variables
-     - ห้ามเปิดสวิตช์ส่งจริงจนกว่าจะได้รับการอนุมัติอย่างเป็นลายลักษณ์อักษร
+### 7.12 แผนและคำสั่ง Rollback ฉุกเฉินหลังการ Deploy ล่าสุด (Updated Emergency Rollback Runbook)
+1. **Rollback Production Worker ทันที (หากต้องการกลับไปเวอร์ชันเดิมก่อนหน้านี้):**
+   ```bash
+   npx wrangler rollback aeb1bcae-d839-4b7b-9637-2d3fb47a67c4 --config backend/wrangler.toml
+   ```
+2. **Rollback Production POS Pages ทันที (หากต้องการกลับไปเวอร์ชันเดิมก่อนหน้านี้):**
+   ```bash
+   npx wrangler pages deployment rollback d4598e58-92e9-4476-ac7c-47bdae0ec14a --project-name bwork-pos
+   ```
+3. **Rollback D1 Database:**
+   ไม่มีการเปลี่ยนแปลง Schema หรือ Migration ใด ๆ ในรอบนี้ ฐานข้อมูล Production D1 ยังคงมีโครงสร้างเดิมที่สมบูรณ์ 100%
+
+---
+
+## 8. สรุปสถานะและความพร้อมการทำงานต่อ (Continuity Status)
+
+- **สถานะระบบปัจจุบัน:**
+  - Production POS Pages และ Worker ได้รับการปรับปรุงเป็น Selective Release Patch ล่าสุดเรียบร้อยแล้ว
+  - ปุ่มส่งอีเมลใบกำกับภาษี, หน้าต่างยืนยัน, และปุ่ม Preview/Dry-run พร้อมใช้งานบน Production
+  - **สวิตช์ส่งจริงยังคงปิดสนิท (`GMAIL_LIVE_DISPATCH_ENABLED="false"`)** โดยบนหน้าจอแสดงข้อความ “ระบบยังไม่เปิดให้ส่งอีเมลจริง กรุณาติดต่อผู้ดูแลระบบ”
+  - **RC Customer Type / Tax Invoice Separation (`5f94a684...`) ยังคงพักไว้ตามเดิมอย่างปลอดภัย**
+  - **ไม่มีการรัน Migration 016 บน Production D1**
+- **Git State:**
+  - Branch `release/selective-gmail-tax-invoice-20261105`: Commit `cd9a4b44` (Pushed to Origin)
+  - Branch `integration/home-office-20261021`: Commit `8fe13097` (In sync with selective patch)
