@@ -9194,7 +9194,7 @@ export default {
            WHERE id = ?
              AND (
                email_status IS NULL
-               OR email_status IN ('unsent', 'failed', 'uncertain', 'dry_run')
+               OR email_status IN ('unsent', 'failed', 'dry_run')
                OR (email_status = 'claiming' AND (strftime('%s', 'now') - strftime('%s', email_sent_at)) > 60)
              )`
         ).bind(invoice.id).run();
@@ -9207,6 +9207,9 @@ export default {
           }
           if (cur?.email_status === 'gmail_accepted') {
             return new Response(JSON.stringify({ error: 'เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้' }), { status: 409, headers: corsHeaders });
+          }
+          if (cur?.email_status === 'uncertain') {
+            return new Response(JSON.stringify({ error: 'สถานะการส่งก่อนหน้าไม่แน่นอน (uncertain) เพื่อความปลอดภัยป้องกันการส่งซ้ำ ระบบไม่อนุญาตให้ส่งซ้ำโดยไม่ตรวจสอบ กรุณาตรวจสอบบันทึกการส่งหรือติดต่อผู้ดูแลระบบ' }), { status: 409, headers: corsHeaders });
           }
           return new Response(JSON.stringify({ error: `ไม่สามารถส่งอีเมลได้ในสถานะปัจจุบัน (${cur?.email_status || 'unknown'})` }), { status: 409, headers: corsHeaders });
         }

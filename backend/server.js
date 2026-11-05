@@ -5689,7 +5689,7 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
        WHERE id = ?
          AND (
            email_status IS NULL
-           OR email_status IN ('unsent', 'failed', 'uncertain', 'dry_run')
+           OR email_status IN ('unsent', 'failed', 'dry_run')
            OR (email_status = 'claiming' AND (strftime('%s', 'now') - strftime('%s', email_sent_at)) > 60)
          )`,
       [invoice.id]
@@ -5702,6 +5702,9 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
       }
       if (currentInvoice?.email_status === 'gmail_accepted') {
         return res.status(409).json({ error: 'เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้' });
+      }
+      if (currentInvoice?.email_status === 'uncertain') {
+        return res.status(409).json({ error: 'สถานะการส่งก่อนหน้าไม่แน่นอน (uncertain) เพื่อความปลอดภัยป้องกันการส่งซ้ำ ระบบไม่อนุญาตให้ส่งซ้ำโดยไม่ตรวจสอบ กรุณาตรวจสอบบันทึกการส่งหรือติดต่อผู้ดูแลระบบ' });
       }
       return res.status(409).json({ error: `ไม่สามารถส่งอีเมลได้ในสถานะปัจจุบัน (${currentInvoice?.email_status || 'unknown'})` });
     }
