@@ -48,7 +48,16 @@ function isValidEmail(email) {
  * Staging recipient allowlist checker.
  * On non-production (development, staging, test), only allows emails matching the allowlist.
  */
-function isEmailAllowedInStaging(email, env = process.env, appEnv = (process.env.APP_ENV || 'development')) {
+function getEffectiveEnvironment(env = process.env) {
+  const raw = String(env?.APP_ENV || env?.ENVIRONMENT || process.env?.APP_ENV || process.env?.ENVIRONMENT || '').trim().toLowerCase();
+  if (raw === 'production') return 'production';
+  if (raw === 'staging') return 'staging';
+  if (raw === 'test') return 'test';
+  // Missing, empty, or unknown values MUST NEVER be considered production!
+  return 'development';
+}
+
+function isEmailAllowedInStaging(email, env = process.env, appEnv = getEffectiveEnvironment(env)) {
   if (appEnv === 'production') return true;
 
   const rawList = env.GMAIL_STAGING_ALLOWLIST || '';
@@ -461,7 +470,7 @@ async function sendTaxInvoiceEmail({
   }
 
   // Staging Allowlist Check:
-  const appEnv = env.APP_ENV || process.env.APP_ENV || 'development';
+  const appEnv = getEffectiveEnvironment(env);
   if (appEnv !== 'production' && !isEmailAllowedInStaging(cleanEmail, env, appEnv)) {
     throw new Error(`โหมด ${appEnv} อนุญาตให้ส่งอีเมลจริงเฉพาะอีเมลใน Staging Allowlist เท่านั้น (${cleanEmail} ไม่อยู่ในรายการที่อนุญาต)`);
   }
@@ -541,6 +550,7 @@ module.exports = {
   GMAIL_SEND_SCOPE,
   isGmailConfigured,
   isLiveDispatchEnabled,
+  getEffectiveEnvironment,
   isEmailAllowedInStaging,
   isValidEmail,
   encodeMimeHeader,

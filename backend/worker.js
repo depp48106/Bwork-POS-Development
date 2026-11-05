@@ -43,7 +43,16 @@ function isValidEmail(email) {
   return re.test(email.trim());
 }
 
-function isEmailAllowedInStaging(email, env, appEnv = (env?.APP_ENV || 'development')) {
+function getEffectiveEnvironment(env) {
+  const raw = String(env?.APP_ENV || env?.ENVIRONMENT || '').trim().toLowerCase();
+  if (raw === 'production') return 'production';
+  if (raw === 'staging') return 'staging';
+  if (raw === 'test') return 'test';
+  // Missing, empty, or unknown values MUST NEVER be considered production!
+  return 'development';
+}
+
+function isEmailAllowedInStaging(email, env, appEnv = getEffectiveEnvironment(env)) {
   if (appEnv === 'production') return true;
   const rawList = env?.GMAIL_STAGING_ALLOWLIST || '';
   if (!rawList.trim()) return false;
@@ -2306,7 +2315,7 @@ async function finalizeNotificationClaim(db, bookingId, notificationType, claimT
 }
 
 async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }, options = {}) {
-  if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true' || env.STAGING_MOCK_LINE_API === 'true')) {
+  if (env && (getEffectiveEnvironment(env) === 'staging' || env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true' || env.STAGING_MOCK_LINE_API === 'true')) {
     return {
       sent: false,
       deduplicated: false,
@@ -3903,7 +3912,7 @@ export default {
         ).bind(username, passHash).first();
 
         // Fallback for default admin (disabled in staging so dedicated Staging Admin password hash is enforced)
-        if (!user && !(env && env.ENVIRONMENT === 'staging') && (username === 'admin' && password === 'admin123')) {
+        if (!user && !(env && (getEffectiveEnvironment(env) === 'staging' || env.ENVIRONMENT === 'staging')) && (username === 'admin' && password === 'admin123')) {
           user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(username) = 'admin'").first();
         }
 
@@ -8600,7 +8609,7 @@ export default {
         const replyTo = env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
         const liveDispatchEnabled = isLiveDispatchEnabled(env);
         const gmailConfigured = isGmailConfigured(env);
-        const appEnv = env.APP_ENV || 'development';
+        const appEnv = getEffectiveEnvironment(env);
         const stagingAllowed = isEmailAllowedInStaging(recipientEmail, env, appEnv);
 
         const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
@@ -8631,6 +8640,54 @@ export default {
             app_env: appEnv
           }
         }), { headers: corsHeaders });
+      }
+
+      // ----------------------------------------------------
+      // GMAIL OAUTH SERVER-SIDE CONNECTION TEST (ADMIN ONLY)
+      // ----------------------------------------------------
+      if (pathname === '/api/admin/gmail/test-oauth' && (method === 'GET' || method === 'POST')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        if (auth.user?.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'สงวนสิทธิ์เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น' }), { status: 403, headers: corsHeaders });
+        }
+
+        if (!isGmailConfigured(env)) {
+          return new Response(JSON.stringify({
+            success: false,
+            oauth_connected: false,
+            error: 'ยังไม่ได้ตั้งค่า Gmail OAuth2 Secrets (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) ในระบบ'
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        try {
+          const accessToken = await getGmailAccessTokenWorker({
+            clientId: env.GMAIL_CLIENT_ID,
+            clientSecret: env.GMAIL_CLIENT_SECRET,
+            refreshToken: env.GMAIL_REFRESH_TOKEN
+          });
+
+          if (!accessToken) {
+            throw new Error('Google OAuth2 ไม่ส่งคืน Access Token');
+          }
+
+          return new Response(JSON.stringify({
+            success: true,
+            oauth_connected: true,
+            message: 'เชื่อมต่อและแลกเปลี่ยน Google OAuth2 Token สำเร็จ (ไม่มีการส่งอีเมล)',
+            app_env: getEffectiveEnvironment(env),
+            sender_email: env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL,
+            sender_name: env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME,
+            live_dispatch_enabled: isLiveDispatchEnabled(env)
+          }), { headers: corsHeaders });
+        } catch (err) {
+          const cleanError = String(err?.message || 'OAuth token exchange failed').replace(/([a-zA-Z0-9_\-\.]{25,})/g, '[REDACTED]');
+          return new Response(JSON.stringify({
+            success: false,
+            oauth_connected: false,
+            error: cleanError
+          }), { status: 500, headers: corsHeaders });
+        }
       }
 
       // ----------------------------------------------------
@@ -8690,7 +8747,7 @@ export default {
         }
 
         // Live dispatch validations
-        const appEnv = env.APP_ENV || 'development';
+        const appEnv = getEffectiveEnvironment(env);
         if (!isDryRun) {
           if (!isLiveDispatchEnabled(env)) {
             return new Response(JSON.stringify({
@@ -11273,7 +11330,7 @@ export default {
             }), { headers: corsHeaders });
           }
 
-          if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
+          if (env && (getEffectiveEnvironment(env) === 'staging' || env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
             return new Response(JSON.stringify({
               success: true,
               connected: true,

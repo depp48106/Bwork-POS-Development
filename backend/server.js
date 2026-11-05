@@ -5241,6 +5241,42 @@ app.get('/api/bookings/:id/tax-invoice/email-preview', authenticateToken, requir
   }
 });
 
+// Gmail OAuth2 Server-side Connection Test (Admin Only; strictly no emails dispatched, no secrets leaked)
+app.all('/api/admin/gmail/test-oauth', authenticateToken, requireAnyPermission('admin'), async (req, res) => {
+  try {
+    const { isGmailConfigured, isLiveDispatchEnabled, getGmailAccessToken, getEffectiveEnvironment, DEFAULT_SENDER_EMAIL, DEFAULT_SENDER_NAME } = require('./services/gmailService');
+    if (!isGmailConfigured()) {
+      return res.status(400).json({
+        success: false,
+        oauth_connected: false,
+        error: 'ยังไม่ได้ตั้งค่า Gmail OAuth2 Credentials ในระบบ'
+      });
+    }
+
+    const accessToken = await getGmailAccessToken();
+    if (!accessToken) {
+      throw new Error('Google OAuth2 ไม่ส่งคืน Access Token');
+    }
+
+    res.json({
+      success: true,
+      oauth_connected: true,
+      message: 'เชื่อมต่อและแลกเปลี่ยน Google OAuth2 Token สำเร็จ (ไม่มีการส่งอีเมล)',
+      app_env: getEffectiveEnvironment(),
+      sender_email: process.env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL,
+      sender_name: process.env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME,
+      live_dispatch_enabled: isLiveDispatchEnabled()
+    });
+  } catch (err) {
+    const cleanError = String(err?.message || 'OAuth token exchange failed').replace(/([a-zA-Z0-9_\-\.]{25,})/g, '[REDACTED]');
+    res.status(500).json({
+      success: false,
+      oauth_connected: false,
+      error: cleanError
+    });
+  }
+});
+
 // Send Tax Invoice Email (Simulated Dry-run by default, OAuth2 Gmail live dispatch with atomic claim & uncertainty handling)
 app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireAnyPermission('pos', 'manage', 'admin'), async (req, res) => {
   try {

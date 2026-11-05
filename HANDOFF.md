@@ -1,11 +1,11 @@
 # BWORK-POS | DEVELOPMENT HANDOFF REPORT
 
-> **Document Version:** 1.3.0  
+> **Document Version:** 1.4.0  
 > **Date:** 5 พฤศจิกายน 2026  
 > **Workspace:** Development (`D:\Project BL\Bwork-POS-Development`)  
 > **Branch:** `integration/home-office-20261021`  
 > **Remote Repository:** `https://github.com/depp48106/Bwork-POS-Development.git`  
-> **Status:** **DEVELOPMENT READY / GMAIL OAUTH2 & WORKER SECRETS PREPARED (DRY-RUN DEFAULT)**  
+> **Status:** **STAGING VALIDATED / GMAIL SECRETS & MIGRATION 017 DEPLOYED (DRY-RUN DEFAULT)**  
 
 ---
 
@@ -74,7 +74,20 @@
 ## 4. ผลการรัน Automated Test Suite
 
 - **ไฟล์ทดสอบ:** `backend/tests/taxInvoiceEmailDryRun.test.cjs`
-- **ผลการทดสอบ:** **12/12 PASS (100% Passed, 0 Failures)**
+- **ผลการทดสอบ:** **13/13 PASS (100% Passed, 0 Failures)**
+  1. `GmailService - Sender info constants and Gmail scope`: PASS
+  2. `GmailService - isValidEmail validation`: PASS
+  3. `GmailService - Thai sender name MIME encoding RFC 2047`: PASS
+  4. `GmailService - generateTaxInvoiceEmailContent generates bilingual template with default sender`: PASS
+  5. `GmailService - buildMimeMessage constructs valid RFC 2822 payload with From, Reply-To and PDF`: PASS
+  6. `GmailService - Master Switch & Credentials enforcement`: PASS
+  7. `GmailService - Staging Allowlist enforcement on non-production`: PASS
+  8. `GmailService - sendTaxInvoiceEmail enforces PDF magic bytes and size check`: PASS
+  9. `GmailService - OAuth2 Token Exchange & Live Dispatch with Mock Fetch`: PASS
+  10. `GmailService - Timeout / Network Uncertainty does not auto-retry and marks uncertain`: PASS
+  11. `Tax Invoice Email Dispatch API - Comprehensive Negative & Positive Suites (Express & SQLite)`: PASS
+  12. `Cloudflare Worker - Tax Invoice Email Dispatch Parity (D1 & R2 Simulation)`: PASS
+  13. `GmailService - Safe Environment resolution & unknown/missing env protection`: PASS
   1. `GmailService - Sender info constants and Gmail scope`: PASS
   2. `GmailService - isValidEmail validation`: PASS
   3. `GmailService - Thai sender name MIME encoding RFC 2047`: PASS
@@ -98,3 +111,60 @@
 - 🔒 **Zero Production Impact:** ไม่มีการเขียนข้อมูลลงใน Production D1, ไม่มีการ Deploy Worker หรือ Pages บน Production
 - 🔒 **Zero External Dispatch:** ไม่มีการส่ง Gmail หรือ LINE ออกไปยังผู้รับภายนอกจริง ทุกขั้นตอนพัฒนาและทดสอบผ่าน Mock และ Dry-run
 - 🌿 **RC Customer Type/Tax Invoice:** ยังคงรักษา RC branch `release/selective-customer-tax-20261104` ที่ SHA `5f94a684d9869e0f5ad009afece6a85860673681` ไว้ครบถ้วน ไม่มีการแก้ไข
+
+---
+
+## 6. ผลการเตรียมและตรวจระบบ Gmail บน Staging (Staging Validation Report)
+
+### 6.1 ข้อมูลสภาพแวดล้อม Staging (Staging Environment & Configuration)
+- **Worker Target:** `bwork-pos-api-staging`
+- **Staging URL:** `https://bwork-pos-api-staging.ohnatza74185-ky.workers.dev`
+- **Deployed Staging Version ID:** `da9e3d77-089a-4cf2-81e5-edbe381fddd2`
+- **D1 Database Target:** `bworkpos_staging_db` (`8511096e-3c57-428f-8b2c-98fdb297f705`)
+- **การสำรองข้อมูล (Pre-migration Backup):**  
+  สำรองฐานข้อมูลก่อนรัน migration เรียบร้อยที่ `backend/backups/staging_db_backup_2026-11-05T05-21-43-459Z.sql` (147,646 bytes)
+- **การอัปเกรด Schema (Migration 017 Applied):**  
+  รันและบันทึกใน `_schema_migrations` (ID: 11) เรียบร้อยแล้ว:
+  - เพิ่ม 6 คอลัมน์ใน `tax_invoices`: `email_status`, `email_sent_at`, `email_dry_run`, `email_message_id`, `email_recipient`, `email_error`
+  - สร้างตารางตรวจสอบ `tax_invoice_email_logs` พร้อม Index สมบูรณ์
+
+### 6.2 การตรวจสอบความสอดคล้องของคอนฟิก (Config & Secrets Parity)
+- **Environment Variables ใน Staging:**
+  - `ENVIRONMENT="staging"`
+  - `APP_ENV="staging"`
+  - `DISABLE_LIVE_LINE="true"`
+  - `STAGING_ISOLATION_VERIFIED="true"`
+  - `GMAIL_LIVE_DISPATCH_ENABLED="false"` (ปิดสวิตช์ส่งจริงโดยเด็ดขาด)
+  - `GMAIL_SENDER_NAME="บริษัท บิลท์ ฮาร์ท จำกัด"`
+  - `GMAIL_USER_EMAIL="coworkings.bwork@gmail.com"`
+  - `GMAIL_REPLY_TO="coworkings.bwork@gmail.com"`
+- **Cloudflare Worker Secrets (ตรวจเฉพาะชื่อ):**
+  - `GMAIL_CLIENT_ID` (มีอยู่)
+  - `GMAIL_CLIENT_SECRET` (มีอยู่)
+  - `GMAIL_REFRESH_TOKEN` (มีอยู่)
+  - `JWT_SECRET` (มีอยู่)
+  - `WIFI_CREDENTIAL_ENCRYPTION_KEY` (มีอยู่)
+- **Safe Environment Resolution:**
+  - เพิ่มฟังก์ชัน `getEffectiveEnvironment(env)` ทั้งใน Worker และ Backend Service
+  - ค่าที่ขาดหาย หรือค่าที่ไม่รู้จัก จะ fallback เป็น `development` เสมอ **ห้ามถือเป็น `production` โดยเด็ดขาด**
+
+### 6.3 ผลการทดสอบ Preview และ Dry-Run บน Staging
+- **ทดสอบ Preview (`GET /api/bookings/9001/tax-invoice/email-preview`):**
+  - HTTP 200 OK แสดงผลตัวอย่างอีเมลภาษาไทย/อังกฤษ พร้อมระบุ `live_dispatch_enabled: false`, `app_env: "staging"`
+- **ทดสอบการปฏิเสธการส่งจริง (`POST /api/bookings/9001/tax-invoice/send-email` with `dry_run: false`):**
+  - HTTP 400 Bad Request ปฏิเสธทันทีด้วยข้อความ: *"ระบบยังไม่ได้เปิดสวิตช์ส่งอีเมลจริง (GMAIL_LIVE_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)"*
+  - **ยืนยัน: ไม่มีการเรียก Gmail send API โดยเด็ดขาด**
+- **ทดสอบจำลองส่ง (`POST /api/bookings/9001/tax-invoice/send-email` with `dry_run: true`):**
+  - HTTP 200 OK จำลองส่งสำเร็จ ออก Message ID: `dry_run_msg_1793856884425_ujisn4yr`
+  - อัปเดตสถานะใน `tax_invoices` เป็น `email_status = 'dry_run'`, `email_dry_run = 1`
+  - บันทึกลงตารางตรวจสอบ `tax_invoice_email_logs` เรียบร้อย
+
+### 6.4 ผลการตรวจ OAuth Token Exchange จากเซิร์ฟเวอร์
+- ตรวจสอบผ่าน Admin diagnostic endpoint (`/api/admin/gmail/test-oauth`) บน Staging Worker โดยตรง
+- เซิร์ฟเวอร์ส่งคำขอแลกเปลี่ยน Token ไปยัง Google OAuth2 (`https://oauth2.googleapis.com/token`) ได้จริง
+- ผลตอบกลับจาก Google OAuth2: **HTTP 401 Unauthorized**
+  `{"error": "invalid_client", "error_description": "The OAuth client was not found."}`
+- **ข้อสรุปและการแยกส่วนรายงาน:**
+  - ระบบเชื่อมต่อและโค้ดแลกเปลี่ยน Token ของ Worker ทำงานถูกต้อง
+  - **รายการที่ยังติด:** ค่า `GMAIL_CLIENT_ID` ที่บันทึกไว้ใน Cloudflare Worker Secrets ยังไม่ตรงกับ Client ID ที่มีอยู่ใน Google Cloud Console หรือยังสร้างไม่เสร็จ / โปรเจกต์ถูกลบ
+  - ไม่มีการส่งอีเมลและไม่มีการเปิดเผย Token หรือ Secret ใด ๆ

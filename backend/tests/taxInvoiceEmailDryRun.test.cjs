@@ -15,6 +15,7 @@ const {
   GMAIL_SEND_SCOPE,
   isGmailConfigured,
   isLiveDispatchEnabled,
+  getEffectiveEnvironment,
   isEmailAllowedInStaging,
   isValidEmail,
   encodeMimeHeader,
@@ -985,4 +986,38 @@ test('Cloudflare Worker - Tax Invoice Email Dispatch Parity (D1 & R2 Simulation)
   assert.strictEqual(d1Invoices[0].email_dry_run, 1);
   assert.strictEqual(d1EmailLogs.length, 1);
   assert.strictEqual(d1EmailLogs[0].status, 'dry_run');
+});
+
+
+test('GmailService - Safe Environment resolution & unknown/missing env protection', () => {
+  // 1. Explicit Staging
+  assert.strictEqual(getEffectiveEnvironment({ ENVIRONMENT: 'staging' }), 'staging');
+  assert.strictEqual(getEffectiveEnvironment({ APP_ENV: 'staging' }), 'staging');
+
+  // 2. Explicit Production
+  assert.strictEqual(getEffectiveEnvironment({ APP_ENV: 'production' }), 'production');
+  assert.strictEqual(getEffectiveEnvironment({ ENVIRONMENT: 'production' }), 'production');
+
+  // 3. Missing, empty, or unknown environment values MUST NEVER resolve to production!
+  assert.strictEqual(getEffectiveEnvironment({ APP_ENV: 'unknown_val' }), 'development');
+  assert.strictEqual(getEffectiveEnvironment({ ENVIRONMENT: 'custom_cluster' }), 'development');
+  assert.strictEqual(getEffectiveEnvironment({}), 'development');
+  assert.strictEqual(getEffectiveEnvironment(null), 'development');
+  assert.strictEqual(getEffectiveEnvironment(undefined), 'development');
+
+  // 4. Staging allowlist enforcement with safe env resolution
+  const stagingEnv = {
+    ENVIRONMENT: 'staging',
+    GMAIL_STAGING_ALLOWLIST: 'admin@bwork.co,@bwork.co'
+  };
+  assert.strictEqual(isEmailAllowedInStaging('test@bwork.co', stagingEnv), true);
+  assert.strictEqual(isEmailAllowedInStaging('customer@external.com', stagingEnv), false);
+
+  // 5. Unknown environment behaves like non-production and blocks external emails
+  const unknownEnv = {
+    APP_ENV: 'unknown_mode',
+    GMAIL_STAGING_ALLOWLIST: 'staff@bwork.co'
+  };
+  assert.strictEqual(isEmailAllowedInStaging('customer@external.com', unknownEnv), false);
+  assert.strictEqual(isEmailAllowedInStaging('staff@bwork.co', unknownEnv), true);
 });
