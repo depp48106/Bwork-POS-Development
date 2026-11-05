@@ -4841,6 +4841,7 @@ app.get('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => 
     res.json({
       success: true,
       booking_id: bookingId,
+      live_dispatch_enabled: isLiveDispatchEnabled(),
       tax_data: {
         tax_invoice_required: Number(booking.tax_invoice_required) || 0,
         tax_payer_type: booking.tax_payer_type || null,
@@ -5221,7 +5222,8 @@ app.get('/api/bookings/:id/tax-invoice/email-preview', authenticateToken, requir
       success: true,
       email_preview: {
         to: recipientEmail,
-        from: `${senderName} <${senderEmail}>`,
+        from: senderEmail,
+      fromName: senderName,
         reply_to: replyTo,
         subject,
         text: textBody,
@@ -5274,6 +5276,309 @@ app.all('/api/admin/gmail/test-oauth', authenticateToken, requireAnyPermission('
       oauth_connected: false,
       error: cleanError
     });
+  }
+});
+
+// Admin Gmail Test Switch (Get status / Toggle test switch)
+app.get('/api/admin/gmail/test-switch', authenticateToken, requireAnyPermission('admin'), async (req, res) => {
+  try {
+    const { isTestDispatchEnabled, isLiveDispatchEnabled } = require('./services/gmailService');
+    const row = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_dispatch_enabled'");
+    const dbVal = row?.value !== undefined ? String(row.value).trim().toLowerCase() === 'true' : null;
+    const testEnabled = dbVal !== null ? dbVal : isTestDispatchEnabled();
+    res.json({
+      success: true,
+      test_dispatch_enabled: testEnabled,
+      customer_live_dispatch_enabled: isLiveDispatchEnabled()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/gmail/test-switch', authenticateToken, requireAnyPermission('admin'), async (req, res) => {
+  try {
+    const { isLiveDispatchEnabled } = require('./services/gmailService');
+    const enabled = Boolean(req.body?.enabled);
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_dispatch_enabled', ?)", [enabled ? 'true' : 'false']);
+    res.json({
+      success: true,
+      test_dispatch_enabled: enabled,
+      customer_live_dispatch_enabled: isLiveDispatchEnabled()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin Gmail Isolated Test Send (Strict recipient kunakornwhynatt@gmail.com, in-memory PDF, no customer data accessed)
+app.post('/api/admin/gmail/test-send', authenticateToken, requireAnyPermission('admin'), async (req, res) => {
+  const {
+    isGmailConfigured,
+    isLiveDispatchEnabled,
+    isTestDispatchEnabled,
+    createTestSamplePdfBuffer,
+    generateTestEmailContent,
+    buildMimeMessage,
+    getGmailAccessToken,
+    base64UrlEncode,
+    DEFAULT_SENDER_EMAIL,
+    DEFAULT_SENDER_NAME,
+    DEFAULT_REPLY_TO,
+    TARGET_TEST_RECIPIENT,
+    TEST_EMAIL_SUBJECT
+  } = require('./services/gmailService');
+
+  // Enforce server-side target recipient and subject strictly
+  const targetEmail = TARGET_TEST_RECIPIENT;
+  const subject = TEST_EMAIL_SUBJECT;
+  const isDryRun = req.body?.dry_run !== false;
+  const staffName = req.user?.username || req.user?.name || req.user?.role || 'admin';
+
+  // Check test dispatch switch state from DB or env
+  const row = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_dispatch_enabled'");
+  const dbVal = row?.value !== undefined ? String(row.value).trim().toLowerCase() === 'true' : null;
+  const testSwitchEnabled = dbVal !== null ? dbVal : isTestDispatchEnabled();
+
+  const pdfBuffer = createTestSamplePdfBuffer();
+  const senderEmail = process.env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+  const senderName = process.env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+  const replyTo = process.env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
+  const nowIso = new Date().toISOString();
+
+  const { textBody, htmlBody } = generateTestEmailContent({
+    recipientEmail: targetEmail,
+    senderEmail,
+    senderName
+  });
+
+  // 1. Dry Run Mode
+  if (isDryRun) {
+    const simulatedMsgId = 'dry_run_test_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+    // Record audit log in settings
+    try {
+      const logsRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'");
+      let logs = [];
+      if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+      if (!Array.isArray(logs)) logs = [];
+      logs.unshift({
+        id: 'test_audit_' + Date.now(),
+        timestamp: nowIso,
+        status: 'dry_run',
+        is_dry_run: true,
+        recipient: targetEmail,
+        subject,
+        message_id: simulatedMsgId,
+        file_name: 'BWORK_TEST_SAMPLE.pdf',
+        file_size: pdfBuffer.length,
+        dispatched_by: staffName
+      });
+      if (logs.length > 50) logs = logs.slice(0, 50);
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)", [JSON.stringify(logs)]);
+    } catch (_) {}
+
+    return res.json({
+      success: true,
+      dry_run: true,
+      status: 'dry_run',
+      message: 'จำลองการส่งอีเมลทดสอบเรียบร้อยแล้ว (Dry-run)',
+      data: {
+        recipient: targetEmail,
+        subject,
+        message_id: simulatedMsgId,
+        file_name: 'BWORK_TEST_SAMPLE.pdf',
+        file_size: pdfBuffer.length,
+        dispatched_by: staffName,
+        test_dispatch_switch: testSwitchEnabled,
+        customer_dispatch_switch: isLiveDispatchEnabled()
+      }
+    });
+  }
+
+  // 2. Live Dispatch Validations
+  if (!testSwitchEnabled) {
+    return res.status(400).json({
+      success: false,
+      error: 'ระบบยังไม่ได้เปิดสวิตช์ทดสอบส่งอีเมล (GMAIL_TEST_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)'
+    });
+  }
+
+  if (!isGmailConfigured()) {
+    return res.status(400).json({
+      success: false,
+      error: 'ยังไม่ได้ตั้งค่า Gmail API OAuth2 Credentials ในระบบ กรุณาตรวจสอบการตั้งค่า'
+    });
+  }
+
+  // Durable Concurrency Check via settings key gmail_test_send_claim
+  const claimRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_claim'");
+  let claim = null;
+  if (claimRow?.value) {
+    try { claim = JSON.parse(claimRow.value); } catch (_) {}
+  }
+  if (claim && claim.status === 'claiming') {
+    const elapsedSec = (Date.now() - new Date(claim.claimed_at).getTime()) / 1000;
+    if (elapsedSec < 60) {
+      return res.status(429).json({
+        error: 'กำลังดำเนินการส่งอีเมลทดสอบอยู่ กรุณารอสักครู่ (In-flight)'
+      });
+    }
+  }
+
+  // Set claim to claiming
+  await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)", [
+    JSON.stringify({
+      status: 'claiming',
+      claimed_at: nowIso,
+      dispatched_by: staffName
+    })
+  ]);
+
+  try {
+    const accessToken = await getGmailAccessToken();
+    const mimePayload = buildMimeMessage({
+      from: `${senderName} <${senderEmail}>`,
+      to: targetEmail,
+      replyTo,
+      subject,
+      text: textBody,
+      html: htmlBody,
+      attachmentBuffer: pdfBuffer,
+      attachmentFileName: 'BWORK_TEST_SAMPLE.pdf'
+    });
+
+    const base64UrlRaw = base64UrlEncode(mimePayload);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+
+    let gmailRes;
+    try {
+      gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + accessToken,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ raw: base64UrlRaw }),
+        signal: controller.signal
+      });
+    } catch (netErr) {
+      clearTimeout(timer);
+      // Mark uncertain in claim and audit log
+      const uncertainItem = {
+        id: 'test_audit_' + Date.now(),
+        timestamp: new Date().toISOString(),
+        status: 'uncertain',
+        is_dry_run: false,
+        recipient: targetEmail,
+        subject,
+        error: netErr.message || 'Timeout/Network error',
+        dispatched_by: staffName
+      };
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)", [
+        JSON.stringify({ status: 'uncertain', error: uncertainItem.error, updated_at: uncertainItem.timestamp })
+      ]);
+      const logsRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'");
+      let logs = [];
+      if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+      if (!Array.isArray(logs)) logs = [];
+      logs.unshift(uncertainItem);
+      if (logs.length > 50) logs = logs.slice(0, 50);
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)", [JSON.stringify(logs)]);
+
+      return res.status(504).json({
+        success: false,
+        status: 'uncertain',
+        error: 'คำขอส่งอีเมลไปยัง Gmail API หมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกสถานะเป็น "uncertain" และจะไม่ส่งซ้ำอัตโนมัติ เพื่อความปลอดภัย กรุณาตรวจสอบก่อนทำรายการใหม่'
+      });
+    }
+    clearTimeout(timer);
+
+    if (!gmailRes.ok) {
+      const errBody = await gmailRes.text().catch(() => '');
+      const errMsg = `Gmail API ส่งข้อความไม่สำเร็จ (HTTP ${gmailRes.status}): ${errBody}`;
+      const failedItem = {
+        id: 'test_audit_' + Date.now(),
+        timestamp: new Date().toISOString(),
+        status: 'failed',
+        is_dry_run: false,
+        recipient: targetEmail,
+        subject,
+        error: errMsg,
+        dispatched_by: staffName
+      };
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)", [
+        JSON.stringify({ status: 'failed', error: errMsg, updated_at: failedItem.timestamp })
+      ]);
+      const logsRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'");
+      let logs = [];
+      if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+      if (!Array.isArray(logs)) logs = [];
+      logs.unshift(failedItem);
+      if (logs.length > 50) logs = logs.slice(0, 50);
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)", [JSON.stringify(logs)]);
+
+      return res.status(500).json({
+        success: false,
+        status: 'failed',
+        error: errMsg
+      });
+    }
+
+    const gmailData = await gmailRes.json().catch(() => ({}));
+    const finalMsgId = gmailData.id || ('gmail_test_' + Date.now());
+
+    // Record success audit log
+    const successItem = {
+      id: 'test_audit_' + Date.now(),
+      timestamp: new Date().toISOString(),
+      status: 'gmail_accepted',
+      is_dry_run: false,
+      recipient: targetEmail,
+      subject,
+      message_id: finalMsgId,
+      file_name: 'BWORK_TEST_SAMPLE.pdf',
+      file_size: pdfBuffer.length,
+      dispatched_by: staffName
+    };
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)", [
+      JSON.stringify({ status: 'gmail_accepted', message_id: finalMsgId, updated_at: successItem.timestamp })
+    ]);
+    const logsRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'");
+    let logs = [];
+    if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+    if (!Array.isArray(logs)) logs = [];
+    logs.unshift(successItem);
+    if (logs.length > 50) logs = logs.slice(0, 50);
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)", [JSON.stringify(logs)]);
+
+    return res.json({
+      success: true,
+      dry_run: false,
+      status: 'gmail_accepted',
+      message: 'Gmail API รับคำขอส่งอีเมลทดสอบเรียบร้อยแล้ว (รอคิวส่งของ Gmail)',
+      data: {
+        recipient: targetEmail,
+        subject,
+        message_id: finalMsgId,
+        file_name: 'BWORK_TEST_SAMPLE.pdf',
+        file_size: pdfBuffer.length,
+        dispatched_by: staffName,
+        test_dispatch_switch: false,
+        customer_dispatch_switch: false
+      }
+    });
+  } catch (outerErr) {
+    return res.status(500).json({
+      success: false,
+      error: 'เกิดข้อผิดพลาดในการประมวลผลคำขอส่งอีเมล: ' + outerErr.message
+    });
+  } finally {
+    // Crucial requirement: Reset test switch back to false immediately even if error occurs!
+    try {
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_dispatch_enabled', 'false')");
+    } catch (_) {}
   }
 });
 

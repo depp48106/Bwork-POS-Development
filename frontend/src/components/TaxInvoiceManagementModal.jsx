@@ -91,6 +91,8 @@ export default function TaxInvoiceManagementModal({
   const [previewError, setPreviewError] = useState(null);
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [emailFeedback, setEmailFeedback] = useState(null);
+  const [liveDispatchEnabled, setLiveDispatchEnabled] = useState(false);
+  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
   const fileInputRef = useRef(null);
   const scrollBodyRef = useRef(null);
   const initialTaxFormRef = useRef(null);
@@ -112,6 +114,9 @@ export default function TaxInvoiceManagementModal({
         const data = await res.json();
         setTaxData(data.tax_data);
         setInvoices(data.invoices || []);
+        if (data.live_dispatch_enabled !== undefined) {
+          setLiveDispatchEnabled(Boolean(data.live_dispatch_enabled));
+        }
 
         // Pre-fill edit state
         if (data.tax_data) {
@@ -352,13 +357,48 @@ export default function TaxInvoiceManagementModal({
     }
   };
 
+  // User Permission Check for tax invoice emailing
+  const currentUser = (() => {
+    try {
+      const raw = localStorage.getItem('pos_user');
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+  })();
+  const hasSendPermission = !currentUser ||
+    currentUser.role === 'admin' ||
+    currentUser.role === 'manage' ||
+    currentUser.role === 'pos' ||
+    (currentUser.permissions && (currentUser.permissions.includes('pos') || currentUser.permissions.includes('manage') || currentUser.permissions.includes('admin')));
+
+  // Check live dispatch status on mount or when active invoice changes
+  useEffect(() => {
+    let isMounted = true;
+    const checkDispatchConfig = async () => {
+      if (!bookingId) return;
+      try {
+        const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+        const invParam = activePdfInvoice?.id ? `?invoice_id=${activePdfInvoice.id}` : '';
+        const res = await fetch(`/api/bookings/${bookingId}/tax-invoice/email-preview${invParam}`, {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (isMounted && data.email_preview?.live_dispatch_enabled !== undefined) {
+            setLiveDispatchEnabled(Boolean(data.email_preview.live_dispatch_enabled));
+          }
+        }
+      } catch (_) {}
+    };
+    checkDispatchConfig();
+    return () => { isMounted = false; };
+  }, [bookingId, activePdfInvoice?.id]);
+
   // Send Tax Invoice Email (Dry-run default or live Gmail)
   const handleSendTaxEmail = async (isDryRun = true) => {
-    if (!bookingId || !activePdfInvoice) return;
-    if (!isDryRun) {
-      const confirmed = window.confirm(`ยืนยันการส่งอีเมลใบกำกับภาษีจริงไปยัง ${recipientEmail}?\n\nระบบจะเรียก Gmail API เพื่อนำส่งเข้าคิวส่งจริง`);
-      if (!confirmed) return;
-    }
+    if (!bookingId || !activePdfInvoice || isSendingEmail) return;
     try {
       setIsSendingEmail(true);
       setEmailFeedback(null);
@@ -376,10 +416,12 @@ export default function TaxInvoiceManagementModal({
         })
       });
       const data = await res.json();
+      setIsConfirmModalOpen(false); // Close confirmation modal upon response
       if (res.ok && data.success) {
         const msg = data.message || (isDryRun ? 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)' : 'Gmail รับคำขอส่งอีเมลเรียบร้อยแล้ว (รอคิวส่งของ Gmail)');
         setEmailFeedback({
           type: 'success',
+          status: data.status || (isDryRun ? 'dry_run' : 'gmail_accepted'),
           message: msg,
           details: data.data
         });
@@ -390,15 +432,17 @@ export default function TaxInvoiceManagementModal({
         const errMsg = data.error || (isDryRun ? 'เกิดข้อผิดพลาดในการจำลองส่งอีเมล' : 'เกิดข้อผิดพลาดในการส่งอีเมลผ่าน Gmail API');
         setEmailFeedback({
           type: 'error',
+          status: data.status,
           message: errMsg
         });
         if (sysAlert) sysAlert(errMsg);
         await fetchTaxInvoiceData();
       }
     } catch (err) {
+      setIsConfirmModalOpen(false);
       setEmailFeedback({
         type: 'error',
-        message: 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์'
+        message: 'เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์: ' + err.message
       });
     } finally {
       setIsSendingEmail(false);
@@ -406,7 +450,11 @@ export default function TaxInvoiceManagementModal({
   };
 
   const handleSimulateSendEmail = () => handleSendTaxEmail(true);
-  const handleLiveSendEmail = () => handleSendTaxEmail(false);
+  const handleOpenLiveSendConfirm = () => {
+    if (!isPdfAttached || !isEmailValid || !hasSendPermission || !liveDispatchEnabled || isSendingEmail) return;
+    setIsConfirmModalOpen(true);
+  };
+  const handleLiveSendEmailConfirmed = () => handleSendTaxEmail(false);
 
   const renderEmailStatusBadge = (status) => {
     switch (status) {
@@ -1623,6 +1671,30 @@ export default function TaxInvoiceManagementModal({
                         </div>
                       )}
 
+                      {/* Action Reason Notice when live dispatch is disabled */}
+                      {!liveDispatchEnabled && (
+                        <div
+                          id="notice-live-dispatch-disabled"
+                          style={{
+                            fontSize: '0.73rem',
+                            color: '#64748b',
+                            backgroundColor: 'rgba(100, 116, 139, 0.08)',
+                            border: '1px dashed #cbd5e1',
+                            borderRadius: '8px',
+                            padding: '8px 12px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            marginTop: '2px'
+                          }}
+                        >
+                          <AlertCircle size={14} color="#64748b" style={{ flexShrink: 0 }} />
+                          <div>
+                            <strong>สวิตช์ส่งจริงปิดอยู่ (GMAIL_LIVE_DISPATCH_ENABLED=false):</strong> ปุ่ม “ส่งอีเมล” ถูกปิดใช้งานเพื่อความปลอดภัย กรุณาใช้ปุ่ม “จำลองส่งอีเมล (Dry-run)” เพื่อทดสอบกระบวนการ
+                          </div>
+                        </div>
+                      )}
+
                       {/* Action buttons */}
                       <div style={{
                         display: 'flex',
@@ -1631,11 +1703,12 @@ export default function TaxInvoiceManagementModal({
                         flexWrap: 'wrap',
                         paddingTop: '4px'
                       }}>
+                        {/* 1. Preview Email Button */}
                         <button
                           type="button"
                           id="btn-tax-email-preview"
                           onClick={handleOpenEmailPreview}
-                          disabled={!isPdfAttached || !isEmailValid || previewLoading}
+                          disabled={!isPdfAttached || !isEmailValid || previewLoading || isSendingEmail}
                           style={{
                             height: '34px',
                             padding: '0 14px',
@@ -1648,8 +1721,8 @@ export default function TaxInvoiceManagementModal({
                             display: 'flex',
                             alignItems: 'center',
                             gap: '5px',
-                            cursor: (!isPdfAttached || !isEmailValid || previewLoading) ? 'not-allowed' : 'pointer',
-                            opacity: (!isPdfAttached || !isEmailValid) ? 0.6 : 1
+                            cursor: (!isPdfAttached || !isEmailValid || previewLoading || isSendingEmail) ? 'not-allowed' : 'pointer',
+                            opacity: (!isPdfAttached || !isEmailValid || isSendingEmail) ? 0.6 : 1
                           }}
                           title={!isPdfAttached ? 'กรุณาแนบไฟล์ PDF ก่อนดูตัวอย่าง' : (!isEmailValid ? 'กรุณาระบุอีเมลที่ถูกต้อง' : 'เปิดดูตัวอย่างอีเมลที่ลูกค้าจะได้รับ')}
                         >
@@ -1657,6 +1730,7 @@ export default function TaxInvoiceManagementModal({
                           <span>{previewLoading ? 'กำลังโหลดตัวอย่าง...' : 'ดูตัวอย่างอีเมล'}</span>
                         </button>
 
+                        {/* 2. Dry-Run / Simulate Send Button */}
                         <button
                           type="button"
                           id="btn-tax-simulate-send-email"
@@ -1666,7 +1740,7 @@ export default function TaxInvoiceManagementModal({
                             height: '34px',
                             padding: '0 16px',
                             borderRadius: '8px',
-                            border: 'none',
+                            border: '1px solid #0284c7',
                             backgroundColor: '#0284c7',
                             color: '#ffffff',
                             fontSize: '0.78rem',
@@ -1675,13 +1749,50 @@ export default function TaxInvoiceManagementModal({
                             alignItems: 'center',
                             gap: '6px',
                             cursor: (!isPdfAttached || !isEmailValid || isSendingEmail) ? 'not-allowed' : 'pointer',
-                            opacity: (!isPdfAttached || !isEmailValid) ? 0.6 : 1,
+                            opacity: (!isPdfAttached || !isEmailValid || isSendingEmail) ? 0.6 : 1,
                             boxShadow: '0 2px 6px rgba(2, 132, 199, 0.25)'
                           }}
                           title={!isPdfAttached ? 'กรุณาแนบไฟล์ PDF ก่อนจำลองการส่ง' : (!isEmailValid ? 'กรุณาระบุอีเมลที่ถูกต้อง' : 'จำลองขั้นตอนส่งอีเมลโดยไม่เรียก Gmail API จริง')}
                         >
                           <Send size={14} />
                           <span>{isSendingEmail ? 'กำลังจำลองส่ง...' : 'จำลองส่งอีเมล (Dry-run)'}</span>
+                        </button>
+
+                        {/* 3. Live Dispatch Button */}
+                        <button
+                          type="button"
+                          id="btn-tax-live-send-email"
+                          onClick={handleOpenLiveSendConfirm}
+                          disabled={!isPdfAttached || !isEmailValid || !hasSendPermission || !liveDispatchEnabled || isSendingEmail}
+                          style={{
+                            height: '34px',
+                            padding: '0 16px',
+                            borderRadius: '8px',
+                            border: 'none',
+                            backgroundColor: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail)
+                              ? '#059669'
+                              : '#94a3b8',
+                            color: '#ffffff',
+                            fontSize: '0.78rem',
+                            fontWeight: 800,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            cursor: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail) ? 'pointer' : 'not-allowed',
+                            opacity: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail) ? 1 : 0.65,
+                            boxShadow: (isPdfAttached && isEmailValid && hasSendPermission && liveDispatchEnabled && !isSendingEmail) ? '0 2px 6px rgba(5, 150, 105, 0.3)' : 'none'
+                          }}
+                          title={
+                            !isPdfAttached ? 'กรุณาแนบไฟล์ PDF ก่อนส่งอีเมล' :
+                            !isEmailValid ? 'กรุณาระบุอีเมลที่ถูกต้อง' :
+                            !hasSendPermission ? 'สงวนสิทธิ์เฉพาะผู้มีสิทธิ์ส่งอีเมล' :
+                            !liveDispatchEnabled ? 'ระบบปิดสวิตช์ส่งจริงอยู่ (GMAIL_LIVE_DISPATCH_ENABLED=false) ไม่สามารถส่งจริงได้ กรุณาใช้โหมดจำลองส่ง (Dry-run)' :
+                            isSendingEmail ? 'กำลังดำเนินการ...' :
+                            'ส่งอีเมลใบกำกับภาษีจริงไปยังลูกค้าผ่าน Gmail API'
+                          }
+                        >
+                          <Send size={14} />
+                          <span>{isSendingEmail ? 'กำลังส่ง...' : 'ส่งอีเมล'}</span>
                         </button>
                       </div>
                     </div>
@@ -2158,6 +2269,218 @@ export default function TaxInvoiceManagementModal({
                   }}
                 >
                   ปิดตัวอย่าง
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Dedicated Confirmation Modal for Live Email Dispatch */}
+        {isConfirmModalOpen && (
+          <div
+            id="modal-tax-confirm-send"
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(15, 23, 42, 0.65)',
+              backdropFilter: 'blur(3px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 100000,
+              padding: '16px'
+            }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !isSendingEmail) {
+                setIsConfirmModalOpen(false);
+              }
+            }}
+          >
+            <div
+              style={{
+                backgroundColor: '#ffffff',
+                borderRadius: '16px',
+                maxWidth: '480px',
+                width: '100%',
+                boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.08)',
+                border: '1px solid #e2e8f0',
+                overflow: 'hidden'
+              }}
+            >
+              {/* Header */}
+              <div style={{
+                padding: '18px 20px',
+                borderBottom: '1px solid #e2e8f0',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                backgroundColor: '#f8fafc'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '10px',
+                    backgroundColor: 'rgba(5, 150, 105, 0.12)',
+                    color: '#059669',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}>
+                    <Send size={18} />
+                  </div>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: '#0f172a' }}>
+                      ยืนยันการส่งใบกำกับภาษีทางอีเมล
+                    </h3>
+                    <p style={{ margin: '2px 0 0', fontSize: '0.72rem', color: '#64748b' }}>
+                      ระบบจะเรียกใช้งาน Gmail API เพื่อส่งอีเมลจริงไปยังลูกค้า
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  id="btn-tax-confirm-close-x"
+                  onClick={() => !isSendingEmail && setIsConfirmModalOpen(false)}
+                  disabled={isSendingEmail}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#94a3b8',
+                    cursor: isSendingEmail ? 'not-allowed' : 'pointer',
+                    padding: '4px'
+                  }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{
+                  backgroundColor: '#f0fdf4',
+                  border: '1px solid #bbf7d0',
+                  borderRadius: '10px',
+                  padding: '12px 14px',
+                  fontSize: '0.76rem',
+                  color: '#166534',
+                  lineHeight: 1.5
+                }}>
+                  ⚠️ <strong>คำชี้แจง:</strong> การดำเนินการนี้จะส่งอีเมลพร้อมแนบเอกสาร PDF ไปยังผู้รับจริงทันที โปรดตรวจสอบข้อมูลสำคัญต่อไปนี้ก่อนยืนยัน:
+                </div>
+
+                <div style={{
+                  backgroundColor: '#f8fafc',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '12px',
+                  padding: '14px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px',
+                  fontSize: '0.78rem'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px dashed #e2e8f0', paddingBottom: '8px' }}>
+                    <span style={{ color: '#64748b', fontWeight: 600 }}>อีเมลผู้รับ (To):</span>
+                    <span id="confirm-recipient-email" style={{ color: '#0284c7', fontWeight: 800, wordBreak: 'break-all', textAlign: 'right' }}>
+                      {recipientEmail}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px dashed #e2e8f0', paddingBottom: '8px' }}>
+                    <span style={{ color: '#64748b', fontWeight: 600 }}>เลขที่ใบกำกับภาษี:</span>
+                    <span id="confirm-invoice-number" style={{ color: '#0f172a', fontWeight: 800 }}>
+                      {activePdfInvoice?.invoice_number || ('INV-' + bookingId)}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px dashed #e2e8f0', paddingBottom: '8px' }}>
+                    <span style={{ color: '#64748b', fontWeight: 600 }}>ไฟล์แนบ PDF:</span>
+                    <span id="confirm-file-name" style={{ color: '#059669', fontWeight: 800, wordBreak: 'break-all', textAlign: 'right' }}>
+                      📄 {activePdfInvoice?.file_name || 'Tax_Invoice.pdf'}
+                      {activePdfInvoice?.file_size ? ` (${((activePdfInvoice.file_size) / 1024).toFixed(1)} KB)` : ''}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px dashed #e2e8f0', paddingBottom: '8px' }}>
+                    <span style={{ color: '#64748b', fontWeight: 600 }}>รหัสการจอง:</span>
+                    <span style={{ color: '#334155', fontWeight: 700 }}>
+                      {booking?.receipt_number || booking?.booking_code || ('BK-' + bookingId)}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span style={{ color: '#64748b', fontWeight: 600 }}>ชื่อผู้เสียภาษี / ลูกค้า:</span>
+                    <span style={{ color: '#334155', fontWeight: 700, textAlign: 'right' }}>
+                      {taxData?.tax_name || booking?.tax_name || booking?.customer_name || '-'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div style={{
+                padding: '14px 20px',
+                borderTop: '1px solid #e2e8f0',
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: '10px',
+                backgroundColor: '#f8fafc'
+              }}>
+                <button
+                  type="button"
+                  id="btn-tax-confirm-cancel"
+                  onClick={() => setIsConfirmModalOpen(false)}
+                  disabled={isSendingEmail}
+                  style={{
+                    height: '36px',
+                    padding: '0 16px',
+                    borderRadius: '8px',
+                    border: '1px solid #cbd5e1',
+                    backgroundColor: '#ffffff',
+                    color: '#475569',
+                    fontSize: '0.8rem',
+                    fontWeight: 700,
+                    cursor: isSendingEmail ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  id="btn-tax-confirm-send"
+                  onClick={handleLiveSendEmailConfirmed}
+                  disabled={isSendingEmail}
+                  style={{
+                    height: '36px',
+                    padding: '0 20px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    backgroundColor: '#059669',
+                    color: '#ffffff',
+                    fontSize: '0.8rem',
+                    fontWeight: 800,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    cursor: isSendingEmail ? 'not-allowed' : 'pointer',
+                    opacity: isSendingEmail ? 0.75 : 1,
+                    boxShadow: '0 2px 6px rgba(5, 150, 105, 0.3)'
+                  }}
+                >
+                  {isSendingEmail ? (
+                    <>
+                      <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                      <span>กำลังส่งเข้าคิว Gmail...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send size={14} />
+                      <span>ยืนยันส่งอีเมลจริง</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
