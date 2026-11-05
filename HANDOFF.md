@@ -1,11 +1,11 @@
 # BWORK-POS | DEVELOPMENT HANDOFF REPORT
 
-> **Document Version:** 1.4.0  
+> **Document Version:** 1.5.0  
 > **Date:** 5 พฤศจิกายน 2026  
 > **Workspace:** Development (`D:\Project BL\Bwork-POS-Development`)  
 > **Branch:** `integration/home-office-20261021`  
 > **Remote Repository:** `https://github.com/depp48106/Bwork-POS-Development.git`  
-> **Status:** **STAGING VALIDATED / GMAIL SECRETS & MIGRATION 017 DEPLOYED (DRY-RUN DEFAULT)**  
+> **Status:** **PRODUCTION DEPLOYED / GMAIL TAX INVOICE SELECTIVE RELEASE (DRY-RUN DEFAULT & SAFE OAUTH PREPARED)**  
 
 ---
 
@@ -173,3 +173,69 @@
   - credentials ครบถ้วนและสามารถขอ Access Token จาก Google ได้จริง
   - สวิตช์ความปลอดภัย `GMAIL_LIVE_DISPATCH_ENABLED="false"` คงปิดสนิท
   - ไม่มีการส่งอีเมลจริง และไม่มีการเปิดเผย Token หรือ Secret ใด ๆ ทั้งสิ้น
+
+---
+
+## 7. ผลการ Deploy ระบบส่งใบกำกับภาษี Gmail ขึ้น Production (Production Release Report)
+
+### 7.1 ข้อมูล Release & Git Traceability
+- **Release Branch:** `release/selective-gmail-tax-invoice-20261105`
+- **Release SHA:** `3bf94a4ef6da95eeb0821d960d7f1ca5c1e0e8e9`
+- **Production Baseline SHA:** `f579b876aee1c11ceb8b172347cb2bb9397a5a73` (งาน History hotfix, รูป R2 และ UI ต่อเวลาเดิมคงอยู่ครบถ้วน 100%)
+- **Selective Scope Isolation:** ปล่อยเฉพาะ Gmail service, API, UI จัดการใบกำกับภาษี และ Schema Migration 017 เท่านั้น โดย **ไม่ปล่อย RC Customer Type/Tax Invoice ที่พักไว้ และไม่รัน Migration 016**
+
+### 7.2 Deployment IDs & Live Targets
+1. **Production Worker (`bwork-pos-api`):**
+   - **URL:** `https://bwork-pos-api.ohnatza74185-ky.workers.dev`
+   - **Previous Version ID:** `c2e7f688-9000-444c-bc88-3cb02093bab2`
+   - **Deployed Version ID:** `d7b3e1e0-1c12-425c-ad03-ab682d27d4b5`
+2. **Production POS Pages (`bwork-pos`):**
+   - **Live URL:** `https://bwork-pos.pages.dev`
+   - **Previous Deployment ID:** `8bcde5bb-23d6-43b3-96f6-92cd03d1be59`
+   - **Deployed Deployment ID:** `d4598e58-92e9-4476-ac7c-47bdae0ec14a`
+   - **Preview URL:** `https://d4598e58.bwork-pos.pages.dev`
+3. **Production Booking Pages (`bwork-booking`):**
+   - คงเดิมที่ Deployment ID `c0211db4-1ccf-4db2-9ac8-a3697703f79a` (ไม่มี dependency ที่จำเป็นต้อง deploy)
+
+### 7.3 การสำรองและอัปเกรด Schema บน Production D1
+- **Database:** `bworkpos_db` (`0f171606-080b-4380-bf91-167dc678e2e4`)
+- **ไฟล์สำรองก่อน Migration:** `backend/backups/production_db_backup_2026-11-05T06-01-45-727Z.sql` (ขนาด 2,511,392 bytes)
+- **Migration ที่รัน:** เฉพาะ `017_tax_invoice_email_dispatch.sql` (บันทึกลงใน `d1_migrations` ID: 7)
+  - เพิ่ม 6 คอลัมน์สำหรับติดตามสถานะอีเมลใน `tax_invoices`
+  - สร้างตารางตรวจสอบ `tax_invoice_email_logs`
+- **Migration 016:** **ไม่ถูกรันบน Production อย่างเด็ดขาด** ตามข้อกำหนดความปลอดภัย
+
+### 7.4 การตั้งค่าสภาพแวดล้อมและ Secrets บน Production
+- **Environment Variables ใน Production Worker:**
+  - `ENVIRONMENT="production"`
+  - `APP_ENV="production"`
+  - `GMAIL_LIVE_DISPATCH_ENABLED="false"` (สวิตช์ความปลอดภัยปิดสนิท)
+  - `GMAIL_SENDER_NAME="บริษัท บิลท์ ฮาร์ท จำกัด"`
+  - `GMAIL_USER_EMAIL="coworkings.bwork@gmail.com"`
+  - `GMAIL_REPLY_TO="coworkings.bwork@gmail.com"`
+- **สถานะ Worker Secrets:**
+  - คงค่าเดิม: `WIFI_CREDENTIAL_ENCRYPTION_KEY`
+  - **จุดกรอก Secrets สำหรับ Production:** ไปที่ Cloudflare Dashboard -> Workers & Pages -> `bwork-pos-api` -> Settings -> Variables and Secrets แล้วเพิ่ม Secret 3 ชื่อดังต่อไปนี้เมื่อพร้อม:
+    1. `GMAIL_CLIENT_ID`
+    2. `GMAIL_CLIENT_SECRET`
+    3. `GMAIL_REFRESH_TOKEN`
+
+### 7.5 ผลการทดสอบสดบน Production (Live Verification)
+- **Live Login (`POST /api/auth/login`):** HTTP 200 OK ได้รับ Admin JWT
+- **OAuth Diagnostic (`POST /api/admin/gmail/test-oauth`):** HTTP 400 ตอบกลับอย่างปลอดภัยว่ายังไม่ได้ตั้งค่า Gmail OAuth2 Secrets ใน Production Worker (ไม่มีการแครชและไม่มี token รั่วไหล)
+- **Tax Invoice Management & Preview (`GET /api/bookings/47/tax-invoice/email-preview`):** HTTP 200 OK เรนเดอร์ตัวอย่างอีเมลส่งให้ `th.admin@tradequo.com` สำเร็จ พร้อมแสดง `live_dispatch_enabled: false`
+- **การบล็อกเมื่อพยายามส่งจริง (`POST /api/bookings/47/tax-invoice/send-email` with `dry_run: false`):**
+  HTTP 400 Bad Request บล็อกทันทีด้วยข้อความ *"ระบบยังไม่ได้เปิดสวิตช์ส่งอีเมลจริง (GMAIL_LIVE_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)"*
+- **ยืนยันเด็ดขาด:** ไม่มีการส่งอีเมลหรือ LINE ออกไปยังผู้รับจริง
+
+### 7.6 แผนและคำสั่ง Rollback ฉุกเฉิน (Emergency Rollback Runbook)
+1. **Rollback Production Worker ทันที:**
+   ```bash
+   npx wrangler rollback c2e7f688-9000-444c-bc88-3cb02093bab2 --config backend/wrangler.toml
+   ```
+2. **Rollback Production POS Pages ทันที:**
+   ```bash
+   npx wrangler pages deployment rollback 8bcde5bb-23d6-43b3-96f6-92cd03d1be59 --project-name bwork-pos
+   ```
+3. **Rollback D1 Database (กรณีฉุกเฉิน):**
+   คอลัมน์และตารางของ Migration 017 เป็นส่วนต่อขยาย (Additive) ที่มีค่า Default ไม่กระทบโค้ดเดิม หากต้องการย้อนกลับฐานข้อมูลทั้งหมด สามารถใช้ไฟล์สำรองก่อน deploy: `backend/backups/production_db_backup_2026-11-05T06-01-45-727Z.sql`
