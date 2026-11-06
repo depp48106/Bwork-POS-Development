@@ -4952,6 +4952,7 @@ app.put('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => 
 
     const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
     const nowIso = getBangkokLocalISO(new Date());
+
     try {
       await dbQuery.run(
         `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
@@ -4960,9 +4961,23 @@ app.put('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => 
       );
     } catch (_) {}
 
+    let updatedInvoices = [];
+    try {
+      updatedInvoices = await dbQuery.all(
+        `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                file_url, file_name, content_type, file_size, status, notes, uploaded_by,
+                email_status, email_sent_at, email_dry_run, email_message_id, email_recipient, email_error,
+                created_at, updated_at
+         FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`,
+        [bookingId]
+      );
+    } catch (_) {}
+
     res.json({
       success: true,
       message: 'บันทึกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว',
+      invoices: updatedInvoices || [],
       tax_data: {
         tax_invoice_required: isRequired,
         tax_payer_type: payerType,
@@ -5168,10 +5183,13 @@ app.get('/api/bookings/:id/tax-invoice/email-preview', authenticateToken, requir
       return res.status(400).json({ error: 'ยังไม่มีเอกสารใบกำกับภาษีสำหรับรายการจองนี้ กรุณาแนบเอกสารก่อนดูตัวอย่าง' });
     }
 
-    // Check recipient email
-    const recipientEmail = (invoice.tax_email || booking.tax_email || '').trim();
-    if (!recipientEmail || !isValidEmail(recipientEmail)) {
-      return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง กรุณาตรวจสอบอีเมลในข้อมูลใบกำกับภาษี' });
+    // Check recipient email (authoritative strictly from booking tax info)
+    const recipientEmail = (booking.tax_email || '').trim();
+    if (!recipientEmail) {
+      return res.status(400).json({ error: 'ยังไม่ได้ระบุอีเมลผู้รับ กรุณากรอกและบันทึกอีเมลในข้อมูลใบกำกับภาษีก่อนดูตัวอย่าง' });
+    }
+    if (!isValidEmail(recipientEmail)) {
+      return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง กรุณาตรวจสอบและบันทึกอีเมลใหม่' });
     }
 
     // Verify PDF attachment on server
@@ -5631,11 +5649,20 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
       return res.status(400).json({ error: 'ไม่พบเอกสารใบกำกับภาษีสำหรับรายการจองนี้' });
     }
 
-    // Validate recipient email
-    const targetEmail = (recipient_email || invoice.tax_email || booking.tax_email || '').trim();
-    if (!targetEmail || !isValidEmail(targetEmail)) {
-      return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง' });
+    // Validate recipient email (authoritative strictly from booking tax info)
+    const authoritativeEmail = (booking.tax_email || '').trim();
+    if (!authoritativeEmail) {
+      return res.status(400).json({ error: 'ยังไม่ได้ระบุอีเมลผู้รับในระบบ กรุณากรอกและบันทึกข้อมูลก่อนส่ง' });
     }
+    if (!isValidEmail(authoritativeEmail)) {
+      return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับในระบบไม่ถูกต้อง กรุณาแก้ไขและบันทึกข้อมูลใหม่' });
+    }
+    if (!recipient_email || recipient_email.trim().toLowerCase() !== authoritativeEmail.toLowerCase()) {
+      return res.status(400).json({
+        error: `อีเมลผู้รับที่ยืนยัน (${recipient_email || 'ไม่ระบุ'}) ไม่ตรงกับข้อมูลล่าสุดที่บันทึกไว้ในระบบ (${authoritativeEmail}) กรุณาตรวจสอบและยืนยันใหม่`
+      });
+    }
+    const targetEmail = authoritativeEmail;
 
     // Live dispatch validations (if dry_run is false)
     const appEnv = process.env.APP_ENV || 'development';
@@ -5689,7 +5716,7 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
        WHERE id = ?
          AND (
            email_status IS NULL
-           OR email_status IN ('unsent', 'failed', 'uncertain', 'dry_run')
+           OR email_status IN ('unsent', 'failed', 'dry_run')
            OR (email_status = 'claiming' AND (strftime('%s', 'now') - strftime('%s', email_sent_at)) > 60)
          )`,
       [invoice.id]
@@ -5702,6 +5729,9 @@ app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireA
       }
       if (currentInvoice?.email_status === 'gmail_accepted') {
         return res.status(409).json({ error: 'เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้' });
+      }
+      if (currentInvoice?.email_status === 'uncertain') {
+        return res.status(409).json({ error: 'สถานะการส่งก่อนหน้าไม่แน่นอน (uncertain) เพื่อความปลอดภัยป้องกันการส่งซ้ำ ระบบไม่อนุญาตให้ส่งซ้ำโดยไม่ตรวจสอบ กรุณาตรวจสอบบันทึกการส่งหรือติดต่อผู้ดูแลระบบ' });
       }
       return res.status(409).json({ error: `ไม่สามารถส่งอีเมลได้ในสถานะปัจจุบัน (${currentInvoice?.email_status || 'unknown'})` });
     }
