@@ -3,12 +3,49 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   CheckCircle2, Copy, Upload, Check,
-  ShieldCheck, AlertCircle, Download, CreditCard, QrCode, Clock, Calendar
+  ShieldCheck, AlertCircle, Download, CreditCard, QrCode, Clock, Calendar,
+  BookOpen, X, ZoomIn, ZoomOut, RotateCcw
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { calcPaymentTimeLeft } from '../utils/paymentCountdown';
 import { generateGoogleCalendarUrl, downloadIcsFile } from '../utils/calendarUtils';
+
+/**
+ * Helper to determine room guidelines flyer by room ID or room name.
+ * - Room 201 & 301-306: uses /rules/room301-306.png
+ * - Jupiter Auditorium: uses /rules/jupiter.jpg
+ * - Any other unmapped room: returns null (button completely hidden)
+ */
+export function getRoomGuidelines(booking) {
+  if (!booking) return null;
+  const rawId = booking.room_id || booking.room?.id || booking.roomId;
+  const roomId = rawId !== undefined && rawId !== null && rawId !== '' ? Number(rawId) : null;
+  const roomName = String(booking.room_name || booking.room?.name || '').trim().toLowerCase();
+
+  // 1. Jupiter Auditorium (ID 10, 12, or name containing jupiter)
+  if (roomId === 10 || roomId === 12 || roomName.includes('jupiter')) {
+    return {
+      type: 'jupiter',
+      title: 'ข้อปฏิบัติการใช้ห้อง Jupiter Auditorium',
+      src: '/rules/jupiter.jpg'
+    };
+  }
+
+  // 2. Room 201 and 301-306 (IDs 4, 5, 6, 7, 8, 9, 11, or name containing 201 / 301-306)
+  const room301Ids = [4, 5, 6, 7, 8, 9, 11];
+  const roomPattern = /\b(201|30[1-6])\b/;
+  if ((roomId !== null && room301Ids.includes(roomId)) || roomPattern.test(roomName)) {
+    return {
+      type: 'room301-306',
+      title: 'ข้อปฏิบัติการใช้ห้องประชุม (201, 301-306)',
+      src: '/rules/room301-306.png'
+    };
+  }
+
+  // 3. Any other room -> return null (hide button completely)
+  return null;
+}
 
 export default function ConfirmPage() {
   const navigate = useNavigate();
@@ -86,6 +123,24 @@ export default function ConfirmPage() {
     } catch (e) {}
     return 15 * 60;
   });
+  const [showGuidelinesModal, setShowGuidelinesModal] = useState(false);
+  const [guidelinesZoom, setGuidelinesZoom] = useState(1);
+
+  // Lock body scroll and listen for Escape key when guidelines modal is open
+  useEffect(() => {
+    if (!showGuidelinesModal) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setShowGuidelinesModal(false);
+    };
+    const origOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = origOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showGuidelinesModal]);
+
   const [isExpired, setIsExpired] = useState(() => {
     try {
       const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
@@ -540,6 +595,7 @@ export default function ConfirmPage() {
   const isDeposit = Boolean((booking?.payment_status === 'deposit' || Number(booking?.paid_amount || 0) > 0) && Number(booking?.balance_amount || 0) > 0);
   const payableAmt = isDeposit ? parseFloat(booking.balance_amount || 0) : totalAmt;
   const qrImageSrc = paymentSettings.qr_image || '/bwork_payment_qr.png';
+  const roomGuidelines = getRoomGuidelines(booking);
 
   const isPaidOrAutoApproved = Boolean(booking?.payment_status === 'paid');
   const bookingForCalendar = booking ? {
@@ -1085,6 +1141,41 @@ export default function ConfirmPage() {
           {/* PAYMENT DETAILS CARD & SLIP UPLOAD CARD (Active or Rejected Only) */}
           {!isExpired && (
             <>
+              {/* ROOM GUIDELINES ACTION BUTTON (ใต้สรุปรายการจอง เหนือ QR - แสดงเพียงจุดเดียว) */}
+              {roomGuidelines && (
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                  <button
+                    type="button"
+                    id="btn-room-guidelines"
+                    onClick={() => {
+                      setGuidelinesZoom(1);
+                      setShowGuidelinesModal(true);
+                    }}
+                    style={{
+                      width: '100%',
+                      maxWidth: '360px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      padding: '12px 18px',
+                      backgroundColor: '#ffffff',
+                      color: '#1d4ed8',
+                      border: '1.5px solid #93c5fd',
+                      borderRadius: '14px',
+                      fontSize: '0.92rem',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      boxShadow: '0 2px 8px rgba(37, 99, 235, 0.08)',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <BookOpen size={18} style={{ color: '#2563eb' }} />
+                    <span>ดูข้อปฏิบัติการใช้ห้อง</span>
+                  </button>
+                </div>
+              )}
+
               <div className="booking-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div style={{
               display: 'flex',
@@ -1310,6 +1401,254 @@ export default function ConfirmPage() {
           </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* ROOM GUIDELINES MODAL (In-web popup, scrollable, zoomable, closeable on mobile) */}
+      {showGuidelinesModal && roomGuidelines && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={roomGuidelines.title}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowGuidelinesModal(false);
+            }
+          }}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.82)',
+            backdropFilter: 'blur(4px)',
+            WebkitBackdropFilter: 'blur(4px)',
+            zIndex: 9999,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '12px',
+            boxSizing: 'border-box'
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#ffffff',
+              borderRadius: '18px',
+              maxWidth: '560px',
+              width: '100%',
+              maxHeight: '92vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              overflow: 'hidden',
+              position: 'relative',
+              border: '1px solid #e2e8f0'
+            }}
+          >
+            {/* Modal Header */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 16px',
+                borderBottom: '1px solid #e2e8f0',
+                backgroundColor: '#ffffff',
+                gap: '8px',
+                flexShrink: 0
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                <BookOpen size={18} style={{ color: '#2563eb', flexShrink: 0 }} />
+                <span
+                  style={{
+                    fontSize: '0.88rem',
+                    fontWeight: 800,
+                    color: '#0f172a',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}
+                  title={roomGuidelines.title}
+                >
+                  {roomGuidelines.title}
+                </span>
+              </div>
+
+              {/* Controls: Zoom & Close */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                {/* Zoom Controls */}
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    backgroundColor: '#f1f5f9',
+                    borderRadius: '8px',
+                    padding: '2px',
+                    gap: '2px'
+                  }}
+                >
+                  <button
+                    type="button"
+                    title="ย่อรูป"
+                    aria-label="ย่อรูป"
+                    disabled={guidelinesZoom <= 1}
+                    onClick={() => setGuidelinesZoom(z => Math.max(1, Math.round((z - 0.25) * 100) / 100))}
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      border: 'none',
+                      backgroundColor: 'transparent',
+                      color: guidelinesZoom <= 1 ? '#94a3b8' : '#334155',
+                      cursor: guidelinesZoom <= 1 ? 'not-allowed' : 'pointer',
+                      borderRadius: '6px'
+                    }}
+                  >
+                    <ZoomOut size={15} />
+                  </button>
+
+                  <button
+                    type="button"
+                    title="รีเซ็ตขนาด"
+                    aria-label="รีเซ็ตขนาด"
+                    onClick={() => setGuidelinesZoom(1)}
+                    style={{
+                      padding: '0 6px',
+                      height: '28px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      border: 'none',
+                      backgroundColor: 'transparent',
+                      color: '#475569',
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      borderRadius: '6px'
+                    }}
+                  >
+                    {Math.round(guidelinesZoom * 100)}%
+                  </button>
+
+                  <button
+                    type="button"
+                    title="ขยายรูป"
+                    aria-label="ขยายรูป"
+                    disabled={guidelinesZoom >= 2.5}
+                    onClick={() => setGuidelinesZoom(z => Math.min(2.5, Math.round((z + 0.25) * 100) / 100))}
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      border: 'none',
+                      backgroundColor: 'transparent',
+                      color: guidelinesZoom >= 2.5 ? '#94a3b8' : '#334155',
+                      cursor: guidelinesZoom >= 2.5 ? 'not-allowed' : 'pointer',
+                      borderRadius: '6px'
+                    }}
+                  >
+                    <ZoomIn size={15} />
+                  </button>
+                </div>
+
+                {/* Close Button */}
+                <button
+                  type="button"
+                  id="btn-close-guidelines-modal"
+                  aria-label="ปิดหน้าต่างข้อปฏิบัติ"
+                  onClick={() => setShowGuidelinesModal(false)}
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '8px',
+                    border: '1px solid #cbd5e1',
+                    backgroundColor: '#ffffff',
+                    color: '#475569',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body - Scrollable & Zoomable Image */}
+            <div
+              style={{
+                flex: 1,
+                overflow: 'auto',
+                WebkitOverflowScrolling: 'touch',
+                touchAction: 'pan-x pan-y pinch-zoom',
+                padding: '12px',
+                backgroundColor: '#f8fafc',
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'flex-start'
+              }}
+            >
+              <img
+                src={roomGuidelines.src}
+                alt={roomGuidelines.title}
+                onDoubleClick={() => setGuidelinesZoom(z => (z > 1 ? 1 : 1.75))}
+                style={{
+                  width: `${guidelinesZoom * 100}%`,
+                  maxWidth: 'none',
+                  height: 'auto',
+                  display: 'block',
+                  borderRadius: '10px',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
+                  transition: 'width 0.18s ease-out',
+                  cursor: guidelinesZoom > 1 ? 'zoom-out' : 'zoom-in',
+                  margin: '0 auto'
+                }}
+              />
+            </div>
+
+            {/* Modal Footer */}
+            <div
+              style={{
+                padding: '10px 16px',
+                borderTop: '1px solid #e2e8f0',
+                backgroundColor: '#ffffff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '10px',
+                flexShrink: 0
+              }}
+            >
+              <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                แตะ 2 ครั้งหรือใช้ปุ่ม +/- เพื่อขยาย
+              </div>
+              <button
+                type="button"
+                id="btn-footer-close-guidelines"
+                onClick={() => setShowGuidelinesModal(false)}
+                className="btn-secondary"
+                style={{
+                  padding: '8px 18px',
+                  fontSize: '0.82rem',
+                  fontWeight: 700,
+                  width: 'auto',
+                  minWidth: '90px'
+                }}
+              >
+                ปิดหน้าต่าง
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
