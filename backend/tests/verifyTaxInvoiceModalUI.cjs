@@ -6,8 +6,8 @@ const { spawn } = require('child_process');
 
 const PORT = 5088;
 const CDP_PORT = 9266;
-const DEV_DIR = 'D:\\Project BL\\Bwork-POS-Development';
-const ARTIFACT_DIR = 'C:\\Users\\ADMIN\\.gemini\\antigravity\\brain\\93b1ef54-72e7-446f-a6a3-437743441774';
+const DEV_DIR = path.resolve(__dirname, '..', '..');
+const ARTIFACT_DIR = path.resolve('C:/Users/Runrasa.P/.gemini/antigravity/brain/03721993-8ed4-4f8b-a41b-db0f7e984101');
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
 class CDPClient {
@@ -294,6 +294,9 @@ async function run() {
     if (!buttonsInfo.liveExists) throw new Error('btn-tax-live-send-email does NOT exist!');
     if (buttonsInfo.liveDisabled !== true) throw new Error('btn-tax-live-send-email MUST be disabled when live dispatch is false!');
     if (!buttonsInfo.noticeVisible) throw new Error('notice-live-dispatch-disabled MUST be visible when live dispatch is false!');
+    if (!buttonsInfo.noticeText.includes('ระบบยังไม่เปิดให้ส่งอีเมลจริง กรุณาติดต่อผู้ดูแลระบบ')) {
+      throw new Error('Notice text mismatch: ' + buttonsInfo.noticeText);
+    }
     console.log('  ✅ Scenario 1 Passed: All 3 buttons present, Live Send button correctly disabled with explanation.');
 
     // Capture Desktop Screenshot

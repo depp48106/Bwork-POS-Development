@@ -1,11 +1,11 @@
 # BWORK-POS | DEVELOPMENT HANDOFF REPORT
 
-> **Document Version:** 1.6.0  
+> **Document Version:** 1.9.0  
 > **Date:** 5 พฤศจิกายน 2026  
-> **Workspace:** Development (`D:\Project BL\Bwork-POS-Development`)  
+> **Workspace:** Development (`D:\Project BL\Bwork-POS-Development-Home`)  
 > **Branch:** `integration/home-office-20261021`  
 > **Remote Repository:** `https://github.com/depp48106/Bwork-POS-Development.git`  
-> **Status:** **UI LIVE DISPATCH & CONFIRMATION MODAL PREPARED / SELECTIVE PATCH STAGED (NOT DEPLOYED / SWITCHES STRICTLY FALSE)**  
+> **Status:** **TAX INVOICE REDESIGN & RECIPIENT TRUTH SUCCESSFULLY DEPLOYED TO PRODUCTION VIA SELECTIVE PATCH / READ-ONLY VERIFIED ON LIVE PAGES & WORKER / GMAIL SWITCH PRESERVED / ZERO DATA MUTATION**
 
 ---
 
@@ -342,40 +342,353 @@
 
 ---
 
-## 8. แผนงานสำหรับดำเนินการต่อที่บ้าน (Home Office Continuity Runbook)
+### 7.11 การ Deploy Selective Patch ขึ้น Production (Production Deployment Execution & Verification)
+- **วัน-เวลาที่ดำเนินการ:** 5 พฤศจิกายน 2026 เวลา 20:17 น. (13:17 UTC)
+- **Production POS Pages Deployment:**
+  - **Deployment ID ใหม่:** `97350101-5445-40a0-a01d-b5cb331c1d2e`
+  - **Deployment ID เดิมก่อนหน้า:** `d4598e58-92e9-4476-ac7c-47bdae0ec14a`
+  - **Active Environment:** Production (`main` branch)
+  - **Production URL:** https://bwork-pos.pages.dev / https://97350101.bwork-pos.pages.dev
+  - **Active JS Bundle:** `dist/assets/index-CmMFtB4H.js` (ขนาด 2,015.46 KB)
+  - **Active CSS Bundle:** `dist/assets/index-CdfFESVk.css` (ขนาด 204.01 KB)
+  - **การตรวจยืนยัน Bundle จริงบน CDN:** โหลด `index-CmMFtB4H.js` สำเร็จ มีข้อความ “ระบบยังไม่เปิดให้ส่งอีเมลจริง กรุณาติดต่อผู้ดูแลระบบ” ครบถ้วน
+- **Production Worker Deployment:**
+  - **Version ID ใหม่:** `a2e97882-49cf-4e7d-abc8-4a2661303939`
+  - **Version ID เดิมก่อนหน้า:** `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4`
+  - **Service Name:** `bwork-pos-api`
+  - **Traffic Allocation:** 100% active
+  - **Worker Triggers:** Crons `* * * * *` (Auto-cancel) และ `0 17 * * *` (Cloud backup)
+- **สถานะสวิตช์ความปลอดภัยและ Secrets บน Production Worker (Verified):**
+  - `GMAIL_LIVE_DISPATCH_ENABLED="false"` (สวิตช์ส่งลูกค้าปิดสนิท 100%)
+  - `GMAIL_TEST_DISPATCH_ENABLED="false"` (สวิตช์ทดสอบปิดสนิท 100%)
+  - `GMAIL_SENDER_NAME="บริษัท บิลท์ ฮาร์ท จำกัด"` (คงการเข้ารหัส RFC 2047 display name)
+  - `GMAIL_USER_EMAIL="coworkings.bwork@gmail.com"`
+  - `GMAIL_REPLY_TO="coworkings.bwork@gmail.com"`
+  - Secrets ครบถ้วน: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `WIFI_CREDENTIAL_ENCRYPTION_KEY`
+- **ผลการตรวจ Production แบบอ่านอย่างเดียว (Read-Only Verification):**
+  - **Worker Health & Public Rooms (`GET /api/public/rooms`):** HTTP 200 OK (10 rooms)
+  - **Live Auth Login (`POST /api/auth/login`):** HTTP 200 OK (Admin JWT obtained)
+  - **Tax Invoice Endpoint (`GET /api/bookings/47/tax-invoice`):** HTTP 200 OK, รายงาน `live_dispatch_enabled: false`
+  - **Email Preview (`GET /api/bookings/47/tax-invoice/email-preview`):**
+    - HTTP Status: 200 OK
+    - To: `th.admin@tradequo.com`
+    - From: `บริษัท บิลท์ ฮาร์ท จำกัด <coworkings.bwork@gmail.com>`
+    - `live_dispatch_enabled: false`
+  - **การป้องกันการแตะต้องข้อมูล:** ไม่มีการกด Dry-run บนรายการลูกค้าจริง ไม่มีการเรียก endpoint ส่งจริง ไม่มีการรัน Migration บน D1 และไม่มีการส่งอีเมลหรือ LINE ออกจากระบบเด็ดขาด
 
-- **สถานะความพร้อม:**
-  - โค้ดทั้งหมดได้รับการบันทึกและซิงก์ขึ้น GitHub Remote Repository บน branch `integration/home-office-20261021` และ `release/selective-gmail-tax-invoice-20261105` อย่างสมบูรณ์
-  - ไฟล์ทดสอบอัตโนมัติ `backend/tests/verifyTaxInvoiceModalUI.cjs` ถูกบันทึกลงใน repository พร้อมใช้งาน
-- **ขั้นตอนการทำงานถัดไปที่บ้าน (Next Steps):**
-  1. **ตรวจ Selective Patch ก่อน Deploy:**
-     - ตรวจสอบ HEAD commit บน `release/selective-gmail-tax-invoice-20261105` (SHA: `7ba523ef`)
-     - รัน `npm run build` ใน `frontend/` และรัน `node backend/tests/taxInvoiceEmailDryRun.test.cjs` เพื่อยืนยันความสมบูรณ์ของ Build Artifacts
-  2. **ดำเนินการ Deploy ตามคำสั่งอนุมัติภายหลัง:**
-     - Deploy Selective Patch ขึ้น Production POS Pages (`bwork-pos`):
-       ```bash
-       npx wrangler pages deploy backend/public --project-name bwork-pos --commit-dirty=true
-       ```
-     - Deploy Selective Patch ขึ้น Production Worker (`bwork-pos-api`):
-       ```bash
-       npx wrangler deploy --name bwork-pos-api backend/worker.js --compatibility-date 2026-08-08 --compatibility-flags nodejs_compat
-       ```
-  3. **การเปิดใช้งานสวิตช์ส่งจริง:**
-     - รอคำสั่งอนุมัติจากผู้ใช้ก่อนปรับค่า `GMAIL_LIVE_DISPATCH_ENABLED="true"` บน Cloudflare Worker Secrets / Environment Variables
-     - ห้ามเปิดสวิตช์ส่งจริงจนกว่าจะได้รับการอนุมัติอย่างเป็นลายลักษณ์อักษร
+### 7.12 แผนและคำสั่ง Rollback ฉุกเฉินหลังการ Deploy ล่าสุด (Updated Emergency Rollback Runbook)
+1. **Rollback Production Worker ทันที (หากต้องการกลับไปเวอร์ชันเดิมก่อนหน้านี้):**
+   ```bash
+   npx wrangler rollback aeb1bcae-d839-4b7b-9637-2d3fb47a67c4 --config backend/wrangler.toml
+   ```
+2. **Rollback Production POS Pages ทันที (หากต้องการกลับไปเวอร์ชันเดิมก่อนหน้านี้):**
+   ```bash
+   npx wrangler pages deployment rollback d4598e58-92e9-4476-ac7c-47bdae0ec14a --project-name bwork-pos
+   ```
+3. **Rollback D1 Database:**
+   ไม่มีการเปลี่ยนแปลง Schema หรือ Migration ใด ๆ ในรอบนี้ ฐานข้อมูล Production D1 ยังคงมีโครงสร้างเดิมที่สมบูรณ์ 100%
 
 ---
 
-## 9. ผลการ Deploy BWORK Booking Tax Invoice Hotfix ขึ้น Production (2026-11-06)
+## 8. สรุปสถานะและความพร้อมการทำงานต่อ (Continuity Status)
 
-### 9.1 ปัญหาเดิมและผลการวิเคราะห์สาเหตุ (Root Cause Analysis)
+- **สถานะระบบปัจจุบัน:**
+  - Production POS Pages และ Worker ได้รับการปรับปรุงเป็น Selective Release Patch ล่าสุดเรียบร้อยแล้ว
+  - ปุ่มส่งอีเมลใบกำกับภาษี, หน้าต่างยืนยัน, และปุ่ม Preview/Dry-run พร้อมใช้งานบน Production
+  - **สวิตช์ส่งจริงยังคงปิดสนิท (`GMAIL_LIVE_DISPATCH_ENABLED="false"`)** โดยบนหน้าจอแสดงข้อความ “ระบบยังไม่เปิดให้ส่งอีเมลจริง กรุณาติดต่อผู้ดูแลระบบ”
+  - **RC Customer Type / Tax Invoice Separation (`5f94a684...`) ยังคงพักไว้ตามเดิมอย่างปลอดภัย**
+  - **ไม่มีการรัน Migration 016 บน Production D1**
+- **Git State:**
+  - Branch `release/selective-gmail-tax-invoice-20261105`: Commit `cd9a4b44` (Pushed to Origin)
+  - Branch `integration/home-office-20261021`: Commit `8fe13097` (In sync with selective patch)
+
+
+---
+
+## 9. การปรับปรุงหน้าต่างจัดการใบกำกับภาษี (Tax Invoice Modal Redesign) และการแก้ปัญหาอีเมลไม่อัปเดต (Email Sync Hotfix)
+
+> **บันทึกการพัฒนา:** 5 พฤศจิกายน 2026  
+> **สภาพแวดล้อม:** Development Workspace (`D:\Project BL\Bwork-POS-Development-Home`)  
+> **Branch:** `integration/home-office-20261021`  
+> **ขอบเขตงาน:** ดำเนินการเฉพาะใน Development เพื่อทดสอบและตรวจรับ — **ไม่มีการ Deploy ขึ้น Production, ไม่มีการแตะต้องข้อมูลลูกค้าจริง, และไม่มีการส่งอีเมลจริง**
+
+### 9.1 สาเหตุที่แท้จริงของบั๊กอีเมลไม่อัปเดตหลังบันทึก (Root Cause Analysis)
+จากการตรวจสอบเส้นทางข้อมูลตั้งแต่ Input → บันทึก → ฐานข้อมูล → API Response → Modal State → Email Preview → Send Email พบสาเหตุ 3 ประการ:
+1. **Database Desynchronization (Split-brain ในฐานข้อมูล):**
+   - เมื่อผู้ใช้กดบันทึกข้อมูลภาษีผ่าน `PUT /api/bookings/:id/tax-invoice` ฝั่ง Backend ทำการอัปเดตเฉพาะตาราง `bookings.tax_email` แต่ **ไม่ได้อัปเดตตาราง `tax_invoices.tax_email`**
+   - เอกสารใบกำกับภาษีที่เคยอัปโหลดไว้ก่อนหน้าจึงยังคงจำค่าอีเมลเก่าของ snapshot ตอนอัปโหลดไว้
+2. **Backend Priority Inversion ใน Endpoint Preview และ Send:**
+   - ใน `email-preview` และ `send-email` Backend เคยประเมิน:
+     ```javascript
+     const recipientEmail = (invoice.tax_email || booking.tax_email || '').trim();
+     ```
+   - เมื่อ `invoice.tax_email` มีค่าเดิมอยู่ จึงถูกดึงมาใช้ก่อนเสมอ ทำให้ค่าใหม่ใน `booking.tax_email` ไม่มีผล
+3. **Frontend State Staleness & Cached Preview:**
+   - ฝั่ง Frontend ใน `TaxInvoiceManagementModal.jsx` ไม่ได้อัปเดตรายการ `invoices` หลังบันทึก และไม่ได้เคลียร์แคช `previewData` เก่า ทำให้ตัวอย่างอีเมลยังแสดงผลค่าเดิม
+
+### 9.2 การแก้ไขฝั่ง Backend (Server Express & Worker Parity)
+1. **Synchronize ตาราง `tax_invoices` ทันทีที่มีการแก้ไขข้อมูลภาษี:**
+   - ใน `PUT /api/bookings/:id/tax-invoice` เพิ่มคำสั่ง UPDATE ตาราง `tax_invoices` ทุกเรคคอร์ดของ booking นั้น ๆ ให้มีข้อมูล `tax_name`, `tax_id`, `tax_email`, `tax_address` ตรงกันกับข้อมูลล่าสุดเสมอ
+   - ส่งคืนรายการ `invoices` ที่อัปเดตแล้วกลับมาใน response ของ `PUT`
+2. **Authoritative Recipient Enforcement:**
+   - ปรับ `email-preview` และ `send-email` ให้ใช้ `(booking.tax_email || invoice.tax_email || '').trim()` เป็นค่าหลัก
+   - หากไม่มีอีเมลผู้รับ ให้ปฏิเสธด้วย HTTP 400 ชัดเจน: `"ยังไม่ได้ระบุอีเมลผู้รับในระบบ กรุณากรอกและบันทึกข้อมูลก่อนส่ง"` โดยไม่มีการ silent fallback ไปใช้อีเมลลูกค้าทั่วไป
+   - ใน `send-email` ตรวจสอบว่าหาก client ส่ง `recipient_email` มา ค่าต้องตรงกับอีเมลล่าสุดที่บันทึกไว้ในระบบเพื่อป้องกัน race condition
+3. **Parity สมบูรณ์ระหว่าง Express และ Cloudflare Worker:**
+   - นำการแก้ไขทั้งหมดไปประยุกต์ใช้ทั้งใน `backend/server.js` และ `backend/worker.js` อย่างเท่าเทียม 100%
+
+### 9.3 การปรับโฉมและสถาปัตยกรรม UI (POS Visual Design Language)
+ปรับปรุง `TaxInvoiceManagementModal.jsx` ให้เข้ากับธีมหลักของ Bwork-POS อย่างประณีต:
+1. **Color Palette & Visual Elements:**
+   - พื้นหลังสะอาดตา (`#ffffff`), แถบหัว/ท้าย (`#ffffff` / `#f8fafc`)
+   - สีหลัก Primary: Royal Blue (`#2563eb`)
+   - ตัวอักษรสีเข้มอ่านง่าย (`#0f172a` / `#64748b`)
+   - เส้นขอบเรียบเนียน (`#e2e8f0`) ยกเลิกกรอบซ้อนและเส้นประหนาที่รกตา
+2. **Header สวยงาม กะทัดรัด:**
+   - แสดงหัวข้อ "จัดการใบกำกับภาษี" พร้อมไอคอน POS
+   - Badge สถานะกะทัดรัด (ออกเอกสารแล้ว, รอออกเอกสาร, ยังไม่ระบุข้อมูล)
+   - ข้อมูลรหัสการจองและชื่อผู้จองแยกชั้นชัดเจน
+3. **โครงสร้าง Desktop (2 คอลัมน์สมดุล):**
+   - **คอลัมน์ซ้าย (ข้อมูลผู้เสียภาษีและวิธีจัดส่ง):**
+     - โหมดดูข้อมูล: แสดงสรุปเรียบร้อย พร้อมปุ่ม "คัดลอกข้อมูล" และ "แก้ไขข้อมูล"
+     - โหมดแก้ไข: ฟอร์มจัดระเบียบเรียบร้อย สวิตช์ประเภทบุคคล/นิติบุคคล และ สนง.ใหญ่/สาขา พร้อมปุ่ม "ยกเลิก" และ "บันทึกข้อมูล"
+   - **คอลัมน์ขวาบน (เอกสารใบกำกับภาษี):**
+     - แสดงรายการเอกสารใบกำกับภาษีที่แนบ
+     - **Active PDF Selector:** หากมีเอกสารหลายฉบับ ผู้ใช้สามารถคลิกเลือกเอกสารที่จะใช้ส่งหรือดูตัวอย่างได้ชัดเจน
+     - ส่วนแนบไฟล์แบบพับเก็บได้ (+ แนบเอกสาร) เพื่อไม่ให้เกะกะสายตา
+   - **คอลัมน์ขวาล่าง (การจัดส่งเอกสารทางอีเมล e-Tax):**
+     - แสดงอีเมลผู้รับและไฟล์ที่จะจัดส่งชัดเจน
+     - Badge สถานะการส่ง (ยังไม่ได้ส่ง, จำลองส่งแล้ว, Gmail รับคำขอแล้ว, ผลส่งไม่แน่นอน)
+     - ปุ่มหลัก: "ส่งอีเมล" (สีน้ำเงิน Royal Blue)
+     - ปุ่มรอง: "ดูตัวอย่างอีเมล"
+     - ตัวเลือกจำลองส่ง (Dry-run Simulation) ซ่อนในเมนูพับเก็บได้ เพื่อความปลอดภัยและเป็นระเบียบ
+4. **ความเข้ากันได้กับ Mobile 390px (Zero Horizontal Overflow):**
+   - ปรับ Grid ด้วย `minmax(min(100%, ...), 1fr)` ทำให้ทุกคอลัมน์เรียงต่อกันเป็น Single-column บนหน้าจอมือถืออย่างสวยงาม
+   - ตรวจวัดจริงด้วย Chrome CDP: `scrollWidth: 348px === clientWidth: 348px` **ไม่มีการล้นขอบแนวนอน 100%**
+   - Sticky Header และ Footer ใช้งานได้คล่องตัว ไม่ถูกบังหรือตัดทอน
+
+### 9.4 กลไกความปลอดภัยและ State Management ใหม่
+1. **Editing / Dirty Safety Lock:**
+   - ในขณะที่ผู้ใช้กำลังเปิดโหมดแก้ไขข้อมูล (`isEditingTaxInfo`) หรือข้อมูลในฟอร์มยังไม่ได้บันทึก:
+     - ปุ่ม "ส่งอีเมล" และ "ดูตัวอย่างอีเมล" จะถูกปิดใช้งาน (Disabled) ทันที
+     - กล่องข้อความแจ้งเตือนสีส้มจะปรากฏขึ้น: **"กรุณาบันทึกข้อมูลก่อนส่งอีเมล"** ป้องกันข้อผิดพลาดในการเผลอกดส่งค่าเก่าโดยไม่ตั้งใจ
+2. **Cancel Revert ปลอดภัย:**
+   - เมื่อกด "ยกเลิก" ค่าทั้งหมดในฟอร์มจะย้อนกลับไปเป็นค่าที่บันทึกไว้ล่าสุดทันที
+3. **Clearing Email Behavior:**
+   - หากผู้ใช้ลบอีเมลจนว่างเปล่าแล้วบันทึก ระบบจะบันทึกเป็นค่าว่าง ไม่มีการ silent fallback ไปใช้อีเมลติดต่ออื่น
+   - ส่วนจัดส่งอีเมลจะแสดงข้อความสีแดง: **"ยังไม่ได้ระบุอีเมลผู้รับ"** และปิดการทำงานของปุ่มส่ง/พรีวิวทันที
+4. **Active PDF Binding & Confirmation Safety:**
+   - ทั้งการกดดูตัวอย่าง (Preview) และการส่งอีเมล (Send) จะผูกกับ ID ของเอกสารที่เลือกอย่างเข้มงวด
+   - หากมีการเปลี่ยนอีเมลผู้รับหรือเปลี่ยนไฟล์เอกสารในขณะที่หน้าต่างยืนยันการส่งเปิดอยู่ หน้าต่างยืนยันจะปิดลงอัตโนมัติเพื่อบังคับให้ผู้ใช้ตรวจสอบใหม่
+
+### 9.5 ผลการทดสอบ Automated End-to-End Suite (Chrome CDP)
+ทดสอบผ่านสคริปต์อัตโนมัติ `scratch/test_tax_invoice_modal.cjs` บน Chrome จริงแบบ Headless:
+- **Test 1: Initial State & Display:** PASS — แสดงผลข้อมูลผู้เสียภาษี เอกสาร และอีเมลผู้รับถูกต้อง
+- **Test 2: Dirty State Safety Lock:** PASS — ขณะแก้ไขข้อมูล ฟอร์มปิดการทำงานของปุ่มส่ง/พรีวิว พร้อมแสดง "กรุณาบันทึกข้อมูลก่อนส่งอีเมล"
+- **Test 3: Cancel Revert:** PASS — กดยกเลิก ค่าย้อนกลับเป็นอีเมลเดิมทันที
+- **Test 4: Save & Real-time Update:** PASS — บันทึกอีเมลใหม่ ค่าอัปเดตทันทีทั้งในการ์ดข้อมูลภาษีและการ์ดจัดส่งโดยไม่ต้องรีเฟรชหน้าเว็บ
+- **Test 5: Email Preview with Updated Email:** PASS — ตัวอย่างอีเมลแสดง "ถึง: billing.updated.2026@bwork.com" ตรงตามค่าใหม่ล่าสุด
+- **Test 6: Dry-run Simulation Dispatch:** PASS — คำขอส่ง API ได้รับอีเมลใหม่และบันทึกลงใน `tax_invoices` สำเร็จ
+- **Test 7: Desktop Viewport (1280px):** PASS — สองคอลัมน์สวยงาม สอดคล้องกับ POS
+- **Test 8: Mobile Viewport (390px):** PASS — `scrollWidth: 348 === clientWidth: 348`, Zero horizontal overflow
+- **Test 9: Clear Email & No Fallback:** PASS — ลบอีเมลแล้วบันทึก ระบบแสดง "ยังไม่ได้ระบุอีเมลผู้รับ" และปิดการส่งถูกต้อง
+
+### 9.6 ภาพหลักฐานผลการทดสอบ (Visual Artifacts)
+- **Desktop Redesign (1280px):** `pos_tax_modal_desktop_redesign.png`
+- **Mobile Redesign (390px):** `pos_tax_modal_mobile_390_redesign.png`
+- **Email Preview with Updated Email:** `pos_tax_modal_preview_desktop.png`
+
+---
+
+## 10. ระบบรักษาความสอดคล้องของข้อมูลผู้รับและการส่งอีเมล (Recipient Truth & Safety Audit)
+
+> **Implementation Baseline:** Commit ต่อเนื่องจาก `146fd457`  
+> **Key Architecture Decisions:**
+> 1. ยึด `booking.tax_email` เป็น Single Source of Truth สำหรับผู้รับอีเมลใบกำกับภาษีเพียงแห่งเดียว
+> 2. ยกเลิกการสั่ง `UPDATE tax_invoices` ย้อนหลังเมื่อมีการแก้ไขข้อมูลผู้เสียภาษีของการจอง เพื่อรักษาประวัติเอกสารดั้งเดิม
+> 3. ผูกหน้าต่างยืนยันการส่ง (Confirmation Dialog) ด้วย Snapshot ข้อมูล และตรวจสอบความตรงกันที่ Backend ป้องกันการส่งผิดพลาด
+
+### 10.1 กำหนดแหล่งอีเมลผู้รับเอกสาร (Recipient Single Source of Truth)
+- **ปัญหาเดิม:** โค้ดเดิมมีการใช้ `booking.tax_email || invoice.tax_email` ใน endpoint `email-preview` และ `send-email` ทำให้หากผู้ใช้ล้างอีเมลในฟอร์มแล้วบันทึก ระบบกลับย้อนไปดึงอีเมลเก่าจาก `invoice.tax_email` มาใช้โดยไม่ตั้งใจ
+- **การแก้ไข:**
+  - กำหนดให้ `booking.tax_email` เป็นแหล่งข้อมูลผู้รับเอกสารเพียงหนึ่งเดียว ทั้งในฝั่ง Express (`server.js`) และ Cloudflare Worker (`worker.js`):
+    ```javascript
+    const recipientEmail = (booking.tax_email || '').trim();
+    if (!recipientEmail) {
+      return res.status(400).json({ error: 'ยังไม่ได้ระบุอีเมลผู้รับ กรุณากรอกและบันทึกอีเมลในข้อมูลใบกำกับภาษีก่อนดูตัวอย่าง' });
+    }
+    ```
+  - หาก `booking.tax_email` เป็นค่าว่าง ระบบจะถือว่าไม่มีผู้รับ และปฏิเสธคำขอด้วย **HTTP 400** ทันทีทั้ง Preview และ Send โดยไม่มีการ fallback ไปใช้ค่าเก่าเด็ดขาด
+
+### 10.2 การยกเลิกและจำกัดขอบเขตการแก้ไขตาราง `tax_invoices`
+- **ปัญหาเดิม:** ใน `PUT /api/bookings/:id/tax-invoice` มีคำสั่ง `UPDATE tax_invoices SET tax_name = ?, tax_id = ?, ... WHERE booking_id = ?` ซึ่งทำให้เอกสารใบกำกับภาษีที่เคยออกไปแล้วในอดีตถูกแก้ไขย้อนหลังโดยไม่ถูกต้อง
+- **การแก้ไข:**
+  - ตัดบล็อกคำสั่ง `UPDATE tax_invoices` ออกจาก `PUT /api/bookings/:id/tax-invoice` ทั้งใน Express และ Cloudflare Worker
+  - แยกข้อมูลเอกสารภาษี (Document Tax Metadata), ข้อมูลผู้รับปัจจุบัน (`booking.tax_email`) และประวัติการจัดส่งในอดีต (`tax_invoices.email_recipient`, `tax_invoices.email_status`, `tax_invoices.email_sent_at`, และ `tax_invoice_email_logs`) ออกจากกันอย่างเด็ดขาด
+  - การแก้ไขข้อมูลผู้เสียภาษีของการจองจะไม่แตะต้องหรือแก้ไขข้อมูลในตาราง `tax_invoices` ย้อนหลัง
+  - การอัปเดตสถานะการจัดส่งจะเกิดขึ้นเฉพาะเมื่อมีการส่งจริงผ่าน `POST /api/bookings/:id/tax-invoice/send-email` และมีผลเฉพาะแถวของเอกสาร ID ที่ถูกส่งเท่านั้น
+
+### 10.3 กลไก Snapshot และการตรวจสอบความถูกต้องของหน้าต่างยืนยัน (Confirmation Safety Binding)
+1. **Frontend Snapshot Binding:**
+   - เมื่อกดเปิดหน้าต่างยืนยันส่งจริง ระบบจะบันทึกสถานะ snapshot:
+     ```javascript
+     setConfirmedSnapshot({
+       bookingId: bookingId,
+       invoiceId: activePdfInvoice.id,
+       recipientEmail: recipientEmail,
+       invoiceNumber: activePdfInvoice.invoice_number || ('INV-' + bookingId),
+       fileName: activePdfInvoice.file_name || 'Tax_Invoice.pdf'
+     });
+     ```
+   - หน้าต่างยืนยันจะแสดงผลตาม `confirmedSnapshot` โดยตรง
+   - มี `useEffect` ติดตามความเปลี่ยนแปลง: หากมีการเปลี่ยน `bookingId`, สลับเอกสาร PDF (`activePdfInvoice.id`), หรือเปลี่ยน `recipientEmail` ในระหว่างที่หน้าต่างยืนยันเปิดอยู่ หน้าต่างยืนยันจะปิดตัวลงทันที และล้าง snapshot เพื่อบังคับให้ผู้ใช้ตรวจสอบใหม่
+2. **Backend Authoritative Enforcement:**
+   - ฝั่ง Frontend ส่ง `recipient_email` ที่ผ่านการยืนยันมาใน payload
+   - ฝั่ง Backend (Express & Worker) ตรวจสอบ:
+     ```javascript
+     if (!recipient_email || recipient_email.trim().toLowerCase() !== authoritativeEmail.toLowerCase()) {
+       return res.status(400).json({
+         error: `อีเมลผู้รับที่ยืนยัน (${recipient_email || 'ไม่ระบุ'}) ไม่ตรงกับข้อมูลล่าสุดที่บันทึกไว้ในระบบ (${authoritativeEmail}) กรุณาตรวจสอบและยืนยันใหม่`
+       });
+     }
+     ```
+   - ป้องกันช่องโหว่การเปลี่ยนอีเมลหรือการเรียก API สวนทาง (Race Conditions) โดยไม่อนุญาตให้ส่งไปยังอีเมลที่ไม่ตรงกับฐานข้อมูลเด็ดขาด
+3. **ป้องกัน Out-of-order Response:**
+   - ใน `useEffect` เมื่อมีการสลับ `bookingId` มีการใช้แฟล็ก `isCancelled` เพื่อตัดทอนการตอบกลับที่ล่าช้าของ booking ก่อนหน้า ป้องกันข้อมูลข้ามกัน
+
+### 10.4 ปรับชื่อส่วนการจัดส่งเอกสารบน UI
+- เปลี่ยนชื่อหัวข้อการ์ดจัดส่งเอกสารใน `TaxInvoiceManagementModal.jsx`:
+  - จากเดิม: `การจัดส่งเอกสารทางอีเมล (e-Tax)`
+  - ปรับเป็น: **`ส่งเอกสารทางอีเมล`** ให้กระชับ สุภาพ และตรงตามคู่มือ UI ของระบบ
+
+### 10.5 ผลการทดสอบ (Verification & Test Results)
+1. **Backend Unit & Safety Suite (`backend/tests/taxInvoiceEmailDryRun.test.cjs`):**
+   - **13/13 PASS**
+2. **Comprehensive Strict Rules Integration Suite (`scratch/test_strict_tax_invoice_rules.cjs`):**
+   - **Suite 1: Empty booking.tax_email + stale invoice.tax_email**
+     - Preview API: HTTP 400 Bad Request (`ยังไม่ได้ระบุอีเมลผู้รับ...`) PASS
+     - Send API: HTTP 400 Bad Request (`ยังไม่ได้ระบุอีเมลผู้รับในระบบ...`) PASS
+     - ไม่มีการ fallback ใช้อีเมลเก่าเด็ดขาด PASS
+   - **Suite 2: Edit recipient A -> B**
+     - บันทึกอีเมล B: สำเร็จ
+     - Preview API: แสดง recipient email เป็น B PASS
+     - Confirmation Snapshot: แสดง recipient email เป็น B PASS
+     - Dry-run Send API: ได้รับ B และตอบกลับสำเร็จ PASS
+   - **Suite 3: Past history preservation**
+     - ตรวจสอบ `tax_invoices` ของเอกสารฉบับเดิมหลังแก้ไขข้อมูลการจอง
+     - `email_recipient`, `email_status`, `tax_name`, `tax_id` เดิมคงอยู่ครบถ้วน ไม่ถูกเขียนทับย้อนหลัง PASS
+   - **Suite 4: Backend mismatch validation**
+     - ส่ง `recipient_email: "stale.client@company.com"` ขณะที่ระบบบันทึก B: Backend ตอบกลับ HTTP 400 Mismatch ชัดเจน PASS
+     - ส่งคำขอโดยไม่แนบ `recipient_email`: Backend ตอบกลับ HTTP 400 ทันที PASS
+   - **Suite 5: Status lock against overwrite**
+     - รายการสถานะ `gmail_accepted`: ปฏิเสธด้วย HTTP 409 Conflict PASS
+     - รายการสถานะ `uncertain`: ปฏิเสธด้วย HTTP 409 Conflict PASS
+     - ไม่สามารถส่งซ้ำหรือเขียนทับด้วย Dry-run ได้ PASS
+   - **Suite 6: Browser UI CDP & Responsive Layout**
+     - ส่วนจัดส่งเอกสารแสดงชื่อ: **"ส่งเอกสารทางอีเมล"** PASS
+     - Desktop Viewport (1280px): แสดงผล 2 คอลัมน์สมบูรณ์ PASS
+     - Mobile Viewport (390px): `scrollWidth: 348 === clientWidth: 348` (Zero horizontal overflow) PASS
+
+### 10.6 รายการไฟล์และแผนการออกแพตช์เฉพาะส่วน (Selective Release Alignment)
+- **เป้าหมาย Release Branch:** `release/selective-gmail-tax-invoice-20261105` (Baseline commit: `cd9a4b44`)
+- **ชุดไฟล์ที่เปลี่ยนแปลงสำหรับการ Deploy (Selective Patch Files):**
+  1. `backend/server.js` (Express backend logic)
+  2. `backend/worker.js` (Cloudflare Worker logic)
+  3. `frontend/src/components/TaxInvoiceManagementModal.jsx` (UI logic & snapshot safety)
+  4. `backend/public/index.html` และ `backend/public/assets/index-BuMrcHJI.js` (Compiled static frontend bundle)
+- **เงื่อนไขความปลอดภัยในการ Deploy Production:**
+  - สวิตช์ `GMAIL_LIVE_DISPATCH_ENABLED` คงค่า `"false"` ไว้ตลอดเวลา ไม่เปิดส่งจริงในรอบนี้
+  - ไม่มีการเปลี่ยนแปลง Database Schema หรือ Migration ไฟล์ D1 ใด ๆ
+  - ไม่มีผลกระทบต่องานฟีเจอร์ RC Customer Type ที่พักไว้
+
+
+---
+
+## 11. การ Deploy หน้า Tax Invoice Redesign และ Recipient Safety ขึ้น Production แบบ Selective
+
+> **วัน-เวลาที่ดำเนินการ:** 5 พฤศจิกายน 2026 เวลา 22:11 น. (15:11 UTC)  
+> **Development Commits:** `146fd457` และ `1dc8537d`  
+> **Release Branch:** `release/selective-gmail-tax-invoice-20261105`  
+> **Release Baseline:** `cd9a4b44`  
+> **Release Commits Added:** `87b18e56`, `9a9b0994`, `a361c642`, `4eb96a95`
+
+### 11.1 รายละเอียดการ Deploy บน Production Environment
+1. **Production POS Pages (`bwork-pos`):**
+   - **Deployment ID ใหม่:** `b26e1616-1004-4d2c-b859-a816a1153d72`
+   - **Deployment ID เดิมก่อนหน้า:** `97350101-5445-40a0-a01d-b5cb331c1d2e`
+   - **Target Branch / Environment:** `main` (Production)
+   - **Live Production URLs:**
+     - https://bwork-pos.pages.dev
+     - https://b26e1616.bwork-pos.pages.dev
+   - **Fresh Production Frontend Bundle (Built from Release Branch):**
+     - JS Bundle: `dist/assets/index-B4PyxfGB.js` (2,014.86 KB / gzip: 534.43 KB)
+     - CSS Bundle: `dist/assets/index-CdfFESVk.css` (204.01 KB / gzip: 31.66 KB)
+     - ยืนยัน: Build สดใหม่จาก `release/selective-gmail-tax-invoice-20261105` ไม่ได้ใช้ bundle เก่าจาก Development
+2. **Production Cloudflare Worker (`bwork-pos-api`):**
+   - **Version ID ใหม่:** `a68b57b8-e161-47d1-86aa-19a7cbd097e1`
+   - **Version ID เดิมก่อนหน้า:** `a34e371b-bd74-4364-b84c-4df4099dc59b`
+   - **Live Service URL:** `https://bwork-pos-api.ohnatza74185-ky.workers.dev`
+   - **Active Cron Triggers:**
+     - `* * * * *` (Auto-cancel expired bookings ทุก 1 นาที)
+     - `0 17 * * *` (Daily cloud backup เที่ยงคืนเวลาไทย)
+
+### 11.2 การรักษาค่าสวิตช์ความปลอดภัยและ Secrets (Pre/Post Deploy Verified)
+- ตรวจสอบสถานะจริงบน Worker ก่อน Deploy และรักษาสภาพเดิม 100% หลัง Deploy:
+  - `GMAIL_LIVE_DISPATCH_ENABLED`: **`true`** (คงสถานะเดิมตามค่าบน Worker ก่อน Deploy โดยไม่เปิด/ปิดเอง)
+  - `GMAIL_TEST_DISPATCH_ENABLED`: **`false`** (สวิตช์ทดสอบปิดสนิท)
+  - `GMAIL_SENDER_NAME`: **`บริษัท บิลท์ ฮาร์ท จำกัด`** (คงการเข้ารหัส RFC 2047)
+  - `GMAIL_USER_EMAIL`: **`coworkings.bwork@gmail.com`**
+  - `GMAIL_REPLY_TO`: **`coworkings.bwork@gmail.com`**
+  - **Secrets ครบถ้วน:** `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `WIFI_CREDENTIAL_ENCRYPTION_KEY`
+  - **Bindings ครบถ้วน:** `DB` (D1 Database `bworkpos_db`), `BUCKET` (R2 Bucket `bwork-uploads`)
+
+### 11.3 ผลการตรวจ Production แบบอ่านอย่างเดียว (Read-Only Verification)
+- **CDN Bundle Verification:** ตรวจสอบผ่าน HTTP fetch ไปยัง `https://bwork-pos.pages.dev/assets/index-B4PyxfGB.js` โหลดสำเร็จ HTTP 200 พบข้อความ `"ส่งเอกสารทางอีเมล"` ครบถ้วน
+- **Worker Health & Auth:** เข้าสู่ระบบ Admin ผ่าน `POST /api/auth/login` ได้รับ JWT ปกติ
+- **Tax Invoice Endpoint:** เรียก `GET /api/bookings/47/tax-invoice` ได้รับ HTTP 200 ข้อมูลเอกสารครบถ้วน
+- **Email Preview Endpoint:** เรียก `GET /api/bookings/47/tax-invoice/email-preview` ได้รับ HTTP 200 ทำงานได้ถูกต้อง
+- **UI Inspection ผ่าน Headless Chrome CDP บน Live Production:**
+  - เข้าสู่หน้าประวัติการจอง (History) และเปิด Modal ใบกำกับภาษีของรายการจริงได้สำเร็จ
+  - หัวข้อส่วนจัดส่งเอกสารแสดงชื่อ: **"ส่งเอกสารทางอีเมล"** ตามที่กำหนด
+  - Desktop (1280px): โครงสร้าง 2 คอลัมน์ สี Royal Blue สอดคล้องกับ POS Palette สวยงาม
+  - Mobile (390px): ตรวจวัดจริง `scrollW: 390 === clientW: 390` (Zero horizontal overflow ไม่มีส่วนใดล้นจอ)
+  - Console Errors: **0 รายการ**
+- **Read-Only Safety Guarantee:**
+  - ไม่มีการกดปุ่มบันทึกข้อมูลภาษีของลูกค้าบน Production
+  - ไม่มีการกดปุ่มจำลองส่ง (Dry-run) บนรายการของลูกค้าจริง
+  - ไม่มีการเรียกคำขอส่งอีเมลจริงไปยังลูกค้าหรือ LINE
+  - ไม่มีการรันคำสั่งแก้ไขข้อมูลหรือ Migration บนฐานข้อมูล D1
+
+### 11.4 แผนและคำสั่ง Rollback ฉุกเฉิน (Emergency Rollback Runbook)
+1. **Rollback Production Worker กลับเวอร์ชันก่อนหน้าทันที:**
+   ```bash
+   npx wrangler rollback a34e371b-bd74-4364-b84c-4df4099dc59b --config backend/wrangler.toml
+   ```
+2. **Rollback Production POS Pages กลับเวอร์ชันก่อนหน้าทันที:**
+   ```bash
+   npx wrangler pages deployment rollback 97350101-5445-40a0-a01d-b5cb331c1d2e --project-name bwork-pos
+   ```
+3. **Database Integrity:**
+   ไม่มีการเปลี่ยนแปลง Database Schema หรือรัน D1 Migration ในรอบนี้ ฐานข้อมูล Production คงเดิม 100%
+
+### 11.5 สรุปไฟล์หลักฐานการตรวจสอบ (Artifacts)
+- `pos_production_live_desktop.png`: ภาพหน้าจอรวม POS บน Production Live (Desktop 1280px)
+- `pos_production_live_mobile_390.png`: ภาพหน้าจอ POS บน Production Live (Mobile 390px)
+- `pos_production_tax_modal_desktop.png`: ภาพหน้าจอเปิด Modal ใบกำกับภาษีใหม่จริงบน Production (Desktop 1280px)
+- `pos_production_tax_modal_mobile_390.png`: ภาพหน้าจอเปิด Modal ใบกำกับภาษีใหม่จริงบน Production (Mobile 390px)
+
+---
+
+## 12. ผลการ Deploy BWORK Booking Tax Invoice Hotfix ขึ้น Production (2026-11-06)
+
+### 12.1 ปัญหาเดิมและผลการวิเคราะห์สาเหตุ (Root Cause Analysis)
 - **อาการบั๊ก:** ลูกค้าติ๊กเลือก "ต้องการขอใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบ" บนหน้าเว็บจอง (`bwork-booking.pages.dev`) แล้วระบบขึ้นข้อความแจ้งเตือนว่า *"กรุณาระบุประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)"* แต่ไม่มีช่องหรือปุ่มตัวเลือกประเภทผู้เสียภาษีให้กดเลือก ทำให้ไม่สามารถดำเนินการต่อได้
 - **สาเหตุทางระบบ (Root Cause):**
   1. การ Release ระบบส่งใบกำกับภาษี Gmail ก่อนหน้านี้ เป็นการปล่อยเฉพาะ Worker API (`bwork-pos-api`) และ POS Pages (`bwork-pos`) โดยที่ Booking Pages (`bwork-booking`) ยังคงอยู่ที่ deployment เดิม (`c0211db4`) ซึ่ง Bundle เดิม (`/assets/index-DoifLwrz.js`) ยังไม่มีฟิลด์ตัวเลือก `tax_payer_type`
   2. Worker API บน Production มี validation บังคับว่าหาก `tax_invoice_required == 1` ค่า `tax_payer_type` ต้องเป็น `'individual'` หรือ `'corporate'` เท่านั้น
   3. เมื่อหน้าเว็บรุ่นเก่าส่ง `tax_invoice_required: 1` โดยไม่มี `tax_payer_type` ทาง Worker จึงตอบกลับ `HTTP 400 Bad Request` ทำให้หน้าเว็บแสดงข้อความแจ้งเตือนดังกล่าว
 
-### 9.2 การตรวจยืนยัน API Contract บน Production Worker (`bwork-pos-api`) สด
+### 12.2 การตรวจยืนยัน API Contract บน Production Worker (`bwork-pos-api`) สด
 - **Active Worker Version ID:** `a68b57b8-e161-47d1-86aa-19a7cbd097e1` (รับทราฟฟิก 100%)
 - **ผลการยิง Probe ตรวจสอบ Contract จริง:**
   - `tax_invoice_required: 1` ไม่ระบุ `tax_payer_type` $\rightarrow$ ตอบ `400: "กรุณาระบุประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)"`
@@ -384,7 +697,7 @@
   - `tax_invoice_required: 0` ไม่ส่ง `tax_payer_type` $\rightarrow$ ข้ามการตรวจประเภทผู้เสียภาษี 100% (เข้าสู่การตรวจห้อง ไม่บังคับฟิลด์นี้)
   - **ยืนยัน: API Contract ของ Worker จริงตรงกับข้อกำหนดและ Hotfix 100% ไม่มีความขัดแย้ง**
 
-### 9.3 ข้อมูลการ Release & Git Traceability
+### 12.3 ข้อมูลการ Release & Git Traceability
 - **Release Repository:** `D:\Project BL\Bwork-POS-Release`
 - **Release Branch:** `release/selective-gmail-tax-invoice-20261105`
 - **Release Commit SHA:** `bff68d107b87231ac8973a8c87cd2b661b09d6ad`
@@ -392,14 +705,14 @@
 - **ขอบเขตการแก้ไข:** แก้ไขเฉพาะไฟล์เดียว [`booking-app/src/pages/BookingFormPage.jsx`](file:///D:/Project%20BL/Bwork-POS-Development/booking-app/src/pages/BookingFormPage.jsx)
 - **การแยกขอบเขต Selective Scope:** ปลอดจาก unreleased features (ไม่มีโค้ด Support Tickets หรือ CRM RC ปะปน 100%)
 
-### 9.4 ข้อมูล Deployment IDs บน Cloudflare Pages (`bwork-booking`)
+### 12.4 ข้อมูล Deployment IDs บน Cloudflare Pages (`bwork-booking`)
 - **Previous Deployment ID (สำหรับ Rollback):** `c0211db4-1ccf-4db2-9ac8-a3697703f79a`
 - **Deployed Deployment ID (Active ล่าสุด):** `3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a`
 - **Production URL:** https://bwork-booking.pages.dev
 - **Preview URL:** https://3ef05797.bwork-booking.pages.dev
 - **ชื่อ Bundle ที่โหลดจริงบน Production:** `/assets/index-DEouKUNO.js` (ขนาด 501,318 bytes)
 
-### 9.5 ผลการทดสอบสดบน Production หลัง Deploy (Real Browser Mobile 390px)
+### 12.5 ผลการทดสอบสดบน Production หลัง Deploy (Real Browser Mobile 390px)
 - **ตรวจสอบทางเทคนิค (Live Chrome CDP at 390x844):**
   1. **เมื่อเปิดหน้าเว็บและติ๊กขอใบกำกับภาษี:**
      - แสดงแถวตัวเลือกประเภทผู้เสียภาษี `#btn-tax-individual` ("บุคคลธรรมดา") และ `#btn-tax-corporate` ("นิติบุคคล") วางก่อนช่องกรอกชื่อ
@@ -417,7 +730,7 @@
      - **หยุดการทำงานก่อนกดปุ่ม "ถัดไป" บน Production อย่างเคร่งครัด**
      - ไม่มีการสร้างรายการจองจริง ไม่มีการบันทึกธุรกรรมการเงิน และไม่มีการเขียนฐานข้อมูล Production ใด ๆ ทั้งสิ้น (ยืนยันขั้นตอนส่งฟอร์มผ่าน Mock UAT Suite ครบทุกเคสแล้ว)
 
-### 9.6 สถานะสวิตช์ความปลอดภัยของระบบโดยรวม
+### 12.6 สถานะสวิตช์ความปลอดภัยของระบบโดยรวม
 - **Worker `bwork-pos-api`:** คงเดิมที่ Version ID `a68b57b8-e161-47d1-86aa-19a7cbd097e1`
 - **POS Pages `bwork-pos`:** คงเดิมที่ Deployment ID `d4598e58-92e9-4476-ac7c-47bdae0ec14a`
 - **D1 Database `bworkpos_db`:** ไม่มีการรัน migration เพิ่มเติม
