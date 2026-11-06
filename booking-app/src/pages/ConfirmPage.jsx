@@ -1120,7 +1120,7 @@ export default function ConfirmPage() {
                 <img
                   src={qrImageSrc}
                   alt="B WORK Payment QR Code"
-                  style={{ width: '100%', height: 'auto', display: 'block', borderRadius: '10px' }}
+                  style={{ width: '100%', height: 'auto', display: 'block', borderRadius: '8px', objectFit: 'contain' }}
                 />
               </div>
 
