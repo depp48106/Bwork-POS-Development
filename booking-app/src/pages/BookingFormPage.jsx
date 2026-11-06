@@ -29,6 +29,9 @@ export default function BookingFormPage() {
 
   // Tax Invoice State
   const [needTaxInvoice, setNeedTaxInvoice] = useState(false);
+  const [taxPayerType, setTaxPayerType] = useState(''); // '' | 'individual' | 'corporate' (no default value)
+  const [taxBranchType, setTaxBranchType] = useState('head'); // 'head' | 'branch'
+  const [taxBranchNumber, setTaxBranchNumber] = useState('');
   const [taxName, setTaxName] = useState('');
   const [taxAddress, setTaxAddress] = useState('');
   const [taxId, setTaxId] = useState('');
@@ -41,6 +44,9 @@ export default function BookingFormPage() {
 
   // Load payload and LIFF profile from location.state or sessionStorage / localStorage
   useEffect(() => {
+    let parsed = null;
+    let savedLineId = '';
+
     // 1. Prefer React Router in-memory state (immune to storage quota or restrictions)
     if (location.state && location.state.room_id) {
       setBookingData(location.state);
@@ -48,7 +54,6 @@ export default function BookingFormPage() {
         setAttendees(String(location.state.guests));
       }
     } else {
-      let parsed = null;
       try {
         const raw = typeof window !== 'undefined' ? sessionStorage.getItem('current_booking_payload') : null;
         if (raw) parsed = JSON.parse(raw);
@@ -68,7 +73,7 @@ export default function BookingFormPage() {
 
     // Check LINE LIFF Profile
     try {
-      const savedLineId = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id')) : '') || '';
+      savedLineId = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id')) : '') || '';
       const savedLineName = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_name') || localStorage.getItem('line_user_name')) : '') || '';
       const savedLinePic = (typeof window !== 'undefined' ? (sessionStorage.getItem('line_user_pic') || localStorage.getItem('line_user_pic')) : '') || '';
 
@@ -81,7 +86,91 @@ export default function BookingFormPage() {
         }
       }
     } catch (e) {}
+
+    // Restore scoped form draft (bound to user and room item, prevent cross-account leak)
+    try {
+      if (typeof window !== 'undefined') {
+        const activeUserId = savedLineId || 'guest';
+        const activeRoomId = (location.state && location.state.room_id) ? location.state.room_id : (parsed ? parsed.room_id : 'any');
+        const scopedKey = `bwork_draft_${activeUserId}_${activeRoomId}`;
+
+        let draftRaw = sessionStorage.getItem(scopedKey);
+        if (!draftRaw) {
+          draftRaw = sessionStorage.getItem('bwork_booking_form_draft');
+        }
+
+        if (draftRaw) {
+          const draft = JSON.parse(draftRaw);
+          // STRICT SECURITY GATE: If draft belongs to a different LINE user, NEVER restore!
+          if (draft._owner_id && draft._owner_id !== activeUserId && activeUserId !== 'guest') {
+            console.warn('[Security] Draft belongs to a different user, discarding.');
+            sessionStorage.removeItem(scopedKey);
+            sessionStorage.removeItem('bwork_booking_form_draft');
+          } else {
+            if (draft.name) setName(draft.name);
+            if (draft.contact) setContact(draft.contact);
+            if (draft.email) setEmail(draft.email);
+            if (draft.company) setCompany(draft.company);
+            if (draft.notes) setNotes(draft.notes);
+            if (draft.attendees) setAttendees(draft.attendees);
+
+            if (draft.needTaxInvoice !== undefined) setNeedTaxInvoice(draft.needTaxInvoice);
+            if (draft.taxPayerType) setTaxPayerType(draft.taxPayerType);
+            if (draft.taxBranchType) setTaxBranchType(draft.taxBranchType);
+            if (draft.taxBranchNumber) setTaxBranchNumber(draft.taxBranchNumber);
+            if (draft.taxName) setTaxName(draft.taxName);
+            if (draft.taxAddress) setTaxAddress(draft.taxAddress);
+            if (draft.taxId) setTaxId(draft.taxId);
+            if (draft.taxPhone) setTaxPhone(draft.taxPhone);
+            if (draft.taxDeliveryMethod) setTaxDeliveryMethod(draft.taxDeliveryMethod);
+            if (draft.taxPostalAddress) setTaxPostalAddress(draft.taxPostalAddress);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Storage] Could not restore form draft:', e);
+    }
   }, []);
+
+  // Auto-save form draft scoped to user and room item (no tokens or slip files stored)
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const activeUserId = lineUserId || (sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id')) || 'guest';
+        const activeRoomId = bookingData?.room_id || bookingData?.room?.id || 'any';
+        const scopedKey = `bwork_draft_${activeUserId}_${activeRoomId}`;
+
+        const draft = {
+          _owner_id: activeUserId,
+          _room_id: activeRoomId,
+          _saved_at: Date.now(),
+          name,
+          contact,
+          email,
+          company,
+          notes,
+          attendees,
+          needTaxInvoice,
+          taxPayerType,
+          taxBranchType,
+          taxBranchNumber,
+          taxName,
+          taxAddress,
+          taxId,
+          taxPhone,
+          taxDeliveryMethod,
+          taxPostalAddress
+        };
+        sessionStorage.setItem(scopedKey, JSON.stringify(draft));
+        sessionStorage.setItem('bwork_booking_form_draft', JSON.stringify(draft));
+      }
+    } catch (e) {}
+  }, [
+    lineUserId, bookingData?.room_id,
+    name, contact, email, company, notes, attendees,
+    needTaxInvoice, taxPayerType, taxBranchType, taxBranchNumber,
+    taxName, taxAddress, taxId, taxPhone, taxDeliveryMethod, taxPostalAddress
+  ]);
 
   const handleLineLogin = () => {
     try {
@@ -134,16 +223,35 @@ export default function BookingFormPage() {
     }
 
     if (needTaxInvoice) {
+      if (taxPayerType !== 'individual' && taxPayerType !== 'corporate') {
+        setError('กรุณาเลือกประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)');
+        if (typeof document !== 'undefined') {
+          const el = document.getElementById('tax-payer-type-container');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+          const btn = document.getElementById('btn-tax-individual');
+          if (btn) {
+            btn.focus();
+          }
+        }
+        return;
+      }
       if (!taxName.trim()) {
-        setError('กรุณาระบุชื่อผู้เสียภาษี / ชื่อบริษัท');
+        setError(taxPayerType === 'individual' ? 'กรุณาระบุชื่อ–นามสกุล' : 'กรุณาระบุชื่อนิติบุคคล');
+        return;
+      }
+      const cleanTaxId = taxId.replace(/[-\s]/g, '').trim();
+      if (!cleanTaxId || cleanTaxId.length !== 13 || !/^\d{13}$/.test(cleanTaxId)) {
+        setError('กรุณาระบุเลขประจำตัวผู้เสียภาษี 13 หลัก');
+        return;
+      }
+      if (taxPayerType === 'corporate' && taxBranchType === 'branch' && !taxBranchNumber.trim()) {
+        setError('กรุณาระบุเลขที่สาขา');
         return;
       }
       if (!taxAddress.trim()) {
-        setError('กรุณาระบุที่อยู่ตาม ภ.พ.20');
-        return;
-      }
-      if (!taxId.trim()) {
-        setError('กรุณาระบุเลขประจำตัวผู้เสียภาษี 13 หลัก');
+        setError(taxPayerType === 'individual' ? 'กรุณาระบุที่อยู่สำหรับออกใบกำกับภาษี' : 'กรุณาระบุที่อยู่จดทะเบียน');
         return;
       }
       if (!taxPhone.trim() && !contact.trim()) {
@@ -179,9 +287,12 @@ export default function BookingFormPage() {
         booking_channel: 'line_oa',
         customer_type: 'general',
         tax_invoice_required: needTaxInvoice ? 1 : 0,
+        tax_payer_type: needTaxInvoice ? taxPayerType : null,
         tax_name: needTaxInvoice ? taxName.trim() : null,
+        tax_id: needTaxInvoice ? taxId.replace(/[-\s]/g, '').trim() : null,
+        tax_branch_type: needTaxInvoice && taxPayerType === 'corporate' ? taxBranchType : null,
+        tax_branch_number: needTaxInvoice && taxPayerType === 'corporate' && taxBranchType === 'branch' ? taxBranchNumber.trim() : null,
         tax_address: needTaxInvoice ? taxAddress.trim() : null,
-        tax_id: needTaxInvoice ? taxId.trim() : null,
         tax_phone: needTaxInvoice ? (taxPhone.trim() || contact.trim()) : null,
         tax_delivery_method: needTaxInvoice ? taxDeliveryMethod : null,
         tax_postal_address: needTaxInvoice && taxDeliveryMethod === 'postal' ? taxPostalAddress.trim() : null
@@ -247,6 +358,10 @@ export default function BookingFormPage() {
         // Storage operations MUST NEVER throw uncaught exceptions or block navigation to payment.
         try {
           sessionStorage.setItem('completed_booking_result', JSON.stringify(completedResult));
+          sessionStorage.removeItem('bwork_booking_form_draft');
+          const activeUserId = lineUserId || 'guest';
+          const activeRoomId = bookingData?.room_id || 'any';
+          sessionStorage.removeItem(`bwork_draft_${activeUserId}_${activeRoomId}`);
         } catch (storageErr) {
           console.warn('[Storage] sessionStorage completed_booking_result failed (non-blocking):', storageErr);
         }
@@ -437,7 +552,7 @@ export default function BookingFormPage() {
             )}
           </div>
 
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <form onSubmit={handleSubmit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {/* Full Name */}
             <div>
               <label className="form-label">
@@ -536,10 +651,7 @@ export default function BookingFormPage() {
                   type="text"
                   placeholder="ชื่อหน่วยงาน / บริษัท"
                   value={company}
-                  onChange={e => {
-                    setCompany(e.target.value);
-                    if (!taxName) setTaxName(e.target.value);
-                  }}
+                  onChange={e => setCompany(e.target.value)}
                   className="form-input"
                 />
               </div>
@@ -568,6 +680,7 @@ export default function BookingFormPage() {
               transition: 'all 0.2s ease'
             }}>
               <div 
+                id="tax-invoice-accordion-toggle"
                 onClick={() => setNeedTaxInvoice(!needTaxInvoice)}
                 style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none' }}
               >
@@ -587,16 +700,106 @@ export default function BookingFormPage() {
               </div>
 
               {needTaxInvoice && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '14px', paddingTop: '14px', borderTop: '1px solid var(--border)' }}>
-                  {/* 1. Tax Name / Company */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px', paddingTop: '14px', borderTop: '1px solid var(--border)' }}>
+                  {/* Entity Type Selector (บุคคลธรรมดา / นิติบุคคล) */}
+                  <div
+                    id="tax-payer-type-container"
+                    tabIndex="-1"
+                    style={{
+                      borderRadius: '12px',
+                      padding: (error && (!taxPayerType || (taxPayerType !== 'individual' && taxPayerType !== 'corporate'))) ? '10px' : '0px',
+                      border: (error && (!taxPayerType || (taxPayerType !== 'individual' && taxPayerType !== 'corporate'))) ? '2px solid var(--danger)' : '2px solid transparent',
+                      backgroundColor: (error && (!taxPayerType || (taxPayerType !== 'individual' && taxPayerType !== 'corporate'))) ? 'rgba(239, 68, 68, 0.05)' : 'transparent',
+                      transition: 'all 0.2s ease',
+                      outline: 'none'
+                    }}
+                  >
+                    <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block' }}>
+                      ประเภทผู้เสียภาษี <span style={{ color: 'var(--danger)' }}>*</span>
+                    </label>
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(2, 1fr)',
+                      gap: '8px',
+                      backgroundColor: '#f1f5f9',
+                      padding: '4px',
+                      borderRadius: '12px'
+                    }}>
+                      <button
+                        type="button"
+                        id="btn-tax-individual"
+                        onClick={() => {
+                          setTaxPayerType('individual');
+                          if (error && error.includes('ประเภทผู้เสียภาษี')) setError('');
+                        }}
+                        style={{
+                          padding: '10px 8px',
+                          minHeight: '44px',
+                          borderRadius: '9px',
+                          border: taxPayerType === 'individual' ? '1.5px solid var(--primary)' : '1px solid transparent',
+                          backgroundColor: taxPayerType === 'individual' ? '#ffffff' : 'transparent',
+                          color: taxPayerType === 'individual' ? 'var(--primary)' : 'var(--text-muted)',
+                          fontWeight: taxPayerType === 'individual' ? 800 : 600,
+                          fontSize: '0.84rem',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                          boxShadow: taxPayerType === 'individual' ? '0 2px 8px rgba(37,99,235,0.12)' : 'none',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <User size={16} />
+                        <span>บุคคลธรรมดา</span>
+                      </button>
+                      <button
+                        type="button"
+                        id="btn-tax-corporate"
+                        onClick={() => {
+                          setTaxPayerType('corporate');
+                          if (error && error.includes('ประเภทผู้เสียภาษี')) setError('');
+                        }}
+                        style={{
+                          padding: '10px 8px',
+                          minHeight: '44px',
+                          borderRadius: '9px',
+                          border: taxPayerType === 'corporate' ? '1.5px solid var(--primary)' : '1px solid transparent',
+                          backgroundColor: taxPayerType === 'corporate' ? '#ffffff' : 'transparent',
+                          color: taxPayerType === 'corporate' ? 'var(--primary)' : 'var(--text-muted)',
+                          fontWeight: taxPayerType === 'corporate' ? 800 : 600,
+                          fontSize: '0.84rem',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                          boxShadow: taxPayerType === 'corporate' ? '0 2px 8px rgba(37,99,235,0.12)' : 'none',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <Building size={16} />
+                        <span>นิติบุคคล</span>
+                      </button>
+                    </div>
+                    {error && (!taxPayerType || (taxPayerType !== 'individual' && taxPayerType !== 'corporate')) && (
+                      <div style={{ color: 'var(--danger)', fontSize: '0.78rem', marginTop: '6px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <AlertCircle size={14} />
+                        <span>กรุณาเลือกประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 1. Tax Name (บุคคลธรรมดา: ชื่อ–นามสกุล / นิติบุคคล: ชื่อนิติบุคคล) */}
                   <div>
                     <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '4px' }}>
-                      ชื่อผู้เสียภาษี / ชื่อบริษัท <span style={{ color: 'var(--danger)' }}>*</span>
+                      {taxPayerType === 'individual' ? 'ชื่อ–นามสกุล' : taxPayerType === 'corporate' ? 'ชื่อนิติบุคคล' : 'ชื่อผู้เสียภาษี / ชื่อนิติบุคคล'} <span style={{ color: 'var(--danger)' }}>*</span>
                     </label>
                     <input
                       type="text"
+                      id="input-tax-name"
                       required={needTaxInvoice}
-                      placeholder="เช่น บริษัท ตัวอย่าง จำกัด หรือ นายสมชาย ใจดี"
+                      placeholder={taxPayerType === 'individual' ? 'เช่น นายสมชาย ใจดี' : taxPayerType === 'corporate' ? 'เช่น บริษัท ตัวอย่าง จำกัด' : 'เช่น บริษัท ตัวอย่าง จำกัด หรือ นายสมชาย ใจดี'}
                       value={taxName}
                       onChange={e => setTaxName(e.target.value)}
                       className="form-input"
@@ -604,16 +807,17 @@ export default function BookingFormPage() {
                     />
                   </div>
 
-                  {/* 2. Tax ID */}
+                  {/* 2. Tax ID (เลขประจำตัวผู้เสียภาษี) */}
                   <div>
                     <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '4px' }}>
-                      เลขประจำตัวผู้เสียภาษี (13 หลัก) <span style={{ color: 'var(--danger)' }}>*</span>
+                      เลขประจำตัวผู้เสียภาษี <span style={{ color: 'var(--danger)' }}>*</span>
                     </label>
                     <input
                       type="text"
+                      id="input-tax-id"
                       required={needTaxInvoice}
                       maxLength="13"
-                      placeholder="01055xxxxxxxx"
+                      placeholder={taxPayerType === 'individual' ? 'เลขประจำตัวผู้เสียภาษี 13 หลัก' : '01055xxxxxxxx'}
                       value={taxId}
                       onChange={e => setTaxId(e.target.value)}
                       className="form-input"
@@ -621,15 +825,89 @@ export default function BookingFormPage() {
                     />
                   </div>
 
-                  {/* 3. Address according to PP.20 */}
+                  {/* 3. Corporate Branch Options (สำนักงานใหญ่ / สาขา) */}
+                  {taxPayerType === 'corporate' && (
+                    <div style={{
+                      backgroundColor: 'rgba(37, 99, 235, 0.03)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '12px',
+                      padding: '12px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px'
+                    }}>
+                      <label className="form-label" style={{ fontSize: '0.8rem', margin: 0, fontWeight: 750 }}>
+                        สำนักงานใหญ่ / สาขา <span style={{ color: 'var(--danger)' }}>*</span>
+                      </label>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+                        <button
+                          type="button"
+                          id="btn-tax-branch-head"
+                          onClick={() => setTaxBranchType('head')}
+                          style={{
+                            padding: '9px 10px',
+                            minHeight: '42px',
+                            borderRadius: '9px',
+                            border: taxBranchType === 'head' ? '1.5px solid var(--primary)' : '1px solid var(--border)',
+                            backgroundColor: taxBranchType === 'head' ? 'rgba(37,99,235,0.09)' : '#ffffff',
+                            color: taxBranchType === 'head' ? 'var(--primary)' : 'var(--text-main)',
+                            fontWeight: taxBranchType === 'head' ? 800 : 600,
+                            fontSize: '0.82rem',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          สำนักงานใหญ่
+                        </button>
+                        <button
+                          type="button"
+                          id="btn-tax-branch-sub"
+                          onClick={() => setTaxBranchType('branch')}
+                          style={{
+                            padding: '9px 10px',
+                            minHeight: '42px',
+                            borderRadius: '9px',
+                            border: taxBranchType === 'branch' ? '1.5px solid var(--primary)' : '1px solid var(--border)',
+                            backgroundColor: taxBranchType === 'branch' ? 'rgba(37,99,235,0.09)' : '#ffffff',
+                            color: taxBranchType === 'branch' ? 'var(--primary)' : 'var(--text-main)',
+                            fontWeight: taxBranchType === 'branch' ? 800 : 600,
+                            fontSize: '0.82rem',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          สาขา
+                        </button>
+                      </div>
+
+                      {taxBranchType === 'branch' && (
+                        <div style={{ marginTop: '4px' }}>
+                          <label className="form-label" style={{ fontSize: '0.76rem', marginBottom: '4px' }}>
+                            เลขที่สาขา <span style={{ color: 'var(--danger)' }}>*</span>
+                          </label>
+                          <input
+                            type="text"
+                            id="input-tax-branch-number"
+                            required={needTaxInvoice && taxPayerType === 'corporate' && taxBranchType === 'branch'}
+                            placeholder="ระบุเลขที่สาขา เช่น 00001 หรือ 01"
+                            value={taxBranchNumber}
+                            onChange={e => setTaxBranchNumber(e.target.value)}
+                            className="form-input"
+                            style={{ height: '42px' }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 4. Address (บุคคลธรรมดา: ที่อยู่สำหรับออกใบกำกับภาษี / นิติบุคคล: ที่อยู่จดทะเบียน) */}
                   <div>
                     <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '4px' }}>
-                      ที่อยู่ตาม ภ.พ.20 / ทะเบียนภาษี <span style={{ color: 'var(--danger)' }}>*</span>
+                      {taxPayerType === 'individual' ? 'ที่อยู่สำหรับออกใบกำกับภาษี' : taxPayerType === 'corporate' ? 'ที่อยู่จดทะเบียน' : 'ที่อยู่สำหรับออกใบกำกับภาษี / ที่อยู่จดทะเบียน'} <span style={{ color: 'var(--danger)' }}>*</span>
                     </label>
                     <textarea
                       rows="2"
+                      id="input-tax-address"
                       required={needTaxInvoice}
-                      placeholder="ระบุที่อยู่จดทะเบียนภาษีมูลค่าเพิ่ม เลขที่ อาคาร ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์"
+                      placeholder={taxPayerType === 'individual' ? 'ระบุที่อยู่ เลขที่ อาคาร ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์' : taxPayerType === 'corporate' ? 'ระบุที่อยู่จดทะเบียนภาษีมูลค่าเพิ่ม เลขที่ อาคาร ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์' : 'ระบุที่อยู่สำหรับออกใบกำกับภาษี / ที่อยู่จดทะเบียน'}
                       value={taxAddress}
                       onChange={e => setTaxAddress(e.target.value)}
                       className="form-input"
@@ -667,6 +945,7 @@ export default function BookingFormPage() {
                     </div>
                     <input
                       type="tel"
+                      id="input-tax-phone"
                       required={needTaxInvoice}
                       placeholder="เช่น 081-234-5678"
                       value={taxPhone}
