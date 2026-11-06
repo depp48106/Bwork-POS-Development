@@ -29,7 +29,7 @@ export default function BookingFormPage() {
 
   // Tax Invoice State
   const [needTaxInvoice, setNeedTaxInvoice] = useState(false);
-  const [taxPayerType, setTaxPayerType] = useState('corporate'); // 'individual' | 'corporate'
+  const [taxPayerType, setTaxPayerType] = useState(''); // '' | 'individual' | 'corporate' (no default value)
   const [taxBranchType, setTaxBranchType] = useState('head'); // 'head' | 'branch'
   const [taxBranchNumber, setTaxBranchNumber] = useState('');
   const [taxName, setTaxName] = useState('');
@@ -225,6 +225,16 @@ export default function BookingFormPage() {
     if (needTaxInvoice) {
       if (taxPayerType !== 'individual' && taxPayerType !== 'corporate') {
         setError('กรุณาเลือกประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)');
+        if (typeof document !== 'undefined') {
+          const el = document.getElementById('tax-payer-type-container');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+          const btn = document.getElementById('btn-tax-individual');
+          if (btn) {
+            btn.focus();
+          }
+        }
         return;
       }
       if (!taxName.trim()) {
@@ -542,7 +552,7 @@ export default function BookingFormPage() {
             )}
           </div>
 
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <form onSubmit={handleSubmit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {/* Full Name */}
             <div>
               <label className="form-label">
@@ -641,10 +651,7 @@ export default function BookingFormPage() {
                   type="text"
                   placeholder="ชื่อหน่วยงาน / บริษัท"
                   value={company}
-                  onChange={e => {
-                    setCompany(e.target.value);
-                    if (!taxName) setTaxName(e.target.value);
-                  }}
+                  onChange={e => setCompany(e.target.value)}
                   className="form-input"
                 />
               </div>
@@ -695,7 +702,18 @@ export default function BookingFormPage() {
               {needTaxInvoice && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px', paddingTop: '14px', borderTop: '1px solid var(--border)' }}>
                   {/* Entity Type Selector (บุคคลธรรมดา / นิติบุคคล) */}
-                  <div>
+                  <div
+                    id="tax-payer-type-container"
+                    tabIndex="-1"
+                    style={{
+                      borderRadius: '12px',
+                      padding: (error && (!taxPayerType || (taxPayerType !== 'individual' && taxPayerType !== 'corporate'))) ? '10px' : '0px',
+                      border: (error && (!taxPayerType || (taxPayerType !== 'individual' && taxPayerType !== 'corporate'))) ? '2px solid var(--danger)' : '2px solid transparent',
+                      backgroundColor: (error && (!taxPayerType || (taxPayerType !== 'individual' && taxPayerType !== 'corporate'))) ? 'rgba(239, 68, 68, 0.05)' : 'transparent',
+                      transition: 'all 0.2s ease',
+                      outline: 'none'
+                    }}
+                  >
                     <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block' }}>
                       ประเภทผู้เสียภาษี <span style={{ color: 'var(--danger)' }}>*</span>
                     </label>
@@ -710,7 +728,10 @@ export default function BookingFormPage() {
                       <button
                         type="button"
                         id="btn-tax-individual"
-                        onClick={() => setTaxPayerType('individual')}
+                        onClick={() => {
+                          setTaxPayerType('individual');
+                          if (error && error.includes('ประเภทผู้เสียภาษี')) setError('');
+                        }}
                         style={{
                           padding: '10px 8px',
                           minHeight: '44px',
@@ -735,7 +756,10 @@ export default function BookingFormPage() {
                       <button
                         type="button"
                         id="btn-tax-corporate"
-                        onClick={() => setTaxPayerType('corporate')}
+                        onClick={() => {
+                          setTaxPayerType('corporate');
+                          if (error && error.includes('ประเภทผู้เสียภาษี')) setError('');
+                        }}
                         style={{
                           padding: '10px 8px',
                           minHeight: '44px',
@@ -758,18 +782,24 @@ export default function BookingFormPage() {
                         <span>นิติบุคคล</span>
                       </button>
                     </div>
+                    {error && (!taxPayerType || (taxPayerType !== 'individual' && taxPayerType !== 'corporate')) && (
+                      <div style={{ color: 'var(--danger)', fontSize: '0.78rem', marginTop: '6px', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <AlertCircle size={14} />
+                        <span>กรุณาเลือกประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* 1. Tax Name (บุคคลธรรมดา: ชื่อ–นามสกุล / นิติบุคคล: ชื่อนิติบุคคล) */}
                   <div>
                     <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '4px' }}>
-                      {taxPayerType === 'individual' ? 'ชื่อ–นามสกุล' : 'ชื่อนิติบุคคล'} <span style={{ color: 'var(--danger)' }}>*</span>
+                      {taxPayerType === 'individual' ? 'ชื่อ–นามสกุล' : taxPayerType === 'corporate' ? 'ชื่อนิติบุคคล' : 'ชื่อผู้เสียภาษี / ชื่อนิติบุคคล'} <span style={{ color: 'var(--danger)' }}>*</span>
                     </label>
                     <input
                       type="text"
                       id="input-tax-name"
                       required={needTaxInvoice}
-                      placeholder={taxPayerType === 'individual' ? 'เช่น นายสมชาย ใจดี' : 'เช่น บริษัท ตัวอย่าง จำกัด'}
+                      placeholder={taxPayerType === 'individual' ? 'เช่น นายสมชาย ใจดี' : taxPayerType === 'corporate' ? 'เช่น บริษัท ตัวอย่าง จำกัด' : 'เช่น บริษัท ตัวอย่าง จำกัด หรือ นายสมชาย ใจดี'}
                       value={taxName}
                       onChange={e => setTaxName(e.target.value)}
                       className="form-input"
@@ -871,13 +901,13 @@ export default function BookingFormPage() {
                   {/* 4. Address (บุคคลธรรมดา: ที่อยู่สำหรับออกใบกำกับภาษี / นิติบุคคล: ที่อยู่จดทะเบียน) */}
                   <div>
                     <label className="form-label" style={{ fontSize: '0.8rem', marginBottom: '4px' }}>
-                      {taxPayerType === 'individual' ? 'ที่อยู่สำหรับออกใบกำกับภาษี' : 'ที่อยู่จดทะเบียน'} <span style={{ color: 'var(--danger)' }}>*</span>
+                      {taxPayerType === 'individual' ? 'ที่อยู่สำหรับออกใบกำกับภาษี' : taxPayerType === 'corporate' ? 'ที่อยู่จดทะเบียน' : 'ที่อยู่สำหรับออกใบกำกับภาษี / ที่อยู่จดทะเบียน'} <span style={{ color: 'var(--danger)' }}>*</span>
                     </label>
                     <textarea
                       rows="2"
                       id="input-tax-address"
                       required={needTaxInvoice}
-                      placeholder={taxPayerType === 'individual' ? 'ระบุที่อยู่ เลขที่ อาคาร ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์' : 'ระบุที่อยู่จดทะเบียนภาษีมูลค่าเพิ่ม เลขที่ อาคาร ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์'}
+                      placeholder={taxPayerType === 'individual' ? 'ระบุที่อยู่ เลขที่ อาคาร ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์' : taxPayerType === 'corporate' ? 'ระบุที่อยู่จดทะเบียนภาษีมูลค่าเพิ่ม เลขที่ อาคาร ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์' : 'ระบุที่อยู่สำหรับออกใบกำกับภาษี / ที่อยู่จดทะเบียน'}
                       value={taxAddress}
                       onChange={e => setTaxAddress(e.target.value)}
                       className="form-input"
@@ -915,6 +945,7 @@ export default function BookingFormPage() {
                     </div>
                     <input
                       type="tel"
+                      id="input-tax-phone"
                       required={needTaxInvoice}
                       placeholder="เช่น 081-234-5678"
                       value={taxPhone}
