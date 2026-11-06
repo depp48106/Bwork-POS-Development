@@ -818,10 +818,9 @@
 > **Release Baseline:** Commit `895176e8`  
 > **Release Branch:** `release/selective-gmail-tax-invoice-20261105`  
 > **Release Worktree:** `D:\Project BL\Bwork-POS-Release`  
-> **Release Commit:** `5f68eb0b` (และ commit ล่าสุดที่รวม HANDOFF)  
-> **Development Branch:** `integration/home-office-20261021` (Commit: `e082c44f`)  
+> **Release Branch:** `release/selective-gmail-tax-invoice-20261105`  
 > **สถานะการ Deploy:** **เตรียมพร้อมปล่อยอัปเดต (STOP AT PREPARATION - ยังไม่ได้ Deploy)**  
-> **สถานะสวิตช์ความปลอดภัย:** `GMAIL_LIVE_DISPATCH_ENABLED="false"`, `GMAIL_TEST_DISPATCH_ENABLED="false"` (ปิดสนิท 100%)
+> **สถานะสวิตช์ความปลอดภัย Production จริง:** `GMAIL_LIVE_DISPATCH_ENABLED="true"`, `GMAIL_TEST_DISPATCH_ENABLED="false"`
 
 ### 14.1 การตรวจสอบความเข้ากันได้ของ API Contract (POST /api/public/bookings)
 ดำเนินการทดสอบ Contract Fixtures และ UAT ครบ 6 กรณีสำคัญ ผ่านชุดทดสอบจำลอง SQLite In-Memory และ Headless Chrome CDP:
@@ -851,7 +850,7 @@
   - `backend/worker.js` (การตรวจสอบ `tax_online_subchannel` และ `tax_email` ใน `POST /api/public/bookings`)
   - `backend/server.js` (ความเท่าเทียมของ Express server กับ Cloudflare Worker)
   - `backend/tests/test_tax_invoice_delivery_uat.cjs` (ชุดทดสอบ UAT อัตโนมัติ)
-  - `backend/wrangler.toml` (ยืนยันสวิตช์ `GMAIL_LIVE_DISPATCH_ENABLED="false"`)
+  - `backend/wrangler.toml` (ปรับค่า `GMAIL_LIVE_DISPATCH_ENABLED="true"` เพื่อรักษาค่าเดิมของ Production Worker ตามผลตรวจจริง)
 - **ผลการคอมไพล์ Frontend (Production Build Artifacts):**
   - คำสั่ง: `npm.cmd --prefix booking-app run build`
   - ไดเรกทอรีผลลัพธ์: `booking-app/dist/`
@@ -864,19 +863,24 @@
   - `test_tax_invoice_delivery_uat.cjs`: ผ่านทั้ง Backend Unit และ Chrome CDP UI tests (100% pass)
   - `verify_contract_fixtures.cjs`: ผ่านครบทุก fixtures (100% pass)
 
-### 14.3 สถานะ Production Baseline ก่อนการ Deploy (Current Live Baselines)
-- **Cloudflare Worker `bwork-pos-api`:**
+### 14.3 สถานะ Production Baseline ก่อนการ Deploy (Current Live Baselines - ตรวจสอบแบบอ่านอย่างเดียว)
+- **Cloudflare Worker `bwork-pos-api` (ตรวจจริงผ่าน `wrangler versions view`):**
   - Live Endpoint: `https://bwork-pos-api.ohnatza74185-ky.workers.dev`
-  - Current Version ID: `a68b57b8-e161-47d1-86aa-19a7cbd097e1` (หรือ hotfix baseline `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4`)
-  - `GMAIL_LIVE_DISPATCH_ENABLED`: `"false"`
-  - `GMAIL_TEST_DISPATCH_ENABLED`: `"false"`
-  - `GMAIL_SENDER_NAME`: `"บริษัท บิลท์ ฮาร์ท จำกัด"`
-  - D1 Database: `bworkpos_db`
+  - Current Active Version ID: **`a68b57b8-e161-47d1-86aa-19a7cbd097e1`** (Created: 2026-11-05T15:10:27.709Z)
+  - `GMAIL_LIVE_DISPATCH_ENABLED`: **`"true"`** (ค่าจริงบน Production Worker)
+  - `GMAIL_TEST_DISPATCH_ENABLED`: **`"false"`**
+  - `GMAIL_SENDER_NAME`: **`"บริษัท บิลท์ ฮาร์ท จำกัด"`**
+  - `GMAIL_REPLY_TO`: **`"coworkings.bwork@gmail.com"`**
+  - `GMAIL_USER_EMAIL`: **`"coworkings.bwork@gmail.com"`**
+  - D1 Database: `bworkpos_db` (`0f171606-080b-4380-bf91-167dc678e2e4`)
   - R2 Bucket: `bwork-uploads`
-- **Cloudflare Pages `bwork-booking`:**
+  - Secrets: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `WIFI_CREDENTIAL_ENCRYPTION_KEY`
+- **Cloudflare Pages `bwork-booking` (ตรวจจริงผ่าน `wrangler pages deployment list`):**
   - Live Domain: `https://bwork-booking.pages.dev`
-  - Current Active Deployment ID: `3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a`
-  - Current Live Bundle: `/assets/index-DEouKUNO.js` (Commit: `bff68d10`)
+  - Current Active Deployment ID: **`3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a`** (สำหรับใช้ Rollback)
+  - Current Live URL: `https://3ef05797.bwork-booking.pages.dev`
+  - Source Commit: `bff68d1` (Booking hotfix)
+  - Status: Active Production Deployment
 
 ---
 
