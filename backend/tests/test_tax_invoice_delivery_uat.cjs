@@ -118,7 +118,7 @@ function runBackendUnitTests() {
             customer_name, contact, email, department, note, room_id, booking_date,
             start_time, end_time, booking_type, layout, total_amount, line_user_id,
             tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone,
-            tax_delivery_method, tax_postal_address, tax_email, guest_count, guests
+            tax_delivery_method, tax_online_subchannel, tax_postal_address, tax_email, guest_count, guests
           } = body;
 
           const isTaxInvoiceRequired = tax_invoice_required === 1 || tax_invoice_required === true || tax_invoice_required === '1' || tax_invoice_required === 'true';
@@ -155,6 +155,8 @@ function runBackendUnitTests() {
               return rejP(new Error('กรุณาระบุเบอร์โทรศัพท์สำหรับใบกำกับภาษี'));
             }
             cleanTaxDeliveryMethod = String(tax_delivery_method || 'online').trim();
+            const cleanSubchannel = tax_online_subchannel ? String(tax_online_subchannel).trim().toLowerCase() : null;
+
             if (cleanTaxDeliveryMethod === 'postal') {
               cleanTaxPostalAddress = String(tax_postal_address || '').trim();
               if (!cleanTaxPostalAddress) {
@@ -163,11 +165,26 @@ function runBackendUnitTests() {
               cleanTaxEmail = null;
             } else {
               cleanTaxPostalAddress = null;
-              if (tax_email) {
-                cleanTaxEmail = String(tax_email).trim();
+              if (cleanSubchannel === 'email') {
+                cleanTaxEmail = String(tax_email || '').trim();
+                if (!cleanTaxEmail) {
+                  return rejP(new Error('กรุณาระบุอีเมลสำหรับรับใบกำกับภาษี'));
+                }
                 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
                 if (!emailRegex.test(cleanTaxEmail)) {
                   return rejP(new Error('รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง'));
+                }
+              } else if (cleanSubchannel === 'line') {
+                cleanTaxEmail = null;
+              } else {
+                if (tax_email && String(tax_email).trim()) {
+                  cleanTaxEmail = String(tax_email).trim();
+                  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                  if (!emailRegex.test(cleanTaxEmail)) {
+                    return rejP(new Error('รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง'));
+                  }
+                } else {
+                  cleanTaxEmail = null;
                 }
               }
             }
