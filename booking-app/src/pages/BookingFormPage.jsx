@@ -37,6 +37,8 @@ export default function BookingFormPage() {
   const [taxId, setTaxId] = useState('');
   const [taxPhone, setTaxPhone] = useState('');
   const [taxDeliveryMethod, setTaxDeliveryMethod] = useState('online'); // 'online' | 'postal'
+  const [taxOnlineSubChannel, setTaxOnlineSubChannel] = useState('line'); // 'line' | 'email'
+  const [taxEmail, setTaxEmail] = useState('');
   const [taxPostalAddress, setTaxPostalAddress] = useState('');
 
   const [loading, setLoading] = useState(false);
@@ -123,6 +125,8 @@ export default function BookingFormPage() {
             if (draft.taxId) setTaxId(draft.taxId);
             if (draft.taxPhone) setTaxPhone(draft.taxPhone);
             if (draft.taxDeliveryMethod) setTaxDeliveryMethod(draft.taxDeliveryMethod);
+            if (draft.taxOnlineSubChannel) setTaxOnlineSubChannel(draft.taxOnlineSubChannel);
+            if (draft.taxEmail) setTaxEmail(draft.taxEmail);
             if (draft.taxPostalAddress) setTaxPostalAddress(draft.taxPostalAddress);
           }
         }
@@ -159,6 +163,8 @@ export default function BookingFormPage() {
           taxId,
           taxPhone,
           taxDeliveryMethod,
+          taxOnlineSubChannel,
+          taxEmail,
           taxPostalAddress
         };
         sessionStorage.setItem(scopedKey, JSON.stringify(draft));
@@ -169,7 +175,7 @@ export default function BookingFormPage() {
     lineUserId, bookingData?.room_id,
     name, contact, email, company, notes, attendees,
     needTaxInvoice, taxPayerType, taxBranchType, taxBranchNumber,
-    taxName, taxAddress, taxId, taxPhone, taxDeliveryMethod, taxPostalAddress
+    taxName, taxAddress, taxId, taxPhone, taxDeliveryMethod, taxOnlineSubChannel, taxEmail, taxPostalAddress
   ]);
 
   const handleLineLogin = () => {
@@ -260,7 +266,34 @@ export default function BookingFormPage() {
       }
       if (taxDeliveryMethod === 'postal' && !taxPostalAddress.trim()) {
         setError('กรุณาระบุที่อยู่สำหรับจัดส่งเอกสารทางจดหมาย');
+        const el = document.getElementById('input-tax-postal-address');
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.focus();
+        }
         return;
+      }
+      if (taxDeliveryMethod === 'online' && taxOnlineSubChannel === 'email') {
+        const cleanTaxEmail = (taxEmail || '').trim();
+        if (!cleanTaxEmail) {
+          setError('กรุณาระบุอีเมลสำหรับรับใบกำกับภาษี');
+          const el = document.getElementById('input-tax-email');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.focus();
+          }
+          return;
+        }
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(cleanTaxEmail)) {
+          setError('รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง');
+          const el = document.getElementById('input-tax-email');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.focus();
+          }
+          return;
+        }
       }
     }
 
@@ -295,6 +328,8 @@ export default function BookingFormPage() {
         tax_address: needTaxInvoice ? taxAddress.trim() : null,
         tax_phone: needTaxInvoice ? (taxPhone.trim() || contact.trim()) : null,
         tax_delivery_method: needTaxInvoice ? taxDeliveryMethod : null,
+        tax_online_subchannel: needTaxInvoice && taxDeliveryMethod === 'online' ? taxOnlineSubChannel : null,
+        tax_email: needTaxInvoice && taxDeliveryMethod === 'online' && taxOnlineSubChannel === 'email' ? taxEmail.trim() : null,
         tax_postal_address: needTaxInvoice && taxDeliveryMethod === 'postal' ? taxPostalAddress.trim() : null
       };
 
@@ -962,8 +997,12 @@ export default function BookingFormPage() {
                     </label>
                     <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
                       <select
+                        id="select-tax-delivery-method"
                         value={taxDeliveryMethod}
-                        onChange={e => setTaxDeliveryMethod(e.target.value)}
+                        onChange={e => {
+                          setTaxDeliveryMethod(e.target.value);
+                          if (error && (error.includes('จดหมาย') || error.includes('อีเมล'))) setError('');
+                        }}
                         className="form-input custom-select-input"
                         style={{
                           height: '46px',
@@ -975,12 +1014,146 @@ export default function BookingFormPage() {
                           MozAppearance: 'none'
                         }}
                       >
-                        <option value="online">จัดส่งออนไลน์ (E-Tax / อีเมล / LINE)</option>
+                        <option value="online">จัดส่งออนไลน์ (LINE หรืออีเมล)</option>
                         <option value="postal">จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)</option>
                       </select>
                       <ChevronDown size={15} style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
                     </div>
                   </div>
+
+                  {/* 5.1 Online Sub-Channels (Appears ONLY if 'online' is selected) */}
+                  {taxDeliveryMethod === 'online' && (
+                    <div style={{
+                      backgroundColor: 'rgba(37, 99, 235, 0.03)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '12px',
+                      padding: '12px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px'
+                    }}>
+                      <label className="form-label" style={{ fontSize: '0.8rem', margin: 0, fontWeight: 750 }}>
+                        ช่องทางรับเอกสารออนไลน์ <span style={{ color: 'var(--danger)' }}>*</span>
+                      </label>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+                        <button
+                          type="button"
+                          id="btn-tax-subchannel-line"
+                          onClick={() => {
+                            setTaxOnlineSubChannel('line');
+                            if (error && error.includes('อีเมลสำหรับรับใบกำกับภาษี')) setError('');
+                          }}
+                          style={{
+                            padding: '9px 10px',
+                            minHeight: '42px',
+                            borderRadius: '9px',
+                            border: taxOnlineSubChannel === 'line' ? '1.5px solid var(--primary)' : '1px solid var(--border)',
+                            backgroundColor: taxOnlineSubChannel === 'line' ? 'rgba(37,99,235,0.09)' : '#ffffff',
+                            color: taxOnlineSubChannel === 'line' ? 'var(--primary)' : 'var(--text-main)',
+                            fontWeight: taxOnlineSubChannel === 'line' ? 800 : 600,
+                            fontSize: '0.82rem',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <MessageSquare size={15} />
+                          <span>LINE</span>
+                        </button>
+                        <button
+                          type="button"
+                          id="btn-tax-subchannel-email"
+                          onClick={() => {
+                            setTaxOnlineSubChannel('email');
+                          }}
+                          style={{
+                            padding: '9px 10px',
+                            minHeight: '42px',
+                            borderRadius: '9px',
+                            border: taxOnlineSubChannel === 'email' ? '1.5px solid var(--primary)' : '1px solid var(--border)',
+                            backgroundColor: taxOnlineSubChannel === 'email' ? 'rgba(37,99,235,0.09)' : '#ffffff',
+                            color: taxOnlineSubChannel === 'email' ? 'var(--primary)' : 'var(--text-main)',
+                            fontWeight: taxOnlineSubChannel === 'email' ? 800 : 600,
+                            fontSize: '0.82rem',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          <Mail size={15} />
+                          <span>อีเมล</span>
+                        </button>
+                      </div>
+
+                      {taxOnlineSubChannel === 'line' && (
+                        <div style={{
+                          fontSize: '0.76rem',
+                          color: 'var(--text-muted)',
+                          lineHeight: 1.4,
+                          padding: '6px 8px',
+                          backgroundColor: '#ffffff',
+                          borderRadius: '8px',
+                          border: '1px solid #f1f5f9'
+                        }}>
+                          ระบบจะจัดส่งใบกำกับภาษีให้ท่านผ่านทาง LINE Official Account เมื่อการให้บริการเสร็จสิ้น
+                        </div>
+                      )}
+
+                      {taxOnlineSubChannel === 'email' && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '4px' }}>
+                            <label className="form-label" style={{ fontSize: '0.78rem', margin: 0, fontWeight: 750 }}>
+                              อีเมลสำหรับรับใบกำกับภาษี <span style={{ color: 'var(--danger)' }}>*</span>
+                            </label>
+                            {email && email.trim() && (
+                              <button
+                                type="button"
+                                id="btn-use-booking-email"
+                                onClick={() => {
+                                  setTaxEmail(email.trim());
+                                  if (error && error.includes('อีเมล')) setError('');
+                                }}
+                                style={{
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  border: '1px solid var(--primary)',
+                                  backgroundColor: '#ffffff',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  color: 'var(--primary)',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px'
+                                }}
+                              >
+                                ใช้อีเมลเดียวกับผู้จอง
+                              </button>
+                            )}
+                          </div>
+                          <input
+                            type="email"
+                            id="input-tax-email"
+                            required={needTaxInvoice && taxDeliveryMethod === 'online' && taxOnlineSubChannel === 'email'}
+                            placeholder="เช่น billing@company.com"
+                            value={taxEmail}
+                            onChange={e => {
+                              setTaxEmail(e.target.value);
+                              if (error && error.includes('อีเมล')) setError('');
+                            }}
+                            className="form-input"
+                            style={{ height: '44px' }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* 6. Postal Delivery Address (Appears ONLY if 'postal' is selected) */}
                   {taxDeliveryMethod === 'postal' && (
@@ -1026,7 +1199,8 @@ export default function BookingFormPage() {
                       </div>
                       <textarea
                         rows="3"
-                        required={taxDeliveryMethod === 'postal'}
+                        id="input-tax-postal-address"
+                        required={needTaxInvoice && taxDeliveryMethod === 'postal'}
                         placeholder="ระบุชื่อผู้รับ แผนก/ฝ่าย อาคาร เลขที่ ถนน ตำบล อำเภอ จังหวัด รหัสไปรษณีย์ ให้ชัดเจน"
                         value={taxPostalAddress}
                         onChange={e => setTaxPostalAddress(e.target.value)}

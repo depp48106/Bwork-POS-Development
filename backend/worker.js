@@ -11070,7 +11070,7 @@ export default {
           customer_name, contact, email, department, note, room_id, booking_date,
           start_time, end_time, booking_type, layout, total_amount, line_user_id,
           tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone,
-          tax_delivery_method, tax_postal_address, guest_count, guests
+          tax_delivery_method, tax_online_subchannel, tax_postal_address, tax_email, guest_count, guests
         } = body;
 
         if (!customer_name || !contact || !room_id || !booking_date || !start_time || !end_time) {
@@ -11118,6 +11118,7 @@ export default {
         let cleanTaxPhone = null;
         let cleanTaxDeliveryMethod = null;
         let cleanTaxPostalAddress = null;
+        let cleanTaxEmail = null;
 
         if (isTaxInvoiceRequired) {
           cleanTaxPayerType = String(tax_payer_type || '').toLowerCase().trim();
@@ -11155,13 +11156,38 @@ export default {
             cleanTaxBranchNumber = null;
           }
           cleanTaxDeliveryMethod = String(tax_delivery_method || 'online').trim();
+          const cleanSubchannel = tax_online_subchannel ? String(tax_online_subchannel).trim().toLowerCase() : null;
+
           if (cleanTaxDeliveryMethod === 'postal') {
             cleanTaxPostalAddress = String(tax_postal_address || '').trim();
             if (!cleanTaxPostalAddress) {
               return new Response(JSON.stringify({ error: 'กรุณาระบุที่อยู่สำหรับจัดส่งทางไปรษณีย์' }), { status: 400, headers: corsHeaders });
             }
+            cleanTaxEmail = null;
           } else {
             cleanTaxPostalAddress = null;
+            if (cleanSubchannel === 'email') {
+              cleanTaxEmail = String(tax_email || '').trim();
+              if (!cleanTaxEmail) {
+                return new Response(JSON.stringify({ error: 'กรุณาระบุอีเมลสำหรับรับใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+              }
+              const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+              if (!emailRegex.test(cleanTaxEmail)) {
+                return new Response(JSON.stringify({ error: 'รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+              }
+            } else if (cleanSubchannel === 'line') {
+              cleanTaxEmail = null;
+            } else {
+              if (tax_email && String(tax_email).trim()) {
+                cleanTaxEmail = String(tax_email).trim();
+                const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                if (!emailRegex.test(cleanTaxEmail)) {
+                  return new Response(JSON.stringify({ error: 'รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+                }
+              } else {
+                cleanTaxEmail = null;
+              }
+            }
           }
         }
 
@@ -11222,17 +11248,17 @@ export default {
                subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
                payment_status, payment_method,
                receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
-               tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone, tax_delivery_method, tax_postal_address,
+               tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone, tax_delivery_method, tax_postal_address, tax_email,
                guest_count,
                created_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name, department || note || '', contact,
             promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
             receiptNumber, pinCode,
             email || null, line_user_id || null,
-            isTaxInvoiceRequired ? 1 : 0, cleanTaxPayerType, cleanTaxName, cleanTaxAddress, cleanTaxId, cleanTaxBranchType, cleanTaxBranchNumber, cleanTaxPhone, cleanTaxDeliveryMethod, cleanTaxPostalAddress,
+            isTaxInvoiceRequired ? 1 : 0, cleanTaxPayerType, cleanTaxName, cleanTaxAddress, cleanTaxId, cleanTaxBranchType, cleanTaxBranchNumber, cleanTaxPhone, cleanTaxDeliveryMethod, cleanTaxPostalAddress, cleanTaxEmail,
             parsedGuests,
             nowIso
           ).run();
