@@ -737,3 +737,74 @@
 - **สวิตช์ส่งอีเมล:**
   - `GMAIL_LIVE_DISPATCH_ENABLED="false"` (ปิดสนิท)
   - `GMAIL_TEST_DISPATCH_ENABLED="false"` (ปิดสนิท)
+
+---
+
+## 13. การปรับปรุงฟอร์มจัดส่งใบกำกับภาษีออนไลน์ และการเชื่อมโยงอีเมลผู้รับสู่ POS (Tax Invoice Delivery Form Enhancement & Recipient Sync)
+
+> **บันทึกการพัฒนา:** 6 พฤศจิกายน 2026  
+> **สภาพแวดล้อม:** Development Workspace (`D:\Project BL\Bwork-POS-Development`)  
+> **Branch:** `integration/home-office-20261021`  
+> **สถานะการ Deploy:** **ยังไม่ได้ Deploy ขึ้น Production (Development Only)**  
+> **สถานะสวิตช์ส่งจริง:** `GMAIL_LIVE_DISPATCH_ENABLED="false"` (ปิดสนิท 100%)
+
+### 13.1 รายละเอียดการปรับปรุงหน้าฟอร์มการจอง (BookingFormPage.jsx)
+1. **ปรับข้อความตัวเลือกรูปแบบการจัดส่ง (Delivery Method Dropdown):**
+   - เปลี่ยนจาก `"จัดส่งออนไลน์ (E-Tax / อีเมล / LINE)"` เป็น **`"จัดส่งออนไลน์ (LINE หรืออีเมล)"`** (ตัดคำว่า E-Tax ออกตามข้อกำหนด)
+   - คงตัวเลือก `"จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)"` ตามเดิม
+2. **ตัวเลือกช่องทางย่อยเมื่อเลือกจัดส่งออนไลน์ (Online Sub-channels):**
+   - แสดงปุ่ม 2 ช่องทาง: **`LINE`** (ไอคอน `MessageSquare`) และ **`อีเมล`** (ไอคอน `Mail`)
+   - **กรณีเลือก LINE (Default):**
+     - แสดงข้อความแนะนำ: *"ระบบจะจัดส่งใบกำกับภาษีให้ท่านผ่านทาง LINE Official Account เมื่อการให้บริการเสร็จสิ้น"*
+     - ซ่อนช่องกรอกอีเมลภาษี และไม่ต้องบังคับอีเมล (ผู้ใช้รับเอกสารทาง LINE OA)
+     - ส่ง `tax_online_subchannel: 'line'` และ `tax_email: null`
+   - **กรณีเลือก อีเมล:**
+     - แสดงช่องกรอก **`"อีเมลสำหรับรับใบกำกับภาษี *"`** (`#input-tax-email`, type="email", required)
+     - แสดงปุ่มผู้ช่วย **`"ใช้อีเมลเดียวกับผู้จอง"`** (`#btn-use-booking-email`): เมื่อกดจะคัดลอกอีเมลผู้จองด้านบนลงในช่อง `taxEmail` โดยอัตโนมัติ
+     - **State Isolation:** แยก state ระหว่าง `email` (อีเมลผู้จอง) และ `taxEmail` (อีเมลภาษี) อย่างเด็ดขาด การแก้ไขในช่องนี้จะไม่กระทบอีเมลผู้จอง
+     - **Validation:** ตรวจสอบความถูกต้องของอีเมลด้วย Regular Expression (`/^[^\s@]+@[^\s@]+\.[^\s@]+$/`) หากว่างหรือรูปแบบไม่ถูกต้อง ระบบจะล็อกไม่ให้ผ่านขั้นตอน พร้อมขึ้นข้อความเตือนและ scroll/focus ไปยังช่องดังกล่าวทันที
+   - **กรณีเลือก จัดส่งทางไปรษณีย์:**
+     - แสดงช่องกรอกที่อยู่จัดส่งทางไปรษณีย์พร้อมปุ่มคัดลอกที่อยู่บริษัท
+     - ส่ง `tax_delivery_method: 'postal'`, `tax_online_subchannel: null` และ `tax_email: null`
+3. **การคงสภาพ Entity Selection & Corporate Branch Options:**
+   - คงปุ่มเลือก "บุคคลธรรมดา" และ "นิติบุคคล" ตามที่ Hotfix ไว้สมบูรณ์
+   - เมื่อเลือกนิติบุคคล มีตัวเลือก "สำนักงานใหญ่" / "สาขา" และช่องระบุเลขที่สาขา
+4. **Draft Persistence & Restoration:**
+   - บันทึกและกู้คืน `taxDeliveryMethod`, `taxOnlineSubChannel`, `taxEmail` ใน `sessionStorage`
+   - เมื่อผู้ใช้กดย้อนกลับจากหน้ายืนยันมายังหน้าฟอร์ม ข้อมูลและช่องทางที่เลือกไว้จะถูกกู้คืนครบถ้วน
+
+### 13.2 การปรับปรุง Backend API (Worker & Server Parity)
+1. **Destructure & Sanitize `tax_email` ใน `POST /api/public/bookings`:**
+   - นำเข้า `tax_email` จาก payload
+   - เมื่อ `tax_invoice_required` เป็นจริง และ `tax_delivery_method === 'online'` มีการตรวจรูปแบบอีเมลด้วย regex หากผิดปฏิเสธด้วย HTTP 400 Bad Request
+   - หากเลือก `postal` หรือ `line` ให้กำหนด `cleanTaxEmail = null`
+2. **บันทึกลงคอลัมน์ `bookings.tax_email`:**
+   - เพิ่มคอลัมน์ `tax_email` ในคำสั่ง `INSERT INTO bookings` ทั้งใน `backend/worker.js` และ `backend/server.js`
+   - ข้อมูลผู้จอง `customer_email` เก็บค่า `email || null` แยกต่างหากจาก `tax_email`
+3. **Seamless Integration กับ POS Tax Invoice Preview/Send:**
+   - ระบบ POS ดั้งเดิม (`GET /api/bookings/:id/tax-invoice/email-preview` และ `POST /api/bookings/:id/tax-invoice/send-email`) ยึด `bookings.tax_email` เป็น Single Source of Truth
+   - เมื่อลูกค้าจองและระบุอีเมลภาษี B ระบบ POS จะดึง B ไปแสดงในช่อง "ถึง:" ของหน้าต่างจัดการใบกำกับภาษีโดยอัตโนมัติ
+
+### 13.3 สรุปผลการทดสอบ UAT และความเข้ากันได้บน Mobile (Chrome CDP)
+ทดสอบผ่านชุดทดสอบอัตโนมัติ `scratch/test_tax_invoice_delivery_uat.cjs`:
+- **Suite 1 (Backend Unit & Parity):**
+  - **Case 1 (Customer email A vs Tax invoice email B):** `bookings.customer_email === 'customerA@example.com'`, `bookings.tax_email === 'accountingB@example.com'`, POS Preview "To:" แสดง `accountingB@example.com` (PASS 100%)
+  - **Case 2 (A == B ผ่านปุ่มใช้อีเมลเดียวกับผู้จอง):** บันทึกทั้งสองคอลัมน์ตรงกัน (PASS 100%)
+  - **Case 3 (Validation รูปแบบอีเมลผิด/ว่าง):** ตอบกลับ HTTP 400 ชัดเจน (PASS 100%)
+  - **Case 4 (สลับเป็น LINE):** `tax_email` ถูกบันทึกเป็น null (PASS 100%)
+  - **Case 5 (สลับเป็น ไปรษณีย์):** บันทึกที่อยู่ไปรษณีย์ `tax_email` เป็น null (PASS 100%)
+  - **Case 6 (ไม่ขอใบกำกับภาษี):** `tax_email` เป็น null รายการจองสำเร็จ (PASS 100%)
+- **Suite 2 (Headless Chrome CDP at Viewport 390x844):**
+  - ตรวจสอบชื่อตัวเลือก: "จัดส่งออนไลน์ (LINE หรืออีเมล)" แสดงถูกต้อง
+  - ค่าเริ่มต้นช่องทางออนไลน์: LINE Active, ซ่อนช่องกรอกอีเมล
+  - สลับเป็นอีเมล: แสดง `#input-tax-email` และปุ่ม `#btn-use-booking-email`
+  - กดปุ่มใช้อีเมลเดียวกับผู้จอง: คัดลอก `customerA@example.com` ลงช่องถูกต้อง
+  - แก้ไขอีเมลเป็น `accountingB@example.com`: อีเมลผู้จองด้านบนไม่เปลี่ยนแปลง
+  - ตรวจสอบ Validation: เมื่อเว้นว่างและกด "ถัดไป" ขึ้นแจ้งเตือน "กรุณาระบุอีเมลสำหรับรับใบกำกับภาษี"
+  - ตรวจสอบการล้นจอ (Zero Horizontal Overflow): `scrollWidth: 390 === clientWidth: 390` ไม่มีส่วนใดล้นจอ 100%
+  - ตรวจสอบการกู้คืน Draft เมื่อย้อนกลับ: กู้คืนอีเมลภาษีและช่องทางที่เลือกไว้ได้สมบูรณ์
+
+### 13.4 ภาพหลักฐานการทดสอบ (Mobile 390px Screenshots)
+- `booking_tax_delivery_line_selected_mobile_390.png`: ภาพหน้าจอตัวเลือกช่องทาง LINE พร้อมข้อความแนะนำบนหน้าจอมือถือ 390px
+- `booking_tax_delivery_email_filled_mobile_390.png`: ภาพหน้าจอกรอกอีเมลภาษี B และปุ่มใช้อีเมลเดียวกับผู้จองบนหน้าจอมือถือ 390px
+- `booking_tax_delivery_validation_mobile_390.png`: ภาพหน้าจอแจ้งเตือน validation เมื่อไม่กรอกอีเมลภาษีบนหน้าจอมือถือ 390px

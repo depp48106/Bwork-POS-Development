@@ -46,6 +46,8 @@ input[type=number] {
 
 html, body, #root {
   min-height: 100%;
+  overflow-x: hidden;
+  max-width: 100vw;
 }
 
 button, input, select, textarea {
@@ -445,7 +447,7 @@ a {
   }
 }
 
-@media (max-width: 380px) {
+@media (max-width: 440px) {
   .header-subtitle {
     display: none !important;
   }
