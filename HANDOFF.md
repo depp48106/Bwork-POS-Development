@@ -808,3 +808,138 @@
 - `booking_tax_delivery_line_selected_mobile_390.png`: ภาพหน้าจอตัวเลือกช่องทาง LINE พร้อมข้อความแนะนำบนหน้าจอมือถือ 390px
 - `booking_tax_delivery_email_filled_mobile_390.png`: ภาพหน้าจอกรอกอีเมลภาษี B และปุ่มใช้อีเมลเดียวกับผู้จองบนหน้าจอมือถือ 390px
 - `booking_tax_delivery_validation_mobile_390.png`: ภาพหน้าจอแจ้งเตือน validation เมื่อไม่กรอกอีเมลภาษีบนหน้าจอมือถือ 390px
+
+
+---
+
+## 14. การเตรียม Selective Release สำหรับระบบจัดส่งใบกำกับภาษีออนไลน์ และคู่มือขั้นตอนการ Deploy / Rollback (Selective Release Runbook & Verification)
+
+> **บันทึกการเตรียม Release:** 6 พฤศจิกายน 2026  
+> **Release Baseline:** Commit `895176e8`  
+> **Release Branch:** `release/selective-gmail-tax-invoice-20261105`  
+> **Release Worktree:** `D:\Project BL\Bwork-POS-Release`  
+> **Release Commit:** `5f68eb0b` (และ commit ล่าสุดที่รวม HANDOFF)  
+> **Development Branch:** `integration/home-office-20261021` (Commit: `e082c44f`)  
+> **สถานะการ Deploy:** **เตรียมพร้อมปล่อยอัปเดต (STOP AT PREPARATION - ยังไม่ได้ Deploy)**  
+> **สถานะสวิตช์ความปลอดภัย:** `GMAIL_LIVE_DISPATCH_ENABLED="false"`, `GMAIL_TEST_DISPATCH_ENABLED="false"` (ปิดสนิท 100%)
+
+### 14.1 การตรวจสอบความเข้ากันได้ของ API Contract (POST /api/public/bookings)
+ดำเนินการทดสอบ Contract Fixtures และ UAT ครบ 6 กรณีสำคัญ ผ่านชุดทดสอบจำลอง SQLite In-Memory และ Headless Chrome CDP:
+1. **Legacy Production Payload Fixture (100% Backward Compatibility):**
+   - ส่ง payload รูปแบบหน้าจอง Production เดิม (`tax_delivery_method: 'online'` โดยไม่มี `tax_online_subchannel` และไม่มี `tax_email`)
+   - ผลการทดสอบ: API บันทึกการจองสำเร็จ 100% โดยบันทึก `bookings.tax_email = NULL` และไม่เกิด error ใด ๆ
+2. **New Form with Email Subchannel - Empty tax_email:**
+   - ส่ง `tax_online_subchannel: 'email'` แต่ `tax_email: ''`
+   - ผลการทดสอบ: API ปฏิเสธด้วย HTTP 400 Bad Request: *"กรุณาระบุอีเมลสำหรับรับใบกำกับภาษี"* ก่อนการบันทึก
+3. **New Form with Email Subchannel - Invalid tax_email format:**
+   - ส่ง `tax_online_subchannel: 'email'` และ `tax_email: 'not-an-email-format'`
+   - ผลการทดสอบ: API ปฏิเสธด้วย HTTP 400 Bad Request: *"รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง"* ก่อนการบันทึก
+4. **New Form with LINE Subchannel - Stale Email Prevention:**
+   - สลับเป็น LINE (`tax_online_subchannel: 'line'`) แม้มีอีเมลตกค้างจาก state เดิม
+   - ผลการทดสอบ: API ตัดค่าทิ้งและบันทึก `bookings.tax_email = NULL` ป้องกัน email ตกค้าง 100%
+5. **Postal Delivery - Stale Email Prevention:**
+   - เลือกจัดส่งทางไปรษณีย์ (`tax_delivery_method: 'postal'`) แม้มีอีเมลส่งมา
+   - ผลการทดสอบ: API บันทึกที่อยู่ไปรษณีย์ และบันทึก `bookings.tax_email = NULL` 100%
+6. **Customer Email A vs Tax Invoice Recipient Email B (POS Integration):**
+   - ผู้จองกรอกอีเมลผู้จอง A (`customer_email = customerA@client.com`) และอีเมลภาษี B (`tax_email = accountingB@taxrecipient.com`)
+   - ผลการทดสอบ: ระบบบันทึกแยกคอลัมน์ชัดเจน และเมื่อเรียก POS Email Preview (`GET /api/bookings/:id/tax-invoice/email-preview`) ช่อง "ถึง:" จะดึงอีเมล B เป็นผู้รับอย่างถูกต้อง ขณะที่ข้อมูลผู้จองยังคงเป็น A 100%
+
+### 14.2 ข้อมูลไฟล์ Selective Release และผลการ Build
+- **ไฟล์ที่ได้รับการคัดเลือก (Selective Patch Scope):**
+  - `booking-app/src/pages/BookingFormPage.jsx` (ฟอร์มจัดส่ง LINE/อีเมล, ปุ่มคัดลอกอีเมล, State Isolation, Draft Persistence)
+  - `booking-app/src/index.css` (การป้องกัน Mobile horizontal overflow บน viewport 390px)
+  - `backend/worker.js` (การตรวจสอบ `tax_online_subchannel` และ `tax_email` ใน `POST /api/public/bookings`)
+  - `backend/server.js` (ความเท่าเทียมของ Express server กับ Cloudflare Worker)
+  - `backend/tests/test_tax_invoice_delivery_uat.cjs` (ชุดทดสอบ UAT อัตโนมัติ)
+  - `backend/wrangler.toml` (ยืนยันสวิตช์ `GMAIL_LIVE_DISPATCH_ENABLED="false"`)
+- **ผลการคอมไพล์ Frontend (Production Build Artifacts):**
+  - คำสั่ง: `npm.cmd --prefix booking-app run build`
+  - ไดเรกทอรีผลลัพธ์: `booking-app/dist/`
+  - ไฟล์หลัก:
+    - `dist/index.html` (1.28 kB, gzip: 0.67 kB)
+    - `dist/assets/index-nyKoyXj5.css` (7.35 kB, gzip: 2.30 kB)
+    - `dist/assets/index-DxlNx6Aw.js` (525.77 kB, gzip: 156.59 kB)
+- **การทดสอบความสมบูรณ์ใน Release Worktree:**
+  - `taxInvoiceEmailDryRun.test.cjs`: ผ่าน 13/13 tests (100% pass)
+  - `test_tax_invoice_delivery_uat.cjs`: ผ่านทั้ง Backend Unit และ Chrome CDP UI tests (100% pass)
+  - `verify_contract_fixtures.cjs`: ผ่านครบทุก fixtures (100% pass)
+
+### 14.3 สถานะ Production Baseline ก่อนการ Deploy (Current Live Baselines)
+- **Cloudflare Worker `bwork-pos-api`:**
+  - Live Endpoint: `https://bwork-pos-api.ohnatza74185-ky.workers.dev`
+  - Current Version ID: `a68b57b8-e161-47d1-86aa-19a7cbd097e1` (หรือ hotfix baseline `aeb1bcae-d839-4b7b-9637-2d3fb47a67c4`)
+  - `GMAIL_LIVE_DISPATCH_ENABLED`: `"false"`
+  - `GMAIL_TEST_DISPATCH_ENABLED`: `"false"`
+  - `GMAIL_SENDER_NAME`: `"บริษัท บิลท์ ฮาร์ท จำกัด"`
+  - D1 Database: `bworkpos_db`
+  - R2 Bucket: `bwork-uploads`
+- **Cloudflare Pages `bwork-booking`:**
+  - Live Domain: `https://bwork-booking.pages.dev`
+  - Current Active Deployment ID: `3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a`
+  - Current Live Bundle: `/assets/index-DEouKUNO.js` (Commit: `bff68d10`)
+
+---
+
+### 14.4 ลำดับขั้นตอนการ Deploy ขึ้น Production (Deployment Runbook)
+> **หมายเหตุสำคัญ:** ดำเนินการขั้นตอนเหล่านี้เมื่อได้รับความเห็นชอบและอนุมัติจากผู้ใช้เท่านั้น
+
+```mermaid
+flowchart TD
+    Start([เริ่มขั้นตอนการ Deploy]) --> PreCheck[ตรวจสอบสวิตช์ความปลอดภัย GMAIL=false และ Secrets ครบถ้วน]
+    PreCheck --> Step1[1. Deploy Worker bwork-pos-api ก่อน]
+    Step1 --> VerifyWorker{ตรวจ Worker Health & Version ID}
+    VerifyWorker -- สำเร็จ --> Step2[2. Deploy Pages bwork-booking ถัดไป]
+    VerifyWorker -- พบปัญหา --> RollbackWorker[Rollback Worker ทันที]
+    Step2 --> VerifyPages{ตรวจ Pages CDN Bundle index-DxlNx6Aw.js}
+    VerifyPages -- สำเร็จ --> PostSmoke[ทดสอบ Read-only Mobile Smoke Test บน Production]
+    VerifyPages -- พบปัญหา --> RollbackPages[Rollback Pages สู่ Deployment เดิม]
+    PostSmoke --> Done([เสร็จสิ้นการ Deploy อย่างปลอดภัย])
+```
+
+#### Step 1: Deploy Cloudflare Worker `bwork-pos-api` (FIRST)
+- **เหตุผลทางเทคนิค:** Backend ต้องถูกอัปเกรดให้รองรับฟิลด์ `tax_online_subchannel` และ `tax_email` ก่อน เพื่อให้สามารถประมวลผล payload ของหน้าเว็บเวอร์ชันใหม่ได้ทันที และยังคงรองรับ payload เดิมแบบ 100% Backward Compatible สำหรับผู้ใช้ที่ยังเปิดหน้าเว็บเดิมค้างอยู่
+- **ขั้นตอนการรัน:**
+  ```powershell
+  cd "D:\Project BL\Bwork-POS-Release\backend"
+  npx wrangler deploy
+  ```
+- **การตรวจสอบความถูกต้องหลัง Deploy:**
+  1. ตรวจสอบ Version ID ใหม่ที่สร้างขึ้น
+  2. ตรวจสอบว่า `GMAIL_LIVE_DISPATCH_ENABLED="false"` ยังคงปิดสนิท
+  3. ตรวจสอบการตอบสนองของ Worker: `curl -I https://bwork-pos-api.ohnatza74185-ky.workers.dev/api/health` ต้องตอบ HTTP 200
+
+#### Step 2: Deploy Cloudflare Pages `bwork-booking` (SECOND)
+- **เหตุผลทางเทคนิค:** Frontend หน้าจองถูก deploy หลังจาก Worker พร้อมแล้ว เพื่อรับประกันว่าจะไม่มี client-side request ส่งฟิลด์ใหม่ไปยัง Worker รุ่นเก่า
+- **ขั้นตอนการรัน:**
+  ```powershell
+  cd "D:\Project BL\Bwork-POS-Release\booking-app"
+  npx wrangler pages deploy dist --project-name=bwork-booking --commit-dirty=true
+  ```
+- **การตรวจสอบความถูกต้องหลัง Deploy:**
+  1. บันทึก Deployment ID ใหม่ที่ Cloudflare Pages คืนค่ากลับมา
+  2. ตรวจสอบ CDN Bundle: `curl -I https://bwork-booking.pages.dev/assets/index-DxlNx6Aw.js` ต้องตอบ HTTP 200
+  3. ตรวจสอบหน้าเว็บ Production ผ่านมือถือ: สลับช่องทาง LINE / อีเมล, ตรวจสอบปุ่ม "ใช้อีเมลเดียวกับผู้จอง", และตรวจสอบว่าไม่มีการล้นจอ (Zero Horizontal Overflow) ที่ความกว้าง 390px
+
+---
+
+### 14.5 ขั้นตอนการ Rollback ฉุกเฉิน (Emergency Rollback Runbook)
+กรณีที่พบปัญหาการทำงานบน Production ให้ดำเนินการ Rollback ย้อนลำดับ (Reverse Order) ดังนี้:
+
+#### Rollback Step 1: Rollback Cloudflare Pages `bwork-booking` (FIRST)
+- **เหตุผล:** นำหน้าบ้านกลับสู่เวอร์ชันเดิมทันที เพื่อหยุดการส่ง payload รูปแบบใหม่จากฝั่งลูกค้า
+- **ขั้นตอนการรัน:**
+  - ผ่าน Cloudflare Dashboard: ไปที่ Pages > `bwork-booking` > Deployments > เลือก Deployment ID `3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a` > คลิก **"Rollback to this deployment"**
+  - หรือผ่าน Wrangler CLI:
+    ```powershell
+    npx wrangler pages deployment rollback 3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a --project-name=bwork-booking
+    ```
+- **การตรวจสอบ:** ตรวจสอบว่าหน้าเว็บโหลด bundle `/assets/index-DEouKUNO.js` กลับคืนมา
+
+#### Rollback Step 2: Rollback Cloudflare Worker `bwork-pos-api` (SECOND)
+- **เหตุผล:** เมื่อไม่มี traffic จากฟอร์มใหม่แล้ว จึง rollback Worker กลับสู่ baseline version เดิม
+- **ขั้นตอนการรัน:**
+  ```powershell
+  cd "D:\Project BL\Bwork-POS-Release\backend"
+  npx wrangler rollback a68b57b8-e161-47d1-86aa-19a7cbd097e1
+  ```
+- **การตรวจสอบ:** ตรวจสอบ Version ID ของ Worker ว่ากลับคืนสู่ `a68b57b8-e161-47d1-86aa-19a7cbd097e1` (หรือ baseline version) เรียบร้อย
