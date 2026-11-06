@@ -1029,3 +1029,73 @@ npx wrangler pages deployment rollback 3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a --pr
 cd "D:\Project BL\Bwork-POS-Release\backend"
 npx wrangler rollback a68b57b8-e161-47d1-86aa-19a7cbd097e1
 ```
+
+
+---
+
+## 16. การอัปเดต booking-app: QR ชำระเงินความละเอียดสูง และ Modal ข้อปฏิบัติการใช้ห้องประชุม (2026-11-06)
+
+> **บันทึกการพัฒนา:** 6 พฤศจิกายน 2026  
+> **สภาพแวดล้อม:** Development Workspace (`D:\Project BL\Bwork-POS-Development`)  
+> **Branch:** `integration/home-office-20261021`  
+> **สถานะการ Deploy:** **หยุดที่ Development เท่านั้น — ยังไม่ได้ Deploy ขึ้น Production (Development Only)**
+
+### 16.1 สรุป Commit แยก 2 รายการ (Two Dedicated Commits)
+
+| Commit SHA | หัวข้อ / รายละเอียด | ไฟล์ที่เกี่ยวข้อง |
+| :--- | :--- | :--- |
+| **`96b187d5`** | **feat(booking-app): update payment QR code with high-resolution standee and intact borders** | - `booking-app/public/bwork_payment_qr.jpg` (ไฟล์สแตนดี้ใหม่ 1024x1536)<br>- `booking-app/public/bwork_payment_qr.png` (แทนที่รูปเดิมด้วยไฟล์ใหม่)<br>- `booking-app/src/pages/ConfirmPage.jsx` (`object-fit: contain`, ขอบ QR ไม่ถูกตัด) |
+| **`c39e4998`** | **feat(booking-app): add room guidelines modal on payment confirmation for rooms 201, 301-306, and Jupiter** | - `booking-app/public/rules/room301-306.png` (ข้อปฏิบัติห้องประชุม 201, 301-306)<br>- `booking-app/public/rules/jupiter.jpg` (ข้อปฏิบัติ Jupiter Auditorium)<br>- `booking-app/src/pages/ConfirmPage.jsx` (ปุ่ม "ดูข้อปฏิบัติการใช้ห้อง" เหนือ QR และ In-web modal) |
+
+---
+
+### 16.2 รายละเอียดการปรับปรุง QR Code ชำระเงิน (Commit `96b187d5`)
+1. **รูปภาพ QR Code สแตนดี้ความละเอียดสูง:**
+   - ใช้รูปต้นฉบับ `Qr ชำระเงิน.jpg` (ความละเอียด 1024x1536, อัตราส่วน 2:3) วางเป็น `bwork_payment_qr.jpg` และเขียนทับ `bwork_payment_qr.png` ใน `booking-app/public`
+   - ปรับแต่ง CSS Container ให้มี `object-fit: contain` และปรับ `borderRadius: 8px` ไม่ให้ตัดหรือครอปขอบ QR Code ใด ๆ ทั้งสิ้น
+   - ลิงก์ดาวน์โหลด QR Code สำหรับลูกค้าสามารถบันทึกรูปสแตนดี้ต้นฉบับได้เต็มใบ
+   - ใน `booking-app` ไม่มีจุดขยายเวลาห้อง (จุดขยายเวลาห้องมีเฉพาะใน POS Staff Modal)
+
+---
+
+### 16.3 การแสดงปุ่มและ In-web Modal "ดูข้อปฏิบัติการใช้ห้อง" (Commit `c39e4998`)
+1. **ตำแหน่งการแสดงผล:**
+   - แสดงปุ่ม `"ดูข้อปฏิบัติการใช้ห้อง"` **เพียงจุดเดียว** วางอยู่ใต้สรุปรายการจอง และอยู่เหนือกล่อง QR Code ชำระเงินอย่างชัดเจน
+2. **การจับคู่รูปภาพตามรหัสและชื่อห้องจริง (Room-Specific Mapping):**
+   - **ห้อง 201 (ID 11: Pluto 201):** ใช้รูป `/rules/room301-306.png`
+   - **ห้อง 301–306 (IDs 4, 5, 6, 7, 8, 9: Mars, Mercury, Saturn, Venus, Uranus, Neptune):** ใช้รูป `/rules/room301-306.png`
+   - **Jupiter Auditorium (IDs 10, 12: Jupiter 300, Jupiter 300 & Co-Working):** ใช้รูป `/rules/jupiter.jpg`
+   - **ห้องที่ไม่ตรงเงื่อนไข (เช่น ID 13 เหมาโซน Co-working หรือห้องที่ไม่ได้แมป):** **ซ่อนปุ่มอย่างสมบูรณ์ (Fail-Closed / Hide Button)** ไม่มีการเดาหรือแสดงรูปผิดห้อง
+3. **ฟังก์ชันการทำงานของ In-web Modal บนมือถือ:**
+   - **เลื่อนอ่านได้ (Scrollable):** กล่อง modal จัดให้มี `overflow: auto` พร้อม `-webkit-overflow-scrolling: touch` รองรับการเลื่อนอ่านรูปภาพขนาดยาวบนหน้าจอมือถือได้อย่างลื่นไหล
+   - **ขยายภาพได้ (Zoomable):**
+     - มีปุ่มเครื่องมือขยาย (`+`), ย่อ (`-`), และปุ่มรีเซ็ตขนาด (`100%`) ที่แถบด้านบน
+     - รองรับการแตะ 2 ครั้ง (Double-tap) เพื่อซูมขยาย 175% หรือรีเซ็ตกลับ 100%
+     - รองรับ Touch gesture `touch-action: pan-x pan-y pinch-zoom` สำหรับการใช้นิ้วซูมบนหน้าจอสัมผัส
+   - **ปิดง่ายบนมือถือ (Easy Close):**
+     - ปุ่มกากบาท (`X`) ที่มุมบนขวา พร้อมแตะได้สะดวก
+     - ปุ่ม `"ปิดหน้าต่าง"` ที่แถบด้านล่างสำหรับกดปิดด้วยนิ้วโป้ง
+     - แตะพื้นที่สีดำด้านนอก (Backdrop overlay) เพื่อปิด modal
+     - กดปุ่ม `Escape` บนคีย์บอร์ดเพื่อปิด modal
+   - **ไม่มีช่องติ๊กยอมรับ (NO Acceptance Checkbox):** เป็นหน้าต่างแสดงข้อมูลเพื่อให้อ่านข้อปฏิบัติ ไม่มีการบังคับติ๊กยอมรับเงื่อนไขในรอบนี้ตามคำสั่ง
+
+---
+
+### 16.4 ผลการทดสอบ Unit Test และ Mobile Verification (Viewport 390x844)
+1. **Unit Tests (`scratch/test_room_guidelines.js`):**
+   - ผ่านการทดสอบครบทุกเคส: ห้อง 201 (ID 11 และชื่อ), ห้อง 301–306 (IDs 4-9 ทั้ง 6 ห้อง), Jupiter Auditorium (IDs 10, 12 และชื่อ), และเคสห้องที่ไม่ได้แมป (ID 13, Desk, null) ให้ผลลัพธ์ `null` ซ่อนปุ่ม 100%
+2. **Headless Chrome Real Mobile 390px Verification (`scratch/verify_mobile_guidelines.js`):**
+   - **Room 201:** ปุ่มแสดงผล `visible: true` -> กดเปิด modal ได้รูป `room301-306.png` -> กดซูม `+` ขนาดเปลี่ยนเป็น 125% -> กด `X` ปิด modal สำเร็จ
+   - **Room 301:** กดเปิด modal ได้รูป `room301-306.png` ถูกต้อง
+   - **Jupiter Auditorium:** กดเปิด modal ได้รูป `jupiter.jpg` พร้อมชื่อหัวข้อ "ข้อปฏิบัติการใช้ห้อง Jupiter Auditorium" ถูกต้อง
+   - **Unmapped Room (เหมาโซน Co-working):** ปุ่ม `#btn-room-guidelines` **ไม่แสดงผล (`visible: false`) 100%**
+   - **Payment QR Standee:** แสดงผลครบถ้วน ขอบไม่ตกหล่น ขนาด 272x408 (อัตราส่วน 1.50 พอดีกับหน้าจอมือถือ 390px โดยไม่ล้นจอ)
+3. **Build Status:**
+   - คำสั่ง `npm run build` ใน `booking-app` ผ่านเรียบร้อย (Bundle: `dist/assets/index-D3mxdwsH.js`, 566.14 kB)
+
+---
+
+### 16.5 ข้อกำหนดความปลอดภัยและการส่งต่องาน (Safety Boundaries)
+- **Development Work Only:** การเปลี่ยนแปลงทั้งหมดถูก commit บน branch `integration/home-office-20261021` และ push ขึ้น origin เท่านั้น
+- **NO Production Deployment:** ไม่มีการ build หรือ deploy ขึ้น Cloudflare Pages หรือ Cloudflare Worker ในรอบนี้
+- **Git Status:** Working tree สะอาด ประวัติ commit สืบทอดอย่างถูกต้อง
