@@ -947,3 +947,85 @@ flowchart TD
   npx wrangler rollback a68b57b8-e161-47d1-86aa-19a7cbd097e1
   ```
 - **การตรวจสอบ:** ตรวจสอบ Version ID ของ Worker ว่ากลับคืนสู่ `a68b57b8-e161-47d1-86aa-19a7cbd097e1` (หรือ baseline version) เรียบร้อย
+
+
+---
+
+## 15. การ Deploy ระบบจัดส่งใบกำกับภาษีออนไลน์ขึ้น Production และผลการตรวจสอบบน Live Mobile (Production Release & Verification)
+
+> **บันทึกการ Deploy:** 6 พฤศจิกายน 2026  
+> **Release Commit SHA:** `601f1783` (จาก worktree `D:\Project BL\Bwork-POS-Release`)  
+> **Release Branch:** `release/selective-gmail-tax-invoice-20261105`  
+> **ขอบเขตการ Deploy:** Cloudflare Worker `bwork-pos-api` และ Cloudflare Pages `bwork-booking` เท่านั้น  
+> *(ไม่มีการ Deploy POS Pages, ไม่มีการรัน Database Migration, และไม่มีการส่งอีเมล/LINE ทดสอบจริง)*
+
+### 15.1 สรุปเปรียบเทียบ Deployment IDs ก่อนและหลังการปล่อย (Pre/Post Deploy IDs)
+
+| บริการ (Service) | ก่อน Deploy (Pre-deploy) | หลัง Deploy (Post-deploy) | สถานะ / รายละเอียด |
+| :--- | :--- | :--- | :--- |
+| **Worker `bwork-pos-api`** | `a68b57b8-e161-47d1-86aa-19a7cbd097e1` | **`e4f15202-5e15-49dd-89a0-fdf4f26d8916`** | 100% Traffic Allocation, Active |
+| **Pages `bwork-booking`** | `3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a` | **`6d005a94-b7e1-48eb-a7e8-2a16f80a6bae`** | Production Environment (branch `main`), Active |
+| **Pages Preview (สำรอง)** | - | `57b4a7c8-5d59-4b98-b822-2ec78894847e` | Preview Alias Deployment |
+
+### 15.2 การตรวจสอบสถานะคอนฟิกและสวิตช์ความปลอดภัยของ Worker
+ตรวจสอบยืนยันผ่านคำสั่ง `wrangler versions view e4f15202-5e15-49dd-89a0-fdf4f26d8916`:
+- `env.GMAIL_LIVE_DISPATCH_ENABLED`: **`"true"`** (รักษาค่าเดิมของ Production ตามข้อกำหนด)
+- `env.GMAIL_TEST_DISPATCH_ENABLED`: **`"false"`** (สวิตช์ทดสอบปิด)
+- `env.GMAIL_SENDER_NAME`: **`"บริษัท บิลท์ ฮาร์ท จำกัด"`**
+- `env.GMAIL_REPLY_TO`: **`"coworkings.bwork@gmail.com"`**
+- `env.GMAIL_USER_EMAIL`: **`"coworkings.bwork@gmail.com"`**
+- **Bindings & Secrets ครบถ้วน:**
+  - D1 Database: `bworkpos_db` (`0f171606-080b-4380-bf91-167dc678e2e4`)
+  - R2 Bucket: `bwork-uploads`
+  - Secrets: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `WIFI_CREDENTIAL_ENCRYPTION_KEY`
+- **Read-Only API Verification:** เรียก `GET /api/public/rooms` ตอบสนอง HTTP 200 รายการห้อง 10 ห้องครบถ้วน
+
+### 15.3 Bundle ที่โหลดจริงบน Production CDN
+ตรวจสอบจาก `https://bwork-booking.pages.dev/`:
+- **JS Bundle:** `/assets/index-DxlNx6Aw.js` (HTTP 200, 525.77 kB)
+- **CSS Bundle:** `/assets/index-nyKoyXj5.css` (HTTP 200, 7.35 kB)
+
+### 15.4 ผลการตรวจสอบ Live Mobile ผ่าน Headless Chrome CDP (Viewport 390x844)
+ทดสอบหน้าจองจริง `https://bwork-booking.pages.dev/form` ในโหมดจำลองมือถือ iPhone (390x844):
+1. **การโหลดและแสดงผล:** หน้าฟอร์มโหลดสำเร็จด้วย bundle ใหม่ `index-DxlNx6Aw.js`
+2. **ตัวเลือกประเภทผู้เสียภาษี (Entity Selection):**
+   - ปุ่ม "บุคคลธรรมดา" และ "นิติบุคคล" แสดงผลและสลับการทำงานได้ถูกต้องสมบูรณ์
+3. **ตัวเลือกรูปแบบการจัดส่ง (Delivery Method Dropdown):**
+   - ตัวเลือก "จัดส่งออนไลน์ (LINE หรืออีเมล)" แสดงผลตรงตามข้อกำหนด
+4. **ช่องทางย่อย LINE (Default):**
+   - ค่าเริ่มต้นเป็น LINE โดยซ่อนช่องกรอกอีเมลภาษี (`taxEmailInputVisible: false`)
+   - บันทึกภาพหน้าจอ: `prod_live_mobile_390_line_selected.png`
+5. **การสลับเป็นช่องทาง "อีเมล":**
+   - แสดงช่องกรอก `#input-tax-email` (placeholder: "เช่น billing@company.com")
+   - แสดงปุ่มผู้ช่วย `#btn-use-booking-email` ("ใช้อีเมลเดียวกับผู้จอง")
+6. **การทำงานของปุ่ม "ใช้อีเมลเดียวกับผู้จอง":**
+   - เมื่อกดปุ่ม ระบบคัดลอกอีเมลผู้จอง `customerA@example.com` ลงในช่อง tax email อย่างแม่นยำ
+7. **State Isolation (การแยก state อย่างเด็ดขาด):**
+   - ทำการแก้ไข tax email เป็น `accountingB@example.com`
+   - ตรวจสอบค่า: `customerEmail === 'customerA@example.com'` และ `taxEmail === 'accountingB@example.com'` ไม่ปะปนกัน 100%
+   - บันทึกภาพหน้าจอ: `prod_live_mobile_390_email_selected.png`
+8. **การสลับกลับมาเป็น LINE:**
+   - ช่องกรอก tax email ถูกซ่อนกลับไปอย่างสะอาดตา
+   - บันทึกภาพหน้าจอ: `prod_live_mobile_390_line_switched_back.png`
+9. **การตรวจสอบการล้นจอ (Zero Horizontal Overflow):**
+   - ตรวจวัดจริง: `scrollWidth: 390 === clientWidth: 390` (ไม่มีส่วนประกอบใดล้นหน้าจอ 100%)
+10. **STRICT SAFETY GATE ENFORCEMENT:**
+    - **หยุดการทดสอบก่อนกดปุ่ม "ถัดไป" บน Production อย่างเคร่งครัด**
+    - ไม่มีการสร้างรายการจองจริงในระบบ, ไม่มีการบันทึกธุรกรรม D1, ไม่มีการส่งอีเมลจริงไปยังลูกค้า และไม่มีการเรียก API LINE จริง
+
+### 15.5 ขั้นตอนการ Rollback ฉุกเฉิน (Emergency Rollback Runbook)
+หากพบปัญหาในการให้บริการจริง ให้ดำเนินการย้อนระบบตามลำดับ (Reverse Order):
+
+#### Rollback Step 1: Rollback Booking Pages (FIRST)
+ย้อนหน้าเว็บกลับสู่เวอร์ชันเดิมก่อน เพื่อหยุดการส่ง payload รูปแบบใหม่จากฝั่งลูกค้า:
+```powershell
+npx wrangler pages deployment rollback 3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a --project-name=bwork-booking
+```
+*(หรือเลือก Rollback ผ่าน Cloudflare Dashboard สู่ Deployment ID `3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a`)*
+
+#### Rollback Step 2: Rollback Worker `bwork-pos-api` (SECOND)
+เมื่อไม่มี traffic จากหน้าเว็บใหม่แล้ว ย้อน Worker กลับสู่ baseline version เดิม:
+```powershell
+cd "D:\Project BL\Bwork-POS-Release\backend"
+npx wrangler rollback a68b57b8-e161-47d1-86aa-19a7cbd097e1
+```
