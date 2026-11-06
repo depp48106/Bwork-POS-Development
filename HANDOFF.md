@@ -363,3 +363,64 @@
   3. **การเปิดใช้งานสวิตช์ส่งจริง:**
      - รอคำสั่งอนุมัติจากผู้ใช้ก่อนปรับค่า `GMAIL_LIVE_DISPATCH_ENABLED="true"` บน Cloudflare Worker Secrets / Environment Variables
      - ห้ามเปิดสวิตช์ส่งจริงจนกว่าจะได้รับการอนุมัติอย่างเป็นลายลักษณ์อักษร
+
+---
+
+## 9. ผลการ Deploy BWORK Booking Tax Invoice Hotfix ขึ้น Production (2026-11-06)
+
+### 9.1 ปัญหาเดิมและผลการวิเคราะห์สาเหตุ (Root Cause Analysis)
+- **อาการบั๊ก:** ลูกค้าติ๊กเลือก "ต้องการขอใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบ" บนหน้าเว็บจอง (`bwork-booking.pages.dev`) แล้วระบบขึ้นข้อความแจ้งเตือนว่า *"กรุณาระบุประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)"* แต่ไม่มีช่องหรือปุ่มตัวเลือกประเภทผู้เสียภาษีให้กดเลือก ทำให้ไม่สามารถดำเนินการต่อได้
+- **สาเหตุทางระบบ (Root Cause):**
+  1. การ Release ระบบส่งใบกำกับภาษี Gmail ก่อนหน้านี้ เป็นการปล่อยเฉพาะ Worker API (`bwork-pos-api`) และ POS Pages (`bwork-pos`) โดยที่ Booking Pages (`bwork-booking`) ยังคงอยู่ที่ deployment เดิม (`c0211db4`) ซึ่ง Bundle เดิม (`/assets/index-DoifLwrz.js`) ยังไม่มีฟิลด์ตัวเลือก `tax_payer_type`
+  2. Worker API บน Production มี validation บังคับว่าหาก `tax_invoice_required == 1` ค่า `tax_payer_type` ต้องเป็น `'individual'` หรือ `'corporate'` เท่านั้น
+  3. เมื่อหน้าเว็บรุ่นเก่าส่ง `tax_invoice_required: 1` โดยไม่มี `tax_payer_type` ทาง Worker จึงตอบกลับ `HTTP 400 Bad Request` ทำให้หน้าเว็บแสดงข้อความแจ้งเตือนดังกล่าว
+
+### 9.2 การตรวจยืนยัน API Contract บน Production Worker (`bwork-pos-api`) สด
+- **Active Worker Version ID:** `a68b57b8-e161-47d1-86aa-19a7cbd097e1` (รับทราฟฟิก 100%)
+- **ผลการยิง Probe ตรวจสอบ Contract จริง:**
+  - `tax_invoice_required: 1` ไม่ระบุ `tax_payer_type` $\rightarrow$ ตอบ `400: "กรุณาระบุประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)"`
+  - `tax_invoice_required: 1` ส่ง `tax_payer_type: "individual"` $\rightarrow$ ยอมรับและเข้าสู่ validation ชื่อบุคคลธรรมดา (`"กรุณากรอกชื่อ–นามสกุลสำหรับออกใบกำกับภาษี"`)
+  - `tax_invoice_required: 1` ส่ง `tax_payer_type: "corporate"` $\rightarrow$ ยอมรับและเข้าสู่ validation ชื่อนิติบุคคล (`"กรุณากรอกชื่อนิติบุคคลสำหรับออกใบกำกับภาษี"`)
+  - `tax_invoice_required: 0` ไม่ส่ง `tax_payer_type` $\rightarrow$ ข้ามการตรวจประเภทผู้เสียภาษี 100% (เข้าสู่การตรวจห้อง ไม่บังคับฟิลด์นี้)
+  - **ยืนยัน: API Contract ของ Worker จริงตรงกับข้อกำหนดและ Hotfix 100% ไม่มีความขัดแย้ง**
+
+### 9.3 ข้อมูลการ Release & Git Traceability
+- **Release Repository:** `D:\Project BL\Bwork-POS-Release`
+- **Release Branch:** `release/selective-gmail-tax-invoice-20261105`
+- **Release Commit SHA:** `bff68d107b87231ac8973a8c87cd2b661b09d6ad`
+- **Development Commit SHA:** `8aa8d747fce5bca578b8ad282713f04494a8c903` (บน branch `integration/home-office-20261021`)
+- **ขอบเขตการแก้ไข:** แก้ไขเฉพาะไฟล์เดียว [`booking-app/src/pages/BookingFormPage.jsx`](file:///D:/Project%20BL/Bwork-POS-Development/booking-app/src/pages/BookingFormPage.jsx)
+- **การแยกขอบเขต Selective Scope:** ปลอดจาก unreleased features (ไม่มีโค้ด Support Tickets หรือ CRM RC ปะปน 100%)
+
+### 9.4 ข้อมูล Deployment IDs บน Cloudflare Pages (`bwork-booking`)
+- **Previous Deployment ID (สำหรับ Rollback):** `c0211db4-1ccf-4db2-9ac8-a3697703f79a`
+- **Deployed Deployment ID (Active ล่าสุด):** `3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a`
+- **Production URL:** https://bwork-booking.pages.dev
+- **Preview URL:** https://3ef05797.bwork-booking.pages.dev
+- **ชื่อ Bundle ที่โหลดจริงบน Production:** `/assets/index-DEouKUNO.js` (ขนาด 501,318 bytes)
+
+### 9.5 ผลการทดสอบสดบน Production หลัง Deploy (Real Browser Mobile 390px)
+- **ตรวจสอบทางเทคนิค (Live Chrome CDP at 390x844):**
+  1. **เมื่อเปิดหน้าเว็บและติ๊กขอใบกำกับภาษี:**
+     - แสดงแถวตัวเลือกประเภทผู้เสียภาษี `#btn-tax-individual` ("บุคคลธรรมดา") และ `#btn-tax-corporate` ("นิติบุคคล") วางก่อนช่องกรอกชื่อ
+     - เริ่มต้นไม่มีปุ่มใดถูกเลือกไว้ล่วงหน้า (ไม่มี default และไม่เดาจากชื่อบริษัท)
+  2. **เมื่อกดเลือก "บุคคลธรรมดา":**
+     - ปุ่มบุคคลธรรมดา Active (`indActive: true`), ซ่อนส่วนตัวเลือกสาขา
+     - แสดง Label *"ชื่อ–นามสกุล *"* และ Placeholder *"เช่น นายสมชาย ใจดี"*
+     - บันทึกภาพหลักฐาน: `prod_live_mobile_390_individual_selected.png`
+  3. **เมื่อกดเลือก "นิติบุคคล":**
+     - ปุ่มนิติบุคคล Active (`corpActive: true`), แสดงตัวเลือกสาขา ("สำนักงานใหญ่" / "สาขา")
+     - แสดง Label *"ชื่อนิติบุคคล *"* และ Placeholder *"เช่น บริษัท ตัวอย่าง จำกัด"*
+     - เมื่อกดเลือก "สาขา" แสดงช่องกรอกเลขที่สาขา (`#input-tax-branch-number`) ทันที
+     - บันทึกภาพหลักฐาน: `prod_live_mobile_390_corporate_selected.png`
+  4. **Safety Gate Compliance:**
+     - **หยุดการทำงานก่อนกดปุ่ม "ถัดไป" บน Production อย่างเคร่งครัด**
+     - ไม่มีการสร้างรายการจองจริง ไม่มีการบันทึกธุรกรรมการเงิน และไม่มีการเขียนฐานข้อมูล Production ใด ๆ ทั้งสิ้น (ยืนยันขั้นตอนส่งฟอร์มผ่าน Mock UAT Suite ครบทุกเคสแล้ว)
+
+### 9.6 สถานะสวิตช์ความปลอดภัยของระบบโดยรวม
+- **Worker `bwork-pos-api`:** คงเดิมที่ Version ID `a68b57b8-e161-47d1-86aa-19a7cbd097e1`
+- **POS Pages `bwork-pos`:** คงเดิมที่ Deployment ID `d4598e58-92e9-4476-ac7c-47bdae0ec14a`
+- **D1 Database `bworkpos_db`:** ไม่มีการรัน migration เพิ่มเติม
+- **สวิตช์ส่งอีเมล:**
+  - `GMAIL_LIVE_DISPATCH_ENABLED="false"` (ปิดสนิท)
+  - `GMAIL_TEST_DISPATCH_ENABLED="false"` (ปิดสนิท)
