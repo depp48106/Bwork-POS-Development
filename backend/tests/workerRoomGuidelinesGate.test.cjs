@@ -2,10 +2,10 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
-const Database = require('better-sqlite3');
+const { DatabaseSync: Database } = require('node:sqlite');
 
 /**
- * High-fidelity D1 Mock backed by better-sqlite3 for Cloudflare Worker runtime testing.
+ * High-fidelity D1 Mock backed by node:sqlite DatabaseSync for Cloudflare Worker runtime testing.
  */
 function createD1Mock(db) {
   return {
@@ -32,7 +32,7 @@ function createD1Mock(db) {
                 success: true,
                 meta: {
                   changes: info.changes,
-                  last_row_id: info.lastInsertRowid
+                  last_row_id: Number(info.lastInsertRowid)
                 }
               };
             }
@@ -57,7 +57,7 @@ function createD1Mock(db) {
             success: true,
             meta: {
               changes: info.changes,
-              last_row_id: info.lastInsertRowid
+              last_row_id: Number(info.lastInsertRowid)
             }
           };
         }
@@ -165,9 +165,9 @@ function setupTestDb(db) {
 
 let workerModule = null;
 async function getWorker() {
-  const devDir = 'D:\\Project BL\\Bwork-POS-Development';
-  const workerPath = path.join(devDir, 'backend/worker.js');
-  const tempMjs = path.join(devDir, `backend/worker.temp.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.mjs`);
+  const devDir = path.resolve(__dirname, '..');
+  const workerPath = path.join(devDir, 'worker.js');
+  const tempMjs = path.join(devDir, `worker.temp.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.mjs`);
   fs.copyFileSync(workerPath, tempMjs);
   try {
     const fileUrl = 'file:///' + tempMjs.replace(/\\/g, '/');
@@ -553,6 +553,271 @@ test('WORKER-08: New post-cutover meeting room booking not yet acknowledged (whe
   assert.equal(res.status, 400);
   const body = await res.json();
   assert.equal(body.code, 'GUIDELINES_NOT_ACKNOWLEDGED');
+
+  db.close();
+});
+
+test('WORKER-09: Forged LINE ID token -> rejected as unverified LINE binding, 0 LINE push calls, booking acknowledged & payment unblocked', async () => {
+  const db = new Database(':memory:');
+  setupTestDb(db);
+  const worker = await getWorker();
+
+  const env = {
+    DB: createD1Mock(db),
+    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token',
+    STAGING_MOCK_LINE_API: 'true'
+  };
+
+  // Enable guidelines LINE toggle
+  db.exec(`UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'`);
+
+  // Booking with unverified LINE account
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (91, 'BK-000091', 'UTARGET_USER_91', 0, '0812345678', 'tok_91')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (91, 4)`);
+
+  // Client passes a forged / fake ID token
+  const forgedToken = 'eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2FjY2Vzcy5saW5lLm1lIiwic3ViIjoiVVRBUkdFVF9VU0VSXzkxIn0.';
+
+  const req = new Request('http://localhost/api/public/bookings/91/acknowledge-rules', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Booking-Token': 'tok_91',
+      'X-Line-ID-Token': forgedToken
+    },
+    body: JSON.stringify({
+      rule_set: 'meeting_room_201_306',
+      rule_version: 'v1',
+      contact: '0812345678'
+    })
+  });
+
+  const res = await worker.default.fetch(req, env);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+
+  // Non-blocking: Customer successfully acknowledges rules and unlocks payment
+  assert.equal(body.success, true);
+  assert.equal(body.acknowledged, true);
+  assert.equal(body.line_notification?.status, 'skipped_unverified_line');
+
+  // Push was NOT dispatched (0 records in line_guidelines_dispatches)
+  const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UTARGET_USER_91'`).get();
+  assert.equal(count.c, 0);
+
+  db.close();
+});
+
+test('WORKER-10: LINE dispatch disabled by default in settings -> 0 LINE push calls even with verified LINE account, booking acknowledged', async () => {
+  const db = new Database(':memory:');
+  setupTestDb(db);
+  const worker = await getWorker();
+
+  const env = {
+    DB: createD1Mock(db),
+    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token',
+    STAGING_MOCK_LINE_API: 'true'
+  };
+
+  // Explicitly ensure default-off (false)
+  db.exec(`UPDATE settings SET value = 'false' WHERE key = 'line_guidelines_dispatch_enabled'`);
+
+  // Booking with server-verified LINE account
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (92, 'BK-000092', 'UVERIFIED_USER_92', 1, '0812345678', 'tok_92')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (92, 4)`);
+
+  const req = new Request('http://localhost/api/public/bookings/92/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_92' },
+    body: JSON.stringify({
+      rule_set: 'meeting_room_201_306',
+      rule_version: 'v1',
+      contact: '0812345678'
+    })
+  });
+
+  const res = await worker.default.fetch(req, env);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+
+  assert.equal(body.success, true);
+  assert.equal(body.acknowledged, true);
+  assert.equal(body.line_notification?.status, 'skipped_feature_disabled');
+
+  // 0 push calls
+  const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED_USER_92'`).get();
+  assert.equal(count.c, 0);
+
+  db.close();
+});
+
+test('WORKER-11: Verified account + dispatch toggle enabled -> exactly 1 push call; repeated acknowledge -> 0 extra push calls (deduplicated)', async () => {
+  const db = new Database(':memory:');
+  setupTestDb(db);
+  const worker = await getWorker();
+
+  const bgTasks = [];
+  const ctx = { waitUntil: (p) => { bgTasks.push(p); } };
+
+  const env = {
+    DB: createD1Mock(db),
+    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token',
+    STAGING_MOCK_LINE_API: 'true'
+  };
+
+  // Turn ON toggle
+  db.exec(`UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'`);
+
+  // Booking with server-verified LINE account
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (93, 'BK-000093', 'UVERIFIED_DEDUP_93', 1, '0812345678', 'tok_93')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (93, 4)`);
+
+  // 1st acknowledge
+  const req1 = new Request('http://localhost/api/public/bookings/93/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_93' },
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v1', contact: '0812345678' })
+  });
+  const res1 = await worker.default.fetch(req1, env, ctx);
+  assert.equal(res1.status, 200);
+  const body1 = await res1.json();
+  assert.equal(body1.line_notification?.status, 'pending');
+  assert.equal(body1.line_notification?.deduplicated, false);
+
+  await Promise.all(bgTasks);
+
+  // Exactly 1 dispatch record in DB
+  const dispatches1 = db.prepare(`SELECT count(*) as c, status FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED_DEDUP_93'`).get();
+  assert.equal(dispatches1.c, 1);
+  assert.equal(dispatches1.status, 'sent');
+
+  // 2nd acknowledge (repeat / duplicate submit)
+  const req2 = new Request('http://localhost/api/public/bookings/93/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_93' },
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v1', contact: '0812345678' })
+  });
+  const res2 = await worker.default.fetch(req2, env, ctx);
+  assert.equal(res2.status, 200);
+  const body2 = await res2.json();
+  assert.equal(body2.line_notification?.status, 'already_sent');
+  assert.equal(body2.line_notification?.deduplicated, true);
+
+  // Still exactly 1 dispatch record in DB (0 extra push calls)
+  const dispatches2 = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED_DEDUP_93'`).get();
+  assert.equal(dispatches2.c, 1);
+
+  db.close();
+});
+
+test('WORKER-12: booking_source=walkin / pos without server verification -> rejected as unverified LINE binding, 0 LINE push calls', async () => {
+  const db = new Database(':memory:');
+  setupTestDb(db);
+  const worker = await getWorker();
+
+  const env = {
+    DB: createD1Mock(db),
+    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token',
+    STAGING_MOCK_LINE_API: 'true'
+  };
+
+  db.exec(`UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'`);
+
+  // booking_source='walkin' but line_user_id_verified=0
+  db.exec(`INSERT INTO bookings (id, receipt_number, booking_source, line_user_id, line_user_id_verified, contact, qr_token) VALUES (94, 'BK-000094', 'walkin', 'UWALKIN_UNVERIFIED_94', 0, '0812345678', 'tok_94')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (94, 4)`);
+
+  const req = new Request('http://localhost/api/public/bookings/94/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_94' },
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v1', contact: '0812345678' })
+  });
+
+  const res = await worker.default.fetch(req, env);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+
+  // booking_source is forbidden as verification proof: must be skipped_unverified_line
+  assert.equal(body.success, true);
+  assert.equal(body.acknowledged, true);
+  assert.equal(body.line_notification?.status, 'skipped_unverified_line');
+
+  // 0 push calls
+  const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UWALKIN_UNVERIFIED_94'`).get();
+  assert.equal(count.c, 0);
+
+  db.close();
+});
+
+test('WORKER-13: LINE Verify ID Token API mocked -> verified token matching booking.line_user_id dispatches LINE push', async () => {
+  const db = new Database(':memory:');
+  setupTestDb(db);
+  const worker = await getWorker();
+
+  const bgTasks = [];
+  const ctx = { waitUntil: (p) => { bgTasks.push(p); } };
+
+  // Mock verify API via env.verifyLineIdToken
+  const env = {
+    DB: createD1Mock(db),
+    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token',
+    STAGING_MOCK_LINE_API: 'true',
+    verifyLineIdToken: async (tokenString, audience) => {
+      if (tokenString === 'valid.token.for.target') {
+        return { userId: 'UVERIFIED_API_TARGET_95', name: 'API Verified Customer' };
+      }
+      if (tokenString === 'valid.token.for.other') {
+        return { userId: 'UOTHER_USER_DIFFERENT', name: 'Other User' };
+      }
+      return null;
+    }
+  };
+
+  db.exec(`UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'`);
+
+  // Case A: Token verified for DIFFERENT user -> rejected, 0 push
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (95, 'BK-000095', 'UVERIFIED_API_TARGET_95', 0, '0812345678', 'tok_95')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (95, 4)`);
+
+  const reqA = new Request('http://localhost/api/public/bookings/95/acknowledge-rules', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Booking-Token': 'tok_95',
+      'X-Line-ID-Token': 'valid.token.for.other'
+    },
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v1', contact: '0812345678' })
+  });
+  const resA = await worker.default.fetch(reqA, env, ctx);
+  assert.equal(resA.status, 200);
+  const bodyA = await resA.json();
+  assert.equal(bodyA.acknowledged, true);
+  assert.equal(bodyA.line_notification?.status, 'skipped_unverified_line');
+
+  // Case B: Token verified for MATCHING user -> approved, 1 push!
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (96, 'BK-000096', 'UVERIFIED_API_TARGET_95', 0, '0812345678', 'tok_96')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (96, 4)`);
+
+  const reqB = new Request('http://localhost/api/public/bookings/96/acknowledge-rules', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Booking-Token': 'tok_96',
+      'X-Line-ID-Token': 'valid.token.for.target'
+    },
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v1', contact: '0812345678' })
+  });
+  const resB = await worker.default.fetch(reqB, env, ctx);
+  assert.equal(resB.status, 200);
+  const bodyB = await resB.json();
+  assert.equal(bodyB.acknowledged, true);
+  assert.equal(bodyB.line_notification?.status, 'pending');
+
+  await Promise.all(bgTasks);
+
+  // Exactly 1 dispatch recorded in DB
+  const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED_API_TARGET_95'`).get();
+  assert.equal(count.c, 1);
 
   db.close();
 });

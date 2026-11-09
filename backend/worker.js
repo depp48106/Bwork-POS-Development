@@ -1172,11 +1172,11 @@ function isBoundLineUserId(lineUserId) {
   return trimmed.startsWith('U') && trimmed.length >= 10;
 }
 
-function isServerConfirmedLineBinding({ lineUserId, isVerified, verifiedTokenUserId, bookingSource } = {}) {
+function isServerConfirmedLineBinding({ lineUserId, isVerified, verifiedTokenUserId } = {}) {
   if (!isBoundLineUserId(lineUserId)) return false;
   if (verifiedTokenUserId && verifiedTokenUserId.trim() === lineUserId.trim()) return true;
   if (isVerified === true || isVerified === 1 || isVerified === '1' || isVerified === 'true') return true;
-  if (bookingSource && bookingSource !== 'online' && isVerified !== false && isVerified !== 0 && isVerified !== '0') return true;
+  // NOTE: booking_source, client LINE ID, and unverified JWT payloads are strictly forbidden as proof
   return false;
 }
 
@@ -3816,6 +3816,59 @@ function generateWorkerTicketToken() {
   const bytes = new Uint8Array(24);
   crypto.getRandomValues(bytes);
   return 'tkt_sec_' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+
+async function verifyWorkerLineIdTokenWithApi(env, tokenString, expectedAudience = '2011136579') {
+  if (!tokenString || typeof tokenString !== 'string') return null;
+  const trimmed = tokenString.trim();
+
+  if (typeof env.verifyLineIdToken === 'function') {
+    return env.verifyLineIdToken(trimmed, expectedAudience);
+  }
+
+  if (typeof globalThis.mockVerifyLineIdToken === 'function') {
+    const res = await globalThis.mockVerifyLineIdToken({ idToken: trimmed, channelId: expectedAudience });
+    return res ? { userId: res, name: null } : null;
+  }
+
+  const parts = trimmed.split('.');
+  if (parts.length !== 3) return null;
+
+  try {
+    const params = new URLSearchParams();
+    params.append('id_token', trimmed);
+    if (expectedAudience) {
+      params.append('client_id', expectedAudience);
+    }
+
+    const res = await fetch('https://api.line.me/oauth2/v2.1/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const payload = await res.json();
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.iss !== 'https://access.line.me' || !payload.sub) {
+      return null;
+    }
+    if (expectedAudience && payload.aud && payload.aud !== expectedAudience && !String(expectedAudience).includes(payload.aud)) {
+      return null;
+    }
+    if (payload.exp && typeof payload.exp === 'number' && payload.exp < (nowSec - 60)) {
+      return null;
+    }
+
+    return { userId: payload.sub.trim(), name: payload.name || null };
+  } catch (err) {
+    console.warn('[WorkerLineVerify] Error verifying LINE ID token:', err?.message || err);
+    return null;
+  }
 }
 
 function verifyWorkerLineIdToken(tokenString, expectedAudience = null) {
@@ -11135,10 +11188,13 @@ export default {
         const acknowledgedAt = updatedBooking?.guidelines_acknowledged_at || new Date().toISOString();
 
         // Server-Confirmed LINE Recipient Check & Feature Toggle
+        const channelIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_id'").first();
+        const channelId = channelIdRow?.value?.trim() || env.LINE_CHANNEL_ID || '2011136579';
+
         let verifiedLineUserId = null;
         const lineIdTokenHeader = request.headers.get('x-line-id-token') || bodyLineIdToken;
         if (lineIdTokenHeader) {
-          const verified = verifyWorkerLineIdToken(lineIdTokenHeader);
+          const verified = await verifyWorkerLineIdTokenWithApi(env, lineIdTokenHeader, channelId);
           if (verified && verified.userId) {
             verifiedLineUserId = verified.userId;
           }
@@ -11148,13 +11204,13 @@ export default {
         const isLineConfirmed = isServerConfirmedLineBinding({
           lineUserId: booking.line_user_id,
           isVerified: booking.line_user_id_verified,
-          verifiedTokenUserId: verifiedLineUserId,
-          bookingSource: booking.booking_source
+          verifiedTokenUserId: verifiedLineUserId
         });
 
         const lineToggleRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'").first();
-        const isFeatureDisabled = (lineToggleRow && (lineToggleRow.value === 'false' || lineToggleRow.value === '0')) ||
-                                  (env.DISABLE_LIVE_LINE === 'true');
+        const isFeatureEnabled = (lineToggleRow && (lineToggleRow.value === 'true' || lineToggleRow.value === '1')) &&
+                                  (env.DISABLE_LIVE_LINE !== 'true');
+        const isFeatureDisabled = !isFeatureEnabled;
 
         let lineNotification = null;
 

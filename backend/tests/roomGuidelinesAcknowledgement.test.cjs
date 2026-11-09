@@ -373,12 +373,12 @@ function createHarness(testDb, mockLineDispatcher = null) {
       const isLineConfirmed = isServerConfirmedLineBinding({
         lineUserId: rawLineId,
         isVerified: booking.line_user_id_verified,
-        bookingSource: booking.booking_source
+        verifiedTokenUserId: (req.headers['x-line-id-token'] && req.headers['x-line-id-token'].includes('valid.token.') ? req.headers['x-line-id-token'].split('valid.token.')[1] : null)
       });
 
       const lineToggleSetting = await testDb.get("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'");
-      const isFeatureDisabled = (lineToggleSetting && (lineToggleSetting.value === 'false' || lineToggleSetting.value === '0')) ||
-                                (process.env.DISABLE_LIVE_LINE === 'true');
+      const isFeatureEnabled = (lineToggleSetting && (lineToggleSetting.value === 'true' || lineToggleSetting.value === '1')) && (process.env.DISABLE_LIVE_LINE !== 'true');
+      const isFeatureDisabled = !isFeatureEnabled;
 
       let lineNotification = null;
 
@@ -1021,6 +1021,7 @@ test('SERVER-E2E: Direct test against server.js routes and database.js migration
 
     // 4. Now turn toggle ON ('true') and reset payment_status
     await dbQuery.run("UPDATE settings SET value = 'true' WHERE key = 'guidelines_enforcement_enabled'");
+    await dbQuery.run("UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'");
     await dbQuery.run("UPDATE bookings SET payment_status = 'pending', slip_image_url = NULL WHERE id = ?", [bookingId]);
 
     // Check GET again -> guidelines_enforced: true
@@ -1076,5 +1077,221 @@ test('SERVER-E2E: Direct test against server.js routes and database.js migration
     if (fs.existsSync(tempDbPath)) {
       try { fs.unlinkSync(tempDbPath); } catch (_) {}
     }
+  }
+});
+
+
+test('TC13: Forged LINE ID token -> rejected as unverified LINE binding, 0 LINE push calls, booking acknowledged & payment unblocked', async () => {
+  const testDb = createTestDb();
+  await initSchema(testDb);
+
+  let pushCalls = 0;
+  const app = createHarness(testDb, async () => {
+    pushCalls++;
+    return { sent: true };
+  });
+
+  // Turn ON toggle
+  await testDb.run("UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'");
+
+  // Booking with unverified LINE account
+  const b = await testDb.run(`
+    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id, line_user_id_verified)
+    VALUES ('Hacker', '0812345678', 800, 'tok_tc13', 'UFORGED_USER_13', 0)
+  `);
+  const bookingId = b.lastID;
+  await testDb.run('INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, 4, 800, 800)', [bookingId]);
+
+  // Client provides forged token
+  const res = await callApi(app, 'POST', `/api/public/bookings/${bookingId}/acknowledge-rules`, {
+    headers: {
+      'X-Booking-Token': 'tok_tc13',
+      'X-Line-ID-Token': 'eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2FjY2Vzcy5saW5lLm1lIiwic3ViIjoiVUZPUkdFRF9VU0VSXzEzIn0.'
+    },
+    body: { rule_set: 'meeting_room_201_306', rule_version: 'v1' }
+  });
+
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.success, true);
+  assert.strictEqual(res.body.acknowledged, true);
+  assert.strictEqual(res.body.line_notification.status, 'skipped_unverified_line');
+
+  // Push was NOT called
+  assert.strictEqual(pushCalls, 0);
+  const count = await testDb.get("SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UFORGED_USER_13'");
+  assert.strictEqual(count.c, 0);
+});
+
+test('TC14: LINE guidelines dispatch toggle disabled (default-off) -> 0 LINE push calls even with verified LINE account, booking acknowledged', async () => {
+  const testDb = createTestDb();
+  await initSchema(testDb);
+
+  let pushCalls = 0;
+  const app = createHarness(testDb, async () => {
+    pushCalls++;
+    return { sent: true };
+  });
+
+  // Explicitly ensure toggle is disabled
+  await testDb.run("UPDATE settings SET value = 'false' WHERE key = 'line_guidelines_dispatch_enabled'");
+
+  // Booking with verified LINE account
+  const b = await testDb.run(`
+    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id, line_user_id_verified)
+    VALUES ('Verified Customer', '0812345678', 800, 'tok_tc14', 'UVERIFIED_USER_14', 1)
+  `);
+  const bookingId = b.lastID;
+  await testDb.run('INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, 4, 800, 800)', [bookingId]);
+
+  const res = await callApi(app, 'POST', `/api/public/bookings/${bookingId}/acknowledge-rules`, {
+    headers: { 'X-Booking-Token': 'tok_tc14' },
+    body: { rule_set: 'meeting_room_201_306', rule_version: 'v1' }
+  });
+
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.success, true);
+  assert.strictEqual(res.body.acknowledged, true);
+  assert.strictEqual(res.body.line_notification.status, 'skipped_feature_disabled');
+
+  // 0 push calls
+  assert.strictEqual(pushCalls, 0);
+  const count = await testDb.get("SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED_USER_14'");
+  assert.strictEqual(count.c, 0);
+});
+
+test('TC15: Verified LINE account + toggle enabled -> exactly 1 push call; repeated acknowledge -> 0 extra push calls (deduplicated)', async () => {
+  const testDb = createTestDb();
+  await initSchema(testDb);
+
+  let pushCalls = 0;
+  const app = createHarness(testDb, async () => {
+    pushCalls++;
+    return { sent: true };
+  });
+
+  // Enable toggle
+  await testDb.run("UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'");
+
+  const b = await testDb.run(`
+    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id, line_user_id_verified)
+    VALUES ('Dedup Customer', '0812345678', 800, 'tok_tc15', 'UVERIFIED_USER_15', 1)
+  `);
+  const bookingId = b.lastID;
+  await testDb.run('INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, 4, 800, 800)', [bookingId]);
+
+  // 1st acknowledge
+  const r1 = await callApi(app, 'POST', `/api/public/bookings/${bookingId}/acknowledge-rules`, {
+    headers: { 'X-Booking-Token': 'tok_tc15' },
+    body: { rule_set: 'meeting_room_201_306', rule_version: 'v1' }
+  });
+  assert.strictEqual(r1.status, 200);
+  assert.strictEqual(r1.body.line_notification.status, 'pending');
+  assert.strictEqual(r1.body.line_notification.deduplicated, false);
+  await new Promise(r => setTimeout(r, 60));
+  assert.strictEqual(pushCalls, 1);
+
+  // 2nd acknowledge (duplicate / repeated submit)
+  const r2 = await callApi(app, 'POST', `/api/public/bookings/${bookingId}/acknowledge-rules`, {
+    headers: { 'X-Booking-Token': 'tok_tc15' },
+    body: { rule_set: 'meeting_room_201_306', rule_version: 'v1' }
+  });
+  assert.strictEqual(r2.status, 200);
+  assert.strictEqual(r2.body.line_notification.status, 'already_sent');
+  assert.strictEqual(r2.body.line_notification.deduplicated, true);
+
+  // Push was NOT called again (deduplicated to exactly 1 call)
+  assert.strictEqual(pushCalls, 1);
+});
+
+test('TC16: booking_source=walkin / pos without server verification -> rejected as unverified LINE binding, 0 LINE push calls', async () => {
+  const testDb = createTestDb();
+  await initSchema(testDb);
+
+  let pushCalls = 0;
+  const app = createHarness(testDb, async () => {
+    pushCalls++;
+    return { sent: true };
+  });
+
+  await testDb.run("UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'");
+
+  // booking_source='walkin' but line_user_id_verified=0
+  const b = await testDb.run(`
+    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id, line_user_id_verified, booking_source)
+    VALUES ('Walkin Customer', '0812345678', 800, 'tok_tc16', 'UWALKIN_USER_16', 0, 'walkin')
+  `);
+  const bookingId = b.lastID;
+  await testDb.run('INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, 4, 800, 800)', [bookingId]);
+
+  const res = await callApi(app, 'POST', `/api/public/bookings/${bookingId}/acknowledge-rules`, {
+    headers: { 'X-Booking-Token': 'tok_tc16' },
+    body: { rule_set: 'meeting_room_201_306', rule_version: 'v1' }
+  });
+
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.success, true);
+  assert.strictEqual(res.body.acknowledged, true);
+  assert.strictEqual(res.body.line_notification.status, 'skipped_unverified_line');
+
+  // 0 push calls
+  assert.strictEqual(pushCalls, 0);
+  const count = await testDb.get("SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UWALKIN_USER_16'");
+  assert.strictEqual(count.c, 0);
+});
+
+test('TC17: Official LINE Verify ID Token API mock test -> verifies sub and aud, rejects invalid tokens', async () => {
+  const { verifyLineIdTokenWithLineApi } = require('../server.js');
+
+  const oldFetch = globalThis.fetch;
+  try {
+    // 1. Mock fetch returning valid token payload matching channel ID
+    globalThis.fetch = async (url, options) => {
+      if (url === 'https://api.line.me/oauth2/v2.1/verify') {
+        const bodyStr = String(options?.body || '');
+        if (bodyStr.includes('id_token=valid.token.123')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              iss: 'https://access.line.me',
+              sub: 'UVERIFIED_VIA_LINE_API_17',
+              aud: '2011136579',
+              exp: Math.floor(Date.now() / 1000) + 3600
+            })
+          };
+        }
+        if (bodyStr.includes('id_token=fake.token.456')) {
+          return {
+            ok: false,
+            status: 400,
+            json: async () => ({ error: 'invalid_request', error_description: 'Invalid ID token' })
+          };
+        }
+      }
+      return oldFetch(url, options);
+    };
+
+    // Valid token
+    const verifiedUser = await verifyLineIdTokenWithLineApi({
+      idToken: 'valid.token.123',
+      channelId: '2011136579'
+    });
+    assert.strictEqual(verifiedUser, 'UVERIFIED_VIA_LINE_API_17');
+
+    // Fake / forged token rejected
+    const fakeUser = await verifyLineIdTokenWithLineApi({
+      idToken: 'fake.token.456',
+      channelId: '2011136579'
+    });
+    assert.strictEqual(fakeUser, null);
+
+    // Completely bogus string rejected without calling API
+    const bogusUser = await verifyLineIdTokenWithLineApi({
+      idToken: 'not-even-a-jwt',
+      channelId: '2011136579'
+    });
+    assert.strictEqual(bogusUser, null);
+  } finally {
+    globalThis.fetch = oldFetch;
   }
 });

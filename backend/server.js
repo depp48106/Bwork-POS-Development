@@ -5983,6 +5983,62 @@ async function sendLineBookingCustomerInfoUpdateServer(booking, newCustomerName,
   }
 }
 
+
+async function verifyLineIdTokenWithLineApi({ idToken, channelId }) {
+  if (!idToken || typeof idToken !== 'string') return null;
+  const trimmed = idToken.trim();
+
+  if (typeof global.mockVerifyLineIdToken === 'function') {
+    return global.mockVerifyLineIdToken({ idToken: trimmed, channelId });
+  }
+
+  const parts = trimmed.split('.');
+  if (parts.length !== 3) return null;
+
+  if (process.env.ALLOW_MOCK_LINE_TOKENS === 'true') {
+    try {
+      const { verifyMockLineIdToken } = require('./supportTickets/customerAuth');
+      const mockRes = verifyMockLineIdToken(trimmed, channelId);
+      if (mockRes && mockRes.userId) return mockRes.userId;
+    } catch (_) {}
+  }
+
+  try {
+    const params = new URLSearchParams();
+    params.append('id_token', trimmed);
+    if (channelId) {
+      params.append('client_id', channelId);
+    }
+
+    const res = await fetch('https://api.line.me/oauth2/v2.1/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const payload = await res.json();
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.iss !== 'https://access.line.me' || !payload.sub) {
+      return null;
+    }
+    if (channelId && payload.aud && payload.aud !== channelId && !String(channelId).includes(payload.aud)) {
+      return null;
+    }
+    if (payload.exp && typeof payload.exp === 'number' && payload.exp < (nowSec - 60)) {
+      return null;
+    }
+
+    return payload.sub.trim();
+  } catch (err) {
+    console.warn('[LineVerify] Error calling LINE Verify ID Token API:', err.message);
+    return null;
+  }
+}
+
 async function sendRoomGuidelinesLineMessageServer({ booking, guidelinesConfig }) {
   try {
     if (!booking || !booking.line_user_id) return { sent: false, reason: 'no_line_recipient' };
@@ -8988,34 +9044,30 @@ app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
     const acknowledgedAt = updatedBooking?.guidelines_acknowledged_at || new Date().toISOString();
 
     // Verify Server-Confirmed LINE Recipient & Feature Toggle
+    const channelIdRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_id'");
+    const channelId = channelIdRow?.value?.trim() || process.env.LINE_CHANNEL_ID || '2011136579';
+
     let verifiedLineUserId = null;
     const lineIdToken = req.headers['x-line-id-token'] || req.body?.line_id_token;
     if (lineIdToken && typeof lineIdToken === 'string') {
       try {
-        const parts = lineIdToken.trim().split('.');
-        if (parts.length === 3) {
-          let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-          while (b64.length % 4) b64 += '=';
-          const payload = JSON.parse(Buffer.from(b64, 'base64').toString());
-          const nowSec = Math.floor(Date.now() / 1000);
-          if (payload.iss === 'https://access.line.me' && (!payload.exp || payload.exp >= nowSec - 60) && payload.sub) {
-            verifiedLineUserId = payload.sub.trim();
-          }
-        }
-      } catch (_) {}
+        verifiedLineUserId = await verifyLineIdTokenWithLineApi({ idToken: lineIdToken, channelId });
+      } catch (_) {
+        verifiedLineUserId = null;
+      }
     }
 
     const hasValidSyntax = isBoundLineUserId(booking.line_user_id);
     const isLineConfirmed = isServerConfirmedLineBinding({
       lineUserId: booking.line_user_id,
       isVerified: booking.line_user_id_verified,
-      verifiedTokenUserId: verifiedLineUserId,
-      bookingSource: booking.booking_source
+      verifiedTokenUserId: verifiedLineUserId
     });
 
     const lineToggleSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'");
-    const isFeatureDisabled = (lineToggleSetting && (lineToggleSetting.value === 'false' || lineToggleSetting.value === '0')) ||
-                              (process.env.DISABLE_LIVE_LINE === 'true');
+    const isFeatureEnabled = (lineToggleSetting && (lineToggleSetting.value === 'true' || lineToggleSetting.value === '1')) &&
+                             (process.env.DISABLE_LIVE_LINE !== 'true');
+    const isFeatureDisabled = !isFeatureEnabled;
 
     let lineNotification = null;
 
@@ -10129,6 +10181,8 @@ const buildLineBookingCancellationFlex = buildLineBookingCancelledFlex;
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     app,
+    verifyLineIdTokenWithLineApi,
+    sendRoomGuidelinesLineMessageServer,
     dbInitPromise,
     autoCancelInterval,
     createToken,

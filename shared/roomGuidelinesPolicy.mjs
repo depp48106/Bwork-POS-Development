@@ -140,20 +140,18 @@ export function isBoundLineUserId(lineUserId) {
 
 /**
  * Evaluates whether a LINE user ID is server-confirmed as bound to the customer.
- * NEVER trust an unverified client-supplied ID as evidence of account binding.
+ * NEVER trust an unverified client-supplied ID, raw JWT payload, or booking_source as evidence of account binding.
  *
  * @param {object} params
  * @param {string} params.lineUserId - The candidate LINE user ID
  * @param {boolean|number|string} [params.isVerified] - Explicit server verification flag
- * @param {string} [params.verifiedTokenUserId] - LINE user ID verified via ID token (LIFF)
- * @param {string} [params.bookingSource] - Booking creation source ('online', 'walkin', 'pos', etc.)
+ * @param {string} [params.verifiedTokenUserId] - LINE user ID verified via official LINE Verify ID Token API
  * @returns {boolean} True if confirmed by server
  */
 export function isServerConfirmedLineBinding({
   lineUserId,
   isVerified,
-  verifiedTokenUserId,
-  bookingSource
+  verifiedTokenUserId
 } = {}) {
   if (!isBoundLineUserId(lineUserId)) {
     return false;
@@ -169,11 +167,7 @@ export function isServerConfirmedLineBinding({
     return true;
   }
 
-  // 3. Back-office / POS staff binding (not untrusted public online form)
-  if (bookingSource && bookingSource !== 'online' && isVerified !== false && isVerified !== 0 && isVerified !== '0') {
-    return true;
-  }
-
+  // NOTE: booking_source, client LINE ID, and unverified JWT payloads are strictly forbidden as proof
   return false;
 }
 
