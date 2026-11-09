@@ -1149,3 +1149,94 @@ npx wrangler rollback a68b57b8-e161-47d1-86aa-19a7cbd097e1
 npx wrangler pages deployment rollback 6d005a94-b7e1-48eb-a7e8-2a16f80a6bae --project-name=bwork-booking
 ```
 *(หรือเลือกกด Rollback สู่ Deployment ID `6d005a94-b7e1-48eb-a7e8-2a16f80a6bae` บน Cloudflare Dashboard)*
+
+
+## 18. ระบบรับทราบข้อปฏิบัติก่อนชำระเงิน (Room Guidelines Pre-Payment Acknowledgement Gate) (Development Only)
+
+### 18.1 ภาพรวมระบบและข้อกำหนดทางธุรกิจ (System Architecture & Guidelines Policy)
+พัฒนาระบบตรวจสอบและบันทึกการรับทราบข้อปฏิบัติของห้องประชุมก่อนเข้าสู่ขั้นตอนการชำระเงินใน BWORK Booking App (`ConfirmPage.jsx`) ร่วมกับระบบ Backend (Express `server.js` และ Cloudflare Worker `worker.js`) โดยมี Single Source of Truth อยู่ที่ `shared/roomGuidelinesPolicy.mjs`:
+- **การจัดกลุ่มห้องและเวอร์ชันข้อปฏิบัติ (Room Guidelines Grouping):**
+  - **กลุ่มห้องประชุม 201 และ 301–306 (`meeting_room_201_306`, v1):** ครอบคลุมห้องรหัส 201 (ID 11), 301 (ID 4), 302 (ID 5), 303 (ID 6), 304 (ID 7), 305 (ID 8), 306 (ID 9) ใช้ข้อปฏิบัติและรูปภาพ `/rules/room301-306.png`
+  - **กลุ่มห้อง Jupiter Auditorium (`jupiter_auditorium`, v1):** ครอบคลุมห้องรหัส 10, 12 หรือชื่อห้องที่มีคำว่า Jupiter ใช้ข้อปฏิบัติและรูปภาพ `/rules/jupiter.jpg`
+  - **กลุ่มห้องยกเว้น (Exempt / Unmapped Rooms):** เช่น เหมาโซน Co-working (ID 13) ไม่บังคับรับทราบข้อปฏิบัติ (`required: false`) และข้ามสู่ขั้นตอนชำระเงินตามปกติได้ทันที
+- **เนื้อหาข้อปฏิบัติย่อ (Summary Points):** แสดง 4 ข้อสำคัญ ชัดเจน อ่านง่าย ไม่รกสายตาบนจอมือถือ พร้อมปุ่มกดเปิดดูเอกสารฉบับเต็มใน In-web modal ความละเอียดสูงที่ขยายและเลื่อนอ่านได้
+
+### 18.2 โครงสร้างฐานข้อมูลและการจัดการ Schema (Migration 018)
+สร้างไฟล์ Migration `backend/migrations/018_add_room_guidelines_acknowledgement.sql` และอัปเดต `backend/database.js`, `backend/schema.sql`, `backend/worker.js`:
+1. เพิ่มคอลัมน์ในตาราง `bookings`:
+   - `guidelines_acknowledged_at DATETIME`: เวลาที่ลูกค้ารับทราบข้อปฏิบัติ
+   - `guidelines_rule_set TEXT`: รหัสกลุ่มข้อปฏิบัติ (เช่น `meeting_room_201_306`, `jupiter_auditorium`)
+   - `guidelines_rule_version TEXT`: เวอร์ชันของข้อปฏิบัติ (เช่น `v1`)
+2. ตาราง `room_guidelines_acknowledgements`:
+   - บันทึกการรับทราบของการจองแต่ละรายการอย่างเป็นเอกเทศ (`booking_id`, `room_id`, `rule_set`, `rule_version`, `customer_contact`, `line_user_id`, `acknowledged_at`)
+   - Unique Constraint: `UNIQUE(booking_id, rule_set, rule_version)` เพื่อป้องกันการบันทึกซ้ำซ้อน
+3. ตาราง `line_guidelines_dispatches`:
+   - จัดเก็บประวัติการส่งข้อความแจ้งข้อปฏิบัติทาง LINE OA
+   - Unique Constraint: `UNIQUE(line_user_id, rule_set, rule_version)` เป็นหัวใจหลักในการทำ Deduplication ป้องกันการส่งข้อความซ้ำซ้อนให้ลูกค้ารายเดิมในกลุ่มห้องและเวอร์ชันเดิม
+
+### 18.3 พฤติกรรมและ API Contract ฝั่ง Backend
+1. **`POST /api/public/bookings/:id/acknowledge-rules`:**
+   - ตรวจสอบสิทธิ์ด้วย `hasPublicBookingAccess` (Token หรือ เบอร์โทรศัพท์)
+   - คำนวณกลุ่มข้อปฏิบัติจากฐานข้อมูลฝั่ง Server-side โดยตรง (ไม่เชื่อถือค่าจาก Client)
+   - บันทึกสถานะการรับทราบลงในตาราง `bookings` และ `room_guidelines_acknowledgements`
+   - ตรวจสอบการส่งข้อความ LINE OA:
+     - หากเคยส่งให้ `line_user_id` นั้นใน `rule_set` และ `rule_version` เดียวกันแล้ว จะระงับการส่งซ้ำ (`status: 'already_sent'`, `deduplicated: true`)
+     - หากเป็นการจองกลุ่มห้องใหม่ หรือเวอร์ชันใหม่ จะส่งข้อความแจ้งข้อปฏิบัติตาม Template ที่กำหนด (`status: 'sent'`)
+     - รูปแบบข้อความ LINE: ขึ้นต้นด้วย *"ข้อปฏิบัติการใช้ห้อง..."* ตามด้วย *"กรุณาอ่านข้อปฏิบัติก่อนเข้าใช้บริการ BWORK"* และแนบลิงก์รูปภาพกฎฉบับเต็ม
+     - **Fault Tolerance & Decoupling:** หากลูกค้าไม่ได้ผูก LINE (`skipped_no_line`) หรือเครือข่าย LINE ขัดข้อง สถานะการรับทราบข้อปฏิบัติบนเว็บยังคงผ่านสมบูรณ์ และลูกค้าสามารถดำเนินการชำระเงินต่อได้
+2. **`GET /api/public/bookings/:id`:**
+   - ส่งคืนสถานะ `guidelines_acknowledged`, `guidelines_acknowledged_at`, `guidelines_required`, `guidelines_rule_set`, `guidelines_rule_version` ให้ Client เรียกคืนสถานะเมื่อโหลดหน้าเว็บใหม่
+3. **`POST /api/public/bookings/:id/upload-slip`:**
+   - ตรวจสอบเงื่อนไขข้อปฏิบัติ: หากห้องต้องการรับทราบข้อปฏิบัติ และรายการจองสร้างหลัง Cutover Date (`2026-11-09T00:00:00.000Z`) แต่ยังไม่ได้รับทราบ จะปฏิเสธทันทีด้วย HTTP 400 (`code: 'GUIDELINES_NOT_ACKNOWLEDGED'`)
+   - รองรับ Backward Compatibility สำหรับรายการจองเก่าที่สร้างก่อน Cutover Date ให้แนบสลิปได้ตามปกติ
+
+### 18.4 พฤติกรรมหน้าบ้าน (Frontend `ConfirmPage.jsx`)
+- **การล็อก QR Code (Gated QR Section):**
+  - หากห้องต้องการรับทราบข้อปฏิบัติและยังไม่ได้รับทราบ: แสดงการ์ดข้อปฏิบัติย่อ, ปุ่มอ่านฉบับเต็ม, ช่องติ๊กยอมรับ *"ฉันได้อ่านและรับทราบข้อปฏิบัติของห้องที่จองแล้ว"*, และปุ่มกดยืนยันรับทราบ
+  - ซ่อนรูปภาพ QR Standee, ลิงก์ดาวน์โหลด QR, และฟอร์มแนบสลิป โดยแสดงการ์ดแจ้งเตือน *"QR Code สำหรับชำระเงินถูกล็อกไว้ กรุณาอ่านและกดยืนยันรับทราบข้อปฏิบัติด้านบน"*
+- **หลังการกดยืนยันรับทราบ:**
+  - แสดงแถบสำเร็จสีเขียว *"✓ รับทราบข้อปฏิบัติเรียบร้อยแล้ว"* พร้อมปุ่มลิงก์ *"ดูข้อปฏิบัติอีกครั้ง"*
+  - ปลดล็อกแสดง QR Code Standee, ยอดเงิน, ปุ่มบันทึกรูป QR, บัญชีธนาคาร, และฟอร์มแนบสลิปทันที
+- **การโหลดหน้าเว็บใหม่ (Page Reload / Refresh):**
+  - ดึงสถานะ `guidelines_acknowledged` ที่บันทึกไว้กลับมาแสดงผลทันที ลูกค้าเห็น QR Code ชำระเงินได้ต่อเนื่องโดยไม่ต้องกดยืนยันซ้ำ
+
+### 18.5 ผลการรัน Automated Test Suite (`backend/tests/roomGuidelinesAcknowledgement.test.cjs`)
+รันผ่าน 100% ครอบคลุม 15 Test Cases:
+```text
+✔ POLICY-01: Resolves Room 201 and 301-306 to meeting_room_201_306 group
+✔ POLICY-02: Resolves Jupiter Auditorium to jupiter_auditorium group
+✔ POLICY-03: Unmapped room (e.g. Co-working zone ID 13) is exempt
+✔ POLICY-04: LINE guidelines message matches required wording and format
+✔ TC01: Meeting room first-time acknowledgement -> QR unlocked, LINE dispatched
+✔ TC02: Repeat booking across rooms in same group (Room 201 -> Room 302) suppresses duplicate LINE dispatch
+✔ TC03: First-time Jupiter Auditorium booking dispatches LINE for new rule set
+✔ TC04: Bumped rule version (v2) re-dispatches LINE message
+✔ TC05: Page refresh (GET /api/public/bookings/:id) exposes stored acknowledgement state
+✔ TC06: Double submit / repeat acknowledge API is idempotent
+✔ TC07: Calling slip upload before acknowledgement is rejected with HTTP 400
+✔ TC08: Legacy booking before cutover allows slip upload without blocking
+✔ TC09: Unmapped exempt room (Co-working zone ID 13) bypasses gate immediately
+✔ TC10: Customer without LINE or LINE dispatch failure does not block web payment flow
+✔ SERVER-E2E: Direct test against server.js routes and database.js migrations
+Total tests: 15 passed, 0 failed (duration: 803ms)
+```
+
+### 18.6 ภาพหลักฐานผลการทดสอบบน Mobile Viewport 390x844 (Visual Artifacts)
+1. **สถานะเริ่มต้นก่อนรับทราบ (Gated QR):**
+   `mobile_390_guidelines_unacknowledged_gated_qr.png`
+   แสดงข้อปฏิบัติย่อ 4 ข้อ, ปุ่มอ่านฉบับเต็ม, ช่องติ๊ก, ปุ่มยืนยัน และกล่องแจ้งว่า QR Code ถูกล็อกไว้
+2. **การเปิด Modal อ่านข้อปฏิบัติฉบับเต็ม (Flyer Modal):**
+   `mobile_390_guidelines_modal_open.png`
+   แสดงภาพกฎของห้อง 201/301-306 พร้อมปุ่มซูมเข้า/ออก และปุ่มปิดหน้าต่าง
+3. **สถานะหลังรับทราบสำเร็จ (Unlocked QR & Slip Upload):**
+   `mobile_390_guidelines_acknowledged_qr_unlocked.png`
+   แสดงแถบสีเขียวรับทราบแล้ว พร้อมปุ่มดูอีกครั้ง และเปิดแสดง QR Code พร้อมฟอร์มแนบสลิป
+4. **การรีเฟรชหน้าเว็บ (Page Reload Persistence):**
+   `mobile_390_guidelines_refresh_persisted_qr.png`
+   ดึงสถานะรับทราบแล้วจาก Server กลับมาแสดง QR Code ได้ต่อเนื่องทันที
+5. **ห้อง Jupiter Auditorium (Dedicated Rule Set):**
+   `mobile_390_jupiter_unacknowledged.png` และ `mobile_390_jupiter_modal_flyer.png`
+   แสดงข้อปฏิบัติและรูปภาพเฉพาะของห้อง Jupiter Auditorium
+6. **ห้องยกเว้น (Co-working Zone ID 13):**
+   `mobile_390_unmapped_room_no_gate.png`
+   ไม่มีการแสดงการ์ดข้อปฏิบัติ และแสดง QR Code ชำระเงินได้ทันทีโดยไม่ต้องผ่าน Gate

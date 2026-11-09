@@ -36,6 +36,11 @@ const {
   isValidKey
 } = require('./wifiCryptoHelper');
 const {
+  resolveRoomGuidelines,
+  buildLineGuidelinesMessage,
+  GUIDELINES_CUTOVER_ISO
+} = require('../shared/roomGuidelinesPolicy.mjs');
+const {
   DEFAULT_SENDER_NAME,
   DEFAULT_SENDER_EMAIL,
   DEFAULT_REPLY_TO,
@@ -5975,6 +5980,39 @@ async function sendLineBookingCustomerInfoUpdateServer(booking, newCustomerName,
   }
 }
 
+async function sendRoomGuidelinesLineMessageServer({ booking, guidelinesConfig }) {
+  try {
+    if (!booking || !booking.line_user_id) return { sent: false, reason: 'no_line_recipient' };
+
+    if (process.env.NODE_ENV === 'test' && !process.env.LIVE_LINE_TEST) {
+      return { sent: true, mocked: true, status: 200 };
+    }
+
+    const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+    const channelAccessToken = tokenSetting?.value || process.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (!channelAccessToken) return { sent: false, reason: 'no_channel_access_token' };
+
+    const textContent = buildLineGuidelinesMessage(guidelinesConfig);
+
+    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${channelAccessToken}`
+      },
+      body: JSON.stringify({
+        to: booking.line_user_id,
+        messages: [{ type: 'text', text: textContent }]
+      })
+    });
+
+    return { sent: lineRes.ok, status: lineRes.status };
+  } catch (err) {
+    console.error('Error sending room guidelines LINE message:', err);
+    return { sent: false, error: err.message };
+  }
+}
+
 // Update booking customer information endpoint (Safe allowlist, concurrency-safe, financial-isolated)
 const handleUpdateCustomerInfo = async (req, res) => {
   const { id } = req.params;
@@ -8853,6 +8891,157 @@ app.post('/api/public/bookings/:id/request-pin', async (req, res) => {
   }
 });
 
+// Customer acknowledges room guidelines before payment
+app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
+  const { id } = req.params;
+
+  let numericId = null;
+  if (!isNaN(id)) {
+    numericId = parseInt(id, 10);
+  } else if (typeof id === 'string' && id.startsWith('BK-')) {
+    const raw = id.replace('BK-', '');
+    if (!isNaN(raw)) {
+      numericId = parseInt(raw, 10);
+    }
+  }
+
+  try {
+    const booking = await dbQuery.get(
+      'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
+      [numericId, id, id, id]
+    );
+
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+    if (!hasPublicBookingAccess(req, booking)) {
+      return res.status(403).json({ error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' });
+    }
+
+    if (booking.payment_status === 'cancelled') {
+      return res.status(400).json({ error: 'รายการจองนี้ถูกยกเลิกแล้ว ไม่สามารถดำเนินการต่อได้' });
+    }
+
+    // Resolve room details
+    const items = await dbQuery.all(
+      `SELECT bi.*, r.name as room_name, r.capacity, r.image_url, r.description
+       FROM booking_items bi
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE bi.booking_id = ?`,
+      [booking.id]
+    );
+
+    const firstItem = items && items.length > 0 ? items[0] : null;
+    const guidelinesConfig = resolveRoomGuidelines(firstItem?.room_id, firstItem?.room_name);
+
+    if (!guidelinesConfig.required) {
+      return res.json({
+        success: true,
+        required: false,
+        message: 'ห้องนี้ไม่จำเป็นต้องรับทราบข้อปฏิบัติ'
+      });
+    }
+
+    // Idempotent: record in room_guidelines_acknowledgements
+    try {
+      await dbQuery.run(
+        `INSERT OR IGNORE INTO room_guidelines_acknowledgements 
+         (booking_id, room_id, rule_set, rule_version, customer_contact, line_user_id, acknowledged_at)
+         VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        [
+          booking.id,
+          firstItem?.room_id || null,
+          guidelinesConfig.rule_set,
+          guidelinesConfig.rule_version,
+          booking.contact || null,
+          booking.line_user_id || null
+        ]
+      );
+    } catch (e) {
+      console.warn('[Guidelines] Error inserting acknowledgement row:', e.message);
+    }
+
+    // Update booking record
+    await dbQuery.run(
+      `UPDATE bookings 
+       SET guidelines_acknowledged_at = COALESCE(guidelines_acknowledged_at, CURRENT_TIMESTAMP),
+           guidelines_rule_set = ?,
+           guidelines_rule_version = ?
+       WHERE id = ?`,
+      [guidelinesConfig.rule_set, guidelinesConfig.rule_version, booking.id]
+    );
+
+    const updatedBooking = await dbQuery.get('SELECT guidelines_acknowledged_at FROM bookings WHERE id = ?', [booking.id]);
+    const acknowledgedAt = updatedBooking?.guidelines_acknowledged_at || new Date().toISOString();
+
+    // LINE OA Notification (Deduplicated per person x rule_set x rule_version)
+    let lineNotification = null;
+    if (booking.line_user_id) {
+      const existingDispatch = await dbQuery.get(
+        `SELECT * FROM line_guidelines_dispatches 
+         WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
+        [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+      );
+
+      if (existingDispatch) {
+        lineNotification = {
+          status: 'already_sent',
+          deduplicated: true,
+          message: 'เคยส่งข้อปฏิบัติชุดนี้ให้ผู้ใช้ทาง LINE แล้ว'
+        };
+      } else {
+        const lineResult = await sendRoomGuidelinesLineMessageServer({
+          booking,
+          guidelinesConfig
+        });
+
+        if (lineResult.sent) {
+          try {
+            await dbQuery.run(
+              `INSERT INTO line_guidelines_dispatches 
+               (line_user_id, rule_set, rule_version, first_booking_id, status, dispatched_at)
+               VALUES (?, ?, ?, ?, 'sent', CURRENT_TIMESTAMP)`,
+              [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, booking.id]
+            );
+          } catch (e) {
+            console.warn('[Guidelines] Error inserting line dispatch row:', e.message);
+          }
+          lineNotification = {
+            status: 'sent',
+            deduplicated: false,
+            message: 'ส่งข้อปฏิบัติทาง LINE เรียบร้อยแล้ว'
+          };
+        } else {
+          lineNotification = {
+            status: 'failed',
+            deduplicated: false,
+            error: lineResult.error || lineResult.reason || 'LINE dispatch failed'
+          };
+        }
+      }
+    } else {
+      lineNotification = {
+        status: 'skipped_no_line',
+        deduplicated: false,
+        message: 'ไม่มี LINE User ID สำหรับรายการจองนี้'
+      };
+    }
+
+    return res.json({
+      success: true,
+      acknowledged: true,
+      required: true,
+      rule_set: guidelinesConfig.rule_set,
+      rule_version: guidelinesConfig.rule_version,
+      acknowledged_at: acknowledgedAt,
+      line_notification: lineNotification
+    });
+  } catch (err) {
+    console.error('Error acknowledging room guidelines:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get booking status (public - requires contact for verification)
 app.get('/api/public/bookings/:id', async (req, res) => {
   const { id } = req.params;
@@ -8913,6 +9102,8 @@ app.get('/api/public/bookings/:id', async (req, res) => {
     const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
     const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
 
+    const guidelinesPolicy = resolveRoomGuidelines(roomInfo?.id, roomInfo?.name);
+
     res.json({
       ...sanitizePublicBooking(booking),
       rejection_reason: rejectionReason,
@@ -8923,7 +9114,12 @@ app.get('/api/public/bookings/:id', async (req, res) => {
       end_time: items && items.length ? (items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time) : null,
       booking_date: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : booking.created_at?.split('T')[0]) : null,
       paymentDeadline: new Date(new Date(booking.created_at).getTime() + paymentWindowMinutes * 60 * 1000).toISOString(),
-      payment_window_minutes: paymentWindowMinutes
+      payment_window_minutes: paymentWindowMinutes,
+      guidelines_acknowledged: Boolean(booking.guidelines_acknowledged_at),
+      guidelines_acknowledged_at: booking.guidelines_acknowledged_at || null,
+      guidelines_required: Boolean(guidelinesPolicy.required),
+      guidelines_rule_set: booking.guidelines_rule_set || guidelinesPolicy.rule_set,
+      guidelines_rule_version: booking.guidelines_rule_version || guidelinesPolicy.rule_version
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -8970,9 +9166,31 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
     const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
     const paymentWindowMs = paymentWindowMinutes * 60 * 1000;
-    const createdAtMs = new Date(String(booking.created_at).replace(' ', 'T')).getTime();
+    const rawCreated = String(booking.created_at || '').trim().replace(' ', 'T');
+    const normalizedCreated = (rawCreated.endsWith('Z') || rawCreated.includes('+')) ? rawCreated : (rawCreated ? rawCreated + 'Z' : '');
+    const createdAtMs = normalizedCreated ? new Date(normalizedCreated).getTime() : NaN;
     const isDepositRemaining = (booking.payment_status === 'deposit' || Number(booking.paid_amount || 0) > 0) && Number(booking.balance_amount || 0) > 0;
     const isExpiredByTime = !isDepositRemaining && !isNaN(createdAtMs) && (Date.now() - createdAtMs >= paymentWindowMs);
+
+    // Guidelines Acknowledgement Precondition Check
+    const bookingItems = await dbQuery.all(
+      `SELECT bi.room_id, r.name as room_name 
+       FROM booking_items bi 
+       LEFT JOIN rooms r ON bi.room_id = r.id 
+       WHERE bi.booking_id = ?`,
+      [booking.id]
+    );
+    const guidelinesPolicy = resolveRoomGuidelines(bookingItems && bookingItems[0]?.room_id, bookingItems && bookingItems[0]?.room_name);
+    if (guidelinesPolicy.required) {
+      const isPostCutover = !booking.created_at || isNaN(createdAtMs) || (createdAtMs >= new Date(GUIDELINES_CUTOVER_ISO).getTime());
+      if (isPostCutover && !booking.guidelines_acknowledged_at) {
+        return res.status(400).json({
+          success: false,
+          error: 'กรุณารับทราบข้อปฏิบัติการใช้ห้องประชุมก่อนส่งหลักฐานการชำระเงิน',
+          code: 'GUIDELINES_NOT_ACKNOWLEDGED'
+        });
+      }
+    }
 
     if (booking.payment_status === 'cancelled' || isExpiredByTime) {
       if (booking.payment_status !== 'cancelled') {

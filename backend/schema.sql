@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS bookings (
   customer_id INTEGER,
   contract_id INTEGER,
   cancellation_reason TEXT,
+  guidelines_acknowledged_at DATETIME,
+  guidelines_rule_set TEXT,
+  guidelines_rule_version TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -371,3 +374,34 @@ CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON support_ticket_messages
 CREATE INDEX IF NOT EXISTS idx_ticket_attachments_ticket ON support_ticket_attachments(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_events_ticket ON support_ticket_events(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_reads_staff ON support_ticket_reads(staff_username, ticket_id);
+
+-- Room Guidelines Acknowledgement and LINE Deduplicated Dispatch
+CREATE TABLE IF NOT EXISTS room_guidelines_acknowledgements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  room_id INTEGER REFERENCES rooms(id),
+  rule_set TEXT NOT NULL,
+  rule_version TEXT NOT NULL,
+  customer_contact TEXT,
+  line_user_id TEXT,
+  acknowledged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(booking_id, rule_set, rule_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_guidelines_ack_booking ON room_guidelines_acknowledgements(booking_id);
+CREATE INDEX IF NOT EXISTS idx_guidelines_ack_contact ON room_guidelines_acknowledgements(customer_contact);
+CREATE INDEX IF NOT EXISTS idx_guidelines_ack_line_user ON room_guidelines_acknowledgements(line_user_id);
+
+CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  line_user_id TEXT NOT NULL,
+  rule_set TEXT NOT NULL,
+  rule_version TEXT NOT NULL,
+  first_booking_id INTEGER REFERENCES bookings(id),
+  status TEXT NOT NULL DEFAULT 'sent',
+  error_message TEXT,
+  dispatched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(line_user_id, rule_set, rule_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_line_guidelines_user ON line_guidelines_dispatches(line_user_id);
