@@ -8,6 +8,8 @@ import {
   ROOM_GUIDELINES_CONFIG,
   GUIDELINES_CUTOVER_ISO,
   resolveRoomGuidelines,
+  isGuidelinesEnforcedForBooking,
+  isBoundLineUserId,
   buildLineGuidelinesMessage
 } from '../../../shared/roomGuidelinesPolicy.mjs';
 
@@ -16,6 +18,8 @@ export {
   ROOM_GUIDELINES_CONFIG,
   GUIDELINES_CUTOVER_ISO,
   resolveRoomGuidelines,
+  isGuidelinesEnforcedForBooking,
+  isBoundLineUserId,
   buildLineGuidelinesMessage
 };
 

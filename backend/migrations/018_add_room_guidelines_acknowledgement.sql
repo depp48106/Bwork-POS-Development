@@ -30,10 +30,13 @@ CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
   rule_set TEXT NOT NULL,
   rule_version TEXT NOT NULL,
   first_booking_id INTEGER REFERENCES bookings(id),
-  status TEXT NOT NULL DEFAULT 'sent', -- 'sent' | 'failed' | 'suppressed'
+  status TEXT NOT NULL DEFAULT 'sent', -- 'claimed' | 'sent' | 'failed' | 'suppressed'
   error_message TEXT,
   dispatched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(line_user_id, rule_set, rule_version)
 );
 
 CREATE INDEX IF NOT EXISTS idx_line_guidelines_user ON line_guidelines_dispatches(line_user_id);
+
+-- 4. Server Feature Toggle default setting (safe release preparation default: false)
+INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_enabled', 'false');

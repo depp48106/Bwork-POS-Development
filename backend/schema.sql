@@ -405,3 +405,5 @@ CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
 );
 
 CREATE INDEX IF NOT EXISTS idx_line_guidelines_user ON line_guidelines_dispatches(line_user_id);
+
+INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_enabled', 'false');

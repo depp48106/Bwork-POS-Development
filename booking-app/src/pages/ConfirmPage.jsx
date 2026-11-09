@@ -1,5 +1,5 @@
 import jsQR from 'jsqr';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   CheckCircle2, Copy, Upload, Check,
@@ -103,18 +103,35 @@ export default function ConfirmPage() {
   });
   const [showGuidelinesModal, setShowGuidelinesModal] = useState(false);
   const [guidelinesZoom, setGuidelinesZoom] = useState(1);
+  const activeBookingIdRef = useRef(bookingId);
+
   const [guidelinesAcknowledged, setGuidelinesAcknowledged] = useState(() => {
     try {
-      if (location.state?.booking?.guidelines_acknowledged || location.state?.booking?.guidelines_acknowledged_at) return true;
+      if (location.state?.booking) {
+        const b = location.state.booking;
+        if (String(b.id) === String(bookingId) || String(b.booking_id) === String(bookingId) || String(b.receipt_number) === String(bookingId)) {
+          if (b.guidelines_acknowledged || b.guidelines_acknowledged_at) return true;
+        }
+      }
       const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
       const parsed = raw ? JSON.parse(raw) : null;
-      if (parsed?.guidelines_acknowledged || parsed?.guidelines_acknowledged_at) return true;
+      if (parsed && (String(parsed.id) === String(bookingId) || String(parsed.booking_id) === String(bookingId) || String(parsed.receipt_number) === String(bookingId))) {
+        if (parsed.guidelines_acknowledged || parsed.guidelines_acknowledged_at) return true;
+      }
     } catch (e) {}
     return false;
   });
   const [guidelinesCheckboxTicked, setGuidelinesCheckboxTicked] = useState(false);
   const [isAcknowledgingGuidelines, setIsAcknowledgingGuidelines] = useState(false);
   const [guidelinesAcknowledgeError, setGuidelinesAcknowledgeError] = useState(null);
+
+  // When switching bookings: reset previous state immediately and discard stale in-flight results
+  useEffect(() => {
+    activeBookingIdRef.current = bookingId;
+    setGuidelinesAcknowledged(false);
+    setGuidelinesCheckboxTicked(false);
+    setGuidelinesAcknowledgeError(null);
+  }, [bookingId]);
 
   // Lock body scroll and listen for Escape key when guidelines modal is open
   useEffect(() => {
@@ -153,7 +170,11 @@ export default function ConfirmPage() {
 
   // Sync guidelines acknowledgement status whenever fresh booking data arrives
   useEffect(() => {
-    if (booking?.guidelines_acknowledged || booking?.guidelines_acknowledged_at) {
+    if (!booking) return;
+    if (booking.guidelines_acknowledged === false) {
+      // If server explicitly reports unacknowledged, immediately lock!
+      setGuidelinesAcknowledged(false);
+    } else if (booking.guidelines_acknowledged || booking.guidelines_acknowledged_at) {
       setGuidelinesAcknowledged(true);
     }
   }, [booking?.guidelines_acknowledged, booking?.guidelines_acknowledged_at]);
@@ -319,6 +340,11 @@ export default function ConfirmPage() {
 
       const data = await res.json();
       if (res.ok && data && !data.error) {
+        // Discard stale responses from prior booking if user switched
+        if (activeBookingIdRef.current !== bookingId && String(activeBookingIdRef.current) !== String(bookingId)) {
+          return null;
+        }
+
         // Canonical booking code verification
         if (queryCode) {
           const validCodes = [
@@ -647,6 +673,12 @@ export default function ConfirmPage() {
   const payableAmt = isDeposit ? parseFloat(booking.balance_amount || 0) : totalAmt;
   const qrImageSrc = paymentSettings.qr_image || '/bwork_payment_qr.png';
   const roomGuidelines = getRoomGuidelines(booking);
+  const isEnforced = booking?.guidelines_enforced !== undefined
+    ? Boolean(booking.guidelines_enforced)
+    : (booking?.guidelines_enforcement_enabled !== undefined
+        ? Boolean(booking.guidelines_enforcement_enabled)
+        : false);
+  const isGuidelinesGated = Boolean(roomGuidelines && isEnforced && !guidelinesAcknowledged);
 
   const isPaidOrAutoApproved = Boolean(booking?.payment_status === 'paid');
   const bookingForCalendar = booking ? {
@@ -1193,7 +1225,7 @@ export default function ConfirmPage() {
           {!isExpired && (
             <>
               {/* ROOM GUIDELINES GATE / ACKNOWLEDGEMENT CARD */}
-              {roomGuidelines && !guidelinesAcknowledged && (
+              {roomGuidelines && isEnforced && !guidelinesAcknowledged && (
                 <div
                   id="guidelines-gate-card"
                   style={{
@@ -1393,8 +1425,35 @@ export default function ConfirmPage() {
                 </div>
               )}
 
+              {roomGuidelines && !isEnforced && !guidelinesAcknowledged && (
+                <div style={{ marginBottom: '16px', textAlign: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => { setGuidelinesZoom(1); setShowGuidelinesModal(true); }}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      background: '#f0f9ff',
+                      border: '1px solid #bae6fd',
+                      borderRadius: '10px',
+                      color: '#0284c7',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    <BookOpen size={16} />
+                    <span>ดูข้อปฏิบัติการใช้ห้อง</span>
+                  </button>
+                </div>
+              )}
+
               {/* GATED QR CARD: Hidden until guidelines acknowledged (if required) */}
-              {roomGuidelines && !guidelinesAcknowledged ? (
+              {isGuidelinesGated ? (
                 <div
                   id="gated-qr-placeholder"
                   className="booking-card"

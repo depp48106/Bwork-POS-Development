@@ -20,10 +20,10 @@ export const ROOM_GUIDELINES_CONFIG = {
     image_url: 'https://bwork-booking.pages.dev/rules/room301-306.png',
     local_image_src: '/rules/room301-306.png',
     summary_points: [
-      'ตรงต่อเวลา: เข้าและออกจากห้องประชุมตามเวลาที่จอง เพื่อไม่ให้กระทบผู้ใช้บริการรอบถัดไป',
-      'รักษาความสะอาด: กรุณาช่วยกันรักษาความสะอาด และนำขยะทิ้งในจุดที่จัดเตรียมไว้',
-      'งดนำสัตว์เลี้ยง สิ่งเสพติด และอาหารที่มีกลิ่นแรงเข้ามาภายในห้องประชุม',
-      'ดูแลรักษาอุปกรณ์: ปิดไฟ เครื่องปรับอากาศ และอุปกรณ์ทุกครั้งหลังใช้งานเสร็จสิ้น'
+      'การใช้ห้องเกินเวลา: หากใช้ห้องเกินเวลาที่จองไว้มากกว่า 15 นาที คิดค่าบริการเพิ่ม 1 ชั่วโมง ตามอัตราของห้องนั้น ๆ',
+      'อาหารและเครื่องดื่ม: ไม่อนุญาตให้นำอาหารเข้ามารับประทานในห้องประชุม ยกเว้นเครื่องดื่มและเบเกอรี่ หากฝ่าฝืน บริษัทขอสงวนสิทธิ์ยุติการให้บริการทันที โดยไม่คืนเงินทุกกรณี',
+      'การรักษาความสะอาด: กรุณารักษาความสะอาดและจัดเก็บพื้นที่หลังใช้งานให้เรียบร้อย',
+      'ความเสียหายและทรัพย์สินส่วนตัว: ผู้ใช้บริการต้องรับผิดชอบความเสียหายต่ออุปกรณ์ที่เกิดจากการใช้งานผิดประเภท หรือความประมาท บริษัทไม่รับผิดชอบต่อทรัพย์สินส่วนตัวที่สูญหาย'
     ]
   },
   jupiter_auditorium: {
@@ -34,10 +34,10 @@ export const ROOM_GUIDELINES_CONFIG = {
     image_url: 'https://bwork-booking.pages.dev/rules/jupiter.jpg',
     local_image_src: '/rules/jupiter.jpg',
     summary_points: [
-      'ตรงต่อเวลา: เข้าและออกจากห้อง Jupiter Auditorium ตามเวลาที่ระบุในรายการจอง',
-      'การใช้อุปกรณ์: ใช้งานระบบแสง สี เสียง และจอภาพตามคำแนะนำของเจ้าหน้าที่อย่างระมัดระวัง',
-      'งดนำอาหารที่มีกลิ่นแรง สารเสพติด และเครื่องดื่มที่อาจทำให้เกิดความเสียหายเข้าห้อง',
-      'ตรวจสอบความเรียบร้อยและปิดระบบอุปกรณ์ทุกครั้งก่อนส่งมอบห้อง'
+      'การใช้ห้องเกินเวลา: กรุณาใช้ห้องประชุมตามเวลาที่จองไว้ หากเกินกว่า 15 นาที คิดค่าบริการเพิ่ม 1 ชั่วโมง (เศษเวลานับเป็น 1 ชั่วโมง)',
+      'อาหารและเครื่องดื่ม: ไม่อนุญาตให้นำอาหารเข้ามารับประทานภายในห้องประชุม (ยกเว้นเครื่องดื่มและเบรกที่จัดเตรียมไว้)',
+      'การรักษาความสะอาด: ขอความกรุณาช่วยรักษาความสะอาด และดูแลความเรียบร้อยภายในพื้นที่เข้าใช้งาน',
+      'ความเสียหายและทรัพย์สิน: หากอุปกรณ์ภายในห้องเกิดความเสียหายจากการติดตั้ง สูญหาย ตกหล่น ใช้งานผิดวิธี หรือเกิดจากความประมาท ผู้ใช้บริการต้องรับผิดชอบค่าเสียหาย และบริษัทไม่รับผิดชอบต่อทรัพย์สินส่วนตัวที่สูญหาย'
     ]
   }
 };
@@ -81,6 +81,61 @@ export function resolveRoomGuidelines(rawRoomId, rawRoomName) {
     local_image_src: null,
     summary_points: []
   };
+}
+
+/**
+ * Evaluates whether room guidelines enforcement gate should block a booking.
+ * Single source of truth for API, Worker, and Web frontend.
+ *
+ * Requirements:
+ * - Setting toggle: guidelines_enforcement_enabled (must be explicitly true)
+ * - Room requirement: Room must map to a guidelines rule set (exempt rooms e.g. Co-working are never enforced)
+ * - Legacy booking support: Bookings created before cutoverAt are never blocked
+ *
+ * @param {object} params
+ * @param {object} params.guidelinesPolicy - Result of resolveRoomGuidelines(roomId, roomName)
+ * @param {boolean|string} [params.enforcementSetting] - Value of 'guidelines_enforcement_enabled'
+ * @param {string|number|Date} [params.cutoverAt] - ISO timestamp or ms threshold (default GUIDELINES_CUTOVER_ISO)
+ * @param {string|number|Date} [params.bookingCreatedAt] - Created timestamp of booking
+ * @returns {boolean} True if enforcement is active and blocks unacknowledged bookings
+ */
+export function isGuidelinesEnforcedForBooking({
+  guidelinesPolicy,
+  enforcementSetting,
+  cutoverAt = GUIDELINES_CUTOVER_ISO,
+  bookingCreatedAt
+}) {
+  if (!guidelinesPolicy || !guidelinesPolicy.required) {
+    return false;
+  }
+
+  const isEnabled = enforcementSetting === true || enforcementSetting === 'true' || enforcementSetting === 1 || enforcementSetting === '1';
+  if (!isEnabled) {
+    return false;
+  }
+
+  if (cutoverAt && bookingCreatedAt) {
+    const cutoverMs = typeof cutoverAt === 'number' ? cutoverAt : new Date(cutoverAt).getTime();
+    const createdMs = typeof bookingCreatedAt === 'number' ? bookingCreatedAt : new Date(bookingCreatedAt).getTime();
+    if (!isNaN(cutoverMs) && !isNaN(createdMs) && createdMs < cutoverMs) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Validates whether a LINE user ID is bound and valid for dispatch.
+ * Must be a string starting with 'U' with length >= 10.
+ *
+ * @param {string} lineUserId 
+ * @returns {boolean}
+ */
+export function isBoundLineUserId(lineUserId) {
+  if (typeof lineUserId !== 'string') return false;
+  const trimmed = lineUserId.trim();
+  return trimmed.startsWith('U') && trimmed.length >= 10;
 }
 
 /**

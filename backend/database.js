@@ -783,6 +783,10 @@ async function initDatabase() {
     if (!checkWifiSsid || !String(checkWifiSsid.value || '').trim()) {
       await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('wifi_ssid', '@BWORK')");
     }
+    const checkGuidelinesToggle = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'");
+    if (!checkGuidelinesToggle) {
+      await dbQuery.run("INSERT INTO settings (key, value) VALUES ('guidelines_enforcement_enabled', 'false')");
+    }
   } catch (e) {}
 
   // Seed default roles if empty
