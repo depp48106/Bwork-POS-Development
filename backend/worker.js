@@ -4151,7 +4151,9 @@ export default {
 
             if (!isAuthorizedCustomer && lineIdToken && bookingRow.line_user_id) {
               hasSuppliedCredentials = true;
-              const verifiedLine = verifyWorkerLineIdToken(lineIdToken);
+              const channelIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_id'").first();
+              const channelId = channelIdRow?.value?.trim() || env.LINE_CHANNEL_ID || '2011136579';
+              const verifiedLine = await verifyWorkerLineIdTokenWithApi(env, lineIdToken, channelId);
               if (verifiedLine && verifiedLine.userId && safeEqualString(verifiedLine.userId, bookingRow.line_user_id.trim())) {
                 isAuthorizedCustomer = true;
               }
