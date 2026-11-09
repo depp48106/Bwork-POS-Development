@@ -1029,3 +1029,53 @@ npx wrangler pages deployment rollback 3ef05797-e7f4-4fcf-831b-e37ad4fe1e9a --pr
 cd "D:\Project BL\Bwork-POS-Release\backend"
 npx wrangler rollback a68b57b8-e161-47d1-86aa-19a7cbd097e1
 ```
+
+
+---
+
+## 17. การ Deploy QR ชำระเงินความละเอียดสูงและข้อปฏิบัติการใช้ห้องขึ้น Production (2026-11-09)
+
+> **บันทึกการ Deploy:** 9 พฤศจิกายน 2026  
+> **Release Commit SHA:** `b81aac546bdb09ecf6583b4bb7c3a43cb9c0f205` (บน branch `release/selective-gmail-tax-invoice-20261105`)  
+> **ขอบเขตการ Deploy:** Cloudflare Pages โปรเจกต์ `bwork-booking` (Production Environment) เท่านั้น  
+> *(ไม่มีการ Deploy Worker, ไม่มีการ Deploy POS Pages, ไม่มีการรัน Database Migration, และไม่มีการสร้างรายการจองหรือโอนเงินจริง)*
+
+### 17.1 สรุปเปรียบเทียบ Deployment IDs ก่อนและหลังการปล่อย (Pre/Post Deploy IDs)
+
+| บริการ (Service) | ก่อน Deploy (Pre-deploy) | หลัง Deploy (Post-deploy) | สถานะ / รายละเอียด |
+| :--- | :--- | :--- | :--- |
+| **Pages `bwork-booking`** | `6d005a94-b7e1-48eb-a7e8-2a16f80a6bae` | **`6f42b794-6bcf-408a-a6d9-5f5349027896`** | Production Environment (branch `main`), 100% Traffic |
+| **Worker `bwork-pos-api`** | `e4f15202-5e15-49dd-89a0-fdf4f26d8916` | **`e4f15202-5e15-49dd-89a0-fdf4f26d8916`** | ไม่มีการแตะต้อง (คงเดิม 100%) |
+| **Pages `bwork-pos`** | `d4598e58-92e9-4476-ac7c-47bdae0ec14a` | **`d4598e58-92e9-4476-ac7c-47bdae0ec14a`** | ไม่มีการแตะต้อง (คงเดิม 100%) |
+
+### 17.2 รายการ Commit ที่รวมใน Release รอบนี้
+1. **`cb42cc0d`** (Cherry-pick จาก `96b187d5`): `feat(booking-app): update payment QR code with high-resolution standee and intact borders`
+   - รูป QR สแตนดี้ใหม่ 1024x1536 px (`bwork_payment_qr.jpg`, `bwork_payment_qr.png`)
+   - ปรับแต่ง `object-fit: contain` ขอบ QR Code สมบูรณ์ 4 ด้าน ไม่ถูกครอป
+2. **`b81aac54`** (Cherry-pick จาก `c39e4998`): `feat(booking-app): add room guidelines modal on payment confirmation for rooms 201, 301-306, and Jupiter`
+   - รูปข้อปฏิบัติห้องประชุม 201, 301–306 (`rules/room301-306.png`)
+   - รูปข้อปฏิบัติ Jupiter Auditorium (`rules/jupiter.jpg`)
+   - ปุ่ม `"ดูข้อปฏิบัติการใช้ห้อง"` จุดเดียวเหนือ QR และ In-web modal แบบเลื่อนอ่าน ขยาย ปิดได้บนมือถือ
+
+### 17.3 ผลการตรวจสอบสดบน Production (`https://bwork-booking.pages.dev`)
+- **Bundle ที่โหลดจริง:** `/assets/index-D_iAdRNM.js` (ขนาด 532.35 kB)
+- **รูปภาพ QR Code บน Production:**
+  - `https://bwork-booking.pages.dev/bwork_payment_qr.png` (HTTP 200, 256,268 bytes, SHA256: `2a2d3caa145e3802b8fc1f5ad3f4830182f1870c6907b28e74fa78d1bda3dbce`)
+  - ค่าที่ถอดรหัสได้จากรูปจริงบน Production: PromptPay Biller ID `0125554000401` / Merchant: `B-WORK` (บริษัท บิลท์ ฮาร์ท จำกัด)
+- **รูปภาพข้อปฏิบัติทั้ง 2 ชุดบน Production:**
+  - `https://bwork-booking.pages.dev/rules/room301-306.png` (HTTP 200, 1,675,288 bytes)
+  - `https://bwork-booking.pages.dev/rules/jupiter.jpg` (HTTP 200, 482,134 bytes)
+- **การทดสอบ Real Mobile 390px (Headless Chrome CDP):**
+  - **ห้อง 201:** ปุ่มแสดงจุดเดียวเหนือ QR (`isAboveQr: true`) -> เปิด modal ได้รูป `room301-306.png` ถูกต้อง
+  - **ห้อง 301:** เปิด modal ได้รูป `room301-306.png` (ชุดเดียวกับ 201) ถูกต้อง
+  - **Jupiter Auditorium:** เปิด modal ได้รูป `jupiter.jpg` (ชุดเฉพาะห้อง) ถูกต้อง
+  - **โซน Co-working (ห้องที่ไม่แมป):** ซ่อนปุ่มข้อปฏิบัติโดยสมบูรณ์ (`count: 0`)
+  - **ความสอดคล้องของ QR:** รูปที่แสดงบนหน้าเว็บและลิงก์ดาวน์โหลดตรงกัน ขอบไม่ตกหล่น ขนาด 272x408 (อัตราส่วน 1.50) ไม่ล้นจอ
+  - **ความปลอดภัยสูงสุด:** ใช้ข้อมูลจำลองใน Client State ไม่มีการสร้างรายการจองหรือบันทึกธุรกรรมจริงบน Production D1 Database
+
+### 17.4 ข้อมูลสำหรับ Rollback ฉุกเฉิน (Emergency Rollback)
+หากพบปัญหา สามารถย้อนกลับไปยัง Production Deployment ก่อนหน้าได้ทันที:
+```powershell
+npx wrangler pages deployment rollback 6d005a94-b7e1-48eb-a7e8-2a16f80a6bae --project-name=bwork-booking
+```
+*(หรือเลือกกด Rollback สู่ Deployment ID `6d005a94-b7e1-48eb-a7e8-2a16f80a6bae` บน Cloudflare Dashboard)*
