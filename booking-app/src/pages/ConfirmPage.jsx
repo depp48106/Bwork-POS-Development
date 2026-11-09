@@ -193,16 +193,26 @@ export default function ConfirmPage() {
       if (rawContact) headers['X-Booking-Contact'] = rawContact;
 
       const targetId = bookingId || booking?.id;
+      const currentGuidelines = getRoomGuidelines(booking);
+
       const res = await fetch(`${API_BASE}/api/public/bookings/${targetId}/acknowledge-rules`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
+          rule_set: currentGuidelines?.rule_set,
+          rule_version: currentGuidelines?.rule_version,
           access_token: rawAccessToken || undefined,
           contact: rawContact || undefined
         })
       });
 
       const data = await res.json();
+
+      // Discard stale in-flight response if user switched bookings while request was pending
+      if (String(activeBookingIdRef.current) !== String(targetId)) {
+        return;
+      }
+
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'ไม่สามารถบันทึกการรับทราบข้อปฏิบัติได้');
       }
@@ -220,12 +230,19 @@ export default function ConfirmPage() {
         const raw = sessionStorage.getItem('completed_booking_result');
         if (raw) {
           const parsed = JSON.parse(raw);
-          parsed.guidelines_acknowledged = true;
-          parsed.guidelines_acknowledged_at = data.acknowledged_at || new Date().toISOString();
-          sessionStorage.setItem('completed_booking_result', JSON.stringify(parsed));
+          if (String(parsed.id) === String(targetId) || String(parsed.booking_id) === String(targetId)) {
+            parsed.guidelines_acknowledged = true;
+            parsed.guidelines_acknowledged_at = data.acknowledged_at || new Date().toISOString();
+            sessionStorage.setItem('completed_booking_result', JSON.stringify(parsed));
+          }
         }
       } catch (e) {}
     } catch (err) {
+      const targetId = bookingId || booking?.id;
+      // Discard error if user has already switched to another booking
+      if (String(activeBookingIdRef.current) !== String(targetId)) {
+        return;
+      }
       console.error('Error acknowledging room guidelines:', err);
       setGuidelinesAcknowledgeError(err.message || 'เกิดข้อผิดพลาดในการบันทึก กรุณาลองใหม่อีกครั้ง');
     } finally {

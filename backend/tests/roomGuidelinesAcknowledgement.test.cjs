@@ -33,6 +33,7 @@ const {
   resolveRoomGuidelines,
   isGuidelinesEnforcedForBooking,
   isBoundLineUserId,
+  isServerConfirmedLineBinding,
   buildLineGuidelinesMessage
 } = require('../../shared/roomGuidelinesPolicy.mjs');
 
@@ -188,6 +189,8 @@ async function initSchema(testDb) {
       slip_image_url TEXT,
       qr_token TEXT,
       line_user_id TEXT,
+      line_user_id_verified INTEGER DEFAULT 0,
+      booking_source TEXT DEFAULT 'online',
       guidelines_acknowledged_at DATETIME,
       guidelines_rule_set TEXT,
       guidelines_rule_version TEXT,
@@ -242,6 +245,8 @@ async function initSchema(testDb) {
 
   // Default server setting: disabled during release prep
   await testDb.run("INSERT INTO settings (key, value) VALUES ('guidelines_enforcement_enabled', 'false')");
+  await testDb.run("INSERT INTO settings (key, value) VALUES ('guidelines_enforcement_cutover_at', '2026-11-09T00:00:00.000Z')");
+  await testDb.run("INSERT INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'true')");
   await testDb.run("INSERT INTO settings (key, value) VALUES ('payment_window_minutes', '15')");
 
   // Seed sample rooms
@@ -303,6 +308,7 @@ function createHarness(testDb, mockLineDispatcher = null) {
         room: items[0] ? { id: items[0].room_id, name: items[0].room_name } : null
       });
     } catch (e) {
+      console.error('[Harness Error in acknowledge-rules]:', e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -329,14 +335,14 @@ function createHarness(testDb, mockLineDispatcher = null) {
         return res.json({ success: true, required: false, message: 'ห้องนี้ไม่จำเป็นต้องรับทราบข้อปฏิบัติ' });
       }
 
-      // Validate client rule_set and rule_version
+      // Strict validation: rule_set & rule_version must be provided and match current room policy
       const clientRuleSet = req.body?.rule_set;
       const clientRuleVersion = req.body?.rule_version;
-      if (clientRuleSet && clientRuleSet !== guidelinesConfig.rule_set) {
-        return res.status(400).json({ error: 'rule_set ไม่ถูกต้องหรือไม่ตรงกับห้องที่จอง' });
+      if (!clientRuleSet || !clientRuleVersion) {
+        return res.status(400).json({ error: 'กรุณาระบุรหัสชุดข้อปฏิบัติ (rule_set) และเวอร์ชัน (rule_version) ให้ครบถ้วน' });
       }
-      if (clientRuleVersion && clientRuleVersion !== guidelinesConfig.rule_version) {
-        return res.status(400).json({ error: 'rule_version ไม่ตรงกับเวอร์ชันปัจจุบันของระบบ' });
+      if (clientRuleSet !== guidelinesConfig.rule_set || clientRuleVersion !== guidelinesConfig.rule_version) {
+        return res.status(400).json({ error: 'รหัสชุดข้อปฏิบัติหรือเวอร์ชันไม่ถูกต้องหรือไม่ตรงกับห้องที่จอง' });
       }
 
       // Record in room_guidelines_acknowledgements
@@ -361,13 +367,27 @@ function createHarness(testDb, mockLineDispatcher = null) {
 
       const updated = await testDb.get('SELECT guidelines_acknowledged_at FROM bookings WHERE id = ?', [booking.id]);
 
-      // Atomic Claim & LINE Dispatch
+      // Atomic Claim & LINE Dispatch with Server Confirmation & Feature Toggle
       const rawLineId = typeof booking.line_user_id === 'string' ? booking.line_user_id.trim() : '';
       const isBound = isBoundLineUserId(rawLineId);
+      const isLineConfirmed = isServerConfirmedLineBinding({
+        lineUserId: rawLineId,
+        isVerified: booking.line_user_id_verified,
+        bookingSource: booking.booking_source
+      });
+
+      const lineToggleSetting = await testDb.get("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'");
+      const isFeatureDisabled = (lineToggleSetting && (lineToggleSetting.value === 'false' || lineToggleSetting.value === '0')) ||
+                                (process.env.DISABLE_LIVE_LINE === 'true');
+
       let lineNotification = null;
 
       if (!isBound) {
         lineNotification = { status: 'skipped_no_line', deduplicated: false };
+      } else if (!isLineConfirmed) {
+        lineNotification = { status: 'skipped_unverified_line', deduplicated: false };
+      } else if (isFeatureDisabled) {
+        lineNotification = { status: 'skipped_feature_disabled', deduplicated: false };
       } else {
         let claimWon = false;
         try {
@@ -386,18 +406,17 @@ function createHarness(testDb, mockLineDispatcher = null) {
             'SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?',
             [rawLineId, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
           );
-          if (existing?.status === 'sent') {
+          if (existing?.status === 'sent' || existing?.status === 'claimed') {
             lineNotification = { status: 'already_sent', deduplicated: true };
-          } else if (existing?.status === 'claimed' || existing?.status === 'pending') {
-            lineNotification = { status: 'pending', deduplicated: true };
-          } else if (existing?.status === 'failed') {
-            lineNotification = { status: 'failed', deduplicated: true, error: existing?.error_message || 'dispatch_failed' };
           } else {
-            lineNotification = { status: 'unknown', deduplicated: true };
+            lineNotification = { status: existing?.status || 'unknown', deduplicated: true };
           }
         } else {
-          // Claim won! Run dispatch worker
-          const runDispatch = async () => {
+          // Claim won! Return pending immediately without waiting for LINE push
+          lineNotification = { status: 'pending', deduplicated: false };
+
+          // Decoupled background task updates line_guidelines_dispatches
+          (async () => {
             let lineResult = { sent: true };
             if (mockLineDispatcher) {
               lineResult = await mockLineDispatcher({ booking, guidelinesConfig });
@@ -408,19 +427,14 @@ function createHarness(testDb, mockLineDispatcher = null) {
                 `UPDATE line_guidelines_dispatches SET status = 'sent', dispatched_at = CURRENT_TIMESTAMP WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
                 [rawLineId, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
               );
-              return { status: 'sent', deduplicated: false };
             } else {
               const errStr = String(lineResult?.error || 'dispatch_error');
               await testDb.run(
                 `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ?, dispatched_at = CURRENT_TIMESTAMP WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
                 [errStr, rawLineId, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
               );
-              return { status: 'failed', deduplicated: false, error: errStr };
             }
-          };
-
-          const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({ status: 'pending', deduplicated: false }), 200));
-          lineNotification = await Promise.race([runDispatch(), timeoutPromise]);
+          })().catch(() => {});
         }
       }
 
@@ -434,6 +448,7 @@ function createHarness(testDb, mockLineDispatcher = null) {
         line_notification: lineNotification
       });
     } catch (e) {
+      console.error('[Harness Error in acknowledge-rules]:', e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -474,6 +489,7 @@ function createHarness(testDb, mockLineDispatcher = null) {
       await testDb.run("UPDATE bookings SET payment_status = 'reviewing', slip_image_url = 'mock_slip.png' WHERE id = ?", [booking.id]);
       return res.json({ success: true, status: 'reviewing', auto_approved: false });
     } catch (e) {
+      console.error('[Harness Error in acknowledge-rules]:', e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -521,10 +537,10 @@ test('TC01: Meeting room first-time acknowledgement -> QR unlocked, LINE dispatc
     return { sent: true };
   });
 
-  // Create booking in Room 301 (Mars)
+  // Create booking in Room 301 (Mars) with server-confirmed LINE ID
   const b = await testDb.run(`
-    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id)
-    VALUES ('Somchai', '0812345678', 800, 'tok_tc01', 'U11111111111111111111111111111111')
+    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id, line_user_id_verified)
+    VALUES ('Somchai', '0812345678', 800, 'tok_tc01', 'U11111111111111111111111111111111', 1)
   `);
   const bookingId = b.lastID;
   await testDb.run('INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, 4, 800, 800)', [bookingId]);
@@ -540,7 +556,7 @@ test('TC01: Meeting room first-time acknowledgement -> QR unlocked, LINE dispatc
   assert.strictEqual(res.body.acknowledged, true);
   assert.strictEqual(res.body.rule_set, 'meeting_room_201_306');
   assert.strictEqual(res.body.rule_version, 'v1');
-  assert.strictEqual(res.body.line_notification.status, 'sent');
+  assert.strictEqual(res.body.line_notification.status, 'pending');
   assert.strictEqual(res.body.line_notification.deduplicated, false);
   assert.strictEqual(lineDispatchedCount, 1);
 
@@ -570,17 +586,17 @@ test('TC02: Repeat booking across rooms in same group (Room 201 -> Room 302) sup
 
   const lineUserId = 'U22222222222222222222222222222222';
 
-  // Booking 1: Room 201
+  // Booking 1: Room 201 with server-confirmed LINE ID
   const b1 = await testDb.run(`
-    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id)
-    VALUES ('Wichai', '0899998888', 1200, 'tok_b1', ?)
+    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id, line_user_id_verified)
+    VALUES ('Wichai', '0899998888', 1200, 'tok_b1', ?, 1)
   `, [lineUserId]);
   await testDb.run('INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, 11, 1200, 1200)', [b1.lastID]);
 
-  // Booking 2: Room 302
+  // Booking 2: Room 302 with server-confirmed LINE ID
   const b2 = await testDb.run(`
-    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id)
-    VALUES ('Wichai', '0899998888', 800, 'tok_b2', ?)
+    INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id, line_user_id_verified)
+    VALUES ('Wichai', '0899998888', 800, 'tok_b2', ?, 1)
   `, [lineUserId]);
   await testDb.run('INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, 5, 800, 800)', [b2.lastID]);
 
@@ -590,7 +606,7 @@ test('TC02: Repeat booking across rooms in same group (Room 201 -> Room 302) sup
     body: { rule_set: 'meeting_room_201_306', rule_version: 'v1' }
   });
   assert.strictEqual(r1.status, 200);
-  assert.strictEqual(r1.body.line_notification.status, 'sent');
+  assert.strictEqual(r1.body.line_notification.status, 'pending');
   assert.strictEqual(lineDispatchedCount, 1);
 
   // Second booking acknowledges
@@ -618,11 +634,11 @@ test('TC03: First-time Jupiter Auditorium booking dispatches LINE for new rule s
   const lineUserId = 'U33333333333333333333333333333333';
 
   // Booking 1: Meeting Room 301
-  const b1 = await testDb.run('INSERT INTO bookings (qr_token, line_user_id) VALUES (?, ?)', ['tok_b1', lineUserId]);
+  const b1 = await testDb.run('INSERT INTO bookings (qr_token, line_user_id, line_user_id_verified) VALUES (?, ?, 1)', ['tok_b1', lineUserId]);
   await testDb.run('INSERT INTO booking_items (booking_id, room_id) VALUES (?, 4)', [b1.lastID]);
 
   // Booking 2: Jupiter Auditorium (Room 10)
-  const b2 = await testDb.run('INSERT INTO bookings (qr_token, line_user_id) VALUES (?, ?)', ['tok_b2', lineUserId]);
+  const b2 = await testDb.run('INSERT INTO bookings (qr_token, line_user_id, line_user_id_verified) VALUES (?, ?, 1)', ['tok_b2', lineUserId]);
   await testDb.run('INSERT INTO booking_items (booking_id, room_id) VALUES (?, 10)', [b2.lastID]);
 
   await callApi(app, 'POST', `/api/public/bookings/${b1.lastID}/acknowledge-rules`, {
@@ -637,7 +653,7 @@ test('TC03: First-time Jupiter Auditorium booking dispatches LINE for new rule s
 
   assert.strictEqual(resJupiter.status, 200);
   assert.strictEqual(resJupiter.body.rule_set, 'jupiter_auditorium');
-  assert.strictEqual(resJupiter.body.line_notification.status, 'sent');
+  assert.strictEqual(resJupiter.body.line_notification.status, 'pending');
   assert.strictEqual(sentMessages.length, 2);
   assert.deepStrictEqual(sentMessages, ['meeting_room_201_306', 'jupiter_auditorium']);
 });
@@ -664,7 +680,7 @@ test('TC04: Bumped rule version (v2) re-dispatches LINE message', async () => {
   ROOM_GUIDELINES_CONFIG.meeting_room_201_306.rule_version = 'v2';
 
   try {
-    const b = await testDb.run('INSERT INTO bookings (qr_token, line_user_id) VALUES (?, ?)', ['tok_v2', lineUserId]);
+    const b = await testDb.run('INSERT INTO bookings (qr_token, line_user_id, line_user_id_verified) VALUES (?, ?, 1)', ['tok_v2', lineUserId]);
     await testDb.run('INSERT INTO booking_items (booking_id, room_id) VALUES (?, 4)', [b.lastID]);
 
     const res = await callApi(app, 'POST', `/api/public/bookings/${b.lastID}/acknowledge-rules`, {
@@ -673,7 +689,7 @@ test('TC04: Bumped rule version (v2) re-dispatches LINE message', async () => {
     });
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.body.rule_version, 'v2');
-    assert.strictEqual(res.body.line_notification.status, 'sent');
+    assert.strictEqual(res.body.line_notification.status, 'pending');
     assert.strictEqual(dispatches, 1);
   } finally {
     // Restore policy version
@@ -722,7 +738,7 @@ test('TC06: Double submit / repeat acknowledge API is idempotent', async () => {
     return { sent: true };
   });
 
-  const b = await testDb.run('INSERT INTO bookings (qr_token, line_user_id) VALUES (?, ?)', ['tok_tc06', 'U66666666666666666666666666666666']);
+  const b = await testDb.run('INSERT INTO bookings (qr_token, line_user_id, line_user_id_verified) VALUES (?, ?, 1)', ['tok_tc06', 'U66666666666666666666666666666666']);
   await testDb.run('INSERT INTO booking_items (booking_id, room_id) VALUES (?, 4)', [b.lastID]);
 
   const r1 = await callApi(app, 'POST', `/api/public/bookings/${b.lastID}/acknowledge-rules`, {
@@ -736,8 +752,10 @@ test('TC06: Double submit / repeat acknowledge API is idempotent', async () => {
 
   assert.strictEqual(r1.status, 200);
   assert.strictEqual(r2.status, 200);
-  assert.strictEqual(callCount, 1);
+  assert.strictEqual(r1.body.line_notification.status, 'pending');
   assert.strictEqual(r2.body.line_notification.status, 'already_sent');
+  await new Promise(r => setTimeout(r, 60));
+  assert.strictEqual(callCount, 1);
 });
 
 test('TC07: Atomic claim prevents duplicate LINE sends on concurrent confirmation in two tabs', async () => {
@@ -753,7 +771,7 @@ test('TC07: Atomic claim prevents duplicate LINE sends on concurrent confirmatio
   });
 
   const lineUserId = 'U77777777777777777777777777777777';
-  const b = await testDb.run('INSERT INTO bookings (qr_token, line_user_id) VALUES (?, ?)', ['tok_tc07', lineUserId]);
+  const b = await testDb.run('INSERT INTO bookings (qr_token, line_user_id, line_user_id_verified) VALUES (?, ?, 1)', ['tok_tc07', lineUserId]);
   await testDb.run('INSERT INTO booking_items (booking_id, room_id) VALUES (?, 4)', [b.lastID]);
 
   // Two tabs confirm simultaneously
@@ -773,12 +791,12 @@ test('TC07: Atomic claim prevents duplicate LINE sends on concurrent confirmatio
   assert.strictEqual(resA.body.acknowledged, true);
   assert.strictEqual(resB.body.acknowledged, true);
 
-  // Exactly one call was dispatched! Atomic claim won exactly once
-  assert.strictEqual(lineCallCount, 1);
-
   const statuses = [resA.body.line_notification.status, resB.body.line_notification.status];
-  assert.ok(statuses.includes('sent'));
-  assert.ok(statuses.includes('already_sent') || statuses.includes('pending'));
+  assert.ok(statuses.includes('pending') && statuses.includes('already_sent'));
+
+  // Exactly one call was dispatched! Atomic claim won exactly once
+  await new Promise(r => setTimeout(r, 60));
+  assert.strictEqual(lineCallCount, 1);
 });
 
 test('TC08: Mismatched client rule_set / rule_version rejected with HTTP 400', async () => {
@@ -795,7 +813,7 @@ test('TC08: Mismatched client rule_set / rule_version rejected with HTTP 400', a
     body: { rule_set: 'jupiter_auditorium', rule_version: 'v1' }
   });
   assert.strictEqual(resBadSet.status, 400);
-  assert.ok(resBadSet.body.error.includes('rule_set ไม่ถูกต้อง'));
+  assert.ok(resBadSet.body.error.includes('ไม่ถูกต้อง') || resBadSet.body.error.includes('ไม่ตรงกับห้องที่จอง'));
 
   // Client sends wrong version
   const resBadVer = await callApi(app, 'POST', `/api/public/bookings/${b.lastID}/acknowledge-rules`, {
@@ -803,7 +821,7 @@ test('TC08: Mismatched client rule_set / rule_version rejected with HTTP 400', a
     body: { rule_set: 'meeting_room_201_306', rule_version: 'v99' }
   });
   assert.strictEqual(resBadVer.status, 400);
-  assert.ok(resBadVer.body.error.includes('rule_version ไม่ตรงกับเวอร์ชันปัจจุบัน'));
+  assert.ok(resBadVer.body.error.includes('ไม่ถูกต้อง') || resBadVer.body.error.includes('ไม่ตรงกับห้องที่จอง'));
 });
 
 test('TC09: Feature toggle OFF allows upload-slip; Feature toggle ON blocks unacknowledged', async () => {
@@ -853,7 +871,7 @@ test('TC10: Legacy booking before cutover allows slip upload without blocking ev
 
   // Enable toggle but set cutover timestamp
   await testDb.run("UPDATE settings SET value = 'true' WHERE key = 'guidelines_enforcement_enabled'");
-  await testDb.run("INSERT INTO settings (key, value) VALUES ('guidelines_enforcement_cutover_at', '2026-11-09T00:00:00Z')");
+  await testDb.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('guidelines_enforcement_cutover_at', '2026-11-09T00:00:00Z')");
 
   // Legacy booking created prior to cutover
   const bLegacy = await testDb.run(`
@@ -927,7 +945,7 @@ test('TC12: Customer without LINE or LINE dispatch failure does not block web pa
     return { sent: false, error: 'Network timeout connecting to LINE API' };
   });
 
-  const bLineFail = await testDb.run('INSERT INTO bookings (qr_token, line_user_id) VALUES (?, ?)', ['tok_linefail', 'U88888888888888888888888888888888']);
+  const bLineFail = await testDb.run('INSERT INTO bookings (qr_token, line_user_id, line_user_id_verified) VALUES (?, ?, 1)', ['tok_linefail', 'U88888888888888888888888888888888']);
   await testDb.run('INSERT INTO booking_items (booking_id, room_id) VALUES (?, 4)', [bLineFail.lastID]);
 
   const res2 = await callApi(appLineFail, 'POST', `/api/public/bookings/${bLineFail.lastID}/acknowledge-rules`, {
@@ -935,11 +953,16 @@ test('TC12: Customer without LINE or LINE dispatch failure does not block web pa
     body: { rule_set: 'meeting_room_201_306', rule_version: 'v1' }
   });
 
-  // Web acknowledgement STILL succeeds! Web status is decoupled from LINE dispatch
+  // Web acknowledgement STILL succeeds immediately! Web response is decoupled from LINE dispatch
   assert.strictEqual(res2.status, 200);
   assert.strictEqual(res2.body.acknowledged, true);
-  assert.strictEqual(res2.body.line_notification.status, 'failed');
-  assert.ok(res2.body.line_notification.error.includes('Network timeout'));
+  assert.strictEqual(res2.body.line_notification.status, 'pending');
+
+  // Background dispatch recorded failure in DB without blocking the web client
+  await new Promise(r => setTimeout(r, 60));
+  const failDispatch = await testDb.get('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?', ['U88888888888888888888888888888888']);
+  assert.strictEqual(failDispatch.status, 'failed');
+  assert.ok(failDispatch.error_message.includes('Network timeout'));
 });
 
 // ========================================================
@@ -968,10 +991,10 @@ test('SERVER-E2E: Direct test against server.js routes and database.js migration
 
     const validSlip = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
-    // Create a test booking for Room 301
+    // Create a test booking for Room 301 (with server-confirmed LINE ID)
     const bResult = await dbQuery.run(`
-      INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id, created_at)
-      VALUES ('Server E2E Customer', '0891234567', 1200, 'tok_srv_1', 'U_SRV_LINE_1', datetime('now'))
+      INSERT INTO bookings (customer_name, contact, total_amount, qr_token, line_user_id, line_user_id_verified, created_at)
+      VALUES ('Server E2E Customer', '0891234567', 1200, 'tok_srv_1', 'U_SRV_LINE_1', 1, datetime('now'))
     `);
     const bookingId = bResult.id || bResult.lastID;
 
@@ -1024,7 +1047,7 @@ test('SERVER-E2E: Direct test against server.js routes and database.js migration
     assert.strictEqual(ackRes.body.acknowledged, true);
     assert.strictEqual(ackRes.body.rule_set, 'meeting_room_201_306');
     assert.ok(ackRes.body.acknowledged_at);
-    assert.strictEqual(ackRes.body.line_notification.status, 'sent');
+    assert.strictEqual(ackRes.body.line_notification.status, 'pending');
 
     // 7. Call GET after acknowledgement -> Exposed
     const getRes2 = await callApi(app, 'GET', `/api/public/bookings/${bookingId}`, {

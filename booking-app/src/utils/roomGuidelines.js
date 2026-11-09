@@ -10,6 +10,7 @@ import {
   resolveRoomGuidelines,
   isGuidelinesEnforcedForBooking,
   isBoundLineUserId,
+  isServerConfirmedLineBinding,
   buildLineGuidelinesMessage
 } from '../../../shared/roomGuidelinesPolicy.mjs';
 
@@ -20,6 +21,7 @@ export {
   resolveRoomGuidelines,
   isGuidelinesEnforcedForBooking,
   isBoundLineUserId,
+  isServerConfirmedLineBinding,
   buildLineGuidelinesMessage
 };
 

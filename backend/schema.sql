@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   guidelines_acknowledged_at DATETIME,
   guidelines_rule_set TEXT,
   guidelines_rule_version TEXT,
+  line_user_id_verified INTEGER DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -407,3 +408,5 @@ CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
 CREATE INDEX IF NOT EXISTS idx_line_guidelines_user ON line_guidelines_dispatches(line_user_id);
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_enabled', 'false');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_cutover_at', '2026-11-09T00:00:00.000Z');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'true');

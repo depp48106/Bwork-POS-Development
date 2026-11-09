@@ -126,7 +126,7 @@ export function isGuidelinesEnforcedForBooking({
 }
 
 /**
- * Validates whether a LINE user ID is bound and valid for dispatch.
+ * Validates whether a LINE user ID is syntactically valid.
  * Must be a string starting with 'U' with length >= 10.
  *
  * @param {string} lineUserId 
@@ -136,6 +136,45 @@ export function isBoundLineUserId(lineUserId) {
   if (typeof lineUserId !== 'string') return false;
   const trimmed = lineUserId.trim();
   return trimmed.startsWith('U') && trimmed.length >= 10;
+}
+
+/**
+ * Evaluates whether a LINE user ID is server-confirmed as bound to the customer.
+ * NEVER trust an unverified client-supplied ID as evidence of account binding.
+ *
+ * @param {object} params
+ * @param {string} params.lineUserId - The candidate LINE user ID
+ * @param {boolean|number|string} [params.isVerified] - Explicit server verification flag
+ * @param {string} [params.verifiedTokenUserId] - LINE user ID verified via ID token (LIFF)
+ * @param {string} [params.bookingSource] - Booking creation source ('online', 'walkin', 'pos', etc.)
+ * @returns {boolean} True if confirmed by server
+ */
+export function isServerConfirmedLineBinding({
+  lineUserId,
+  isVerified,
+  verifiedTokenUserId,
+  bookingSource
+} = {}) {
+  if (!isBoundLineUserId(lineUserId)) {
+    return false;
+  }
+
+  // 1. Cryptographically verified via LINE ID token matching this user ID
+  if (verifiedTokenUserId && verifiedTokenUserId.trim() === lineUserId.trim()) {
+    return true;
+  }
+
+  // 2. Explicit server-side verification flag in database (e.g. line_user_id_verified = 1)
+  if (isVerified === true || isVerified === 1 || isVerified === '1' || isVerified === 'true') {
+    return true;
+  }
+
+  // 3. Back-office / POS staff binding (not untrusted public online form)
+  if (bookingSource && bookingSource !== 'online' && isVerified !== false && isVerified !== 0 && isVerified !== '0') {
+    return true;
+  }
+
+  return false;
 }
 
 /**

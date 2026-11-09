@@ -1172,6 +1172,14 @@ function isBoundLineUserId(lineUserId) {
   return trimmed.startsWith('U') && trimmed.length >= 10;
 }
 
+function isServerConfirmedLineBinding({ lineUserId, isVerified, verifiedTokenUserId, bookingSource } = {}) {
+  if (!isBoundLineUserId(lineUserId)) return false;
+  if (verifiedTokenUserId && verifiedTokenUserId.trim() === lineUserId.trim()) return true;
+  if (isVerified === true || isVerified === 1 || isVerified === '1' || isVerified === 'true') return true;
+  if (bookingSource && bookingSource !== 'online' && isVerified !== false && isVerified !== 0 && isVerified !== '0') return true;
+  return false;
+}
+
 function buildLineGuidelinesMessage(guidelinesConfig) {
   const title = guidelinesConfig?.line_title || guidelinesConfig?.title || 'ข้อปฏิบัติการใช้ห้องประชุม';
   const fullUrl = guidelinesConfig?.image_url || 'https://bwork-booking.pages.dev/rules/room301-306.png';
@@ -10838,10 +10846,12 @@ export default {
         const guidelinesPolicy = resolveRoomGuidelines(checkItems && checkItems[0]?.room_id, checkItems && checkItems[0]?.room_name);
         const enforcementRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'").first();
         const enforcementSetting = enforcementRow?.value || 'false';
+        const cutoverRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'guidelines_enforcement_cutover_at'").first();
+        const cutoverAt = cutoverRow?.value || GUIDELINES_CUTOVER_ISO;
         const isEnforced = isGuidelinesEnforcedForBooking({
           guidelinesPolicy,
           enforcementSetting,
-          cutoverAt: GUIDELINES_CUTOVER_ISO,
+          cutoverAt,
           bookingCreatedAt: booking.created_at
         });
 
@@ -11008,6 +11018,7 @@ export default {
         let bodyContact = null;
         let bodyRuleSet = null;
         let bodyRuleVersion = null;
+        let bodyLineIdToken = null;
         const contentType = request.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
           try {
@@ -11016,6 +11027,7 @@ export default {
             bodyContact = body.contact;
             bodyRuleSet = body.rule_set;
             bodyRuleVersion = body.rule_version;
+            bodyLineIdToken = body.line_id_token;
           } catch (e) {}
         }
 
@@ -11066,11 +11078,12 @@ export default {
           }), { headers: corsHeaders });
         }
 
-        if (bodyRuleSet && bodyRuleSet !== guidelinesConfig.rule_set) {
-          return new Response(JSON.stringify({ error: 'รหัสชุดข้อปฏิบัติไม่ถูกต้องหรือไม่ตรงกับห้องที่จอง' }), { status: 400, headers: corsHeaders });
+        // Strict validation: rule_set & rule_version must be provided and match current room policy
+        if (!bodyRuleSet || !bodyRuleVersion) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุรหัสชุดข้อปฏิบัติ (rule_set) และเวอร์ชัน (rule_version) ให้ครบถ้วน' }), { status: 400, headers: corsHeaders });
         }
-        if (bodyRuleVersion && bodyRuleVersion !== guidelinesConfig.rule_version) {
-          return new Response(JSON.stringify({ error: 'เวอร์ชันข้อปฏิบัติไม่ถูกต้องหรือไม่ตรงกับเวอร์ชันปัจจุบัน' }), { status: 400, headers: corsHeaders });
+        if (bodyRuleSet !== guidelinesConfig.rule_set || bodyRuleVersion !== guidelinesConfig.rule_version) {
+          return new Response(JSON.stringify({ error: 'รหัสชุดข้อปฏิบัติหรือเวอร์ชันไม่ถูกต้องหรือไม่ตรงกับห้องที่จอง' }), { status: 400, headers: corsHeaders });
         }
 
         // Record acknowledgement in room_guidelines_acknowledgements
@@ -11121,11 +11134,49 @@ export default {
         ).bind(booking.id).first();
         const acknowledgedAt = updatedBooking?.guidelines_acknowledged_at || new Date().toISOString();
 
-        // LINE OA Notification (Deduplicated per person x rule_set x rule_version with Atomic Claim)
-        let lineNotification = null;
-        const hasValidLine = isBoundLineUserId(booking.line_user_id);
+        // Server-Confirmed LINE Recipient Check & Feature Toggle
+        let verifiedLineUserId = null;
+        const lineIdTokenHeader = request.headers.get('x-line-id-token') || bodyLineIdToken;
+        if (lineIdTokenHeader) {
+          const verified = verifyWorkerLineIdToken(lineIdTokenHeader);
+          if (verified && verified.userId) {
+            verifiedLineUserId = verified.userId;
+          }
+        }
 
-        if (hasValidLine) {
+        const hasValidSyntax = isBoundLineUserId(booking.line_user_id);
+        const isLineConfirmed = isServerConfirmedLineBinding({
+          lineUserId: booking.line_user_id,
+          isVerified: booking.line_user_id_verified,
+          verifiedTokenUserId: verifiedLineUserId,
+          bookingSource: booking.booking_source
+        });
+
+        const lineToggleRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'").first();
+        const isFeatureDisabled = (lineToggleRow && (lineToggleRow.value === 'false' || lineToggleRow.value === '0')) ||
+                                  (env.DISABLE_LIVE_LINE === 'true');
+
+        let lineNotification = null;
+
+        if (!hasValidSyntax) {
+          lineNotification = {
+            status: 'skipped_no_line',
+            deduplicated: false,
+            message: 'ไม่มี LINE User ID สำหรับรายการจองนี้'
+          };
+        } else if (!isLineConfirmed) {
+          lineNotification = {
+            status: 'skipped_unverified_line',
+            deduplicated: false,
+            message: 'LINE ID ไม่ได้รับการยืนยันการผูกบัญชีจากเซิร์ฟเวอร์'
+          };
+        } else if (isFeatureDisabled) {
+          lineNotification = {
+            status: 'skipped_feature_disabled',
+            deduplicated: false,
+            message: 'ระบบปิดการส่งข้อความแจ้งเตือนทาง LINE'
+          };
+        } else {
           try {
             await env.DB.prepare(`
               CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
@@ -11155,43 +11206,57 @@ export default {
           }
 
           if (claimSuccess) {
-            const tokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
-            const channelAccessToken = tokenRow?.value || env.LINE_CHANNEL_ACCESS_TOKEN;
-            const textContent = buildLineGuidelinesMessage(guidelinesConfig);
+            // Decoupled web response: return 'pending' immediately without waiting for LINE push
+            lineNotification = {
+              status: 'pending',
+              deduplicated: false,
+              message: 'กำลังส่งข้อปฏิบัติทาง LINE ในพื้นหลัง'
+            };
 
-            let linePushOk = false;
-            let lineErr = null;
-
-            if (channelAccessToken) {
+            const targetLineUserId = booking.line_user_id;
+            const bgLineTask = async () => {
               try {
-                const pushRes = await dispatchLineMessagePush(env, channelAccessToken, {
-                  to: booking.line_user_id,
-                  messages: [{ type: 'text', text: textContent }]
-                });
-                linePushOk = pushRes.success || pushRes.ok || pushRes.mocked;
-                lineErr = pushRes.error || pushRes.reason;
-              } catch (pushEx) {
-                linePushOk = false;
-                lineErr = pushEx.message;
+                const tokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
+                const channelAccessToken = tokenRow?.value || env.LINE_CHANNEL_ACCESS_TOKEN;
+                const textContent = buildLineGuidelinesMessage(guidelinesConfig);
+
+                let linePushOk = false;
+                let lineErr = null;
+
+                if (channelAccessToken) {
+                  try {
+                    const pushRes = await dispatchLineMessagePush(env, channelAccessToken, {
+                      to: targetLineUserId,
+                      messages: [{ type: 'text', text: textContent }]
+                    });
+                    linePushOk = pushRes.success || pushRes.ok || pushRes.mocked;
+                    lineErr = pushRes.error || pushRes.reason;
+                  } catch (pushEx) {
+                    linePushOk = false;
+                    lineErr = pushEx.message;
+                  }
+                } else {
+                  lineErr = 'no_channel_access_token';
+                }
+
+                if (linePushOk) {
+                  await env.DB.prepare(
+                    `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
+                  ).bind(targetLineUserId, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+                } else {
+                  await env.DB.prepare(
+                    `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
+                  ).bind(lineErr || 'LINE dispatch failed', targetLineUserId, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+                }
+              } catch (bgEx) {
+                console.error('[Worker-Guidelines-Background]', bgEx);
               }
-            } else {
-              lineErr = 'no_channel_access_token';
-            }
+            };
 
-            if (linePushOk) {
-              try {
-                await env.DB.prepare(
-                  `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
-                ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
-              } catch (_) {}
-              lineNotification = { status: 'sent', deduplicated: false, message: 'ส่งข้อปฏิบัติทาง LINE เรียบร้อยแล้ว' };
+            if (ctx && typeof ctx.waitUntil === 'function') {
+              ctx.waitUntil(bgLineTask());
             } else {
-              try {
-                await env.DB.prepare(
-                  `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
-                ).bind(lineErr || 'LINE dispatch failed', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
-              } catch (_) {}
-              lineNotification = { status: 'failed', deduplicated: false, error: lineErr || 'LINE dispatch failed' };
+              bgLineTask().catch(e => console.error('[Background Task Error]', e));
             }
           } else {
             const existingDispatch = await env.DB.prepare(
@@ -11204,12 +11269,6 @@ export default {
               lineNotification = { status: existingDispatch?.status || 'unknown', deduplicated: true, message: 'มีคำขอส่งข้อปฏิบัติชุดนี้อยู่แล้ว' };
             }
           }
-        } else {
-          lineNotification = {
-            status: 'skipped_no_line',
-            deduplicated: false,
-            message: 'ไม่มี LINE User ID สำหรับรายการจองนี้'
-          };
         }
 
         return new Response(JSON.stringify({
@@ -11418,10 +11477,12 @@ export default {
         const enforcementRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'").first();
         const enforcementSetting = enforcementRow?.value || 'false';
         const enforcementEnabled = enforcementSetting === 'true' || enforcementSetting === '1' || enforcementSetting === 1;
+        const cutoverRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'guidelines_enforcement_cutover_at'").first();
+        const cutoverAt = cutoverRow?.value || GUIDELINES_CUTOVER_ISO;
         const guidelinesEnforced = isGuidelinesEnforcedForBooking({
           guidelinesPolicy,
           enforcementSetting: enforcementEnabled,
-          cutoverAt: GUIDELINES_CUTOVER_ISO,
+          cutoverAt,
           bookingCreatedAt: booking.created_at
         });
 
@@ -11438,6 +11499,7 @@ export default {
           paymentDeadline: new Date(new Date(booking.created_at).getTime() + windowMins * 60 * 1000).toISOString(),
           payment_window_minutes: windowMins,
           guidelines_enforcement_enabled: enforcementEnabled,
+          guidelines_enforcement_cutover_at: cutoverAt,
           guidelines_enforced: guidelinesEnforced,
           guidelines_acknowledged: Boolean(booking.guidelines_acknowledged_at),
           guidelines_acknowledged_at: booking.guidelines_acknowledged_at || null,

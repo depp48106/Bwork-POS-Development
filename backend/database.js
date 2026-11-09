@@ -632,6 +632,7 @@ async function initDatabase() {
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN guidelines_acknowledged_at DATETIME'); } catch (e) {}
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN guidelines_rule_set TEXT'); } catch (e) {}
   try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN guidelines_rule_version TEXT'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN line_user_id_verified INTEGER DEFAULT 0'); } catch (e) {}
 
   // Migration: Room guidelines acknowledgements table (stores per-booking acknowledgement)
   try {
@@ -786,6 +787,14 @@ async function initDatabase() {
     const checkGuidelinesToggle = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'");
     if (!checkGuidelinesToggle) {
       await dbQuery.run("INSERT INTO settings (key, value) VALUES ('guidelines_enforcement_enabled', 'false')");
+    }
+    const checkGuidelinesCutover = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_cutover_at'");
+    if (!checkGuidelinesCutover) {
+      await dbQuery.run("INSERT INTO settings (key, value) VALUES ('guidelines_enforcement_cutover_at', '2026-11-09T00:00:00.000Z')");
+    }
+    const checkGuidelinesLineToggle = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'");
+    if (!checkGuidelinesLineToggle) {
+      await dbQuery.run("INSERT INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'true')");
     }
   } catch (e) {}
 

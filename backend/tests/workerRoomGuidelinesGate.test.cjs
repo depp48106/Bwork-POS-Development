@@ -1,63 +1,65 @@
-/**
- * backend/tests/workerRoomGuidelinesGate.test.cjs
- *
- * Automated verification of room guidelines acknowledgement gate on Cloudflare Worker (backend/worker.js).
- * Uses better-sqlite3 as an in-memory D1 mock and tests fetch() handlers against Worker routes:
- * 1. Book Room 201 then Room 302 in same tab -> acknowledge both, LINE dispatched once.
- * 2. Concurrently confirm in two tabs -> atomic claim ensures LINE sent once.
- * 3. Book Jupiter Auditorium first time -> see Jupiter flyer, send Jupiter LINE separately.
- * 4. Refresh after acknowledgement -> see QR continuously; new booking starts locked.
- * 5. Old unpaid bookings and Co-working room can upload slip normally without blocking.
- * 6. New booking not yet acknowledged (when enforcement enabled) -> rejected on slip upload.
- * 7. LINE slow or fails -> customer still sees QR after acknowledgement.
- */
-
-'use strict';
-
-const test = require('node:test');
+const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const path = require('path');
+const path = require('node:path');
+const fs = require('node:fs');
 const Database = require('better-sqlite3');
 
-const devDir = path.resolve(__dirname, '../..');
-const workerPath = path.join(devDir, 'backend/worker.js');
-
+/**
+ * High-fidelity D1 Mock backed by better-sqlite3 for Cloudflare Worker runtime testing.
+ */
 function createD1Mock(db) {
   return {
-    prepare(sql) {
+    prepare(query) {
       return {
-        _sql: sql,
-        _params: [],
-        bind(...args) {
-          this._params = args;
-          return this;
+        bind(...params) {
+          return {
+            async first(col) {
+              const stmt = db.prepare(query);
+              const row = stmt.get(...params);
+              if (!row) return null;
+              if (col) return row[col];
+              return row;
+            },
+            async all() {
+              const stmt = db.prepare(query);
+              const results = stmt.all(...params);
+              return { results, success: true };
+            },
+            async run() {
+              const stmt = db.prepare(query);
+              const info = stmt.run(...params);
+              return {
+                success: true,
+                meta: {
+                  changes: info.changes,
+                  last_row_id: info.lastInsertRowid
+                }
+              };
+            }
+          };
         },
-        async first() {
-          try {
-            const stmt = db.prepare(this._sql);
-            return stmt.get(...this._params) || null;
-          } catch (e) {
-            return null;
-          }
+        async first(col) {
+          const stmt = db.prepare(query);
+          const row = stmt.get();
+          if (!row) return null;
+          if (col) return row[col];
+          return row;
         },
         async all() {
-          try {
-            const stmt = db.prepare(this._sql);
-            const results = stmt.all(...this._params);
-            return { results: results || [] };
-          } catch (e) {
-            return { results: [] };
-          }
+          const stmt = db.prepare(query);
+          const results = stmt.all();
+          return { results, success: true };
         },
         async run() {
-          try {
-            const stmt = db.prepare(this._sql);
-            const info = stmt.run(...this._params);
-            return { success: true, meta: { changes: info.changes, last_row_id: info.lastInsertRowid } };
-          } catch (e) {
-            return { success: false, error: e.message };
-          }
+          const stmt = db.prepare(query);
+          const info = stmt.run();
+          return {
+            success: true,
+            meta: {
+              changes: info.changes,
+              last_row_id: info.lastInsertRowid
+            }
+          };
         }
       };
     }
@@ -67,7 +69,7 @@ function createD1Mock(db) {
 function setupTestDb(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS rooms (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
       capacity INTEGER,
       image_url TEXT,
@@ -75,9 +77,9 @@ function setupTestDb(db) {
     );
 
     CREATE TABLE IF NOT EXISTS bookings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      booking_code TEXT,
+      id INTEGER PRIMARY KEY,
       receipt_number TEXT,
+      booking_source TEXT DEFAULT 'online',
       payment_status TEXT DEFAULT 'pending',
       checkin_status TEXT DEFAULT 'pending',
       cancellation_reason TEXT,
@@ -87,6 +89,7 @@ function setupTestDb(db) {
       contact TEXT,
       customer_name TEXT,
       line_user_id TEXT,
+      line_user_id_verified INTEGER DEFAULT 0,
       qr_token TEXT,
       slip_image_url TEXT,
       slip_trans_ref TEXT,
@@ -153,16 +156,18 @@ function setupTestDb(db) {
 
     INSERT OR REPLACE INTO settings (key, value) VALUES
       ('guidelines_enforcement_enabled', 'false'),
+      ('guidelines_enforcement_cutover_at', '2026-11-09T00:00:00.000Z'),
+      ('line_guidelines_dispatch_enabled', 'true'),
       ('payment_window_minutes', '15'),
       ('line_channel_access_token', 'mock_token');
   `);
 }
 
-// Dynamically load Worker module
 let workerModule = null;
 async function getWorker() {
-  if (workerModule) return workerModule;
-  const tempMjs = path.join(devDir, 'backend/worker.temp.mjs');
+  const devDir = 'D:\\Project BL\\Bwork-POS-Development';
+  const workerPath = path.join(devDir, 'backend/worker.js');
+  const tempMjs = path.join(devDir, `backend/worker.temp.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.mjs`);
   fs.copyFileSync(workerPath, tempMjs);
   try {
     const fileUrl = 'file:///' + tempMjs.replace(/\\/g, '/');
@@ -173,7 +178,7 @@ async function getWorker() {
   return workerModule;
 }
 
-test('WORKER-01: Book 201 then 302 in same tab -> acknowledge both, LINE dispatched once', async () => {
+test('WORKER-01: Book 201 then 302 in same tab -> acknowledge both, LINE dispatched once via atomic claim', async () => {
   const db = new Database(':memory:');
   setupTestDb(db);
   const worker = await getWorker();
@@ -184,34 +189,57 @@ test('WORKER-01: Book 201 then 302 in same tab -> acknowledge both, LINE dispatc
     STAGING_MOCK_LINE_API: 'true'
   };
 
-  // 1. Create booking 1 (Room 301)
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, contact, qr_token) VALUES (1, 'BK-000001', 'U1234567890', '0812345678', 'tok_1')`);
+  const bgTasks = [];
+  const ctx = {
+    waitUntil: (p) => { bgTasks.push(p); }
+  };
+
+  // 1. Create booking 1 (Room 301) with server-confirmed LINE ID
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (1, 'BK-000001', 'U1234567890', 1, '0812345678', 'tok_1')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (1, 4)`);
 
   // Acknowledge booking 1
   const req1 = new Request('http://localhost/api/public/bookings/1/acknowledge-rules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_1' },
-    body: JSON.stringify({ contact: '0812345678' })
+    body: JSON.stringify({
+      rule_set: 'meeting_room_201_306',
+      rule_version: 'v1',
+      contact: '0812345678'
+    })
   });
-  const res1 = await worker.default.fetch(req1, env);
+  const res1 = await worker.default.fetch(req1, env, ctx);
   assert.equal(res1.status, 200);
   const body1 = await res1.json();
   assert.equal(body1.acknowledged, true);
   assert.equal(body1.rule_set, 'meeting_room_201_306');
-  assert.equal(body1.line_notification?.status, 'sent');
+  assert.equal(body1.rule_version, 'v1');
+  // Decoupled response returns pending immediately
+  assert.equal(body1.line_notification?.status, 'pending');
+  assert.equal(body1.line_notification?.deduplicated, false);
+
+  // Wait for background waitUntil task to complete
+  await Promise.all(bgTasks);
+
+  // Verify DB dispatch row transitioned to 'sent'
+  const row1 = db.prepare(`SELECT status FROM line_guidelines_dispatches WHERE line_user_id = 'U1234567890'`).get();
+  assert.equal(row1.status, 'sent');
 
   // 2. Create booking 2 (Room 302) same LINE user
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, contact, qr_token) VALUES (2, 'BK-000002', 'U1234567890', '0812345678', 'tok_2')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (2, 'BK-000002', 'U1234567890', 1, '0812345678', 'tok_2')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (2, 5)`);
 
   // Acknowledge booking 2
   const req2 = new Request('http://localhost/api/public/bookings/2/acknowledge-rules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_2' },
-    body: JSON.stringify({ contact: '0812345678' })
+    body: JSON.stringify({
+      rule_set: 'meeting_room_201_306',
+      rule_version: 'v1',
+      contact: '0812345678'
+    })
   });
-  const res2 = await worker.default.fetch(req2, env);
+  const res2 = await worker.default.fetch(req2, env, ctx);
   assert.equal(res2.status, 200);
   const body2 = await res2.json();
   assert.equal(body2.acknowledged, true);
@@ -222,7 +250,7 @@ test('WORKER-01: Book 201 then 302 in same tab -> acknowledge both, LINE dispatc
   db.close();
 });
 
-test('WORKER-02: Concurrently confirm in two tabs -> atomic claim ensures LINE sent once', async () => {
+test('WORKER-02: Concurrently confirm in two tabs -> atomic claim ensures LINE sent once, non-blocking response', async () => {
   const db = new Database(':memory:');
   setupTestDb(db);
   const worker = await getWorker();
@@ -233,23 +261,28 @@ test('WORKER-02: Concurrently confirm in two tabs -> atomic claim ensures LINE s
     STAGING_MOCK_LINE_API: 'true'
   };
 
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, contact, qr_token) VALUES (10, 'BK-000010', 'UCONCURRENT99', '0812345678', 'tok_c')`);
+  const bgTasks = [];
+  const ctx = {
+    waitUntil: (p) => { bgTasks.push(p); }
+  };
+
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (10, 'BK-000010', 'UCONCURRENT99', 1, '0812345678', 'tok_c')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (10, 4)`);
 
   const reqTab1 = new Request('http://localhost/api/public/bookings/10/acknowledge-rules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_c' },
-    body: JSON.stringify({ contact: '0812345678' })
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v1', contact: '0812345678' })
   });
   const reqTab2 = new Request('http://localhost/api/public/bookings/10/acknowledge-rules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_c' },
-    body: JSON.stringify({ contact: '0812345678' })
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v1', contact: '0812345678' })
   });
 
   const [res1, res2] = await Promise.all([
-    worker.default.fetch(reqTab1, env),
-    worker.default.fetch(reqTab2, env)
+    worker.default.fetch(reqTab1, env, ctx),
+    worker.default.fetch(reqTab2, env, ctx)
   ]);
 
   assert.equal(res1.status, 200);
@@ -260,7 +293,9 @@ test('WORKER-02: Concurrently confirm in two tabs -> atomic claim ensures LINE s
   assert.equal(body2.acknowledged, true);
 
   const statuses = [body1.line_notification?.status, body2.line_notification?.status];
-  assert.ok(statuses.includes('sent') || statuses.includes('already_sent'));
+  assert.ok(statuses.includes('pending') && statuses.includes('already_sent'));
+
+  await Promise.all(bgTasks);
 
   // DB must only have 1 dispatch record
   const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UCONCURRENT99'`).get();
@@ -269,7 +304,7 @@ test('WORKER-02: Concurrently confirm in two tabs -> atomic claim ensures LINE s
   db.close();
 });
 
-test('WORKER-03: Book Jupiter Auditorium first time -> see Jupiter flyer, send Jupiter LINE separately', async () => {
+test('WORKER-03: Unverified floating client LINE ID and disabled feature -> exactly 0 LINE sends', async () => {
   const db = new Database(':memory:');
   setupTestDb(db);
   const worker = await getWorker();
@@ -280,33 +315,141 @@ test('WORKER-03: Book Jupiter Auditorium first time -> see Jupiter flyer, send J
     STAGING_MOCK_LINE_API: 'true'
   };
 
+  // Case A: Client supplied floating line_user_id without server confirmation
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (71, 'BK-000071', 'UFLOATING123', 0, '0812345678', 'tok_float')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (71, 4)`);
+
+  const reqA = new Request('http://localhost/api/public/bookings/71/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_float' },
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v1', contact: '0812345678' })
+  });
+  const resA = await worker.default.fetch(reqA, env);
+  assert.equal(resA.status, 200);
+  const bodyA = await resA.json();
+  assert.equal(bodyA.acknowledged, true); // Customer can still proceed!
+  assert.equal(bodyA.line_notification?.status, 'skipped_unverified_line');
+
+  // Verify zero rows in dispatches
+  const countA = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UFLOATING123'`).get();
+  assert.equal(countA.c, 0);
+
+  // Case B: Feature disabled in settings
+  db.exec(`UPDATE settings SET value = 'false' WHERE key = 'line_guidelines_dispatch_enabled'`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (72, 'BK-000072', 'UVERIFIED999', 1, '0812345678', 'tok_disabled')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (72, 4)`);
+
+  const reqB = new Request('http://localhost/api/public/bookings/72/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_disabled' },
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v1', contact: '0812345678' })
+  });
+  const resB = await worker.default.fetch(reqB, env);
+  assert.equal(resB.status, 200);
+  const bodyB = await resB.json();
+  assert.equal(bodyB.acknowledged, true);
+  assert.equal(bodyB.line_notification?.status, 'skipped_feature_disabled');
+
+  const countB = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED999'`).get();
+  assert.equal(countB.c, 0);
+
+  db.close();
+});
+
+test('WORKER-04: Strict validation: Missing, incomplete, or mismatched rule_set/rule_version rejected with HTTP 400', async () => {
+  const db = new Database(':memory:');
+  setupTestDb(db);
+  const worker = await getWorker();
+
+  const env = {
+    DB: createD1Mock(db),
+    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token'
+  };
+
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (80, 'BK-000080', 'UTEST', 1, '0812345678', 'tok_strict')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (80, 4)`); // Room 301
+
+  // 1. Missing rule_set
+  const r1 = await worker.default.fetch(new Request('http://localhost/api/public/bookings/80/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_strict' },
+    body: JSON.stringify({ rule_version: 'v1' })
+  }), env);
+  assert.equal(r1.status, 400);
+
+  // 2. Missing rule_version
+  const r2 = await worker.default.fetch(new Request('http://localhost/api/public/bookings/80/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_strict' },
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306' })
+  }), env);
+  assert.equal(r2.status, 400);
+
+  // 3. Mismatched rule_set (sent jupiter for room 301)
+  const r3 = await worker.default.fetch(new Request('http://localhost/api/public/bookings/80/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_strict' },
+    body: JSON.stringify({ rule_set: 'jupiter_auditorium', rule_version: 'v1' })
+  }), env);
+  assert.equal(r3.status, 400);
+
+  // 4. Mismatched rule_version (sent v99)
+  const r4 = await worker.default.fetch(new Request('http://localhost/api/public/bookings/80/acknowledge-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_strict' },
+    body: JSON.stringify({ rule_set: 'meeting_room_201_306', rule_version: 'v99' })
+  }), env);
+  assert.equal(r4.status, 400);
+
+  db.close();
+});
+
+test('WORKER-05: Book Jupiter Auditorium first time -> see Jupiter flyer, send Jupiter LINE separately', async () => {
+  const db = new Database(':memory:');
+  setupTestDb(db);
+  const worker = await getWorker();
+
+  const env = {
+    DB: createD1Mock(db),
+    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token',
+    STAGING_MOCK_LINE_API: 'true'
+  };
+
+  const bgTasks = [];
+  const ctx = {
+    waitUntil: (p) => { bgTasks.push(p); }
+  };
+
   // User already received meeting room rules earlier
   db.exec(`INSERT INTO line_guidelines_dispatches (line_user_id, rule_set, rule_version, status) VALUES ('UJUPITER0001', 'meeting_room_201_306', 'v1', 'sent')`);
 
   // Now books Jupiter
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, contact, qr_token) VALUES (20, 'BK-000020', 'UJUPITER0001', '0812345678', 'tok_j')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (20, 'BK-000020', 'UJUPITER0001', 1, '0812345678', 'tok_j')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (20, 10)`);
 
   const req = new Request('http://localhost/api/public/bookings/20/acknowledge-rules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_j' },
-    body: JSON.stringify({ contact: '0812345678' })
+    body: JSON.stringify({ rule_set: 'jupiter_auditorium', rule_version: 'v1', contact: '0812345678' })
   });
-  const res = await worker.default.fetch(req, env);
+  const res = await worker.default.fetch(req, env, ctx);
   assert.equal(res.status, 200);
   const body = await res.json();
   assert.equal(body.acknowledged, true);
   assert.equal(body.rule_set, 'jupiter_auditorium');
-  assert.equal(body.line_notification?.status, 'sent');
+  assert.equal(body.line_notification?.status, 'pending');
 
-  // Both dispatches now exist
-  const dispatches = db.prepare(`SELECT rule_set FROM line_guidelines_dispatches WHERE line_user_id = 'UJUPITER0001' ORDER BY id ASC`).all();
+  await Promise.all(bgTasks);
+
+  // Both dispatches now exist in DB
+  const dispatches = db.prepare(`SELECT rule_set, status FROM line_guidelines_dispatches WHERE line_user_id = 'UJUPITER0001' ORDER BY id ASC`).all();
   assert.deepEqual(dispatches.map(d => d.rule_set), ['meeting_room_201_306', 'jupiter_auditorium']);
+  assert.deepEqual(dispatches.map(d => d.status), ['sent', 'sent']);
 
   db.close();
 });
 
-test('WORKER-04: Refresh after acknowledgement -> see QR continuously; new booking starts locked', async () => {
+test('WORKER-06: Refresh after acknowledgement -> see QR continuously; new booking starts locked', async () => {
   const db = new Database(':memory:');
   setupTestDb(db);
   const worker = await getWorker();
@@ -342,7 +485,7 @@ test('WORKER-04: Refresh after acknowledgement -> see QR continuously; new booki
   db.close();
 });
 
-test('WORKER-05: Old unpaid bookings and Co-working room can upload slip normally without blocking', async () => {
+test('WORKER-07: Old unpaid bookings and Co-working room can upload slip normally without blocking', async () => {
   const db = new Database(':memory:');
   setupTestDb(db);
   const worker = await getWorker();
@@ -383,7 +526,7 @@ test('WORKER-05: Old unpaid bookings and Co-working room can upload slip normall
   db.close();
 });
 
-test('WORKER-06: New booking not yet acknowledged (when enforcement enabled) -> rejected on slip upload', async () => {
+test('WORKER-08: New post-cutover meeting room booking not yet acknowledged (when enforcement enabled) -> rejected on slip upload', async () => {
   const db = new Database(':memory:');
   setupTestDb(db);
   const worker = await getWorker();
@@ -410,37 +553,6 @@ test('WORKER-06: New booking not yet acknowledged (when enforcement enabled) -> 
   assert.equal(res.status, 400);
   const body = await res.json();
   assert.equal(body.code, 'GUIDELINES_NOT_ACKNOWLEDGED');
-
-  db.close();
-});
-
-test('WORKER-07: LINE slow or fails -> customer still sees QR after acknowledgement', async () => {
-  const db = new Database(':memory:');
-  setupTestDb(db);
-  const worker = await getWorker();
-
-  const env = {
-    DB: createD1Mock(db),
-    LINE_CHANNEL_ACCESS_TOKEN: 'invalid_broken_token' // Causes LINE push error
-  };
-
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, contact, qr_token) VALUES (60, 'BK-000060', 'UFAIL999999', '0812345678', 'tok_fail')`);
-  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (60, 4)`);
-
-  const req = new Request('http://localhost/api/public/bookings/60/acknowledge-rules', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_fail' },
-    body: JSON.stringify({ contact: '0812345678' })
-  });
-  const res = await worker.default.fetch(req, env);
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.acknowledged, true); // Web flow still succeeds!
-  assert.equal(body.line_notification?.status, 'failed');
-
-  // Verify booking record was marked acknowledged
-  const b = db.prepare('SELECT guidelines_acknowledged_at FROM bookings WHERE id = 60').get();
-  assert.ok(b.guidelines_acknowledged_at);
 
   db.close();
 });

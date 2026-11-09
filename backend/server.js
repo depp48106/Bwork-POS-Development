@@ -40,6 +40,7 @@ const {
   buildLineGuidelinesMessage,
   isGuidelinesEnforcedForBooking,
   isBoundLineUserId,
+  isServerConfirmedLineBinding,
   GUIDELINES_CUTOVER_ISO
 } = require('../shared/roomGuidelinesPolicy.mjs');
 const {
@@ -8944,14 +8945,14 @@ app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
       });
     }
 
-    // Client rule validation (rule_set & rule_version must match server policy)
+    // Client rule validation: rule_set & rule_version are strictly required and must match server room policy
     const clientRuleSet = req.body?.rule_set;
     const clientRuleVersion = req.body?.rule_version;
-    if (clientRuleSet && clientRuleSet !== guidelinesConfig.rule_set) {
-      return res.status(400).json({ error: 'รหัสชุดข้อปฏิบัติไม่ถูกต้องหรือไม่ตรงกับห้องที่จอง' });
+    if (!clientRuleSet || !clientRuleVersion) {
+      return res.status(400).json({ error: 'กรุณาระบุรหัสชุดข้อปฏิบัติ (rule_set) และเวอร์ชัน (rule_version) ให้ครบถ้วน' });
     }
-    if (clientRuleVersion && clientRuleVersion !== guidelinesConfig.rule_version) {
-      return res.status(400).json({ error: 'เวอร์ชันข้อปฏิบัติไม่ถูกต้องหรือไม่ตรงกับเวอร์ชันปัจจุบัน' });
+    if (clientRuleSet !== guidelinesConfig.rule_set || clientRuleVersion !== guidelinesConfig.rule_version) {
+      return res.status(400).json({ error: 'รหัสชุดข้อปฏิบัติหรือเวอร์ชันไม่ถูกต้องหรือไม่ตรงกับห้องที่จอง' });
     }
 
     // Idempotent: record in room_guidelines_acknowledgements
@@ -8986,11 +8987,60 @@ app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
     const updatedBooking = await dbQuery.get('SELECT guidelines_acknowledged_at FROM bookings WHERE id = ?', [booking.id]);
     const acknowledgedAt = updatedBooking?.guidelines_acknowledged_at || new Date().toISOString();
 
-    // Atomic Claim & LINE OA Notification (Deduplicated per person x rule_set x rule_version)
-    let lineNotification = null;
-    const hasValidLine = isBoundLineUserId(booking.line_user_id);
+    // Verify Server-Confirmed LINE Recipient & Feature Toggle
+    let verifiedLineUserId = null;
+    const lineIdToken = req.headers['x-line-id-token'] || req.body?.line_id_token;
+    if (lineIdToken && typeof lineIdToken === 'string') {
+      try {
+        const parts = lineIdToken.trim().split('.');
+        if (parts.length === 3) {
+          let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          while (b64.length % 4) b64 += '=';
+          const payload = JSON.parse(Buffer.from(b64, 'base64').toString());
+          const nowSec = Math.floor(Date.now() / 1000);
+          if (payload.iss === 'https://access.line.me' && (!payload.exp || payload.exp >= nowSec - 60) && payload.sub) {
+            verifiedLineUserId = payload.sub.trim();
+          }
+        }
+      } catch (_) {}
+    }
 
-    if (hasValidLine) {
+    const hasValidSyntax = isBoundLineUserId(booking.line_user_id);
+    const isLineConfirmed = isServerConfirmedLineBinding({
+      lineUserId: booking.line_user_id,
+      isVerified: booking.line_user_id_verified,
+      verifiedTokenUserId: verifiedLineUserId,
+      bookingSource: booking.booking_source
+    });
+
+    const lineToggleSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'");
+    const isFeatureDisabled = (lineToggleSetting && (lineToggleSetting.value === 'false' || lineToggleSetting.value === '0')) ||
+                              (process.env.DISABLE_LIVE_LINE === 'true');
+
+    let lineNotification = null;
+
+    if (!hasValidSyntax) {
+      lineNotification = {
+        status: 'skipped_no_line',
+        deduplicated: false,
+        message: 'ไม่มี LINE User ID สำหรับรายการจองนี้'
+      };
+    } else if (!isLineConfirmed) {
+      // Unverified client floating ID: reject as binding evidence, skip sending but do not block payment
+      lineNotification = {
+        status: 'skipped_unverified_line',
+        deduplicated: false,
+        message: 'LINE ID ไม่ได้รับการยืนยันการผูกบัญชีจากเซิร์ฟเวอร์'
+      };
+    } else if (isFeatureDisabled) {
+      // Feature toggle turned off: skip sending, allow payment
+      lineNotification = {
+        status: 'skipped_feature_disabled',
+        deduplicated: false,
+        message: 'ระบบปิดการส่งข้อความแจ้งเตือนทาง LINE'
+      };
+    } else {
+      // Server-confirmed recipient & feature enabled -> Atomic Claim
       let claimSuccess = false;
       try {
         const claimRes = await dbQuery.run(
@@ -9005,51 +9055,29 @@ app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
       }
 
       if (claimSuccess) {
-        // Fast non-blocking race against external LINE network latency
-        let lineResult = null;
-        try {
-          const sendPromise = sendRoomGuidelinesLineMessageServer({ booking, guidelinesConfig });
-          const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 200));
-          const raceResult = await Promise.race([sendPromise, timeoutPromise]);
-          if (raceResult && !raceResult.timeout) {
-            lineResult = raceResult;
-          } else {
-            sendPromise.then(async (bgRes) => {
-              const bgStatus = bgRes && bgRes.sent ? 'sent' : 'failed';
-              const bgErr = bgRes && !bgRes.sent ? (bgRes.error || bgRes.reason || 'Background LINE dispatch failed') : null;
-              await dbQuery.run(
-                `UPDATE line_guidelines_dispatches SET status = ?, error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-                [bgStatus, bgErr, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
-              );
-            }).catch(async (e) => {
-              await dbQuery.run(
-                `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-                [e.message, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
-              );
-            });
-          }
-        } catch (e) {
-          lineResult = { sent: false, error: e.message };
-        }
+        // Immediately respond to web client with 'pending' status without awaiting LINE network
+        lineNotification = {
+          status: 'pending',
+          deduplicated: false,
+          message: 'กำลังส่งข้อปฏิบัติทาง LINE ในพื้นหลัง'
+        };
 
-        if (lineResult) {
-          if (lineResult.sent) {
-            await dbQuery.run(
-              `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-              [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
-            );
-            lineNotification = { status: 'sent', deduplicated: false, message: 'ส่งข้อปฏิบัติทาง LINE เรียบร้อยแล้ว' };
-          } else {
-            await dbQuery.run(
-              `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-              [lineResult.error || lineResult.reason || 'LINE dispatch failed', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
-            );
-            lineNotification = { status: 'failed', deduplicated: false, error: lineResult.error || lineResult.reason || 'LINE dispatch failed' };
-          }
-        } else {
-          lineNotification = { status: 'pending', deduplicated: false, message: 'กำลังส่งข้อปฏิบัติทาง LINE ในพื้นหลัง' };
-        }
+        // Decoupled async dispatch: updates dispatches table to 'sent' or 'failed'
+        sendRoomGuidelinesLineMessageServer({ booking, guidelinesConfig }).then(async (bgRes) => {
+          const bgStatus = bgRes && (bgRes.sent || bgRes.mocked) ? 'sent' : 'failed';
+          const bgErr = bgRes && !bgRes.sent && !bgRes.mocked ? (bgRes.error || bgRes.reason || 'Background LINE dispatch failed') : null;
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches SET status = ?, error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
+            [bgStatus, bgErr, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+          );
+        }).catch(async (e) => {
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
+            [e.message, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+          );
+        });
       } else {
+        // Claim already exists for this person x rule_set x rule_version -> Deduplicated
         const existingDispatch = await dbQuery.get(
           `SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
           [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
@@ -9060,12 +9088,6 @@ app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
           lineNotification = { status: existingDispatch?.status || 'unknown', deduplicated: true, message: 'มีคำขอส่งข้อปฏิบัติชุดนี้อยู่แล้ว' };
         }
       }
-    } else {
-      lineNotification = {
-        status: 'skipped_no_line',
-        deduplicated: false,
-        message: 'ไม่มี LINE User ID สำหรับรายการจองนี้'
-      };
     }
 
     return res.json({
@@ -9146,10 +9168,12 @@ app.get('/api/public/bookings/:id', async (req, res) => {
     const guidelinesPolicy = resolveRoomGuidelines(roomInfo?.id, roomInfo?.name);
     const enforcementSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'");
     const enforcementEnabled = enforcementSetting ? (enforcementSetting.value === 'true' || enforcementSetting.value === '1') : false;
+    const cutoverSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_cutover_at'");
+    const cutoverAt = cutoverSetting?.value || GUIDELINES_CUTOVER_ISO;
     const guidelinesEnforced = isGuidelinesEnforcedForBooking({
       guidelinesPolicy,
       enforcementSetting: enforcementEnabled,
-      cutoverAt: GUIDELINES_CUTOVER_ISO,
+      cutoverAt,
       bookingCreatedAt: booking.created_at
     });
 
@@ -9165,6 +9189,7 @@ app.get('/api/public/bookings/:id', async (req, res) => {
       paymentDeadline: new Date(new Date(booking.created_at).getTime() + paymentWindowMinutes * 60 * 1000).toISOString(),
       payment_window_minutes: paymentWindowMinutes,
       guidelines_enforcement_enabled: enforcementEnabled,
+      guidelines_enforcement_cutover_at: cutoverAt,
       guidelines_enforced: guidelinesEnforced,
       guidelines_acknowledged: Boolean(booking.guidelines_acknowledged_at),
       guidelines_acknowledged_at: booking.guidelines_acknowledged_at || null,
@@ -9234,10 +9259,12 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     const guidelinesPolicy = resolveRoomGuidelines(bookingItems && bookingItems[0]?.room_id, bookingItems && bookingItems[0]?.room_name);
     const enforcementSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'");
     const enforcementEnabled = enforcementSetting ? (enforcementSetting.value === 'true' || enforcementSetting.value === '1') : false;
+    const cutoverSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_cutover_at'");
+    const cutoverAt = cutoverSetting?.value || GUIDELINES_CUTOVER_ISO;
     const isEnforced = isGuidelinesEnforcedForBooking({
       guidelinesPolicy,
       enforcementSetting: enforcementEnabled,
-      cutoverAt: GUIDELINES_CUTOVER_ISO,
+      cutoverAt,
       bookingCreatedAt: booking.created_at
     });
     if (isEnforced && !booking.guidelines_acknowledged_at) {
