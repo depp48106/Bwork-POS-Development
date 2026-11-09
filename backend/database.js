@@ -599,6 +599,58 @@ async function initDatabase() {
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_customer_id ON bookings(customer_id)'); } catch (e) {}
   try { await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_bookings_contract_id ON bookings(contract_id)'); } catch (e) {}
 
+  // Migration: Add room guidelines acknowledgement columns to bookings table
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN guidelines_acknowledged_at DATETIME'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN guidelines_rule_set TEXT'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN guidelines_rule_version TEXT'); } catch (e) {}
+  try { await dbQuery.run('ALTER TABLE bookings ADD COLUMN line_user_id_verified INTEGER DEFAULT 0'); } catch (e) {}
+
+  // Migration: Room guidelines acknowledgements table (stores per-booking acknowledgement)
+  try {
+    await dbQuery.run(`
+      CREATE TABLE IF NOT EXISTS room_guidelines_acknowledgements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+        room_id INTEGER REFERENCES rooms(id),
+        rule_set TEXT NOT NULL,
+        rule_version TEXT NOT NULL,
+        customer_contact TEXT,
+        line_user_id TEXT,
+        acknowledged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(booking_id, rule_set, rule_version)
+      )
+    `);
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_guidelines_ack_booking ON room_guidelines_acknowledgements(booking_id)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_guidelines_ack_contact ON room_guidelines_acknowledgements(customer_contact)');
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_guidelines_ack_line_user ON room_guidelines_acknowledgements(line_user_id)');
+  } catch (e) {}
+
+  // Migration: LINE guidelines dispatches table (deduplicated per line_user_id x rule_set x rule_version)
+  try {
+    await dbQuery.run(`
+      CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        line_user_id TEXT NOT NULL,
+        rule_set TEXT NOT NULL,
+        rule_version TEXT NOT NULL,
+        first_booking_id INTEGER REFERENCES bookings(id),
+        status TEXT NOT NULL DEFAULT 'sent',
+        error_message TEXT,
+        dispatched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(line_user_id, rule_set, rule_version)
+      )
+    `);
+    await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_line_guidelines_user ON line_guidelines_dispatches(line_user_id)');
+  } catch (e) {}
+
+  // Feature Toggle Defaults for Room Guidelines & LINE Dispatch
+  try {
+    await dbQuery.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_enabled', 'false')");
+    await dbQuery.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_cutover_at', '2026-11-09T00:00:00.000Z')");
+    await dbQuery.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'false')");
+  } catch (e) {}
+
+
   // Performance: Database Indexes for High-Speed Queries
   try {
     await dbQuery.run('CREATE INDEX IF NOT EXISTS idx_booking_items_booking_id ON booking_items(booking_id)');

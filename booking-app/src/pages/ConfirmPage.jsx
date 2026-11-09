@@ -1,5 +1,5 @@
 import jsQR from 'jsqr';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   CheckCircle2, Copy, Upload, Check,
@@ -10,41 +10,19 @@ import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { calcPaymentTimeLeft } from '../utils/paymentCountdown';
 import { generateGoogleCalendarUrl, downloadIcsFile } from '../utils/calendarUtils';
+import { getBookingRoomGuidelines } from '../utils/roomGuidelines';
 
 /**
- * Helper to determine room guidelines flyer by room ID or room name.
- * - Room 201 & 301-306: uses /rules/room301-306.png
- * - Jupiter Auditorium: uses /rules/jupiter.jpg
- * - Any other unmapped room: returns null (button completely hidden)
+ * Helper to determine room guidelines flyer and summary points.
+ * Single Source of Truth from shared policy.
  */
 export function getRoomGuidelines(booking) {
-  if (!booking) return null;
-  const rawId = booking.room_id || booking.room?.id || booking.roomId;
-  const roomId = rawId !== undefined && rawId !== null && rawId !== '' ? Number(rawId) : null;
-  const roomName = String(booking.room_name || booking.room?.name || '').trim().toLowerCase();
-
-  // 1. Jupiter Auditorium (ID 10, 12, or name containing jupiter)
-  if (roomId === 10 || roomId === 12 || roomName.includes('jupiter')) {
-    return {
-      type: 'jupiter',
-      title: 'ข้อปฏิบัติการใช้ห้อง Jupiter Auditorium',
-      src: '/rules/jupiter.jpg'
-    };
-  }
-
-  // 2. Room 201 and 301-306 (IDs 4, 5, 6, 7, 8, 9, 11, or name containing 201 / 301-306)
-  const room301Ids = [4, 5, 6, 7, 8, 9, 11];
-  const roomPattern = /\b(201|30[1-6])\b/;
-  if ((roomId !== null && room301Ids.includes(roomId)) || roomPattern.test(roomName)) {
-    return {
-      type: 'room301-306',
-      title: 'ข้อปฏิบัติการใช้ห้องประชุม (201, 301-306)',
-      src: '/rules/room301-306.png'
-    };
-  }
-
-  // 3. Any other room -> return null (hide button completely)
-  return null;
+  const g = getBookingRoomGuidelines(booking);
+  if (!g || !g.required) return null;
+  return {
+    ...g,
+    src: g.local_image_src || g.image_url
+  };
 }
 
 export default function ConfirmPage() {
@@ -125,6 +103,35 @@ export default function ConfirmPage() {
   });
   const [showGuidelinesModal, setShowGuidelinesModal] = useState(false);
   const [guidelinesZoom, setGuidelinesZoom] = useState(1);
+  const activeBookingIdRef = useRef(bookingId);
+
+  const [guidelinesAcknowledged, setGuidelinesAcknowledged] = useState(() => {
+    try {
+      if (location.state?.booking) {
+        const b = location.state.booking;
+        if (String(b.id) === String(bookingId) || String(b.booking_id) === String(bookingId) || String(b.receipt_number) === String(bookingId)) {
+          if (b.guidelines_acknowledged || b.guidelines_acknowledged_at) return true;
+        }
+      }
+      const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && (String(parsed.id) === String(bookingId) || String(parsed.booking_id) === String(bookingId) || String(parsed.receipt_number) === String(bookingId))) {
+        if (parsed.guidelines_acknowledged || parsed.guidelines_acknowledged_at) return true;
+      }
+    } catch (e) {}
+    return false;
+  });
+  const [guidelinesCheckboxTicked, setGuidelinesCheckboxTicked] = useState(false);
+  const [isAcknowledgingGuidelines, setIsAcknowledgingGuidelines] = useState(false);
+  const [guidelinesAcknowledgeError, setGuidelinesAcknowledgeError] = useState(null);
+
+  // When switching bookings: reset previous state immediately and discard stale in-flight results
+  useEffect(() => {
+    activeBookingIdRef.current = bookingId;
+    setGuidelinesAcknowledged(false);
+    setGuidelinesCheckboxTicked(false);
+    setGuidelinesAcknowledgeError(null);
+  }, [bookingId]);
 
   // Lock body scroll and listen for Escape key when guidelines modal is open
   useEffect(() => {
@@ -160,6 +167,88 @@ export default function ConfirmPage() {
 
   // Check if booking slip is in rejected status
   const isRejected = Boolean(booking?.payment_status === 'rejected' || booking?.slip_verify_status === 'rejected');
+
+  // Sync guidelines acknowledgement status whenever fresh booking data arrives
+  useEffect(() => {
+    if (!booking) return;
+    if (booking.guidelines_acknowledged === false) {
+      // If server explicitly reports unacknowledged, immediately lock!
+      setGuidelinesAcknowledged(false);
+    } else if (booking.guidelines_acknowledged || booking.guidelines_acknowledged_at) {
+      setGuidelinesAcknowledged(true);
+    }
+  }, [booking?.guidelines_acknowledged, booking?.guidelines_acknowledged_at]);
+
+  // Handler to acknowledge room guidelines via API
+  const handleAcknowledgeRules = async () => {
+    if (!guidelinesCheckboxTicked || isAcknowledgingGuidelines) return;
+    setIsAcknowledgingGuidelines(true);
+    setGuidelinesAcknowledgeError(null);
+
+    try {
+      const rawAccessToken = query.get('access_token') || booking?.qr_token || '';
+      const rawContact = query.get('contact') || booking?.contact || '';
+      const headers = { 'Content-Type': 'application/json' };
+      if (rawAccessToken) headers['X-Booking-Token'] = rawAccessToken;
+      if (rawContact) headers['X-Booking-Contact'] = rawContact;
+
+      const targetId = bookingId || booking?.id;
+      const currentGuidelines = getRoomGuidelines(booking);
+
+      const res = await fetch(`${API_BASE}/api/public/bookings/${targetId}/acknowledge-rules`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          rule_set: currentGuidelines?.rule_set,
+          rule_version: currentGuidelines?.rule_version,
+          access_token: rawAccessToken || undefined,
+          contact: rawContact || undefined
+        })
+      });
+
+      const data = await res.json();
+
+      // Discard stale in-flight response if user switched bookings while request was pending
+      if (String(activeBookingIdRef.current) !== String(targetId)) {
+        return;
+      }
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'ไม่สามารถบันทึกการรับทราบข้อปฏิบัติได้');
+      }
+
+      setGuidelinesAcknowledged(true);
+      setBooking(prev => prev ? {
+        ...prev,
+        guidelines_acknowledged: true,
+        guidelines_acknowledged_at: data.acknowledged_at || new Date().toISOString(),
+        guidelines_rule_set: data.rule_set,
+        guidelines_rule_version: data.rule_version
+      } : prev);
+
+      try {
+        const raw = sessionStorage.getItem('completed_booking_result');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (String(parsed.id) === String(targetId) || String(parsed.booking_id) === String(targetId)) {
+            parsed.guidelines_acknowledged = true;
+            parsed.guidelines_acknowledged_at = data.acknowledged_at || new Date().toISOString();
+            sessionStorage.setItem('completed_booking_result', JSON.stringify(parsed));
+          }
+        }
+      } catch (e) {}
+    } catch (err) {
+      const targetId = bookingId || booking?.id;
+      // Discard error if user has already switched to another booking
+      if (String(activeBookingIdRef.current) !== String(targetId)) {
+        return;
+      }
+      console.error('Error acknowledging room guidelines:', err);
+      setGuidelinesAcknowledgeError(err.message || 'เกิดข้อผิดพลาดในการบันทึก กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsAcknowledgingGuidelines(false);
+    }
+  };
 
   // Dynamic Countdown Timer based on paymentDeadline as Source of Truth
   useEffect(() => {
@@ -268,6 +357,11 @@ export default function ConfirmPage() {
 
       const data = await res.json();
       if (res.ok && data && !data.error) {
+        // Discard stale responses from prior booking if user switched
+        if (activeBookingIdRef.current !== bookingId && String(activeBookingIdRef.current) !== String(bookingId)) {
+          return null;
+        }
+
         // Canonical booking code verification
         if (queryCode) {
           const validCodes = [
@@ -596,6 +690,12 @@ export default function ConfirmPage() {
   const payableAmt = isDeposit ? parseFloat(booking.balance_amount || 0) : totalAmt;
   const qrImageSrc = paymentSettings.qr_image || '/bwork_payment_qr.png';
   const roomGuidelines = getRoomGuidelines(booking);
+  const isEnforced = booking?.guidelines_enforced !== undefined
+    ? Boolean(booking.guidelines_enforced)
+    : (booking?.guidelines_enforcement_enabled !== undefined
+        ? Boolean(booking.guidelines_enforcement_enabled)
+        : false);
+  const isGuidelinesGated = Boolean(roomGuidelines && isEnforced && !guidelinesAcknowledged);
 
   const isPaidOrAutoApproved = Boolean(booking?.payment_status === 'paid');
   const bookingForCalendar = booking ? {
@@ -1141,42 +1241,267 @@ export default function ConfirmPage() {
           {/* PAYMENT DETAILS CARD & SLIP UPLOAD CARD (Active or Rejected Only) */}
           {!isExpired && (
             <>
-              {/* ROOM GUIDELINES ACTION BUTTON (ใต้สรุปรายการจอง เหนือ QR - แสดงเพียงจุดเดียว) */}
-              {roomGuidelines && (
-                <div style={{ display: 'flex', justifyContent: 'center' }}>
+              {/* ROOM GUIDELINES GATE / ACKNOWLEDGEMENT CARD */}
+              {roomGuidelines && isEnforced && !guidelinesAcknowledged && (
+                <div
+                  id="guidelines-gate-card"
+                  style={{
+                    width: '100%',
+                    maxWidth: '360px',
+                    margin: '0 auto 16px',
+                    padding: '18px 16px',
+                    backgroundColor: '#ffffff',
+                    border: '2px solid #bfdbfe',
+                    borderRadius: '20px',
+                    boxShadow: '0 4px 16px rgba(37, 99, 235, 0.08)',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                    <ShieldCheck size={20} color="#2563eb" style={{ flexShrink: 0 }} />
+                    <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: '#1e3a8a' }}>
+                      {roomGuidelines.title}
+                    </h3>
+                  </div>
+
+                  {/* Concise summary bullets (ข้อปฏิบัติย่อ) */}
+                  <div
+                    style={{
+                      backgroundColor: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '12px',
+                      padding: '12px 14px',
+                      marginBottom: '12px',
+                      fontSize: '0.84rem',
+                      lineHeight: 1.5,
+                      color: '#334155'
+                    }}
+                  >
+                    <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {(roomGuidelines.summary_points || []).map((point, idx) => (
+                        <li key={idx} style={{ paddingLeft: '2px' }}>
+                          {point}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {/* Read full guidelines flyer modal trigger */}
                   <button
                     type="button"
-                    id="btn-room-guidelines"
+                    id="btn-view-full-guidelines"
                     onClick={() => {
                       setGuidelinesZoom(1);
                       setShowGuidelinesModal(true);
                     }}
                     style={{
                       width: '100%',
-                      maxWidth: '360px',
+                      padding: '10px 14px',
+                      backgroundColor: '#eff6ff',
+                      color: '#1d4ed8',
+                      border: '1px solid #bfdbfe',
+                      borderRadius: '12px',
+                      fontSize: '0.86rem',
+                      fontWeight: 700,
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: '8px',
-                      padding: '12px 18px',
-                      backgroundColor: '#ffffff',
-                      color: '#1d4ed8',
-                      border: '1.5px solid #93c5fd',
-                      borderRadius: '14px',
-                      fontSize: '0.92rem',
-                      fontWeight: 800,
+                      gap: '6px',
                       cursor: 'pointer',
-                      boxShadow: '0 2px 8px rgba(37, 99, 235, 0.08)',
                       transition: 'all 0.15s ease'
                     }}
                   >
-                    <BookOpen size={18} style={{ color: '#2563eb' }} />
+                    <BookOpen size={16} />
+                    <span>อ่านข้อปฏิบัติฉบับเต็ม</span>
+                  </button>
+
+                  {/* Mandatory acknowledgement checkbox */}
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '10px',
+                      marginTop: '12px',
+                      cursor: 'pointer',
+                      padding: '10px 12px',
+                      backgroundColor: guidelinesCheckboxTicked ? '#f0fdf4' : '#f8fafc',
+                      border: guidelinesCheckboxTicked ? '1.5px solid #86efac' : '1px solid #cbd5e1',
+                      borderRadius: '12px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      id="checkbox-acknowledge-guidelines"
+                      checked={guidelinesCheckboxTicked}
+                      onChange={e => setGuidelinesCheckboxTicked(e.target.checked)}
+                      style={{
+                        width: '18px',
+                        height: '18px',
+                        marginTop: '2px',
+                        cursor: 'pointer',
+                        accentColor: '#2563eb',
+                        flexShrink: 0
+                      }}
+                    />
+                    <span style={{ fontSize: '0.84rem', fontWeight: 700, color: '#1e293b', lineHeight: 1.4 }}>
+                      ฉันได้อ่านและรับทราบข้อปฏิบัติของห้องที่จองแล้ว
+                    </span>
+                  </label>
+
+                  {/* Confirm acknowledgement button */}
+                  <button
+                    type="button"
+                    id="btn-confirm-acknowledge-guidelines"
+                    disabled={!guidelinesCheckboxTicked || isAcknowledgingGuidelines}
+                    onClick={handleAcknowledgeRules}
+                    style={{
+                      width: '100%',
+                      marginTop: '12px',
+                      padding: '13px 16px',
+                      backgroundColor: guidelinesCheckboxTicked ? '#2563eb' : '#cbd5e1',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '12px',
+                      fontSize: '0.94rem',
+                      fontWeight: 800,
+                      cursor: guidelinesCheckboxTicked && !isAcknowledgingGuidelines ? 'pointer' : 'not-allowed',
+                      boxShadow: guidelinesCheckboxTicked ? '0 4px 12px rgba(37, 99, 235, 0.25)' : 'none',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    {isAcknowledgingGuidelines ? 'กำลังยืนยัน...' : 'ยืนยันรับทราบเพื่อชำระเงิน'}
+                  </button>
+
+                  {/* Error feedback if API fails */}
+                  {guidelinesAcknowledgeError && (
+                    <div
+                      style={{
+                        marginTop: '10px',
+                        padding: '8px 12px',
+                        backgroundColor: '#fef2f2',
+                        border: '1px solid #fecaca',
+                        borderRadius: '8px',
+                        color: '#dc2626',
+                        fontSize: '0.82rem',
+                        fontWeight: 600,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      <AlertCircle size={15} style={{ flexShrink: 0 }} />
+                      <span>{guidelinesAcknowledgeError}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* POST-ACKNOWLEDGEMENT SUCCESS BADGE & RE-VIEW BUTTON */}
+              {roomGuidelines && guidelinesAcknowledged && (
+                <div
+                  id="guidelines-acknowledged-badge"
+                  style={{
+                    maxWidth: '360px',
+                    width: '100%',
+                    margin: '0 auto 14px',
+                    padding: '10px 14px',
+                    backgroundColor: '#f0fdf4',
+                    border: '1.5px solid #86efac',
+                    borderRadius: '14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#16a34a', fontWeight: 800, fontSize: '0.86rem' }}>
+                    <CheckCircle2 size={16} />
+                    <span>รับทราบข้อปฏิบัติเรียบร้อยแล้ว</span>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-re-view-guidelines"
+                    onClick={() => {
+                      setGuidelinesZoom(1);
+                      setShowGuidelinesModal(true);
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#2563eb',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      textDecoration: 'underline',
+                      padding: '2px 4px'
+                    }}
+                  >
+                    ดูข้อปฏิบัติอีกครั้ง
+                  </button>
+                </div>
+              )}
+
+              {roomGuidelines && !isEnforced && !guidelinesAcknowledged && (
+                <div style={{ marginBottom: '16px', textAlign: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => { setGuidelinesZoom(1); setShowGuidelinesModal(true); }}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      background: '#f0f9ff',
+                      border: '1px solid #bae6fd',
+                      borderRadius: '10px',
+                      color: '#0284c7',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    <BookOpen size={16} />
                     <span>ดูข้อปฏิบัติการใช้ห้อง</span>
                   </button>
                 </div>
               )}
 
-              <div className="booking-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              {/* GATED QR CARD: Hidden until guidelines acknowledged (if required) */}
+              {isGuidelinesGated ? (
+                <div
+                  id="gated-qr-placeholder"
+                  className="booking-card"
+                  style={{
+                    padding: '28px 18px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    textAlign: 'center',
+                    backgroundColor: '#f8fafc',
+                    border: '2px dashed #cbd5e1',
+                    borderRadius: '20px',
+                    maxWidth: '360px',
+                    margin: '0 auto',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '12px' }}>
+                    <QrCode size={24} color="#64748b" />
+                  </div>
+                  <div style={{ fontSize: '0.94rem', fontWeight: 800, color: '#334155', marginBottom: '6px' }}>
+                    QR Code สำหรับชำระเงินถูกล็อกไว้
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: '#64748b', lineHeight: 1.5, maxWidth: '280px' }}>
+                    กรุณาอ่านและกดยืนยันรับทราบข้อปฏิบัติด้านบน เพื่อแสดง QR Code สำหรับสแกนชำระเงิน
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="booking-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div style={{
               display: 'flex',
               flexDirection: 'column',
@@ -1399,6 +1724,8 @@ export default function ConfirmPage() {
               </button>
             </form>
           </div>
+                </>
+              )}
             </>
           )}
         </div>

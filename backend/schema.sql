@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS bookings (
   customer_id INTEGER,
   contract_id INTEGER,
   cancellation_reason TEXT,
+  guidelines_acknowledged_at DATETIME,
+  guidelines_rule_set TEXT,
+  guidelines_rule_version TEXT,
+  line_user_id_verified INTEGER DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -289,3 +293,39 @@ CREATE INDEX IF NOT EXISTS idx_contracts_customer_id ON customer_contracts(custo
 CREATE INDEX IF NOT EXISTS idx_audit_logs_customer ON customer_audit_logs(customer_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_customer_id ON bookings(customer_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_contract_id ON bookings(contract_id);
+
+
+-- Room Guidelines Acknowledgement and LINE Deduplicated Dispatch
+CREATE TABLE IF NOT EXISTS room_guidelines_acknowledgements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+  room_id INTEGER REFERENCES rooms(id),
+  rule_set TEXT NOT NULL,
+  rule_version TEXT NOT NULL,
+  customer_contact TEXT,
+  line_user_id TEXT,
+  acknowledged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(booking_id, rule_set, rule_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_guidelines_ack_booking ON room_guidelines_acknowledgements(booking_id);
+CREATE INDEX IF NOT EXISTS idx_guidelines_ack_contact ON room_guidelines_acknowledgements(customer_contact);
+CREATE INDEX IF NOT EXISTS idx_guidelines_ack_line_user ON room_guidelines_acknowledgements(line_user_id);
+
+CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  line_user_id TEXT NOT NULL,
+  rule_set TEXT NOT NULL,
+  rule_version TEXT NOT NULL,
+  first_booking_id INTEGER REFERENCES bookings(id),
+  status TEXT NOT NULL DEFAULT 'sent',
+  error_message TEXT,
+  dispatched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(line_user_id, rule_set, rule_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_line_guidelines_user ON line_guidelines_dispatches(line_user_id);
+
+INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_enabled', 'false');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_cutover_at', '2026-11-09T00:00:00.000Z');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'false');
