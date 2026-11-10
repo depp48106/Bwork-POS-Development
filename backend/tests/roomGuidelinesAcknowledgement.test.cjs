@@ -1022,6 +1022,7 @@ test('SERVER-E2E: Direct test against server.js routes and database.js migration
     // 4. Now turn toggle ON ('true') and reset payment_status
     await dbQuery.run("UPDATE settings SET value = 'true' WHERE key = 'guidelines_enforcement_enabled'");
     await dbQuery.run("UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'");
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('line_channel_access_token', 'mock_test_token')");
     await dbQuery.run("UPDATE bookings SET payment_status = 'pending', slip_image_url = NULL WHERE id = ?", [bookingId]);
 
     // Check GET again -> guidelines_enforced: true
@@ -1048,7 +1049,7 @@ test('SERVER-E2E: Direct test against server.js routes and database.js migration
     assert.strictEqual(ackRes.body.acknowledged, true);
     assert.strictEqual(ackRes.body.rule_set, 'meeting_room_201_306');
     assert.ok(ackRes.body.acknowledged_at);
-    assert.strictEqual(ackRes.body.line_notification.status, 'pending');
+    assert.strictEqual(ackRes.body.line_notification.status, 'skipped_decoupled_to_confirmation');
 
     // 7. Call GET after acknowledgement -> Exposed
     const getRes2 = await callApi(app, 'GET', `/api/public/bookings/${bookingId}`, {
@@ -1071,8 +1072,20 @@ test('SERVER-E2E: Direct test against server.js routes and database.js migration
     assert.strictEqual(ackRows.length, 1);
     assert.strictEqual(ackRows[0].rule_set, 'meeting_room_201_306');
 
-    const lineRows = await dbQuery.all('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?', ['U_SRV_LINE_1']);
-    assert.strictEqual(lineRows.length, 1);
+    // In decoupled flow, acknowledging rules does NOT push guidelines before payment
+    const lineRowsBeforePayment = await dbQuery.all('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?', ['U_SRV_LINE_1']);
+    assert.strictEqual(lineRowsBeforePayment.length, 0);
+
+    // After full payment, sendLineNotification attaches guidelines and claims dispatch
+    await dbQuery.run("UPDATE bookings SET payment_status = 'paid', paid_amount = 1200, balance_amount = 0, slip_verify_status = 'approved' WHERE id = ?", [bookingId]);
+    const { sendLineNotification } = require('../server');
+    const lineRes = await sendLineNotification(bookingId);
+    assert.strictEqual(lineRes.success, true);
+    assert.strictEqual(lineRes.guidelinesAttached, true);
+
+    const lineRowsAfterPayment = await dbQuery.all('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?', ['U_SRV_LINE_1']);
+    assert.strictEqual(lineRowsAfterPayment.length, 1);
+    assert.strictEqual(lineRowsAfterPayment[0].rule_set, 'meeting_room_201_306');
   } finally {
     if (fs.existsSync(tempDbPath)) {
       try { fs.unlinkSync(tempDbPath); } catch (_) {}

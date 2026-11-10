@@ -73,7 +73,8 @@ function setupTestDb(db) {
       name TEXT NOT NULL,
       capacity INTEGER,
       image_url TEXT,
-      description TEXT
+      description TEXT,
+      pin_code TEXT
     );
 
     CREATE TABLE IF NOT EXISTS bookings (
@@ -87,10 +88,11 @@ function setupTestDb(db) {
       paid_amount REAL DEFAULT 0,
       balance_amount REAL DEFAULT 0,
       contact TEXT,
-      customer_name TEXT,
+      customer_name TEXT DEFAULT 'Test Customer',
       line_user_id TEXT,
       line_user_id_verified INTEGER DEFAULT 0,
       qr_token TEXT,
+      pin_code TEXT,
       slip_image_url TEXT,
       slip_trans_ref TEXT,
       slip_verified_at DATETIME,
@@ -107,6 +109,9 @@ function setupTestDb(db) {
       room_id INTEGER REFERENCES rooms(id),
       start_time TEXT,
       end_time TEXT,
+      price REAL DEFAULT 0,
+      subtotal REAL DEFAULT 0,
+      pin_code TEXT,
       checkin_status TEXT DEFAULT 'pending'
     );
 
@@ -139,6 +144,31 @@ function setupTestDb(db) {
       UNIQUE(line_user_id, rule_set, rule_version)
     );
 
+    CREATE TABLE IF NOT EXISTS line_notification_claims (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+      notification_type TEXT NOT NULL DEFAULT 'booking_confirmation',
+      status TEXT NOT NULL DEFAULT 'processing',
+      claim_token TEXT NOT NULL,
+      retry_key TEXT NOT NULL,
+      claimed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      http_status INTEGER,
+      error_message TEXT,
+      accepted_request_id TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(booking_id, notification_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS booking_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      booking_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      details TEXT,
+      performed_by TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS slip_verifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       booking_id INTEGER NOT NULL,
@@ -148,11 +178,12 @@ function setupTestDb(db) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
-    INSERT OR IGNORE INTO rooms (id, name, capacity) VALUES
-      (4, 'ห้องประชุม 301 (Mars)', 8),
-      (5, 'ห้องประชุม 302 (Mercury)', 8),
-      (10, 'Jupiter Auditorium (300)', 50),
-      (13, 'Co-working zone (Desk 1)', 1);
+    INSERT OR IGNORE INTO rooms (id, name, capacity, pin_code) VALUES
+      (1, 'ห้องประชุม 201 (Pluto)', 6, '1234'),
+      (4, 'ห้องประชุม 301 (Mars)', 8, '5678'),
+      (5, 'ห้องประชุม 302 (Mercury)', 8, '5679'),
+      (10, 'Jupiter Auditorium (300)', 50, '9999'),
+      (13, 'Co-working zone (Desk 1)', 1, NULL);
 
     INSERT OR REPLACE INTO settings (key, value) VALUES
       ('guidelines_enforcement_enabled', 'false'),
@@ -194,9 +225,10 @@ test('WORKER-01: Book 201 then 302 in same tab -> acknowledge both, LINE dispatc
     waitUntil: (p) => { bgTasks.push(p); }
   };
 
-  // 1. Create booking 1 (Room 301) with server-confirmed LINE ID
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (1, 'BK-000001', 'U1234567890', 1, '0812345678', 'tok_1')`);
-  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (1, 4)`);
+  // 1. Create booking 1 (Room 201) with server-verified LINE binding
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (1, 'BK-000001', 'U1234567890', 1, '0812345678', 'tok_1', 800, 0, 800, 'pending')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (1, 1, 800, 800)`);
 
   // Acknowledge booking 1
   const req1 = new Request('http://localhost/api/public/bookings/1/acknowledge-rules', {
@@ -214,20 +246,28 @@ test('WORKER-01: Book 201 then 302 in same tab -> acknowledge both, LINE dispatc
   assert.equal(body1.acknowledged, true);
   assert.equal(body1.rule_set, 'meeting_room_201_306');
   assert.equal(body1.rule_version, 'v1');
-  // Decoupled response returns pending immediately
-  assert.equal(body1.line_notification?.status, 'pending');
-  assert.equal(body1.line_notification?.deduplicated, false);
+  // Decoupled response returns skipped_decoupled_to_confirmation immediately (0 LINE calls)
+  assert.equal(body1.line_notification?.status, 'skipped_decoupled_to_confirmation');
 
-  // Wait for background waitUntil task to complete
   await Promise.all(bgTasks);
+
+  // Before payment, line_guidelines_dispatches has 0 rows
+  const rowBefore = db.prepare(`SELECT * FROM line_guidelines_dispatches WHERE line_user_id = 'U1234567890'`).all();
+  assert.equal(rowBefore.length, 0);
+
+  // Now customer pays in full -> post-payment confirmation attaches guidelines flyer
+  db.exec(`UPDATE bookings SET payment_status = 'paid', paid_amount = 800, balance_amount = 0 WHERE id = 1`);
+  const conf1 = await worker.triggerLineBookingConfirmation(env, 1);
+  assert.equal(conf1.success, true);
 
   // Verify DB dispatch row transitioned to 'sent'
   const row1 = db.prepare(`SELECT status FROM line_guidelines_dispatches WHERE line_user_id = 'U1234567890'`).get();
   assert.equal(row1.status, 'sent');
 
   // 2. Create booking 2 (Room 302) same LINE user
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (2, 'BK-000002', 'U1234567890', 1, '0812345678', 'tok_2')`);
-  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (2, 5)`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (2, 'BK-000002', 'U1234567890', 1, '0812345678', 'tok_2', 800, 800, 0, 'paid')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (2, 5, 800, 800)`);
 
   // Acknowledge booking 2
   const req2 = new Request('http://localhost/api/public/bookings/2/acknowledge-rules', {
@@ -244,8 +284,17 @@ test('WORKER-01: Book 201 then 302 in same tab -> acknowledge both, LINE dispatc
   const body2 = await res2.json();
   assert.equal(body2.acknowledged, true);
   assert.equal(body2.rule_set, 'meeting_room_201_306');
-  assert.equal(body2.line_notification?.status, 'already_sent');
-  assert.equal(body2.line_notification?.deduplicated, true);
+  assert.equal(body2.line_notification?.status, 'skipped_decoupled_to_confirmation');
+
+  // When booking 2 confirmation is triggered, duplicate guidelines attachment is suppressed
+  const conf2 = await worker.triggerLineBookingConfirmation(env, 2);
+  assert.equal(conf2.success, true);
+
+  const hist2 = db.prepare(`SELECT details FROM booking_history WHERE booking_id = 2 AND action = 'line_confirmation_notified'`).get();
+  assert.equal(JSON.parse(hist2.details).guidelines_attached, false);
+
+  const totalDispatches = db.prepare(`SELECT count(*) as count FROM line_guidelines_dispatches WHERE line_user_id = 'U1234567890'`).get();
+  assert.equal(totalDispatches.count, 1);
 
   db.close();
 });
@@ -266,7 +315,8 @@ test('WORKER-02: Concurrently confirm in two tabs -> atomic claim ensures LINE s
     waitUntil: (p) => { bgTasks.push(p); }
   };
 
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (10, 'BK-000010', 'UCONCURRENT99', 1, '0812345678', 'tok_c')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (10, 'BK-000010', 'UCONCURRENT99', 1, '0812345678', 'tok_c', 800, 800, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (10, 4)`);
 
   const reqTab1 = new Request('http://localhost/api/public/bookings/10/acknowledge-rules', {
@@ -291,11 +341,16 @@ test('WORKER-02: Concurrently confirm in two tabs -> atomic claim ensures LINE s
   const body2 = await res2.json();
   assert.equal(body1.acknowledged, true);
   assert.equal(body2.acknowledged, true);
+  assert.equal(body1.line_notification?.status, 'skipped_decoupled_to_confirmation');
+  assert.equal(body2.line_notification?.status, 'skipped_decoupled_to_confirmation');
 
-  const statuses = [body1.line_notification?.status, body2.line_notification?.status];
-  assert.ok(statuses.includes('pending') && statuses.includes('already_sent'));
+  // Trigger post-payment confirmation concurrently
+  const [conf1, conf2] = await Promise.all([
+    worker.triggerLineBookingConfirmation(env, 10),
+    worker.triggerLineBookingConfirmation(env, 10)
+  ]);
 
-  await Promise.all(bgTasks);
+  assert.ok(conf1.success || conf2.success);
 
   // DB must only have 1 dispatch record
   const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UCONCURRENT99'`).get();
@@ -316,7 +371,8 @@ test('WORKER-03: Unverified floating client LINE ID and disabled feature -> exac
   };
 
   // Case A: Client supplied floating line_user_id without server confirmation
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (71, 'BK-000071', 'UFLOATING123', 0, '0812345678', 'tok_float')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (71, 'BK-000071', 'UFLOATING123', 0, '0812345678', 'tok_float', 800, 800, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (71, 4)`);
 
   const reqA = new Request('http://localhost/api/public/bookings/71/acknowledge-rules', {
@@ -328,7 +384,14 @@ test('WORKER-03: Unverified floating client LINE ID and disabled feature -> exac
   assert.equal(resA.status, 200);
   const bodyA = await resA.json();
   assert.equal(bodyA.acknowledged, true); // Customer can still proceed!
-  assert.equal(bodyA.line_notification?.status, 'skipped_unverified_line');
+  assert.equal(bodyA.line_notification?.status, 'skipped_decoupled_to_confirmation');
+
+  // Trigger confirmation push -> unverified, guidelines suppressed
+  const confA = await worker.triggerLineBookingConfirmation(env, 71);
+  assert.equal(confA.success, true);
+
+  const histA = db.prepare(`SELECT details FROM booking_history WHERE booking_id = 71 AND action = 'line_confirmation_notified'`).get();
+  assert.equal(JSON.parse(histA.details).guidelines_attached, false);
 
   // Verify zero rows in dispatches
   const countA = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UFLOATING123'`).get();
@@ -336,7 +399,8 @@ test('WORKER-03: Unverified floating client LINE ID and disabled feature -> exac
 
   // Case B: Feature disabled in settings
   db.exec(`UPDATE settings SET value = 'false' WHERE key = 'line_guidelines_dispatch_enabled'`);
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (72, 'BK-000072', 'UVERIFIED999', 1, '0812345678', 'tok_disabled')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (72, 'BK-000072', 'UVERIFIED999', 1, '0812345678', 'tok_disabled', 800, 800, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (72, 4)`);
 
   const reqB = new Request('http://localhost/api/public/bookings/72/acknowledge-rules', {
@@ -348,7 +412,14 @@ test('WORKER-03: Unverified floating client LINE ID and disabled feature -> exac
   assert.equal(resB.status, 200);
   const bodyB = await resB.json();
   assert.equal(bodyB.acknowledged, true);
-  assert.equal(bodyB.line_notification?.status, 'skipped_feature_disabled');
+  assert.equal(bodyB.line_notification?.status, 'skipped_decoupled_to_confirmation');
+
+  // Trigger confirmation push -> toggle disabled, guidelines suppressed
+  const confB = await worker.triggerLineBookingConfirmation(env, 72);
+  assert.equal(confB.success, true);
+
+  const histB = db.prepare(`SELECT details FROM booking_history WHERE booking_id = 72 AND action = 'line_confirmation_notified'`).get();
+  assert.equal(JSON.parse(histB.details).guidelines_attached, false);
 
   const countB = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED999'`).get();
   assert.equal(countB.c, 0);
@@ -424,7 +495,8 @@ test('WORKER-05: Book Jupiter Auditorium first time -> see Jupiter flyer, send J
   db.exec(`INSERT INTO line_guidelines_dispatches (line_user_id, rule_set, rule_version, status) VALUES ('UJUPITER0001', 'meeting_room_201_306', 'v1', 'sent')`);
 
   // Now books Jupiter
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (20, 'BK-000020', 'UJUPITER0001', 1, '0812345678', 'tok_j')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (20, 'BK-000020', 'UJUPITER0001', 1, '0812345678', 'tok_j', 5000, 5000, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (20, 10)`);
 
   const req = new Request('http://localhost/api/public/bookings/20/acknowledge-rules', {
@@ -437,9 +509,16 @@ test('WORKER-05: Book Jupiter Auditorium first time -> see Jupiter flyer, send J
   const body = await res.json();
   assert.equal(body.acknowledged, true);
   assert.equal(body.rule_set, 'jupiter_auditorium');
-  assert.equal(body.line_notification?.status, 'pending');
+  assert.equal(body.line_notification?.status, 'skipped_decoupled_to_confirmation');
 
   await Promise.all(bgTasks);
+
+  // Trigger post-payment confirmation
+  const conf = await worker.triggerLineBookingConfirmation(env, 20);
+  assert.equal(conf.success, true);
+
+  const hist = db.prepare(`SELECT details FROM booking_history WHERE booking_id = 20 AND action = 'line_confirmation_notified'`).get();
+  assert.equal(JSON.parse(hist.details).guidelines_attached, true);
 
   // Both dispatches now exist in DB
   const dispatches = db.prepare(`SELECT rule_set, status FROM line_guidelines_dispatches WHERE line_user_id = 'UJUPITER0001' ORDER BY id ASC`).all();
@@ -456,31 +535,23 @@ test('WORKER-06: Refresh after acknowledgement -> see QR continuously; new booki
 
   const env = {
     DB: createD1Mock(db),
-    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token',
-    STAGING_MOCK_LINE_API: 'true'
+    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token'
   };
 
-  // Acknowledged booking 30
-  db.exec(`INSERT INTO bookings (id, receipt_number, guidelines_acknowledged_at, contact, qr_token) VALUES (30, 'BK-000030', datetime('now'), '0812345678', 'tok_ack')`);
-  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (30, 4)`);
+  db.exec(`UPDATE settings SET value = 'true' WHERE key = 'guidelines_enforcement_enabled'`);
 
-  const req1 = new Request('http://localhost/api/public/bookings/30', {
-    headers: { 'X-Booking-Token': 'tok_ack' }
+  // Booking with acknowledgement already set
+  db.exec(`INSERT INTO bookings (id, receipt_number, guidelines_acknowledged_at, contact, qr_token) VALUES (50, 'BK-000050', '2026-11-09T10:00:00.000Z', '0812345678', 'tok_50')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (50, 4)`);
+
+  const req = new Request('http://localhost/api/public/bookings/50', {
+    headers: { 'X-Booking-Token': 'tok_50' }
   });
-  const res1 = await worker.default.fetch(req1, env);
-  const body1 = await res1.json();
-  assert.equal(body1.guidelines_acknowledged, true);
-
-  // Fresh unacknowledged booking 31
-  db.exec(`INSERT INTO bookings (id, receipt_number, contact, qr_token) VALUES (31, 'BK-000031', '0812345678', 'tok_fresh')`);
-  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (31, 4)`);
-
-  const req2 = new Request('http://localhost/api/public/bookings/31', {
-    headers: { 'X-Booking-Token': 'tok_fresh' }
-  });
-  const res2 = await worker.default.fetch(req2, env);
-  const body2 = await res2.json();
-  assert.equal(body2.guidelines_acknowledged, false);
+  const res = await worker.default.fetch(req, env);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.guidelines_acknowledged, true);
+  assert.equal(data.guidelines_enforced, true);
 
   db.close();
 });
@@ -493,35 +564,34 @@ test('WORKER-07: Old unpaid bookings and Co-working room can upload slip normall
   const env = {
     DB: createD1Mock(db),
     LINE_CHANNEL_ACCESS_TOKEN: 'mock_token',
-    STAGING_MOCK_LINE_API: 'true'
+    BUCKET: {
+      async put() { return {}; }
+    }
   };
 
-  // Turn ON enforcement toggle
   db.exec(`UPDATE settings SET value = 'true' WHERE key = 'guidelines_enforcement_enabled'`);
 
-  // Case A: Legacy booking before cutover (deposit status so not expired)
-  db.exec(`INSERT INTO bookings (id, receipt_number, created_at, contact, qr_token, payment_status, balance_amount, paid_amount) VALUES (40, 'BK-000040', '2026-11-01 10:00:00', '0812345678', 'tok_legacy', 'deposit', 500, 500)`);
-  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (40, 4)`);
+  // Case 1: Legacy booking created BEFORE cutover date (unacknowledged)
+  db.exec(`INSERT INTO bookings (id, receipt_number, created_at, contact, qr_token) VALUES (60, 'BK-000060', '2026-11-01T00:00:00.000Z', '0812345678', 'tok_60')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (60, 4)`);
 
-  const reqA = new Request('http://localhost/api/public/bookings/40/upload-slip', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_legacy' },
-    body: JSON.stringify({ slip_image: 'data:image/jpeg;base64,mock' })
+  const req1 = new Request('http://localhost/api/public/bookings/60', {
+    headers: { 'X-Booking-Token': 'tok_60' }
   });
-  const resA = await worker.default.fetch(reqA, env);
-  assert.notEqual(resA.status, 400); // not blocked by guidelines
+  const res1 = await worker.default.fetch(req1, env);
+  const data1 = await res1.json();
+  assert.equal(data1.guidelines_enforced, false); // Grandfathered!
 
-  // Case B: Co-working Zone (ID 13) unmapped room
-  db.exec(`INSERT INTO bookings (id, receipt_number, created_at, contact, qr_token, payment_status, balance_amount, paid_amount) VALUES (41, 'BK-000041', datetime('now'), '0812345678', 'tok_cowork', 'deposit', 500, 500)`);
-  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (41, 13)`);
+  // Case 2: Co-working room (Desk 1, ID 13)
+  db.exec(`INSERT INTO bookings (id, receipt_number, created_at, contact, qr_token) VALUES (61, 'BK-000061', '2026-11-10T00:00:00.000Z', '0812345678', 'tok_61')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (61, 13)`);
 
-  const reqB = new Request('http://localhost/api/public/bookings/41/upload-slip', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_cowork' },
-    body: JSON.stringify({ slip_image: 'data:image/jpeg;base64,mock' })
+  const req2 = new Request('http://localhost/api/public/bookings/61', {
+    headers: { 'X-Booking-Token': 'tok_61' }
   });
-  const resB = await worker.default.fetch(reqB, env);
-  assert.notEqual(resB.status, 400); // not blocked by guidelines
+  const res2 = await worker.default.fetch(req2, env);
+  const data2 = await res2.json();
+  assert.equal(data2.guidelines_required, false); // Exempt room!
 
   db.close();
 });
@@ -533,26 +603,29 @@ test('WORKER-08: New post-cutover meeting room booking not yet acknowledged (whe
 
   const env = {
     DB: createD1Mock(db),
-    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token',
-    STAGING_MOCK_LINE_API: 'true'
+    LINE_CHANNEL_ACCESS_TOKEN: 'mock_token'
   };
 
-  // Turn ON enforcement
   db.exec(`UPDATE settings SET value = 'true' WHERE key = 'guidelines_enforcement_enabled'`);
 
-  // New post-cutover booking without acknowledgement
-  db.exec(`INSERT INTO bookings (id, receipt_number, created_at, contact, qr_token) VALUES (50, 'BK-000050', datetime('now'), '0812345678', 'tok_unack')`);
-  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (50, 4)`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, created_at, contact, qr_token) VALUES (70, 'BK-000070', '2026-11-10T00:00:00.000Z', '0812345678', 'tok_70')`);
+  db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (70, 4)`);
 
-  const req = new Request('http://localhost/api/public/bookings/50/upload-slip', {
+  const validSlip = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+  const req = new Request('http://localhost/api/public/bookings/70/upload-slip', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Booking-Token': 'tok_unack' },
-    body: JSON.stringify({ slip_image: 'data:image/jpeg;base64,mock' })
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Booking-Token': 'tok_70'
+    },
+    body: JSON.stringify({ slip_image: validSlip })
   });
+
   const res = await worker.default.fetch(req, env);
   assert.equal(res.status, 400);
-  const body = await res.json();
-  assert.equal(body.code, 'GUIDELINES_NOT_ACKNOWLEDGED');
+  const data = await res.json();
+  assert.equal(data.code, 'GUIDELINES_NOT_ACKNOWLEDGED');
 
   db.close();
 });
@@ -572,7 +645,8 @@ test('WORKER-09: Forged LINE ID token -> rejected as unverified LINE binding, 0 
   db.exec(`UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'`);
 
   // Booking with unverified LINE account
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (91, 'BK-000091', 'UTARGET_USER_91', 0, '0812345678', 'tok_91')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (91, 'BK-000091', 'UTARGET_USER_91', 0, '0812345678', 'tok_91', 800, 800, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (91, 4)`);
 
   // Client passes a forged / fake ID token
@@ -599,7 +673,18 @@ test('WORKER-09: Forged LINE ID token -> rejected as unverified LINE binding, 0 
   // Non-blocking: Customer successfully acknowledges rules and unlocks payment
   assert.equal(body.success, true);
   assert.equal(body.acknowledged, true);
-  assert.equal(body.line_notification?.status, 'skipped_unverified_line');
+  assert.equal(body.line_notification?.status, 'skipped_decoupled_to_confirmation');
+
+  // Verify line_user_id_verified is still 0 (forged token rejected)
+  const b = db.prepare('SELECT line_user_id_verified FROM bookings WHERE id = 91').get();
+  assert.equal(b.line_user_id_verified, 0);
+
+  // Trigger post-payment confirmation
+  const conf = await worker.triggerLineBookingConfirmation(env, 91);
+  assert.equal(conf.success, true);
+
+  const hist = db.prepare(`SELECT details FROM booking_history WHERE booking_id = 91 AND action = 'line_confirmation_notified'`).get();
+  assert.equal(JSON.parse(hist.details).guidelines_attached, false);
 
   // Push was NOT dispatched (0 records in line_guidelines_dispatches)
   const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UTARGET_USER_91'`).get();
@@ -623,7 +708,8 @@ test('WORKER-10: LINE dispatch disabled by default in settings -> 0 LINE push ca
   db.exec(`UPDATE settings SET value = 'false' WHERE key = 'line_guidelines_dispatch_enabled'`);
 
   // Booking with server-verified LINE account
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (92, 'BK-000092', 'UVERIFIED_USER_92', 1, '0812345678', 'tok_92')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (92, 'BK-000092', 'UVERIFIED_USER_92', 1, '0812345678', 'tok_92', 800, 800, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (92, 4)`);
 
   const req = new Request('http://localhost/api/public/bookings/92/acknowledge-rules', {
@@ -642,7 +728,14 @@ test('WORKER-10: LINE dispatch disabled by default in settings -> 0 LINE push ca
 
   assert.equal(body.success, true);
   assert.equal(body.acknowledged, true);
-  assert.equal(body.line_notification?.status, 'skipped_feature_disabled');
+  assert.equal(body.line_notification?.status, 'skipped_decoupled_to_confirmation');
+
+  // Trigger post-payment confirmation -> disabled switch, guidelines suppressed
+  const conf = await worker.triggerLineBookingConfirmation(env, 92);
+  assert.equal(conf.success, true);
+
+  const hist = db.prepare(`SELECT details FROM booking_history WHERE booking_id = 92 AND action = 'line_confirmation_notified'`).get();
+  assert.equal(JSON.parse(hist.details).guidelines_attached, false);
 
   // 0 push calls
   const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED_USER_92'`).get();
@@ -669,7 +762,8 @@ test('WORKER-11: Verified account + dispatch toggle enabled -> exactly 1 push ca
   db.exec(`UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'`);
 
   // Booking with server-verified LINE account
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (93, 'BK-000093', 'UVERIFIED_DEDUP_93', 1, '0812345678', 'tok_93')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (93, 'BK-000093', 'UVERIFIED_DEDUP_93', 1, '0812345678', 'tok_93', 800, 800, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (93, 4)`);
 
   // 1st acknowledge
@@ -681,10 +775,13 @@ test('WORKER-11: Verified account + dispatch toggle enabled -> exactly 1 push ca
   const res1 = await worker.default.fetch(req1, env, ctx);
   assert.equal(res1.status, 200);
   const body1 = await res1.json();
-  assert.equal(body1.line_notification?.status, 'pending');
-  assert.equal(body1.line_notification?.deduplicated, false);
+  assert.equal(body1.line_notification?.status, 'skipped_decoupled_to_confirmation');
 
   await Promise.all(bgTasks);
+
+  // Trigger post-payment confirmation
+  const conf1 = await worker.triggerLineBookingConfirmation(env, 93);
+  assert.equal(conf1.success, true);
 
   // Exactly 1 dispatch record in DB
   const dispatches1 = db.prepare(`SELECT count(*) as c, status FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED_DEDUP_93'`).get();
@@ -700,8 +797,11 @@ test('WORKER-11: Verified account + dispatch toggle enabled -> exactly 1 push ca
   const res2 = await worker.default.fetch(req2, env, ctx);
   assert.equal(res2.status, 200);
   const body2 = await res2.json();
-  assert.equal(body2.line_notification?.status, 'already_sent');
-  assert.equal(body2.line_notification?.deduplicated, true);
+  assert.equal(body2.line_notification?.status, 'skipped_decoupled_to_confirmation');
+
+  // Trigger post-payment confirmation again
+  const conf2 = await worker.triggerLineBookingConfirmation(env, 93);
+  assert.equal(conf2.success, true);
 
   // Still exactly 1 dispatch record in DB (0 extra push calls)
   const dispatches2 = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED_DEDUP_93'`).get();
@@ -724,7 +824,8 @@ test('WORKER-12: booking_source=walkin / pos without server verification -> reje
   db.exec(`UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'`);
 
   // booking_source='walkin' but line_user_id_verified=0
-  db.exec(`INSERT INTO bookings (id, receipt_number, booking_source, line_user_id, line_user_id_verified, contact, qr_token) VALUES (94, 'BK-000094', 'walkin', 'UWALKIN_UNVERIFIED_94', 0, '0812345678', 'tok_94')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, booking_source, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (94, 'BK-000094', 'walkin', 'UWALKIN_UNVERIFIED_94', 0, '0812345678', 'tok_94', 800, 800, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (94, 4)`);
 
   const req = new Request('http://localhost/api/public/bookings/94/acknowledge-rules', {
@@ -737,10 +838,16 @@ test('WORKER-12: booking_source=walkin / pos without server verification -> reje
   assert.equal(res.status, 200);
   const body = await res.json();
 
-  // booking_source is forbidden as verification proof: must be skipped_unverified_line
   assert.equal(body.success, true);
   assert.equal(body.acknowledged, true);
-  assert.equal(body.line_notification?.status, 'skipped_unverified_line');
+  assert.equal(body.line_notification?.status, 'skipped_decoupled_to_confirmation');
+
+  // Trigger post-payment confirmation -> unverified walk-in, guidelines suppressed
+  const conf = await worker.triggerLineBookingConfirmation(env, 94);
+  assert.equal(conf.success, true);
+
+  const hist = db.prepare(`SELECT details FROM booking_history WHERE booking_id = 94 AND action = 'line_confirmation_notified'`).get();
+  assert.equal(JSON.parse(hist.details).guidelines_attached, false);
 
   // 0 push calls
   const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UWALKIN_UNVERIFIED_94'`).get();
@@ -776,7 +883,8 @@ test('WORKER-13: LINE Verify ID Token API mocked -> verified token matching book
   db.exec(`UPDATE settings SET value = 'true' WHERE key = 'line_guidelines_dispatch_enabled'`);
 
   // Case A: Token verified for DIFFERENT user -> rejected, 0 push
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (95, 'BK-000095', 'UVERIFIED_API_TARGET_95', 0, '0812345678', 'tok_95')`);
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (95, 'BK-000095', 'UVERIFIED_API_TARGET_95', 0, '0812345678', 'tok_95', 800, 800, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (95, 4)`);
 
   const reqA = new Request('http://localhost/api/public/bookings/95/acknowledge-rules', {
@@ -792,10 +900,19 @@ test('WORKER-13: LINE Verify ID Token API mocked -> verified token matching book
   assert.equal(resA.status, 200);
   const bodyA = await resA.json();
   assert.equal(bodyA.acknowledged, true);
-  assert.equal(bodyA.line_notification?.status, 'skipped_unverified_line');
+  assert.equal(bodyA.line_notification?.status, 'skipped_decoupled_to_confirmation');
 
-  // Case B: Token verified for MATCHING user -> approved, 1 push!
-  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token) VALUES (96, 'BK-000096', 'UVERIFIED_API_TARGET_95', 0, '0812345678', 'tok_96')`);
+  const b95 = db.prepare('SELECT line_user_id_verified FROM bookings WHERE id = 95').get();
+  assert.equal(b95.line_user_id_verified, 0);
+
+  const confA = await worker.triggerLineBookingConfirmation(env, 95);
+  assert.equal(confA.success, true);
+  const histA = db.prepare(`SELECT details FROM booking_history WHERE booking_id = 95 AND action = 'line_confirmation_notified'`).get();
+  assert.equal(JSON.parse(histA.details).guidelines_attached, false);
+
+  // Case B: Token verified for MATCHING user -> approved, 1 push on confirmation!
+  db.exec(`INSERT INTO bookings (id, receipt_number, line_user_id, line_user_id_verified, contact, qr_token, total_amount, paid_amount, balance_amount, payment_status)
+           VALUES (96, 'BK-000096', 'UVERIFIED_API_TARGET_95', 0, '0812345678', 'tok_96', 800, 800, 0, 'paid')`);
   db.exec(`INSERT INTO booking_items (booking_id, room_id) VALUES (96, 4)`);
 
   const reqB = new Request('http://localhost/api/public/bookings/96/acknowledge-rules', {
@@ -811,9 +928,20 @@ test('WORKER-13: LINE Verify ID Token API mocked -> verified token matching book
   assert.equal(resB.status, 200);
   const bodyB = await resB.json();
   assert.equal(bodyB.acknowledged, true);
-  assert.equal(bodyB.line_notification?.status, 'pending');
+  assert.equal(bodyB.line_notification?.status, 'skipped_decoupled_to_confirmation');
+
+  // Verify DB updated line_user_id_verified to 1
+  const b96 = db.prepare('SELECT line_user_id_verified FROM bookings WHERE id = 96').get();
+  assert.equal(b96.line_user_id_verified, 1);
 
   await Promise.all(bgTasks);
+
+  // Post-payment confirmation -> guidelines flyer attached!
+  const confB = await worker.triggerLineBookingConfirmation(env, 96);
+  assert.equal(confB.success, true);
+
+  const histB = db.prepare(`SELECT details FROM booking_history WHERE booking_id = 96 AND action = 'line_confirmation_notified'`).get();
+  assert.equal(JSON.parse(histB.details).guidelines_attached, true);
 
   // Exactly 1 dispatch recorded in DB
   const count = db.prepare(`SELECT count(*) as c FROM line_guidelines_dispatches WHERE line_user_id = 'UVERIFIED_API_TARGET_95'`).get();
