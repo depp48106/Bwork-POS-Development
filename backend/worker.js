@@ -2007,7 +2007,7 @@ function formatThaiDateDisplay(isoString) {
 }
 
 // 1. Flex Message: ยืนยันการจองห้องประชุมสำเร็จ (ไม่แสดงรหัสผ่านในขั้นตอนนี้)
-function buildLineBookingConfirmationFlex(booking, item, room) {
+function buildLineBookingConfirmationFlex(booking, item, room, options = {}) {
   const customerName = booking?.customer_name || 'ลูกค้าคนพิเศษ';
   const roomName = room?.name || 'ห้องประชุม B-WORK';
   const receiptNo = booking?.receipt_number || `BK-${String(booking?.id || 0).padStart(6, '0')}`;
@@ -2135,7 +2135,35 @@ function buildLineBookingConfirmationFlex(booking, item, room) {
                 margin: 'sm'
               }
             ]
-          }
+          },
+          ...(options?.guidelinesUrl ? [
+            {
+              type: 'box',
+              layout: 'vertical',
+              margin: 'md',
+              paddingAll: '12px',
+              backgroundColor: '#f8fafc',
+              cornerRadius: '10px',
+              borderWidth: '1px',
+              borderColor: '#e2e8f0',
+              contents: [
+                {
+                  type: 'text',
+                  text: 'ข้อปฏิบัติการใช้ห้อง',
+                  size: 'xs',
+                  weight: 'bold',
+                  color: '#334155'
+                },
+                {
+                  type: 'text',
+                  text: 'กรุณาอ่านข้อปฏิบัติก่อนเข้าใช้บริการ BWORK',
+                  size: 'xxs',
+                  color: '#64748b',
+                  margin: 'xs'
+                }
+              ]
+            }
+          ] : [])
         ]
       },
       footer: {
@@ -2153,7 +2181,21 @@ function buildLineBookingConfirmationFlex(booking, item, room) {
             style: 'primary',
             color: '#065f46',
             height: 'md'
-          }
+          },
+          ...(options?.guidelinesUrl ? [
+            {
+              type: 'button',
+              action: {
+                type: 'uri',
+                label: options.guidelinesLabel || 'ข้อปฏิบัติการใช้ห้อง',
+                uri: options.guidelinesUrl
+              },
+              style: 'secondary',
+              color: '#0f172a',
+              height: 'md',
+              margin: 'sm'
+            }
+          ] : [])
         ]
       }
     }
@@ -2858,7 +2900,62 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
     const item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
     const room = item?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first() : null;
 
-    const flexCard = buildLineBookingConfirmationFlex(booking, item, room);
+    let guidelinesUrl = null;
+    let guidelinesConfig = null;
+    let guidelinesClaimed = false;
+
+    const lineGuidelinesSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'").first();
+    const isGuidelinesDispatchEnabled = (lineGuidelinesSetting && (lineGuidelinesSetting.value === 'true' || lineGuidelinesSetting.value === '1' || lineGuidelinesSetting.value === 1 || lineGuidelinesSetting.value === true)) && (env.DISABLE_LIVE_LINE !== 'true');
+
+    if (isGuidelinesDispatchEnabled) {
+      guidelinesConfig = resolveRoomGuidelines(item?.room_id, room?.name);
+      if (guidelinesConfig && guidelinesConfig.required) {
+        const isLineConfirmed = isServerConfirmedLineBinding({
+          lineUserId: booking.line_user_id,
+          isVerified: booking.line_user_id_verified,
+          bookingSource: booking.booking_source
+        });
+
+        if (isLineConfirmed) {
+          try {
+            await env.DB.prepare(`
+              CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                line_user_id TEXT NOT NULL,
+                rule_set TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                first_booking_id INTEGER REFERENCES bookings(id),
+                status TEXT NOT NULL DEFAULT 'sent',
+                error_message TEXT,
+                dispatched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(line_user_id, rule_set, rule_version)
+              )
+            `).run();
+          } catch (_) {}
+
+          try {
+            const claimRes = await env.DB.prepare(
+              `INSERT INTO line_guidelines_dispatches 
+               (line_user_id, rule_set, rule_version, first_booking_id, status, dispatched_at)
+               VALUES (?, ?, ?, ?, 'claimed', datetime('now'))`
+            ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId).run();
+
+            if (claimRes && (claimRes.success || (claimRes.meta && claimRes.meta.changes > 0))) {
+              guidelinesClaimed = true;
+              guidelinesUrl = guidelinesConfig.image_url;
+            }
+          } catch (claimErr) {
+            guidelinesClaimed = false;
+            guidelinesUrl = null;
+          }
+        }
+      }
+    }
+
+    const flexCard = buildLineBookingConfirmationFlex(booking, item, room, {
+      guidelinesUrl,
+      guidelinesLabel: 'ข้อปฏิบัติการใช้ห้อง'
+    });
 
     // 8. Dispatch LINE Push with stable X-Line-Retry-Key
     const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
@@ -2874,11 +2971,25 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         acceptedRequestId: null
       });
 
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await env.DB.prepare(
+            `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
+          ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+        } catch (_) {}
+      }
+
       try {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
            VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
-        ).bind(bookingId, JSON.stringify({ status: 'sent', mocked: true, http_status: 200, timestamp: nowIso }), nowIso).run();
+        ).bind(bookingId, JSON.stringify({ 
+          status: 'sent', 
+          mocked: true, 
+          http_status: 200, 
+          guidelines_attached: Boolean(guidelinesUrl),
+          timestamp: nowIso 
+        }), nowIso).run();
       } catch (_) {}
 
       logSafeNotificationDiagnostic('booking_confirmation', {
@@ -2890,7 +3001,17 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         http_status: 200,
         line_user_id: booking.line_user_id
       });
-      return { success: true, sent: false, mocked: true, status: 'sent', http_status: 200, retry_key: claim.retryKey };
+      return { 
+        success: true, 
+        sent: false, 
+        mocked: true, 
+        status: 'sent', 
+        http_status: 200, 
+        flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
+        retry_key: claim.retryKey 
+      };
     }
 
     if (dispatch.ok) {
@@ -2901,6 +3022,14 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         acceptedRequestId: dispatch.accepted_request_id || null
       });
 
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await env.DB.prepare(
+            `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
+          ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+        } catch (_) {}
+      }
+
       try {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
@@ -2910,6 +3039,7 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
           http_status: dispatch.status, 
           deduplicated: dispatch.deduplicated || false,
           accepted_request_id: dispatch.accepted_request_id || null,
+          guidelines_attached: Boolean(guidelinesUrl),
           timestamp: nowIso 
         }), nowIso).run();
       } catch (_) {}
@@ -2929,12 +3059,23 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         mocked: false, 
         status: 'sent', 
         http_status: dispatch.status,
+        flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
         accepted_request_id: dispatch.accepted_request_id || null,
         retry_key: claim.retryKey
       };
     }
 
     if (dispatch.network_error) {
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await env.DB.prepare(
+            `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
+          ).bind(dispatch.reason || 'network_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+        } catch (_) {}
+      }
+
       // Network timeout or socket drop - Delivery state is unknown!
       // Do not allow blind retries to prevent customer duplicate messages.
       await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
@@ -2977,6 +3118,14 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       errorMessage: dispatch.reason || 'line_api_error',
       acceptedRequestId: null
     });
+
+    if (guidelinesClaimed && guidelinesConfig) {
+      try {
+        await env.DB.prepare(
+          `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
+        ).bind(dispatch.reason || 'line_api_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+      } catch (_) {}
+    }
 
     try {
       await env.DB.prepare(
@@ -10804,6 +10953,7 @@ export default {
         let qr_data = null;
         let bodyAccessToken = null;
         let bodyContact = null;
+        let bodyLineIdToken = null;
 
         const contentType = request.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
@@ -10813,6 +10963,7 @@ export default {
             qr_data = body.qr_data || body.qrData || body.qr;
             bodyAccessToken = body.access_token;
             bodyContact = body.contact;
+            bodyLineIdToken = body.line_id_token;
           } catch (e) {}
         } else if (contentType.includes('multipart/form-data')) {
           try {
@@ -10821,6 +10972,7 @@ export default {
             qr_data = formData.get('qr_data') || formData.get('qrData');
             bodyAccessToken = formData.get('access_token');
             bodyContact = formData.get('contact');
+            bodyLineIdToken = formData.get('line_id_token');
             if (file && typeof file === 'object' && typeof file.arrayBuffer === 'function') {
               const arrayBuffer = await file.arrayBuffer();
               const bytes = new Uint8Array(arrayBuffer);
@@ -10873,6 +11025,20 @@ export default {
           await safeEqual(normalizedContact, String(booking.contact || '').replace(/\D/g, ''));
         if (!tokenMatches && !contactMatches) {
           return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' }), { status: 403, headers: corsHeaders });
+        }
+
+        // Verify Server-Confirmed LINE Recipient if token provided
+        const lineIdTokenHeader = request.headers.get('x-line-id-token') || bodyLineIdToken;
+        if (lineIdTokenHeader) {
+          const channelIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_id'").first();
+          const channelId = channelIdRow?.value?.trim() || env.LINE_CHANNEL_ID || '2011136579';
+          const verified = await verifyWorkerLineIdTokenWithApi(env, lineIdTokenHeader, channelId);
+          if (verified && verified.userId && booking.line_user_id && verified.userId.trim() === booking.line_user_id.trim() && !booking.line_user_id_verified) {
+            try {
+              await env.DB.prepare('UPDATE bookings SET line_user_id_verified = 1 WHERE id = ?').bind(booking.id).run();
+              booking.line_user_id_verified = 1;
+            } catch (_) {}
+          }
         }
         let windowMins = 15;
         try {
@@ -11189,7 +11355,7 @@ export default {
         ).bind(booking.id).first();
         const acknowledgedAt = updatedBooking?.guidelines_acknowledged_at || new Date().toISOString();
 
-        // Server-Confirmed LINE Recipient Check & Feature Toggle
+        // Server-Confirmed LINE Recipient Check if token provided
         const channelIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_id'").first();
         const channelId = channelIdRow?.value?.trim() || env.LINE_CHANNEL_ID || '2011136579';
 
@@ -11202,131 +11368,11 @@ export default {
           }
         }
 
-        const hasValidSyntax = isBoundLineUserId(booking.line_user_id);
-        const isLineConfirmed = isServerConfirmedLineBinding({
-          lineUserId: booking.line_user_id,
-          isVerified: booking.line_user_id_verified,
-          verifiedTokenUserId: verifiedLineUserId
-        });
-
-        const lineToggleRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'").first();
-        const isFeatureEnabled = (lineToggleRow && (lineToggleRow.value === 'true' || lineToggleRow.value === '1')) &&
-                                  (env.DISABLE_LIVE_LINE !== 'true');
-        const isFeatureDisabled = !isFeatureEnabled;
-
-        let lineNotification = null;
-
-        if (!hasValidSyntax) {
-          lineNotification = {
-            status: 'skipped_no_line',
-            deduplicated: false,
-            message: 'ไม่มี LINE User ID สำหรับรายการจองนี้'
-          };
-        } else if (!isLineConfirmed) {
-          lineNotification = {
-            status: 'skipped_unverified_line',
-            deduplicated: false,
-            message: 'LINE ID ไม่ได้รับการยืนยันการผูกบัญชีจากเซิร์ฟเวอร์'
-          };
-        } else if (isFeatureDisabled) {
-          lineNotification = {
-            status: 'skipped_feature_disabled',
-            deduplicated: false,
-            message: 'ระบบปิดการส่งข้อความแจ้งเตือนทาง LINE'
-          };
-        } else {
+        if (verifiedLineUserId && booking.line_user_id && verifiedLineUserId === booking.line_user_id.trim()) {
           try {
-            await env.DB.prepare(`
-              CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                line_user_id TEXT NOT NULL,
-                rule_set TEXT NOT NULL,
-                rule_version TEXT NOT NULL,
-                first_booking_id INTEGER REFERENCES bookings(id),
-                status TEXT NOT NULL DEFAULT 'sent',
-                error_message TEXT,
-                dispatched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(line_user_id, rule_set, rule_version)
-              )
-            `).run();
+            await env.DB.prepare('UPDATE bookings SET line_user_id_verified = 1 WHERE id = ?').bind(booking.id).run();
+            booking.line_user_id_verified = 1;
           } catch (_) {}
-
-          let claimSuccess = false;
-          try {
-            const claimRes = await env.DB.prepare(
-              `INSERT INTO line_guidelines_dispatches 
-               (line_user_id, rule_set, rule_version, first_booking_id, status, dispatched_at)
-               VALUES (?, ?, ?, ?, 'claimed', datetime('now'))`
-            ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, booking.id).run();
-            claimSuccess = Boolean(claimRes && (claimRes.success || (claimRes.meta && claimRes.meta.changes > 0)));
-          } catch (e) {
-            claimSuccess = false;
-          }
-
-          if (claimSuccess) {
-            // Decoupled web response: return 'pending' immediately without waiting for LINE push
-            lineNotification = {
-              status: 'pending',
-              deduplicated: false,
-              message: 'กำลังส่งข้อปฏิบัติทาง LINE ในพื้นหลัง'
-            };
-
-            const targetLineUserId = booking.line_user_id;
-            const bgLineTask = async () => {
-              try {
-                const tokenRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_access_token'").first();
-                const channelAccessToken = tokenRow?.value || env.LINE_CHANNEL_ACCESS_TOKEN;
-                const textContent = buildLineGuidelinesMessage(guidelinesConfig);
-
-                let linePushOk = false;
-                let lineErr = null;
-
-                if (channelAccessToken) {
-                  try {
-                    const pushRes = await dispatchLineMessagePush(env, channelAccessToken, {
-                      to: targetLineUserId,
-                      messages: [{ type: 'text', text: textContent }]
-                    });
-                    linePushOk = pushRes.success || pushRes.ok || pushRes.mocked;
-                    lineErr = pushRes.error || pushRes.reason;
-                  } catch (pushEx) {
-                    linePushOk = false;
-                    lineErr = pushEx.message;
-                  }
-                } else {
-                  lineErr = 'no_channel_access_token';
-                }
-
-                if (linePushOk) {
-                  await env.DB.prepare(
-                    `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
-                  ).bind(targetLineUserId, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
-                } else {
-                  await env.DB.prepare(
-                    `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
-                  ).bind(lineErr || 'LINE dispatch failed', targetLineUserId, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
-                }
-              } catch (bgEx) {
-                console.error('[Worker-Guidelines-Background]', bgEx);
-              }
-            };
-
-            if (ctx && typeof ctx.waitUntil === 'function') {
-              ctx.waitUntil(bgLineTask());
-            } else {
-              bgLineTask().catch(e => console.error('[Background Task Error]', e));
-            }
-          } else {
-            const existingDispatch = await env.DB.prepare(
-              `SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
-            ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).first();
-
-            if (existingDispatch && (existingDispatch.status === 'sent' || existingDispatch.status === 'claimed')) {
-              lineNotification = { status: 'already_sent', deduplicated: true, message: 'เคยส่งข้อปฏิบัติชุดนี้ให้ผู้ใช้ทาง LINE แล้ว' };
-            } else {
-              lineNotification = { status: existingDispatch?.status || 'unknown', deduplicated: true, message: 'มีคำขอส่งข้อปฏิบัติชุดนี้อยู่แล้ว' };
-            }
-          }
         }
 
         return new Response(JSON.stringify({
@@ -11336,7 +11382,11 @@ export default {
           rule_set: guidelinesConfig.rule_set,
           rule_version: guidelinesConfig.rule_version,
           acknowledged_at: acknowledgedAt,
-          line_notification: lineNotification
+          line_notification: {
+            status: 'skipped_decoupled_to_confirmation',
+            deduplicated: false,
+            message: 'ข้อปฏิบัติจะถูกแนบไปกับข้อความยืนยันการจองทาง LINE หลังชำระเงินสำเร็จ'
+          }
         }), { headers: corsHeaders });
       }
 
@@ -11742,6 +11792,17 @@ export default {
         const receiptNumber = await generateReceiptNumber(env);
         const pinCode = !roomUsesDoorPin(room || room_id) ? null : (room.pin_code?.trim() || await generateUniquePinCode(env));
 
+        let isLineVerified = 0;
+        const lineIdTokenHeader = request.headers.get('x-line-id-token') || body.line_id_token;
+        if (line_user_id && lineIdTokenHeader) {
+          const channelIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_id'").first();
+          const channelId = channelIdRow?.value?.trim() || env.LINE_CHANNEL_ID || '2011136579';
+          const verified = await verifyWorkerLineIdTokenWithApi(env, lineIdTokenHeader, channelId);
+          if (verified && verified.userId && verified.userId.trim() === String(line_user_id).trim()) {
+            isLineVerified = 1;
+          }
+        }
+
         const nowIso = new Date().toISOString();
         let insBooking;
         try {
@@ -11750,17 +11811,17 @@ export default {
                customer_name, department, contact,
                subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
                payment_status, payment_method,
-               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
+               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id, line_user_id_verified,
                tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone, tax_delivery_method, tax_postal_address, tax_email,
                guest_count,
                created_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name, department || note || '', contact,
             promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
             receiptNumber, pinCode,
-            email || null, line_user_id || null,
+            email || null, line_user_id || null, isLineVerified,
             isTaxInvoiceRequired ? 1 : 0, cleanTaxPayerType, cleanTaxName, cleanTaxAddress, cleanTaxId, cleanTaxBranchType, cleanTaxBranchNumber, cleanTaxPhone, cleanTaxDeliveryMethod, cleanTaxPostalAddress, cleanTaxEmail,
             parsedGuests,
             nowIso
@@ -11772,15 +11833,15 @@ export default {
                customer_name, department, contact,
                subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
                payment_status, payment_method,
-               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
+               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id, line_user_id_verified,
                created_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?)`
           ).bind(
             customer_name, department || note || '', contact,
             promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
             receiptNumber, pinCode,
-            email || null, line_user_id || null,
+            email || null, line_user_id || null, isLineVerified,
             nowIso
           ).run();
         }
@@ -13680,3 +13741,9 @@ async function uploadToOneDriveFromWorker(env, sqlContent, fileName) {
 
 const buildLineConfirmationFlex = buildLineBookingConfirmationFlex;
 const buildLineBookingCancelledFlex = buildLineBookingCancellationFlex;
+
+export {
+  triggerLineBookingConfirmation,
+  sendLineBookingConfirmation,
+  verifyWorkerLineIdTokenWithApi
+};

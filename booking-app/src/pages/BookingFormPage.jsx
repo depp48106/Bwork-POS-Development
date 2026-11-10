@@ -333,9 +333,20 @@ export default function BookingFormPage() {
         tax_postal_address: needTaxInvoice && taxDeliveryMethod === 'postal' ? taxPostalAddress.trim() : null
       };
 
+      let idToken = '';
+      if (typeof window !== 'undefined' && window.liff && window.liff.isLoggedIn()) {
+        try { idToken = window.liff.getIDToken() || ''; } catch (e) {}
+      }
+      if (idToken) {
+        payload.line_id_token = idToken;
+      }
+
+      const reqHeaders = { 'Content-Type': 'application/json' };
+      if (idToken) reqHeaders['X-Line-ID-Token'] = idToken;
+
       const res = await fetch(`${API_BASE}/api/public/bookings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: reqHeaders,
         body: JSON.stringify(payload)
       });
 

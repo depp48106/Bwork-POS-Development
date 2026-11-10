@@ -188,9 +188,14 @@ export default function ConfirmPage() {
     try {
       const rawAccessToken = query.get('access_token') || booking?.qr_token || '';
       const rawContact = query.get('contact') || booking?.contact || '';
+      let idToken = '';
+      if (typeof window !== 'undefined' && window.liff && window.liff.isLoggedIn()) {
+        try { idToken = window.liff.getIDToken() || ''; } catch (e) {}
+      }
       const headers = { 'Content-Type': 'application/json' };
       if (rawAccessToken) headers['X-Booking-Token'] = rawAccessToken;
       if (rawContact) headers['X-Booking-Contact'] = rawContact;
+      if (idToken) headers['X-Line-ID-Token'] = idToken;
 
       const targetId = bookingId || booking?.id;
       const currentGuidelines = getRoomGuidelines(booking);
@@ -202,7 +207,8 @@ export default function ConfirmPage() {
           rule_set: currentGuidelines?.rule_set,
           rule_version: currentGuidelines?.rule_version,
           access_token: rawAccessToken || undefined,
-          contact: rawContact || undefined
+          contact: rawContact || undefined,
+          line_id_token: idToken || undefined
         })
       });
 
@@ -631,18 +637,25 @@ export default function ConfirmPage() {
       const currentToken = booking?.access_token || statusAccess?.accessToken;
 
       // Send Base64 payload + QR data (Enables 100% Automated Instant Verification)
+      let idToken = '';
+      if (typeof window !== 'undefined' && window.liff && window.liff.isLoggedIn()) {
+        try { idToken = window.liff.getIDToken() || ''; } catch (e) {}
+      }
+
       const res = await fetch(`${API_BASE}/api/public/bookings/${targetId}/upload-slip`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(currentToken ? { 'X-Booking-Token': currentToken } : {}),
-          ...(currentContact ? { 'X-Booking-Contact': currentContact } : {})
+          ...(currentContact ? { 'X-Booking-Contact': currentContact } : {}),
+          ...(idToken ? { 'X-Line-ID-Token': idToken } : {})
         },
         body: JSON.stringify({
           slip_image: finalPayload,
           qr_data: slipQrData,
           contact: currentContact,
-          access_token: currentToken
+          access_token: currentToken,
+          line_id_token: idToken || undefined
         })
       });
 
