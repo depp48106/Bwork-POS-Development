@@ -2603,6 +2603,38 @@ async function finalizeNotificationClaim(db, bookingId, notificationType, claimT
 }
 
 async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }, options = {}) {
+  const mockOutcome = options.mockLineOutcome || (env && env.MOCK_LINE_OUTCOME);
+  if (mockOutcome) {
+    if (mockOutcome.network_error || mockOutcome.is_timeout || mockOutcome.status === 'timeout') {
+      return {
+        sent: false,
+        deduplicated: false,
+        mocked: true,
+        status: null,
+        raw_status: null,
+        ok: false,
+        success: false,
+        network_error: true,
+        is_timeout: true,
+        reason: mockOutcome.reason || 'timeout'
+      };
+    }
+    const httpStatus = mockOutcome.status || (mockOutcome.ok ? 200 : 400);
+    const ok = mockOutcome.ok !== undefined ? Boolean(mockOutcome.ok) : (httpStatus >= 200 && httpStatus < 300);
+    return {
+      sent: ok,
+      deduplicated: Boolean(mockOutcome.deduplicated),
+      mocked: true,
+      status: httpStatus,
+      raw_status: httpStatus,
+      ok: ok,
+      success: ok,
+      network_error: false,
+      is_timeout: false,
+      reason: mockOutcome.reason || (ok ? 'mock_success' : 'mock_line_error')
+    };
+  }
+
   if (env && (getEffectiveEnvironment(env) === 'staging' || env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true' || env.STAGING_MOCK_LINE_API === 'true')) {
     return {
       sent: false,
@@ -2936,8 +2968,8 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
           try {
             const claimRes = await env.DB.prepare(
               `INSERT INTO line_guidelines_dispatches 
-               (line_user_id, rule_set, rule_version, first_booking_id, status, dispatched_at)
-               VALUES (?, ?, ?, ?, 'claimed', datetime('now'))`
+               (line_user_id, rule_set, rule_version, first_booking_id, status, error_message, dispatched_at)
+               VALUES (?, ?, ?, ?, 'claimed', NULL, datetime('now'))`
             ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId).run();
 
             if (claimRes && (claimRes.success || (claimRes.meta && claimRes.meta.changes > 0))) {
@@ -2945,8 +2977,31 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
               guidelinesUrl = guidelinesConfig.image_url;
             }
           } catch (claimErr) {
-            guidelinesClaimed = false;
-            guidelinesUrl = null;
+            // Row already exists. Atomically re-claim if and only if status is currently 'retryable_rejected'
+            try {
+              const reclaimRes = await env.DB.prepare(
+                `UPDATE line_guidelines_dispatches
+                 SET status = 'claimed',
+                     first_booking_id = ?,
+                     dispatched_at = datetime('now'),
+                     error_message = NULL
+                 WHERE line_user_id = ?
+                   AND rule_set = ?
+                   AND rule_version = ?
+                   AND status = 'retryable_rejected'`
+              ).bind(bookingId, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+
+              if (reclaimRes && ((reclaimRes.meta && reclaimRes.meta.changes > 0) || reclaimRes.changes > 0)) {
+                guidelinesClaimed = true;
+                guidelinesUrl = guidelinesConfig.image_url;
+              } else {
+                guidelinesClaimed = false;
+                guidelinesUrl = null;
+              }
+            } catch (reclaimErr) {
+              guidelinesClaimed = false;
+              guidelinesUrl = null;
+            }
           }
         }
       }
@@ -2961,58 +3016,7 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
     const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
       to: booking.line_user_id,
       messages: [flexCard]
-    }, { timeoutMs: options.timeoutMs || 10000, retryKey: claim.retryKey });
-
-    if (dispatch.mocked) {
-      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
-        status: 'sent',
-        httpStatus: 200,
-        errorMessage: null,
-        acceptedRequestId: null
-      });
-
-      if (guidelinesClaimed && guidelinesConfig) {
-        try {
-          await env.DB.prepare(
-            `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
-          ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
-        } catch (_) {}
-      }
-
-      try {
-        await env.DB.prepare(
-          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
-           VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
-        ).bind(bookingId, JSON.stringify({ 
-          status: 'sent', 
-          mocked: true, 
-          http_status: 200, 
-          guidelines_attached: Boolean(guidelinesUrl),
-          timestamp: nowIso 
-        }), nowIso).run();
-      } catch (_) {}
-
-      logSafeNotificationDiagnostic('booking_confirmation', {
-        booking_id: bookingId,
-        eligible: true,
-        attempted: true,
-        status: 'sent',
-        reason: 'staging_environment_mock',
-        http_status: 200,
-        line_user_id: booking.line_user_id
-      });
-      return { 
-        success: true, 
-        sent: false, 
-        mocked: true, 
-        status: 'sent', 
-        http_status: 200, 
-        flexCard,
-        guidelinesAttached: Boolean(guidelinesUrl),
-        guidelinesUrl: guidelinesUrl || null,
-        retry_key: claim.retryKey 
-      };
-    }
+    }, { timeoutMs: options.timeoutMs || 10000, retryKey: claim.retryKey, mockLineOutcome: options.mockLineOutcome });
 
     if (dispatch.ok) {
       await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
@@ -3025,8 +3029,10 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       if (guidelinesClaimed && guidelinesConfig) {
         try {
           await env.DB.prepare(
-            `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
-          ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+            `UPDATE line_guidelines_dispatches 
+             SET status = 'sent', error_message = NULL 
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`
+          ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId).run();
         } catch (_) {}
       }
 
@@ -3036,6 +3042,7 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
            VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
         ).bind(bookingId, JSON.stringify({ 
           status: 'sent', 
+          mocked: Boolean(dispatch.mocked),
           http_status: dispatch.status, 
           deduplicated: dispatch.deduplicated || false,
           accepted_request_id: dispatch.accepted_request_id || null,
@@ -3049,21 +3056,22 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         eligible: true,
         attempted: true,
         status: 'sent',
+        reason: dispatch.mocked ? 'staging_environment_mock' : null,
         http_status: dispatch.status,
         line_user_id: booking.line_user_id
       });
       return { 
         success: true, 
-        sent: dispatch.sent, 
+        sent: !dispatch.mocked && Boolean(dispatch.sent), 
         deduplicated: dispatch.deduplicated || false,
-        mocked: false, 
+        mocked: Boolean(dispatch.mocked), 
         status: 'sent', 
-        http_status: dispatch.status,
+        http_status: dispatch.status, 
         flexCard,
         guidelinesAttached: Boolean(guidelinesUrl),
         guidelinesUrl: guidelinesUrl || null,
         accepted_request_id: dispatch.accepted_request_id || null,
-        retry_key: claim.retryKey
+        retry_key: claim.retryKey 
       };
     }
 
@@ -3071,8 +3079,10 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       if (guidelinesClaimed && guidelinesConfig) {
         try {
           await env.DB.prepare(
-            `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
-          ).bind(dispatch.reason || 'network_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+            `UPDATE line_guidelines_dispatches 
+             SET status = 'unknown', error_message = ? 
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`
+          ).bind(dispatch.reason || 'timeout', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId).run();
         } catch (_) {}
       }
 
@@ -3089,7 +3099,12 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
            VALUES (?, 'line_confirmation_failed', ?, 'system', ?)`
-        ).bind(bookingId, JSON.stringify({ status: 'delivery_unknown', reason: dispatch.reason, timestamp: nowIso }), nowIso).run();
+        ).bind(bookingId, JSON.stringify({ 
+          status: 'delivery_unknown', 
+          mocked: Boolean(dispatch.mocked),
+          reason: dispatch.reason, 
+          timestamp: nowIso 
+        }), nowIso).run();
       } catch (_) {}
 
       logSafeNotificationDiagnostic('booking_confirmation', {
@@ -3101,31 +3116,48 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         http_status: null,
         line_user_id: booking.line_user_id
       });
-      return { success: false, sent: false, mocked: false, status: 'delivery_unknown', reason: dispatch.reason, http_status: null, retry_key: claim.retryKey };
+      return { 
+        success: false, 
+        sent: false, 
+        mocked: Boolean(dispatch.mocked), 
+        status: 'delivery_unknown', 
+        reason: dispatch.reason, 
+        http_status: null, 
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
+        retry_key: claim.retryKey 
+      };
     }
 
     // Explicit HTTP 4xx/5xx rejection from LINE API
+    const httpStatus = dispatch.raw_status || dispatch.status;
+    const isDefiniteRejection = (httpStatus >= 400 && httpStatus < 500 && !dispatch.deduplicated);
+    const guidelinesStatus = isDefiniteRejection ? 'retryable_rejected' : 'unknown';
+
+    if (guidelinesClaimed && guidelinesConfig) {
+      try {
+        await env.DB.prepare(
+          `UPDATE line_guidelines_dispatches 
+           SET status = ?, error_message = ? 
+           WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`
+        ).bind(guidelinesStatus, dispatch.reason || ('line_api_status_' + httpStatus), booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId).run();
+      } catch (_) {}
+    }
+
     const errorDetail = {
       status: 'failed',
+      mocked: Boolean(dispatch.mocked),
       reason: dispatch.reason || 'line_api_error',
-      http_status: dispatch.raw_status || dispatch.status,
+      http_status: httpStatus,
       timestamp: nowIso
     };
 
     await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
       status: 'failed',
-      httpStatus: dispatch.raw_status || dispatch.status,
+      httpStatus: httpStatus,
       errorMessage: dispatch.reason || 'line_api_error',
       acceptedRequestId: null
     });
-
-    if (guidelinesClaimed && guidelinesConfig) {
-      try {
-        await env.DB.prepare(
-          `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`
-        ).bind(dispatch.reason || 'line_api_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
-      } catch (_) {}
-    }
 
     try {
       await env.DB.prepare(
@@ -3140,10 +3172,20 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       attempted: true,
       status: 'failed',
       reason: dispatch.reason || 'line_api_error',
-      http_status: dispatch.raw_status || dispatch.status,
+      http_status: httpStatus,
       line_user_id: booking.line_user_id
     });
-    return { success: false, sent: false, mocked: false, status: 'failed', reason: dispatch.reason || 'line_api_error', http_status: dispatch.raw_status || dispatch.status, retry_key: claim.retryKey };
+    return { 
+      success: false, 
+      sent: false, 
+      mocked: Boolean(dispatch.mocked), 
+      status: 'failed', 
+      reason: dispatch.reason || 'line_api_error', 
+      http_status: httpStatus, 
+      guidelinesAttached: Boolean(guidelinesUrl),
+      guidelinesUrl: guidelinesUrl || null,
+      retry_key: claim.retryKey 
+    };
   } catch (err) {
     console.error('[LINE-Confirmation] Unexpected error in worker:', err?.message || err);
     return { success: false, sent: false, mocked: false, status: 'failed', reason: 'internal_error', error: err?.message || String(err) };
