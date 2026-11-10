@@ -7,6 +7,10 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const { initDatabase, dbQuery, dbPath, hashPassword, verifyPassword } = require('./database');
 const { performBackup } = require('./backup');
 const {
+  getAvailabilityMonth, ACTIVE_AVAILABILITY_ROOMS_SQL, ROOM_AVAILABILITY_INTERVALS_SQL,
+  getAvailabilityQueryParams, buildAvailabilityResponse
+} = require('./roomAvailabilityQuery.mjs');
+const {
   generateDatabaseDumpSql,
   getOneDriveAuthUrl,
   exchangeOneDriveCode,
@@ -8558,6 +8562,25 @@ app.get('/api/public/rooms', async (req, res) => {
     res.json(sortRoomsByNumber(rooms));
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/public/rooms/availability-month', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const month = getAvailabilityMonth(req.query.month);
+  if (!month) {
+    return res.status(400).json({ error: 'กรุณาระบุเดือนในรูปแบบ YYYY-MM' });
+  }
+  try {
+    const bufferMinutes = Math.max(0, await getCleaningBufferMinutes());
+    const [rooms, items] = await Promise.all([
+      dbQuery.all(ACTIVE_AVAILABILITY_ROOMS_SQL),
+      dbQuery.all(ROOM_AVAILABILITY_INTERVALS_SQL, getAvailabilityQueryParams(month, bufferMinutes))
+    ]);
+    return res.json(buildAvailabilityResponse(month, rooms, items, bufferMinutes, normalizeToLocalISO));
+  } catch (err) {
+    console.error('Monthly room availability failed:', err);
+    return res.status(500).json({ error: 'ไม่สามารถโหลดตารางห้องประชุมได้' });
   }
 });
 

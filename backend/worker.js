@@ -5083,6 +5083,25 @@ export default {
       // ----------------------------------------------------
       // 3. PUBLIC ROOMS & SCHEDULE
       // ----------------------------------------------------
+      if (pathname === '/api/public/rooms/availability-month' && method === 'GET') {
+        const {
+          getAvailabilityMonth, ACTIVE_AVAILABILITY_ROOMS_SQL, ROOM_AVAILABILITY_INTERVALS_SQL,
+          getAvailabilityQueryParams, buildAvailabilityResponse
+        } = await import('./roomAvailabilityQuery.mjs');
+        const month = getAvailabilityMonth(url.searchParams.get('month'));
+        const headers = { ...corsHeaders, 'Cache-Control': 'no-store' };
+        if (!month) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุเดือนในรูปแบบ YYYY-MM' }), { status: 400, headers });
+        }
+        const bufferMinutes = Math.max(0, await getCleaningBufferMinutes(env));
+        const [{ results: rooms }, { results: items }] = await env.DB.batch([
+          env.DB.prepare(ACTIVE_AVAILABILITY_ROOMS_SQL),
+          env.DB.prepare(ROOM_AVAILABILITY_INTERVALS_SQL).bind(...getAvailabilityQueryParams(month, bufferMinutes))
+        ]);
+        const availability = buildAvailabilityResponse(month, rooms, items, bufferMinutes, normalizeToLocalISO);
+        return new Response(JSON.stringify(availability), { headers });
+      }
+
       if (pathname === '/api/public/rooms/schedule') {
         const date = url.searchParams.get('date');
         const { results: rooms } = await env.DB.prepare("SELECT * FROM rooms WHERE status = 'active' ORDER BY name ASC").all();
