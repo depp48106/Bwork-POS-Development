@@ -3024,7 +3024,7 @@ function formatRescheduleTimeDisplay(startTime, endTime) {
 }
 
 // Helper to build LINE OA Flex Message for booking confirmation
-function buildLineConfirmationFlex(booking, item, room) {
+function buildLineConfirmationFlex(booking, item, room, options = {}) {
   const customerName = booking?.customer_name || 'ลูกค้าคนพิเศษ';
   const roomName = room?.name || 'ห้องประชุม B-WORK';
   const receiptNo = booking?.receipt_number || `BK-${String(booking?.id || 0).padStart(6, '0')}`;
@@ -3152,7 +3152,35 @@ function buildLineConfirmationFlex(booking, item, room) {
                 margin: 'sm'
               }
             ]
-          }
+          },
+          ...(options?.guidelinesUrl ? [
+            {
+              type: 'box',
+              layout: 'vertical',
+              margin: 'md',
+              paddingAll: '12px',
+              backgroundColor: '#f8fafc',
+              cornerRadius: '10px',
+              borderWidth: '1px',
+              borderColor: '#e2e8f0',
+              contents: [
+                {
+                  type: 'text',
+                  text: 'ข้อปฏิบัติการใช้ห้อง',
+                  size: 'xs',
+                  weight: 'bold',
+                  color: '#334155'
+                },
+                {
+                  type: 'text',
+                  text: 'กรุณาอ่านข้อปฏิบัติก่อนเข้าใช้บริการ BWORK',
+                  size: 'xxs',
+                  color: '#64748b',
+                  margin: 'xs'
+                }
+              ]
+            }
+          ] : [])
         ]
       },
       footer: {
@@ -3170,7 +3198,21 @@ function buildLineConfirmationFlex(booking, item, room) {
             style: 'primary',
             color: '#065f46',
             height: 'md'
-          }
+          },
+          ...(options?.guidelinesUrl ? [
+            {
+              type: 'button',
+              action: {
+                type: 'uri',
+                label: options.guidelinesLabel || 'ข้อปฏิบัติการใช้ห้อง',
+                uri: options.guidelinesUrl
+              },
+              style: 'secondary',
+              color: '#0f172a',
+              height: 'md',
+              margin: 'sm'
+            }
+          ] : [])
         ]
       }
     }
@@ -3630,7 +3672,50 @@ async function sendLineNotification(bookingId) {
       booking.pin_code = pinCode;
     }
 
-    const flexCard = buildLineConfirmationFlex(booking, item, room);
+    // Guidelines link attachment check:
+    // Only attach guidelines link on first time per (line_user_id, rule_set, rule_version)
+    // for server-confirmed LINE binding when feature toggle is enabled.
+    let guidelinesUrl = null;
+    let guidelinesConfig = null;
+    let guidelinesClaimed = false;
+
+    const lineGuidelinesSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'");
+    const isGuidelinesDispatchEnabled = (lineGuidelinesSetting && (lineGuidelinesSetting.value === 'true' || lineGuidelinesSetting.value === '1' || lineGuidelinesSetting.value === 1 || lineGuidelinesSetting.value === true));
+
+    if (isGuidelinesDispatchEnabled) {
+      guidelinesConfig = resolveRoomGuidelines(item?.room_id, room?.name);
+      if (guidelinesConfig && guidelinesConfig.required) {
+        const isLineConfirmed = isServerConfirmedLineBinding({
+          lineUserId: booking.line_user_id,
+          isVerified: booking.line_user_id_verified,
+          bookingSource: booking.booking_source
+        });
+
+        if (isLineConfirmed) {
+          try {
+            const claimRes = await dbQuery.run(
+              `INSERT INTO line_guidelines_dispatches 
+               (line_user_id, rule_set, rule_version, first_booking_id, status, dispatched_at)
+               VALUES (?, ?, ?, ?, 'claimed', CURRENT_TIMESTAMP)`,
+              [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId]
+            );
+            if (claimRes && (claimRes.changes > 0 || claimRes.lastID)) {
+              guidelinesClaimed = true;
+              guidelinesUrl = guidelinesConfig.image_url;
+            }
+          } catch (claimErr) {
+            // Already sent or claimed (UNIQUE constraint violation) -> Suppress duplicate guidelines attachment
+            guidelinesClaimed = false;
+            guidelinesUrl = null;
+          }
+        }
+      }
+    }
+
+    const flexCard = buildLineConfirmationFlex(booking, item, room, {
+      guidelinesUrl,
+      guidelinesLabel: 'ข้อปฏิบัติการใช้ห้อง'
+    });
 
     // Staging / Test Hard-Block or Mock Check
     const isStagingOrMock = process.env.ENVIRONMENT === 'staging' || process.env.DISABLE_LIVE_LINE === 'true' || process.env.STAGING_MOCK_LINE_API === 'true' || process.env.NODE_ENV === 'test';
@@ -3641,6 +3726,15 @@ async function sendLineNotification(bookingId) {
         errorMessage: null,
         acceptedRequestId: null
       });
+
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
+            [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+          );
+        } catch (_) {}
+      }
 
       try {
         await dbQuery.run(
@@ -3667,6 +3761,8 @@ async function sendLineNotification(bookingId) {
         pin_code: pinCode,
         line_pushed: false,
         flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
         booking,
         retry_key: claim.retryKey
       };
@@ -3752,6 +3848,15 @@ async function sendLineNotification(bookingId) {
         acceptedRequestId
       });
 
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
+            [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+          );
+        } catch (_) {}
+      }
+
       try {
         await dbQuery.run(
           "INSERT INTO booking_history (booking_id, action, details, performed_by, created_at) VALUES (?, 'line_confirmation_notified', ?, 'system', ?)",
@@ -3760,6 +3865,7 @@ async function sendLineNotification(bookingId) {
             http_status: httpStatus, 
             deduplicated: isDeduplicated,
             accepted_request_id: acceptedRequestId,
+            guidelines_attached: Boolean(guidelinesUrl),
             timestamp: nowIso 
           }), nowIso]
         );
@@ -3783,11 +3889,21 @@ async function sendLineNotification(bookingId) {
         pin_code: pinCode,
         line_pushed: true,
         flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
         booking,
         accepted_request_id: acceptedRequestId,
         retry_key: claim.retryKey
       };
     } else if (networkError) {
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
+            [isTimeout ? 'timeout' : 'network_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+          );
+        } catch (_) {}
+      }
       // Delivery state is unknown - do not allow blind retry
       await finalizeServerNotificationClaim(dbQuery, bookingId, 'booking_confirmation', claim.claimToken, {
         status: 'delivery_unknown',
@@ -3832,6 +3948,15 @@ async function sendLineNotification(bookingId) {
         errorMessage: httpStatus === 409 ? 'unexpected_409_conflict' : 'line_api_error',
         acceptedRequestId: null
       });
+
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
+            [httpStatus === 409 ? 'unexpected_409_conflict' : 'line_api_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+          );
+        } catch (_) {}
+      }
 
       try {
         await dbQuery.run(
@@ -8707,23 +8832,41 @@ app.post('/api/public/bookings', async (req, res) => {
         pinCode = await generateUniquePinCode();
       }
 
+      // Verify line_user_id cryptographic binding via lineIdToken if provided
+      let isLineVerified = 0;
+      const lineIdToken = req.headers['x-line-id-token'] || req.body?.line_id_token;
+      if (line_user_id && lineIdToken && typeof lineIdToken === 'string') {
+        try {
+          const parts = lineIdToken.trim().split('.');
+          if (parts.length === 3) {
+            let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+            while (b64.length % 4) b64 += '=';
+            const payload = JSON.parse(Buffer.from(b64, 'base64').toString());
+            const nowSec = Math.floor(Date.now() / 1000);
+            if (payload.iss === 'https://access.line.me' && (!payload.exp || payload.exp >= nowSec - 60) && payload.sub && payload.sub.trim() === String(line_user_id).trim()) {
+              isLineVerified = 1;
+            }
+          }
+        } catch (_) {}
+      }
+
       // Insert master booking (with mandatory guest_count, booking_channel = 'line_oa', customer_type = 'general')
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings (
           customer_name, department, contact,
           subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
           payment_status, payment_method,
-          receipt_number, pin_code, qr_token, booking_source, booking_channel, customer_type, customer_email, checkin_status, line_user_id,
+          receipt_number, pin_code, qr_token, booking_source, booking_channel, customer_type, customer_email, checkin_status, line_user_id, line_user_id_verified,
           tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone, tax_delivery_method, tax_postal_address, tax_email,
           guest_count,
           created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customer_name, department || note || '', contact,
           promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, 0, promoPricing.total_amount,
           'pending', 'transfer',
-          receiptNumber, pinCode, accessToken, 'online', 'line_oa', 'general', email || null, 'pending', line_user_id || null,
+          receiptNumber, pinCode, accessToken, 'online', 'line_oa', 'general', email || null, 'pending', line_user_id || null, isLineVerified,
           isTaxInvoiceRequired ? 1 : 0, cleanTaxPayerType, cleanTaxName, cleanTaxAddress, cleanTaxId, cleanTaxBranchType, cleanTaxBranchNumber, cleanTaxPhone, cleanTaxDeliveryMethod, cleanTaxPostalAddress, cleanTaxEmail,
           parsedGuests,
           getBangkokLocalISO(new Date())
@@ -8987,7 +9130,7 @@ app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
     const updatedBooking = await dbQuery.get('SELECT guidelines_acknowledged_at FROM bookings WHERE id = ?', [booking.id]);
     const acknowledgedAt = updatedBooking?.guidelines_acknowledged_at || new Date().toISOString();
 
-    // Verify Server-Confirmed LINE Recipient & Feature Toggle
+    // Verify Server-Confirmed LINE Recipient if token provided
     let verifiedLineUserId = null;
     const lineIdToken = req.headers['x-line-id-token'] || req.body?.line_id_token;
     if (lineIdToken && typeof lineIdToken === 'string') {
@@ -9005,89 +9148,10 @@ app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
       } catch (_) {}
     }
 
-    const hasValidSyntax = isBoundLineUserId(booking.line_user_id);
-    const isLineConfirmed = isServerConfirmedLineBinding({
-      lineUserId: booking.line_user_id,
-      isVerified: booking.line_user_id_verified,
-      verifiedTokenUserId: verifiedLineUserId,
-      bookingSource: booking.booking_source
-    });
-
-    const lineToggleSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'");
-    const isFeatureDisabled = (lineToggleSetting && (lineToggleSetting.value === 'false' || lineToggleSetting.value === '0')) ||
-                              (process.env.DISABLE_LIVE_LINE === 'true');
-
-    let lineNotification = null;
-
-    if (!hasValidSyntax) {
-      lineNotification = {
-        status: 'skipped_no_line',
-        deduplicated: false,
-        message: 'ไม่มี LINE User ID สำหรับรายการจองนี้'
-      };
-    } else if (!isLineConfirmed) {
-      // Unverified client floating ID: reject as binding evidence, skip sending but do not block payment
-      lineNotification = {
-        status: 'skipped_unverified_line',
-        deduplicated: false,
-        message: 'LINE ID ไม่ได้รับการยืนยันการผูกบัญชีจากเซิร์ฟเวอร์'
-      };
-    } else if (isFeatureDisabled) {
-      // Feature toggle turned off: skip sending, allow payment
-      lineNotification = {
-        status: 'skipped_feature_disabled',
-        deduplicated: false,
-        message: 'ระบบปิดการส่งข้อความแจ้งเตือนทาง LINE'
-      };
-    } else {
-      // Server-confirmed recipient & feature enabled -> Atomic Claim
-      let claimSuccess = false;
+    if (verifiedLineUserId && booking.line_user_id && verifiedLineUserId === booking.line_user_id.trim()) {
       try {
-        const claimRes = await dbQuery.run(
-          `INSERT INTO line_guidelines_dispatches 
-           (line_user_id, rule_set, rule_version, first_booking_id, status, dispatched_at)
-           VALUES (?, ?, ?, ?, 'claimed', CURRENT_TIMESTAMP)`,
-          [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, booking.id]
-        );
-        claimSuccess = Boolean(claimRes && (claimRes.changes > 0 || claimRes.lastID));
-      } catch (claimErr) {
-        claimSuccess = false;
-      }
-
-      if (claimSuccess) {
-        // Immediately respond to web client with 'pending' status without awaiting LINE network
-        lineNotification = {
-          status: 'pending',
-          deduplicated: false,
-          message: 'กำลังส่งข้อปฏิบัติทาง LINE ในพื้นหลัง'
-        };
-
-        // Decoupled async dispatch: updates dispatches table to 'sent' or 'failed'
-        sendRoomGuidelinesLineMessageServer({ booking, guidelinesConfig }).then(async (bgRes) => {
-          const bgStatus = bgRes && (bgRes.sent || bgRes.mocked) ? 'sent' : 'failed';
-          const bgErr = bgRes && !bgRes.sent && !bgRes.mocked ? (bgRes.error || bgRes.reason || 'Background LINE dispatch failed') : null;
-          await dbQuery.run(
-            `UPDATE line_guidelines_dispatches SET status = ?, error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-            [bgStatus, bgErr, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
-          );
-        }).catch(async (e) => {
-          await dbQuery.run(
-            `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-            [e.message, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
-          );
-        });
-      } else {
-        // Claim already exists for this person x rule_set x rule_version -> Deduplicated
-        const existingDispatch = await dbQuery.get(
-          `SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-          [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
-        );
-        if (existingDispatch && (existingDispatch.status === 'sent' || existingDispatch.status === 'claimed')) {
-          lineNotification = { status: 'already_sent', deduplicated: true, message: 'เคยส่งข้อปฏิบัติชุดนี้ให้ผู้ใช้ทาง LINE แล้ว' };
-        } else {
-          lineNotification = { status: existingDispatch?.status || 'unknown', deduplicated: true, message: 'มีคำขอส่งข้อปฏิบัติชุดนี้อยู่แล้ว' };
-        }
-      }
+        await dbQuery.run('UPDATE bookings SET line_user_id_verified = 1 WHERE id = ?', [booking.id]);
+      } catch (_) {}
     }
 
     return res.json({
@@ -9097,7 +9161,11 @@ app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
       rule_set: guidelinesConfig.rule_set,
       rule_version: guidelinesConfig.rule_version,
       acknowledged_at: acknowledgedAt,
-      line_notification: lineNotification
+      line_notification: {
+        status: 'skipped_decoupled_to_confirmation',
+        deduplicated: false,
+        message: 'ข้อปฏิบัติจะถูกแนบไปกับข้อความยืนยันการจองทาง LINE หลังชำระเงินสำเร็จ'
+      }
     });
   } catch (err) {
     console.error('Error acknowledging room guidelines:', err);
@@ -9234,6 +9302,30 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
       return res.status(403).json({ error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' });
     }
     const targetBookingId = booking.id;
+
+    // Verify Server-Confirmed LINE Recipient if token provided
+    let verifiedUploadLineUserId = null;
+    const uploadLineIdToken = req.headers['x-line-id-token'] || req.body?.line_id_token;
+    if (uploadLineIdToken && typeof uploadLineIdToken === 'string') {
+      try {
+        const parts = uploadLineIdToken.trim().split('.');
+        if (parts.length === 3) {
+          let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          while (b64.length % 4) b64 += '=';
+          const payload = JSON.parse(Buffer.from(b64, 'base64').toString());
+          const nowSec = Math.floor(Date.now() / 1000);
+          if (payload.iss === 'https://access.line.me' && (!payload.exp || payload.exp >= nowSec - 60) && payload.sub) {
+            verifiedUploadLineUserId = payload.sub.trim();
+          }
+        }
+      } catch (_) {}
+    }
+    if (verifiedUploadLineUserId && booking.line_user_id && verifiedUploadLineUserId === booking.line_user_id.trim() && !booking.line_user_id_verified) {
+      try {
+        await dbQuery.run('UPDATE bookings SET line_user_id_verified = 1 WHERE id = ?', [booking.id]);
+        booking.line_user_id_verified = 1;
+      } catch (_) {}
+    }
 
     if (booking.payment_status === 'paid') {
       return res.status(409).json({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้ว ไม่สามารถแนบสลิปซ้ำได้' });

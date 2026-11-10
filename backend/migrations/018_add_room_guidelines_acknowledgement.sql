@@ -42,4 +42,4 @@ CREATE INDEX IF NOT EXISTS idx_line_guidelines_user ON line_guidelines_dispatche
 -- 4. Server Feature Toggle default setting (safe release preparation default: false)
 INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_enabled', 'false');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('guidelines_enforcement_cutover_at', '2026-11-09T00:00:00.000Z');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'true');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'false');

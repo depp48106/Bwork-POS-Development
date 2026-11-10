@@ -794,7 +794,7 @@ async function initDatabase() {
     }
     const checkGuidelinesLineToggle = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'");
     if (!checkGuidelinesLineToggle) {
-      await dbQuery.run("INSERT INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'true')");
+      await dbQuery.run("INSERT INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'false')");
     }
   } catch (e) {}
 

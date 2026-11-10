@@ -192,3 +192,14 @@ export function buildLineGuidelinesMessage(guidelinesConfig) {
 
   return `${title}\nกรุณาอ่านข้อปฏิบัติก่อนเข้าใช้บริการ BWORK\n\nอ่านข้อปฏิบัติฉบับเต็ม:\n${fullUrl}`;
 }
+
+/**
+ * Gets the direct guidelines image/flyer URL for a given rule_set.
+ * @param {string} ruleSet 
+ * @returns {string|null}
+ */
+export function getGuidelinesUrl(ruleSet) {
+  if (!ruleSet) return null;
+  return ROOM_GUIDELINES_CONFIG[ruleSet]?.image_url || null;
+}
+
