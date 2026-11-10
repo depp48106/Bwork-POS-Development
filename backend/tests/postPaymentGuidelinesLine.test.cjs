@@ -554,3 +554,274 @@ test('SCENARIO 6: Express Server (server.js) sendLineNotification verifies all 5
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// TEST 7: Definite LINE Rejection (Worker) records retryable_rejected and allows subsequent booking to re-claim
+// ---------------------------------------------------------------------------
+test('SCENARIO 7: Definite LINE 4xx rejection (Worker) records retryable_rejected and allows subsequent booking to claim', async () => {
+  const db = new Database(':memory:');
+  setupTestDb(db);
+  const worker = await getWorker();
+  const d1 = createD1Mock(db);
+  const env = { DB: d1, MOCK_LINE_OUTCOME: null };
+
+  const lineUser = 'U_WORKER_REJECT_RETRY';
+
+  // Booking 50: Full payment, Room 301, verified user
+  db.prepare(`
+    INSERT INTO bookings (id, customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+    VALUES (50, 'Reject Customer', 'BK-W050', ?, 1, '0812345678', 800, 800, 0, 'paid')
+  `).run(lineUser);
+  db.prepare(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (50, 4, 800, 800)`).run();
+
+  // Dispatch 1: LINE rejects with HTTP 400 (e.g. invalid reply token or user unreachability)
+  const res50 = await worker.triggerLineBookingConfirmation(env, 50, {
+    mockLineOutcome: { status: 400, ok: false, reason: 'line_api_status_400' }
+  });
+  assert.equal(res50.success, false);
+  assert.equal(res50.status, 'failed');
+  assert.equal(res50.guidelinesAttached, true, 'Guidelines was attached to flex card on initial claim');
+
+  // Check DB dispatch status: must be retryable_rejected
+  const dispatch50 = db.prepare('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?').get(lineUser);
+  assert.ok(dispatch50);
+  assert.equal(dispatch50.status, 'retryable_rejected');
+  assert.equal(dispatch50.first_booking_id, 50);
+
+  // Booking 51: Subsequent booking for same user and rule_set
+  db.prepare(`
+    INSERT INTO bookings (id, customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+    VALUES (51, 'Retry Customer', 'BK-W051', ?, 1, '0812345678', 1200, 1200, 0, 'paid')
+  `).run(lineUser);
+  db.prepare(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (51, 4, 1200, 1200)`).run();
+
+  // Dispatch 2: Succeeds with HTTP 200
+  const res51 = await worker.triggerLineBookingConfirmation(env, 51, {
+    mockLineOutcome: { status: 200, ok: true }
+  });
+  assert.equal(res51.success, true);
+  assert.equal(res51.status, 'sent');
+  assert.equal(res51.guidelinesAttached, true, 'Re-claimed right and attached guidelines flyer successfully');
+
+  const dispatch51 = db.prepare('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?').get(lineUser);
+  assert.equal(dispatch51.status, 'sent');
+  assert.equal(dispatch51.first_booking_id, 51);
+
+  // Booking 52: Another booking for same user -> must now be suppressed because status is 'sent'
+  db.prepare(`
+    INSERT INTO bookings (id, customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+    VALUES (52, 'Repeat Customer', 'BK-W052', ?, 1, '0812345678', 800, 800, 0, 'paid')
+  `).run(lineUser);
+  db.prepare(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (52, 4, 800, 800)`).run();
+
+  const res52 = await worker.triggerLineBookingConfirmation(env, 52, {
+    mockLineOutcome: { status: 200, ok: true }
+  });
+  assert.equal(res52.success, true);
+  assert.equal(res52.guidelinesAttached, false, 'Duplicate suppressed on 3rd booking');
+
+  db.close();
+});
+
+// ---------------------------------------------------------------------------
+// TEST 8: Timeout / Unknown outcome (Worker) records unknown and blocks subsequent booking duplicate
+// ---------------------------------------------------------------------------
+test('SCENARIO 8: Timeout / Unknown outcome (Worker) records unknown and blocks subsequent booking from duplicate', async () => {
+  const db = new Database(':memory:');
+  setupTestDb(db);
+  const worker = await getWorker();
+  const d1 = createD1Mock(db);
+  const env = { DB: d1, MOCK_LINE_OUTCOME: null };
+
+  const lineUser = 'U_WORKER_TIMEOUT_BLOCK';
+
+  // Booking 60: Full payment, Room 301, verified user
+  db.prepare(`
+    INSERT INTO bookings (id, customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+    VALUES (60, 'Timeout Customer', 'BK-W060', ?, 1, '0812345678', 800, 800, 0, 'paid')
+  `).run(lineUser);
+  db.prepare(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (60, 4, 800, 800)`).run();
+
+  // Dispatch 1: Network timeout
+  const res60 = await worker.triggerLineBookingConfirmation(env, 60, {
+    mockLineOutcome: { network_error: true, reason: 'timeout' }
+  });
+  assert.equal(res60.success, false);
+  assert.equal(res60.status, 'delivery_unknown');
+
+  // DB dispatch status: must be unknown
+  const dispatch60 = db.prepare('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?').get(lineUser);
+  assert.ok(dispatch60);
+  assert.equal(dispatch60.status, 'unknown');
+
+  // Booking 61: Subsequent booking for same user
+  db.prepare(`
+    INSERT INTO bookings (id, customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+    VALUES (61, 'Subsequent Customer', 'BK-W061', ?, 1, '0812345678', 1200, 1200, 0, 'paid')
+  `).run(lineUser);
+  db.prepare(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (61, 4, 1200, 1200)`).run();
+
+  // Dispatch 2: Succeeds with HTTP 200, but guidelines must NOT be attached
+  const res61 = await worker.triggerLineBookingConfirmation(env, 61, {
+    mockLineOutcome: { status: 200, ok: true }
+  });
+  assert.equal(res61.success, true);
+  assert.equal(res61.status, 'sent');
+  assert.equal(res61.guidelinesAttached, false, 'Guidelines attachment blocked after unknown status to prevent duplicate');
+
+  // DB dispatch status remains unknown
+  const dispatch61 = db.prepare('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?').get(lineUser);
+  assert.equal(dispatch61.status, 'unknown');
+
+  db.close();
+});
+
+// ---------------------------------------------------------------------------
+// TEST 9: Express Server (server.js) definite rejection -> retryable_rejected, next booking succeeds
+// ---------------------------------------------------------------------------
+test('SCENARIO 9: Express Server (server.js) definite 4xx rejection -> retryable_rejected and next booking re-claims', async () => {
+  const tempDbPath = path.resolve(__dirname, 'temp_postpay_reject.sqlite');
+  if (fs.existsSync(tempDbPath)) {
+    try { fs.unlinkSync(tempDbPath); } catch (_) {}
+  }
+
+  process.env.DB_PATH = tempDbPath;
+  process.env.NODE_ENV = 'test';
+  process.env.APP_ENV = 'test';
+
+  const { initDatabase, dbQuery } = require('../database.js');
+  await initDatabase();
+  const { sendLineNotification } = require('../server.js');
+
+  try {
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'true')");
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('line_channel_access_token', 'mock_token')");
+
+    const roomRow = await dbQuery.get("SELECT id FROM rooms WHERE name LIKE '%301%' LIMIT 1");
+    const targetRoomId = roomRow ? roomRow.id : 4;
+    const lineUser = 'U_SRV_REJECT_RETRY';
+
+    // Booking 1: Rejected by LINE 401
+    const b1 = await dbQuery.run(`
+      INSERT INTO bookings (customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+      VALUES ('Server Reject Customer', 'BK-SR70', ?, 1, '0812345678', 800, 800, 0, 'paid')
+    `, [lineUser]);
+    const b1Id = b1.id || b1.lastID;
+    await dbQuery.run(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, ?, 800, 800)`, [b1Id, targetRoomId]);
+
+    const res1 = await sendLineNotification(b1Id, { mockLineOutcome: { status: 401, ok: false } });
+    assert.equal(res1.status, 'failed');
+    assert.equal(res1.guidelinesAttached, true);
+
+    const dispatch1 = await dbQuery.get('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?', [lineUser]);
+    assert.equal(dispatch1.status, 'retryable_rejected');
+
+    // Booking 2: Subsequent booking re-claims and sends successfully
+    const b2 = await dbQuery.run(`
+      INSERT INTO bookings (customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+      VALUES ('Server Retry Customer', 'BK-SR71', ?, 1, '0812345678', 1200, 1200, 0, 'paid')
+    `, [lineUser]);
+    const b2Id = b2.id || b2.lastID;
+    await dbQuery.run(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, ?, 1200, 1200)`, [b2Id, targetRoomId]);
+
+    const res2 = await sendLineNotification(b2Id, { mockLineOutcome: { status: 200, ok: true } });
+    assert.equal(res2.status, 'sent');
+    assert.equal(res2.guidelinesAttached, true, 'Guidelines re-claimed and attached successfully');
+
+    const dispatch2 = await dbQuery.get('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?', [lineUser]);
+    assert.equal(dispatch2.status, 'sent');
+    assert.equal(dispatch2.first_booking_id, b2Id);
+
+    // Booking 3: Another booking -> duplicate suppressed
+    const b3 = await dbQuery.run(`
+      INSERT INTO bookings (customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+      VALUES ('Server Repeat Customer', 'BK-SR72', ?, 1, '0812345678', 800, 800, 0, 'paid')
+    `, [lineUser]);
+    const b3Id = b3.id || b3.lastID;
+    await dbQuery.run(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, ?, 800, 800)`, [b3Id, targetRoomId]);
+
+    const res3 = await sendLineNotification(b3Id, { mockLineOutcome: { status: 200, ok: true } });
+    assert.equal(res3.guidelinesAttached, false, 'Duplicate suppressed on repeat booking');
+  } finally {
+    if (fs.existsSync(tempDbPath)) {
+      try { fs.unlinkSync(tempDbPath); } catch (_) {}
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TEST 10: Express Server (server.js) timeout -> unknown blocks duplicate; legacy failed blocks duplicate
+// ---------------------------------------------------------------------------
+test('SCENARIO 10: Express Server (server.js) timeout -> unknown blocks duplicate; legacy failed row blocks duplicate', async () => {
+  const tempDbPath = path.resolve(__dirname, 'temp_postpay_timeout.sqlite');
+  if (fs.existsSync(tempDbPath)) {
+    try { fs.unlinkSync(tempDbPath); } catch (_) {}
+  }
+
+  process.env.DB_PATH = tempDbPath;
+  process.env.NODE_ENV = 'test';
+  process.env.APP_ENV = 'test';
+
+  const { initDatabase, dbQuery } = require('../database.js');
+  await initDatabase();
+  const { sendLineNotification } = require('../server.js');
+
+  try {
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('line_guidelines_dispatch_enabled', 'true')");
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('line_channel_access_token', 'mock_token')");
+
+    const roomRow = await dbQuery.get("SELECT id FROM rooms WHERE name LIKE '%301%' LIMIT 1");
+    const targetRoomId = roomRow ? roomRow.id : 4;
+
+    // Part 1: Timeout -> status unknown -> subsequent booking blocked
+    const lineUserTimeout = 'U_SRV_TIMEOUT_BLOCK';
+    const b1 = await dbQuery.run(`
+      INSERT INTO bookings (customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+      VALUES ('Timeout Customer', 'BK-ST80', ?, 1, '0812345678', 800, 800, 0, 'paid')
+    `, [lineUserTimeout]);
+    const b1Id = b1.id || b1.lastID;
+    await dbQuery.run(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, ?, 800, 800)`, [b1Id, targetRoomId]);
+
+    const res1 = await sendLineNotification(b1Id, { mockLineOutcome: { network_error: true, reason: 'timeout' } });
+    assert.equal(res1.status, 'delivery_unknown');
+
+    const dispatch1 = await dbQuery.get('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?', [lineUserTimeout]);
+    assert.equal(dispatch1.status, 'unknown');
+
+    const b2 = await dbQuery.run(`
+      INSERT INTO bookings (customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+      VALUES ('Timeout Next Customer', 'BK-ST81', ?, 1, '0812345678', 1200, 1200, 0, 'paid')
+    `, [lineUserTimeout]);
+    const b2Id = b2.id || b2.lastID;
+    await dbQuery.run(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, ?, 1200, 1200)`, [b2Id, targetRoomId]);
+
+    const res2 = await sendLineNotification(b2Id, { mockLineOutcome: { status: 200, ok: true } });
+    assert.equal(res2.status, 'sent');
+    assert.equal(res2.guidelinesAttached, false, 'Subsequent booking after timeout cannot attach guidelines (blocks duplicate)');
+
+    // Part 2: Legacy failed row (where cause is indistinguishable) must be treated as unknown and block retry
+    const legacyUser = 'U_SRV_LEGACY_FAILED';
+    await dbQuery.run(`
+      INSERT INTO line_guidelines_dispatches (line_user_id, rule_set, rule_version, first_booking_id, status, error_message)
+      VALUES (?, 'meeting_room_201_306', 'v1', NULL, 'failed', 'legacy_unknown_error')
+    `, [legacyUser]);
+
+    const b3 = await dbQuery.run(`
+      INSERT INTO bookings (customer_name, receipt_number, line_user_id, line_user_id_verified, contact, total_amount, paid_amount, balance_amount, payment_status)
+      VALUES ('Legacy User Booking', 'BK-ST82', ?, 1, '0812345678', 800, 800, 0, 'paid')
+    `, [legacyUser]);
+    const b3Id = b3.id || b3.lastID;
+    await dbQuery.run(`INSERT INTO booking_items (booking_id, room_id, price, subtotal) VALUES (?, ?, 800, 800)`, [b3Id, targetRoomId]);
+
+    const res3 = await sendLineNotification(b3Id, { mockLineOutcome: { status: 200, ok: true } });
+    assert.equal(res3.status, 'sent');
+    assert.equal(res3.guidelinesAttached, false, 'Legacy failed row blocks retry as unknown');
+
+    const dispatch3 = await dbQuery.get('SELECT * FROM line_guidelines_dispatches WHERE line_user_id = ?', [legacyUser]);
+    assert.equal(dispatch3.status, 'failed', 'Legacy failed status remains untouched');
+  } finally {
+    if (fs.existsSync(tempDbPath)) {
+      try { fs.unlinkSync(tempDbPath); } catch (_) {}
+    }
+  }
+});

@@ -3695,8 +3695,8 @@ async function sendLineNotification(bookingId) {
           try {
             const claimRes = await dbQuery.run(
               `INSERT INTO line_guidelines_dispatches 
-               (line_user_id, rule_set, rule_version, first_booking_id, status, dispatched_at)
-               VALUES (?, ?, ?, ?, 'claimed', CURRENT_TIMESTAMP)`,
+               (line_user_id, rule_set, rule_version, first_booking_id, status, error_message, dispatched_at)
+               VALUES (?, ?, ?, ?, 'claimed', NULL, CURRENT_TIMESTAMP)`,
               [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId]
             );
             if (claimRes && (claimRes.changes > 0 || claimRes.lastID)) {
@@ -3704,9 +3704,31 @@ async function sendLineNotification(bookingId) {
               guidelinesUrl = guidelinesConfig.image_url;
             }
           } catch (claimErr) {
-            // Already sent or claimed (UNIQUE constraint violation) -> Suppress duplicate guidelines attachment
-            guidelinesClaimed = false;
-            guidelinesUrl = null;
+            // Row already exists. Atomically re-claim if and only if status is currently 'retryable_rejected'
+            try {
+              const reclaimRes = await dbQuery.run(
+                `UPDATE line_guidelines_dispatches
+                 SET status = 'claimed',
+                     first_booking_id = ?,
+                     dispatched_at = CURRENT_TIMESTAMP,
+                     error_message = NULL
+                 WHERE line_user_id = ?
+                   AND rule_set = ?
+                   AND rule_version = ?
+                   AND status = 'retryable_rejected'`,
+                [bookingId, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+              );
+              if (reclaimRes && reclaimRes.changes > 0) {
+                guidelinesClaimed = true;
+                guidelinesUrl = guidelinesConfig.image_url;
+              } else {
+                guidelinesClaimed = false;
+                guidelinesUrl = null;
+              }
+            } catch (reclaimErr) {
+              guidelinesClaimed = false;
+              guidelinesUrl = null;
+            }
           }
         }
       }
@@ -3718,68 +3740,8 @@ async function sendLineNotification(bookingId) {
     });
 
     // Staging / Test Hard-Block or Mock Check
-    const isStagingOrMock = process.env.ENVIRONMENT === 'staging' || process.env.DISABLE_LIVE_LINE === 'true' || process.env.STAGING_MOCK_LINE_API === 'true' || process.env.NODE_ENV === 'test';
-    if (isStagingOrMock) {
-      await finalizeServerNotificationClaim(dbQuery, bookingId, 'booking_confirmation', claim.claimToken, {
-        status: 'sent',
-        httpStatus: 200,
-        errorMessage: null,
-        acceptedRequestId: null
-      });
-
-      if (guidelinesClaimed && guidelinesConfig) {
-        try {
-          await dbQuery.run(
-            `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-            [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
-          );
-        } catch (_) {}
-      }
-
-      try {
-        await dbQuery.run(
-          "INSERT INTO booking_history (booking_id, action, details, performed_by, created_at) VALUES (?, 'line_confirmation_notified', ?, 'system', ?)",
-          [bookingId, JSON.stringify({ status: 'sent', mocked: true, http_status: 200, timestamp: nowIso }), nowIso]
-        );
-      } catch (_) {}
-
-      logSafeNotificationDiagnostic('booking_confirmation', {
-        booking_id: bookingId,
-        eligible: true,
-        attempted: true,
-        status: 'sent',
-        reason: 'staging_environment_mock',
-        http_status: 200,
-        line_user_id: booking.line_user_id
-      });
-      return {
-        success: true,
-        sent: false,
-        mocked: true,
-        status: 'sent',
-        http_status: 200,
-        pin_code: pinCode,
-        line_pushed: false,
-        flexCard,
-        guidelinesAttached: Boolean(guidelinesUrl),
-        guidelinesUrl: guidelinesUrl || null,
-        booking,
-        retry_key: claim.retryKey
-      };
-    }
-
-    const timeoutMs = options.timeoutMs || 10000;
-    const retryKey = claim.retryKey || null;
-    let timeoutId = null;
-    let isTimedOut = false;
-
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    if (controller) {
-      timeoutId = setTimeout(() => {
-        isTimedOut = true;
-        try { controller.abort(); } catch (_) {}
-      }, timeoutMs);
-    }
+    const mockOutcome = options.mockLineOutcome || (process.env.MOCK_LINE_OUTCOME ? JSON.parse(process.env.MOCK_LINE_OUTCOME) : null);
+    const isStagingOrMock = Boolean(mockOutcome) || process.env.ENVIRONMENT === 'staging' || process.env.DISABLE_LIVE_LINE === 'true' || process.env.STAGING_MOCK_LINE_API === 'true' || process.env.NODE_ENV === 'test';
 
     let linePushed = false;
     let isDeduplicated = false;
@@ -3787,57 +3749,95 @@ async function sendLineNotification(bookingId) {
     let networkError = false;
     let isTimeout = false;
     let acceptedRequestId = null;
+    let isLineAccepted409 = false;
 
-    try {
-      const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + channelAccessToken
-      };
-      if (retryKey) {
-        headers['X-Line-Retry-Key'] = retryKey;
-      }
-
-      const fetchOptions = {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          to: booking.line_user_id,
-          messages: [flexCard]
-        })
-      };
-      if (controller) {
-        fetchOptions.signal = controller.signal;
-      }
-
-      const lineRes = await fetch('https://api.line.me/v2/bot/message/push', fetchOptions);
-      if (timeoutId) clearTimeout(timeoutId);
-
-      acceptedRequestId = lineRes.headers?.get ? lineRes.headers.get('x-line-accepted-request-id') : null;
-
-      let bodyJson = null;
-      let bodyText = '';
-      try {
-        bodyText = await lineRes.text();
-        bodyJson = JSON.parse(bodyText);
-      } catch (_) {}
-
-      const isLineAccepted409 = lineRes.status === 409 && (
-        (bodyJson && typeof bodyJson.message === 'string' && bodyJson.message.toLowerCase().includes('already accepted')) ||
-        Boolean(acceptedRequestId)
-      );
-
-      httpStatus = lineRes.status;
-      if (lineRes.ok || isLineAccepted409) {
+    if (isStagingOrMock) {
+      if (mockOutcome) {
+        if (mockOutcome.network_error || mockOutcome.is_timeout || mockOutcome.status === 'timeout') {
+          networkError = true;
+          isTimeout = true;
+          httpStatus = null;
+        } else {
+          httpStatus = mockOutcome.status || (mockOutcome.ok ? 200 : 400);
+          const ok = mockOutcome.ok !== undefined ? Boolean(mockOutcome.ok) : (httpStatus >= 200 && httpStatus < 300);
+          if (ok) {
+            linePushed = true;
+            isDeduplicated = Boolean(mockOutcome.deduplicated);
+          } else {
+            linePushed = false;
+            networkError = false;
+          }
+        }
+      } else {
         linePushed = true;
-        isDeduplicated = isLineAccepted409;
-        httpStatus = isLineAccepted409 ? 200 : lineRes.status;
+        isDeduplicated = false;
+        httpStatus = 200;
       }
-    } catch (pushErr) {
-      if (timeoutId) clearTimeout(timeoutId);
-      networkError = true;
-      isTimeout = isTimedOut || pushErr?.name === 'AbortError' || String(pushErr?.message || '').toLowerCase().includes('abort') || String(pushErr?.message || '').toLowerCase().includes('timeout');
-      console.warn('LINE push notification error in server:', pushErr.message);
-      httpStatus = null;
+    } else {
+      const timeoutMs = options.timeoutMs || 10000;
+      const retryKey = claim.retryKey || null;
+      let timeoutId = null;
+      let isTimedOut = false;
+
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (controller) {
+        timeoutId = setTimeout(() => {
+          isTimedOut = true;
+          try { controller.abort(); } catch (_) {}
+        }, timeoutMs);
+      }
+
+      try {
+        const headers = {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + channelAccessToken
+        };
+        if (retryKey) {
+          headers['X-Line-Retry-Key'] = retryKey;
+        }
+
+        const fetchOptions = {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            to: booking.line_user_id,
+            messages: [flexCard]
+          })
+        };
+        if (controller) {
+          fetchOptions.signal = controller.signal;
+        }
+
+        const lineRes = await fetch('https://api.line.me/v2/bot/message/push', fetchOptions);
+        if (timeoutId) clearTimeout(timeoutId);
+
+        acceptedRequestId = lineRes.headers?.get ? lineRes.headers.get('x-line-accepted-request-id') : null;
+
+        let bodyJson = null;
+        let bodyText = '';
+        try {
+          bodyText = await lineRes.text();
+          bodyJson = JSON.parse(bodyText);
+        } catch (_) {}
+
+        isLineAccepted409 = lineRes.status === 409 && (
+          (bodyJson && typeof bodyJson.message === 'string' && bodyJson.message.toLowerCase().includes('already accepted')) ||
+          Boolean(acceptedRequestId)
+        );
+
+        httpStatus = lineRes.status;
+        if (lineRes.ok || isLineAccepted409) {
+          linePushed = true;
+          isDeduplicated = isLineAccepted409;
+          httpStatus = isLineAccepted409 ? 200 : lineRes.status;
+        }
+      } catch (pushErr) {
+        if (timeoutId) clearTimeout(timeoutId);
+        networkError = true;
+        isTimeout = isTimedOut || pushErr?.name === 'AbortError' || String(pushErr?.message || '').toLowerCase().includes('abort') || String(pushErr?.message || '').toLowerCase().includes('timeout');
+        console.warn('LINE push notification error in server:', pushErr.message);
+        httpStatus = null;
+      }
     }
 
     if (linePushed) {
@@ -3851,8 +3851,10 @@ async function sendLineNotification(bookingId) {
       if (guidelinesClaimed && guidelinesConfig) {
         try {
           await dbQuery.run(
-            `UPDATE line_guidelines_dispatches SET status = 'sent' WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-            [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+            `UPDATE line_guidelines_dispatches 
+             SET status = 'sent', error_message = NULL 
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`,
+            [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId]
           );
         } catch (_) {}
       }
@@ -3862,6 +3864,7 @@ async function sendLineNotification(bookingId) {
           "INSERT INTO booking_history (booking_id, action, details, performed_by, created_at) VALUES (?, 'line_confirmation_notified', ?, 'system', ?)",
           [bookingId, JSON.stringify({ 
             status: 'sent', 
+            mocked: isStagingOrMock,
             http_status: httpStatus, 
             deduplicated: isDeduplicated,
             accepted_request_id: acceptedRequestId,
@@ -3876,18 +3879,19 @@ async function sendLineNotification(bookingId) {
         eligible: true,
         attempted: true,
         status: 'sent',
+        reason: isStagingOrMock ? 'staging_environment_mock' : null,
         http_status: httpStatus,
         line_user_id: booking.line_user_id
       });
       return {
         success: true,
-        sent: !isDeduplicated,
+        sent: !isStagingOrMock && !isDeduplicated,
         deduplicated: isDeduplicated,
-        mocked: false,
+        mocked: isStagingOrMock,
         status: 'sent',
         http_status: httpStatus,
         pin_code: pinCode,
-        line_pushed: true,
+        line_pushed: !isStagingOrMock,
         flexCard,
         guidelinesAttached: Boolean(guidelinesUrl),
         guidelinesUrl: guidelinesUrl || null,
@@ -3899,8 +3903,10 @@ async function sendLineNotification(bookingId) {
       if (guidelinesClaimed && guidelinesConfig) {
         try {
           await dbQuery.run(
-            `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-            [isTimeout ? 'timeout' : 'network_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+            `UPDATE line_guidelines_dispatches 
+             SET status = 'unknown', error_message = ? 
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`,
+            [isTimeout ? 'timeout' : 'network_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId]
           );
         } catch (_) {}
       }
@@ -3931,32 +3937,39 @@ async function sendLineNotification(bookingId) {
       return {
         success: false,
         sent: false,
-        mocked: false,
+        mocked: isStagingOrMock,
         status: 'delivery_unknown',
         reason: isTimeout ? 'timeout' : 'network_error',
         http_status: null,
         pin_code: pinCode,
         line_pushed: false,
         flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
         booking,
         retry_key: claim.retryKey
       };
     } else {
+      const isDefiniteRejection = (httpStatus >= 400 && httpStatus < 500 && !isLineAccepted409);
+      const guidelinesStatus = isDefiniteRejection ? 'retryable_rejected' : 'unknown';
+
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches 
+             SET status = ?, error_message = ? 
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`,
+            [guidelinesStatus, httpStatus === 409 ? 'unexpected_409_conflict' : ('line_api_status_' + httpStatus), booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId]
+          );
+        } catch (_) {}
+      }
+
       await finalizeServerNotificationClaim(dbQuery, bookingId, 'booking_confirmation', claim.claimToken, {
         status: 'failed',
         httpStatus: httpStatus,
         errorMessage: httpStatus === 409 ? 'unexpected_409_conflict' : 'line_api_error',
         acceptedRequestId: null
       });
-
-      if (guidelinesClaimed && guidelinesConfig) {
-        try {
-          await dbQuery.run(
-            `UPDATE line_guidelines_dispatches SET status = 'failed', error_message = ? WHERE line_user_id = ? AND rule_set = ? AND rule_version = ?`,
-            [httpStatus === 409 ? 'unexpected_409_conflict' : 'line_api_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
-          );
-        } catch (_) {}
-      }
 
       try {
         await dbQuery.run(
@@ -3977,13 +3990,15 @@ async function sendLineNotification(bookingId) {
       return {
         success: false,
         sent: false,
-        mocked: false,
+        mocked: isStagingOrMock,
         status: 'failed',
         reason: httpStatus === 409 ? 'unexpected_409_conflict' : 'line_api_error',
         http_status: httpStatus,
         pin_code: pinCode,
         line_pushed: false,
         flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
         booking,
         retry_key: claim.retryKey
       };
