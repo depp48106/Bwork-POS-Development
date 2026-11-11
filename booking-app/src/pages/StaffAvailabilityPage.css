@@ -1,0 +1,53 @@
+.staff-availability__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px max(16px, calc((100% - 960px) / 2));
+  background: var(--navy);
+  color: white;
+}
+
+.staff-availability__header img { width: 38px; height: 38px; object-fit: contain; }
+.staff-availability__header span { display: block; color: #bfdbfe; }
+.staff-availability__content { max-width: 992px; margin: auto; padding: 20px 16px; }
+.staff-availability__content h1 { font-size: 1.45rem; }
+.staff-availability__muted { color: var(--text-muted); }
+.staff-availability__layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; align-items: start; }
+.staff-availability__panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px; }
+.staff-availability__room { display: block; font-weight: 600; margin-bottom: 6px; }
+.staff-availability__room select { display: block; width: 100%; min-height: 44px; margin-top: 4px; padding: 6px 8px; font-size: 1rem; border: 1px solid var(--border-card); border-radius: var(--radius-sm); }
+.staff-availability__month { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: center; text-align: center; }
+.staff-availability h2 { font-size: 1.1rem; }
+.staff-availability h3 { font-size: 1rem; margin-top: 8px; }
+.staff-availability__grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; }
+.staff-availability__month button, .staff-availability__grid button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-main);
+  font: inherit;
+  line-height: 1.15;
+  cursor: pointer;
+}
+.staff-availability__grid button:hover { background: var(--primary-light); }
+.staff-availability__grid button[aria-pressed="true"] { background: var(--primary); color: white; }
+.staff-availability [data-status="free"] { color: #176147; }
+.staff-availability [data-status="partial"] { color: #915400; }
+.staff-availability [data-status="full"] { color: #a92942; }
+.staff-availability__grid button[aria-pressed="true"] span { color: inherit; }
+.staff-availability__legend, .staff-availability__ranges { display: flex; flex-wrap: wrap; gap: 4px 12px; list-style: none; margin-top: 8px; }
+.staff-availability__ranges { margin-bottom: 8px; }
+.staff-availability__ranges li { background: var(--success-light); color: #176147; padding: 4px 8px; border-radius: var(--radius-sm); }
+.staff-availability__note { border-top: 1px solid var(--border); color: var(--text-muted); padding-top: 8px; margin-top: 10px; }
+@media (max-width: 600px) {
+  .staff-availability__layout { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .staff-availability__content { padding: 12px 5px calc(16px + env(safe-area-inset-bottom, 0px)); }
+  .staff-availability__content > h1, .staff-availability__content > p { margin-inline: 9px; }
+  .staff-availability__panel:not(.staff-availability__details) { padding-inline: 2px; }
+  .staff-availability__room, .staff-availability__legend { margin-inline: 8px; }
+}

@@ -24,6 +24,7 @@ import CustomSelect from './CustomSelect';
 import { roomUsesDoorPin } from '../utils/doorPinHelper';
 import { resolveRoomPin, resolveRoomPinInfo, isInternalBooking, getRoomPinLabel, NO_PIN_ROOM_IDS } from '../utils/doorPinHelper';
 import { calculatePaymentPreview, formatMoney, roundMoney, normalizeBookingFinancials } from '../utils/financialUtils';
+import { getConflictingRoomIds } from '../../../shared/roomAvailability.mjs';
 
 const TIMELINE_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 const TIMELINE_START = 8;
@@ -1095,9 +1096,11 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
     const reqEndMs = eTime.getTime();
     const reqEndBufferedMs = reqEndMs + bufferMs;
 
+    const conflictIds = getConflictingRoomIds(selectedRoom.id);
+
     // Check overlap with calendarEvents taking cleaning buffer into account
     for (const ev of calendarEvents) {
-      if (ev.room_id !== selectedRoom.id) continue;
+      if (!conflictIds.includes(ev.room_id)) continue;
       if (ev.status === 'cancelled' || ev.payment_status === 'cancelled') continue;
       const evStartMs = new Date(ev.start_time).getTime();
       const evEndMs = new Date(ev.end_time).getTime();
@@ -1118,7 +1121,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
     // Check overlap with cart items taking cleaning buffer into account
     for (const item of cart) {
-      if (item.room_id !== selectedRoom.id) continue;
+      if (!conflictIds.includes(item.room_id)) continue;
       const cStartMs = new Date(item.start_time).getTime();
       const cEndMs = new Date(item.end_time).getTime();
       const cEndBufferedMs = cEndMs + bufferMs;
@@ -1131,6 +1134,8 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
           isCleaningBuffer: !isDirectUsage,
           bufferMinutes: bufferMins,
           booking: {
+            room_id: item.room_id,
+            room_name: item.room_name,
             customer_name: customer.name || 'ในตะกร้าสินค้า',
             start_time: item.start_time,
             end_time: item.end_time
@@ -1443,10 +1448,13 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
 
   const addRoomToCart = async () => {
     if (currentSlotOverlap.isOverlap) {
+      const conflictMsg = currentSlotOverlap.booking?.room_id && currentSlotOverlap.booking.room_id !== selectedRoom.id
+        ? ` (ทับซ้อนกับห้อง "${currentSlotOverlap.booking.room_name || currentSlotOverlap.booking.room_id}")`
+        : '';
       if (currentSlotOverlap.isCleaningBuffer) {
-        sysAlert(`ห้องนี้อยู่ในช่วงเวลาทำความสะอาด / เคลียร์ห้อง (${currentSlotOverlap.bufferMinutes || 30} นาที) กรุณาเลือกเวลาอื่น`);
+        sysAlert(`ห้องนี้อยู่ในช่วงเวลาทำความสะอาด / เคลียร์ห้อง (${currentSlotOverlap.bufferMinutes || 30} นาที)${conflictMsg} กรุณาเลือกเวลาอื่น`);
       } else {
-        sysAlert('ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง) กรุณาเลือกเวลาอื่น');
+        sysAlert(`ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง)${conflictMsg} กรุณาเลือกเวลาอื่น`);
       }
       return;
     }
@@ -1523,10 +1531,13 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const quickDirectBooking = async () => {
     if (isSubmittingQuickBooking) return;
     if (currentSlotOverlap.isOverlap) {
+      const conflictMsg = currentSlotOverlap.booking?.room_id && currentSlotOverlap.booking.room_id !== selectedRoom.id
+        ? ` (ทับซ้อนกับห้อง "${currentSlotOverlap.booking.room_name || currentSlotOverlap.booking.room_id}")`
+        : '';
       if (currentSlotOverlap.isCleaningBuffer) {
-        sysAlert(`ห้องนี้อยู่ในช่วงเวลาทำความสะอาด / เคลียร์ห้อง (${currentSlotOverlap.bufferMinutes || 30} นาที) กรุณาเลือกเวลาอื่น`);
+        sysAlert(`ห้องนี้อยู่ในช่วงเวลาทำความสะอาด / เคลียร์ห้อง (${currentSlotOverlap.bufferMinutes || 30} นาที)${conflictMsg} กรุณาเลือกเวลาอื่น`);
       } else {
-        sysAlert('ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง) กรุณาเลือกเวลาอื่น');
+        sysAlert(`ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง)${conflictMsg} กรุณาเลือกเวลาอื่น`);
       }
       return;
     }
@@ -5048,6 +5059,11 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     <div style={{ fontSize: '0.78rem' }}>
                       <div style={{ fontWeight: 800, color: '#d97706' }}>ช่วงเวลานี้ติดทำความสะอาด / เคลียร์ห้อง ({currentSlotOverlap.bufferMinutes || 30} นาที)</div>
                       <div style={{ color: 'var(--text-main)', marginTop: '3px', lineHeight: 1.4 }}>
+                        {currentSlotOverlap.booking?.room_id && currentSlotOverlap.booking.room_id !== selectedRoom.id && (
+                          <div style={{ color: '#b45309', fontWeight: 700, marginBottom: '2px' }}>
+                            (ติดการใช้งานทับซ้อนกับห้อง: {currentSlotOverlap.booking.room_name || `ID ${currentSlotOverlap.booking.room_id}`})
+                          </div>
+                        )}
                         คิวก่อนหน้าใช้งานถึง <strong>{new Date(currentSlotOverlap.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</strong>
                         {currentSlotOverlap.booking.customer_name && ` (คุณ ${currentSlotOverlap.booking.customer_name})`}
                         <br />
@@ -5071,6 +5087,11 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                     <div style={{ fontSize: '0.78rem' }}>
                       <div style={{ fontWeight: 800, color: '#ef4444' }}>ช่วงเวลานี้มีผู้จองแล้ว (ห้องไม่ว่าง)</div>
                       <div style={{ color: 'var(--text-main)', marginTop: '2px' }}>
+                        {currentSlotOverlap.booking?.room_id && currentSlotOverlap.booking.room_id !== selectedRoom.id && (
+                          <div style={{ color: '#dc2626', fontWeight: 700, marginBottom: '2px' }}>
+                            (ติดการใช้งานทับซ้อนกับห้อง: {currentSlotOverlap.booking.room_name || `ID ${currentSlotOverlap.booking.room_id}`})
+                          </div>
+                        )}
                         ผู้เข้าใช้: <strong>คุณ {currentSlotOverlap.booking.customer_name || 'ลูกค้า'}</strong> ({new Date(currentSlotOverlap.booking.start_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} - {new Date(currentSlotOverlap.booking.end_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.)
                       </div>
                     </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import { Search, CreditCard, ChevronRight, X, Clock } from 'lucide-react';
 import HomePage from './pages/HomePage';
@@ -9,7 +9,23 @@ import StatusPage from './pages/StatusPage';
 import LinePreviewPage from './pages/LinePreviewPage';
 import { API_BASE } from './apiConfig';
 
+const StaffAvailabilityPage = import.meta.env.DEV || import.meta.env.VITE_ENABLE_STAFF_BOOKING_PREVIEW === 'true'
+  ? lazy(() => import('./pages/StaffAvailabilityPage'))
+  : null;
+
 function App() {
+  const { pathname } = useLocation();
+  if (StaffAvailabilityPage && pathname.replace(/\/$/, '') === '/staff-booking') {
+    return (
+      <Suspense fallback={<p role="status">กำลังเปิดปฏิทินห้องประชุม…</p>}>
+        <StaffAvailabilityPage />
+      </Suspense>
+    );
+  }
+  return <CustomerApp />;
+}
+
+function CustomerApp() {
   const location = useLocation();
   const [pendingBooking, setPendingBooking] = useState(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
