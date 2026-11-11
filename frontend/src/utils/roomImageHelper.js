@@ -58,39 +58,39 @@ export function getRoomImageUrl(roomOrUrl, isClassroom = false, apiBaseOverride 
  * @param {Event} e - Image error event
  * @param {string} [originalUrl] - Original relative URL of the image
  * @param {string|null} [apiBaseOverride=null] - Optional override for API_BASE (for testing)
+ * @returns {boolean} Whether a fallback image request was started
  */
 export function handleRoomImageError(e, originalUrl, apiBaseOverride = null) {
   const img = e?.currentTarget;
-  if (!img) return;
+  if (!img) return false;
 
   // Prevent infinite looping: only attempt fallback ONCE per <img> element
   if (img.dataset && img.dataset.fallbackTried === 'true') {
     img.style.display = 'none';
-    return;
+    return false;
   }
   if (img.dataset) {
     img.dataset.fallbackTried = 'true';
   }
 
-  const cleanOriginal = (originalUrl && typeof originalUrl === 'string')
-    ? (originalUrl.startsWith('/') ? originalUrl : `/${originalUrl}`)
-    : '';
-
+  const original = typeof originalUrl === 'string' ? originalUrl.trim() : '';
   const baseToUse = apiBaseOverride !== null ? apiBaseOverride : API_BASE;
 
-  if (!cleanOriginal || !baseToUse) {
+  if (!original || !baseToUse || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(original)) {
     img.style.display = 'none';
-    return;
+    return false;
   }
 
+  const cleanOriginal = original.startsWith('/') ? original : `/${original}`;
   const apiBase = baseToUse.replace(/\/+$/, '');
 
   // If currently attempted via API_BASE, try falling back to relative Pages path
-  if (img.src && img.src.startsWith(apiBase)) {
+  if (img.src && img.src.startsWith(`${apiBase}/`)) {
     img.src = cleanOriginal;
   }
   // If currently attempted via relative Pages path, try falling back to API_BASE
   else {
     img.src = `${apiBase}${cleanOriginal}`;
   }
+  return true;
 }

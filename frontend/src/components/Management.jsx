@@ -1579,7 +1579,9 @@ function ManagementPanel({ sysAlert, sysConfirm }) {
                   >
                     {/* Background Room Photo with live focal positioning */}
                     <img
-                      src={itemForm.image_url}
+                      key={itemForm.image_url}
+                      src={getRoomImageUrl(itemForm.image_url)}
+                      onError={(e) => handleRoomImageError(e, itemForm.image_url)}
                       alt="Room Preview"
                       style={{
                         width: '100%',

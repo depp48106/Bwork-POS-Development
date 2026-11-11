@@ -9713,9 +9713,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           }}
                         >
                           <img
-                            src={rawSingleRoomImage}
+                            key={rawSingleRoomImage}
+                            src={getRoomImageUrl(rawSingleRoomImage)}
                             alt={singleRoomName}
-                            onError={() => setFailedCardImages(prev => ({ ...prev, [rawSingleRoomImage]: true }))}
+                            onError={(e) => {
+                              if (!handleRoomImageError(e, rawSingleRoomImage)) {
+                                setFailedCardImages(prev => ({ ...prev, [rawSingleRoomImage]: true }));
+                              }
+                            }}
                             style={{
                               width: '100%',
                               height: '100%',
@@ -9961,9 +9966,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                 {isMultiRoom && (
                                   itemRoomImg ? (
                                     <img
-                                      src={itemRoomImg}
+                                      key={itemRoomImg}
+                                      src={getRoomImageUrl(itemRoomImg)}
                                       alt={sch.room_name}
-                                      onError={() => setFailedCardImages(prev => ({ ...prev, [sch.room_image_url]: true }))}
+                                      onError={(e) => {
+                                        if (!handleRoomImageError(e, itemRoomImg)) {
+                                          setFailedCardImages(prev => ({ ...prev, [itemRoomImg]: true }));
+                                        }
+                                      }}
                                       style={{
                                         width: '56px',
                                         height: '40px',
