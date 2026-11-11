@@ -1278,6 +1278,22 @@ function addMinutesToLocalISO(isoString, minutes) {
   return `${y}-${mo}-${d}T${newH}:${newM}:${newS}`;
 }
 
+// Physical space relationship matrix:
+// Room 10: 'Jupiter (300)'
+// Room 12: 'Jupiter (300) & Co-Working'
+// Room 13: 'เหมาโซน Co-working'
+const WORKER_ROOM_CONFLICT_MAP = {
+  10: [10, 12],
+  12: [12, 10, 13],
+  13: [13, 12]
+};
+
+function getWorkerConflictingRoomIds(roomId) {
+  const id = Number(roomId);
+  if (!id) return [];
+  return WORKER_ROOM_CONFLICT_MAP[id] ? Array.from(WORKER_ROOM_CONFLICT_MAP[id]) : [id];
+}
+
 async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId = null, excludeBookingItemId = null) {
   const normStart = normalizeToLocalISO(startISO);
   const normEnd = normalizeToLocalISO(endISO);
@@ -1288,15 +1304,20 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
   const reqEndMs = new Date(normEnd.replace(' ', 'T')).getTime();
   const reqEndBufferedMs = reqEndMs + bufferMs;
 
+  const targetRoomId = Number(roomId);
+  const conflictIds = getWorkerConflictingRoomIds(targetRoomId);
+  const inPlaceholders = conflictIds.map(() => '?').join(', ');
+
   let query = `
-    SELECT bi.id, bi.booking_id, bi.start_time, bi.end_time, b.customer_name, b.payment_status
+    SELECT bi.id, bi.booking_id, bi.room_id, r.name as room_name, bi.start_time, bi.end_time, b.customer_name, b.payment_status
     FROM booking_items bi
     JOIN bookings b ON bi.booking_id = b.id
-    WHERE bi.room_id = ?
+    LEFT JOIN rooms r ON bi.room_id = r.id
+    WHERE bi.room_id IN (${inPlaceholders})
       AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
       AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
   `;
-  const params = [roomId];
+  const params = [...conflictIds];
   if (excludeBookingItemId) {
     query += " AND bi.id != ?";
     params.push(excludeBookingItemId);
@@ -1345,7 +1366,7 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
   return { hasOverlap: false, overlap: false, bufferMinutes: bufferMins };
 }
 
-function formatOverlapErrorMessage(roomName, overlapResult) {
+function formatOverlapErrorMessage(roomName, overlapResult, requestedRoomId = null) {
   const b = (overlapResult && overlapResult.booking) || {};
   const sTime = b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : (b.start_time || '');
   const eTime = b.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : (b.end_time || '');
@@ -1353,17 +1374,19 @@ function formatOverlapErrorMessage(roomName, overlapResult) {
 
   const customer = b.customer_name ? `คุณ ${b.customer_name}` : 'ลูกค้า';
   const nameLabel = roomName ? `ห้อง "${roomName}"` : 'ห้องนี้';
+  const isDifferentRoom = b.room_id && requestedRoomId && Number(b.room_id) !== Number(requestedRoomId);
+  const conflictLabel = isDifferentRoom ? ` (ทับซ้อนกับห้อง "${b.room_name || b.room_id}")` : '';
 
   if (overlapResult.isCleaningBuffer) {
     if (overlapResult.isNextQueueBuffer) {
-      return `${nameLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
+      return `${nameLabel}${conflictLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
     }
     if (nextAvail >= '18:00') {
-      return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
+      return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
     }
-    return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
+    return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
   }
-  return `${nameLabel} ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: ${customer} ช่วงเวลา ${sTime} - ${eTime} น.)`;
+  return `${nameLabel}${conflictLabel} มีผู้จองแล้วในช่วงเวลานี้ (${customer} ใช้งาน ${sTime} - ${eTime} น.)`;
 }
 
 // ==========================================
@@ -5083,6 +5106,25 @@ export default {
       // ----------------------------------------------------
       // 3. PUBLIC ROOMS & SCHEDULE
       // ----------------------------------------------------
+      if (pathname === '/api/public/rooms/availability-month' && method === 'GET') {
+        const {
+          getAvailabilityMonth, ACTIVE_AVAILABILITY_ROOMS_SQL, ROOM_AVAILABILITY_INTERVALS_SQL,
+          getAvailabilityQueryParams, buildAvailabilityResponse
+        } = await import('./roomAvailabilityQuery.mjs');
+        const month = getAvailabilityMonth(url.searchParams.get('month'));
+        const headers = { ...corsHeaders, 'Cache-Control': 'no-store' };
+        if (!month) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุเดือนในรูปแบบ YYYY-MM' }), { status: 400, headers });
+        }
+        const bufferMinutes = Math.max(0, await getCleaningBufferMinutes(env));
+        const [{ results: rooms }, { results: items }] = await env.DB.batch([
+          env.DB.prepare(ACTIVE_AVAILABILITY_ROOMS_SQL),
+          env.DB.prepare(ROOM_AVAILABILITY_INTERVALS_SQL).bind(...getAvailabilityQueryParams(month, bufferMinutes))
+        ]);
+        const availability = buildAvailabilityResponse(month, rooms, items, bufferMinutes, normalizeToLocalISO);
+        return new Response(JSON.stringify(availability), { headers });
+      }
+
       if (pathname === '/api/public/rooms/schedule') {
         const date = url.searchParams.get('date');
         const { results: rooms } = await env.DB.prepare("SELECT * FROM rooms WHERE status = 'active' ORDER BY name ASC").all();
@@ -5105,10 +5147,11 @@ export default {
           const safeRoom = { ...room };
           delete safeRoom.pin_code;
           delete safeRoom.builtland_pin_code;
+          const conflictIds = getWorkerConflictingRoomIds(room.id);
           return {
             ...safeRoom,
             bookings: (bookings || [])
-              .filter(b => b.room_id === room.id)
+              .filter(b => conflictIds.includes(b.room_id))
               .map(b => {
                 const safeB = { ...b };
                 delete safeB.pin_code;
@@ -7103,6 +7146,8 @@ export default {
 
           if (item.room_id && normStart && normEnd) {
             const itemEndBuffered = addMinutesToLocalISO(normEnd, bufferMins);
+            const conflictIds = getWorkerConflictingRoomIds(item.room_id);
+            const inPlaceholders = conflictIds.map(() => '?').join(', ');
             let insItemRes;
             try {
               insItemRes = await env.DB.prepare(
@@ -7111,7 +7156,7 @@ export default {
                  WHERE NOT EXISTS (
                    SELECT 1 FROM booking_items bi
                    JOIN bookings b ON bi.booking_id = b.id
-                   WHERE bi.room_id = ?
+                   WHERE bi.room_id IN (${inPlaceholders})
                      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                      AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                      AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -7130,7 +7175,7 @@ export default {
                 item.booking_type || 'hourly',
                 itemGuestCount,
                 itemPin,
-                item.room_id,
+                ...conflictIds,
                 normStart,
                 `+${bufferMins} minutes`,
                 itemEndBuffered
@@ -7142,7 +7187,7 @@ export default {
                  WHERE NOT EXISTS (
                    SELECT 1 FROM booking_items bi
                    JOIN bookings b ON bi.booking_id = b.id
-                   WHERE bi.room_id = ?
+                   WHERE bi.room_id IN (${inPlaceholders})
                      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                      AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                      AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -7160,7 +7205,7 @@ export default {
                 item.layout || 'standard',
                 item.booking_type || 'hourly',
                 itemPin,
-                item.room_id,
+                ...conflictIds,
                 normStart,
                 `+${bufferMins} minutes`,
                 itemEndBuffered
@@ -7170,7 +7215,7 @@ export default {
             if (insItemRes?.meta?.changes !== 1) {
               const rObj = await env.DB.prepare('SELECT name FROM rooms WHERE id = ?').bind(item.room_id).first();
               const latestConflict = await checkRoomOverlap(env, item.room_id, normStart, normEnd);
-              itemInsertConflict = formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins });
+              itemInsertConflict = formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }, item.room_id);
               break;
             }
           } else {
@@ -10045,6 +10090,8 @@ export default {
 
         const bufferMins = await getCleaningBufferMinutes(env);
         const newEndBufferedISO = addMinutesToLocalISO(newEndISO, bufferMins);
+        const conflictIds = getWorkerConflictingRoomIds(targetRoomId);
+        const inPlaceholders = conflictIds.map(() => '?').join(', ');
 
         const updateItemStmt = env.DB.prepare(
           `UPDATE booking_items
@@ -10054,7 +10101,7 @@ export default {
              AND NOT EXISTS (
                SELECT 1 FROM booking_items bi
                JOIN bookings b ON bi.booking_id = b.id
-               WHERE bi.room_id = ?
+               WHERE bi.room_id IN (${inPlaceholders})
                  AND bi.id != ?
                  AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                  AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
@@ -10077,7 +10124,7 @@ export default {
           currentItem.room_id,
           bookingId,
           booking.subtotal_amount,
-          targetRoomId,
+          ...conflictIds,
           currentItem.id,
           newStartISO,
           `+${bufferMins} minutes`,
@@ -10513,7 +10560,17 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         const parts = pathname.split('/');
-        const bookingId = parts[3];
+        const ref = decodeURIComponent(parts[3] || '');
+        if (!ref) return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+
+        const bookingRow = await env.DB.prepare(
+          'SELECT id, customer_name, receipt_number, payment_status, paid_amount FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
+        ).bind(ref, ref, ref).first();
+
+        if (!bookingRow) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+        const bookingId = bookingRow.id;
 
         if (method === 'GET') {
           const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
@@ -10557,10 +10614,65 @@ export default {
           return new Response(JSON.stringify({ success: true, message: 'แก้ไขข้อมูลการจองสำเร็จ' }), { headers: corsHeaders });
         }
 
-        // Hard permanent delete: Delete booking items first, then booking record
+        // Hard permanent delete: explicitly cascade delete all linked child records, freeing slot
         if (method === 'DELETE') {
-          await env.DB.prepare("DELETE FROM booking_items WHERE booking_id = ?").bind(bookingId).run();
-          await env.DB.prepare("DELETE FROM bookings WHERE id = ?").bind(bookingId).run();
+          const user = auth.user;
+          const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+          if (bookingRow.payment_status === 'paid' && !isAdmin) {
+            return new Response(JSON.stringify({ error: 'ไม่อนุญาตให้ลบรายการจองที่ชำระเงินแล้ว กรุณายกเลิกการจอง หรือให้ผู้ดูแลระบบ (Admin) ดำเนินการ' }), { status: 403, headers: corsHeaders });
+          }
+
+          // Check if linked to room hour credits
+          const creditEntry = await env.DB.prepare(
+            'SELECT e.id FROM room_hour_credit_entries e JOIN booking_items i ON i.id = e.booking_item_id WHERE i.booking_id = ? LIMIT 1'
+          ).bind(bookingId).first();
+          const sourceCredit = await env.DB.prepare(
+            'SELECT credit_id FROM room_hour_credits WHERE source_booking_id = ? LIMIT 1'
+          ).bind(bookingId).first();
+          if (creditEntry || sourceCredit) {
+            return new Response(JSON.stringify({ error: 'ไม่สามารถลบรายการจองนี้ได้ เนื่องจากผูกกับเครดิตชั่วโมงห้องประชุม' }), { status: 409, headers: corsHeaders });
+          }
+
+          const tablesRes = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+          const tableNames = new Set((tablesRes?.results || []).map(t => t.name));
+
+          const statements = [];
+          if (tableNames.has('line_guidelines_dispatches')) {
+            statements.push(env.DB.prepare('UPDATE line_guidelines_dispatches SET first_booking_id = NULL WHERE first_booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('support_tickets')) {
+            statements.push(env.DB.prepare('UPDATE support_tickets SET booking_id = NULL WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('line_notification_claims')) {
+            statements.push(env.DB.prepare('DELETE FROM line_notification_claims WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('room_guidelines_acknowledgements')) {
+            statements.push(env.DB.prepare('DELETE FROM room_guidelines_acknowledgements WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('tax_invoice_email_logs')) {
+            statements.push(env.DB.prepare('DELETE FROM tax_invoice_email_logs WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('tax_invoices')) {
+            statements.push(env.DB.prepare('DELETE FROM tax_invoices WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('slip_verifications')) {
+            statements.push(env.DB.prepare('DELETE FROM slip_verifications WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('payment_transactions')) {
+            statements.push(env.DB.prepare('DELETE FROM payment_transactions WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('booking_history')) {
+            statements.push(env.DB.prepare('DELETE FROM booking_history WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('timeline_notes')) {
+            statements.push(env.DB.prepare('DELETE FROM timeline_notes WHERE booking_id = ?').bind(bookingId));
+          }
+          statements.push(
+            env.DB.prepare('DELETE FROM booking_items WHERE booking_id = ?').bind(bookingId),
+            env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId)
+          );
+          await env.DB.batch(statements);
+
           return new Response(JSON.stringify({ success: true, message: 'ลบรายการจองออกจากระบบอย่างถาวรสำเร็จ' }), { headers: corsHeaders });
         }
       }
@@ -11892,6 +12004,8 @@ export default {
         const bufferMins = await getCleaningBufferMinutes(env);
         const fullEndBuffered = addMinutesToLocalISO(fullEnd, bufferMins);
 
+        const conflictIds = getWorkerConflictingRoomIds(room_id);
+        const inPlaceholders = conflictIds.map(() => '?').join(', ');
         let insItemRes;
         try {
           insItemRes = await env.DB.prepare(
@@ -11900,7 +12014,7 @@ export default {
              WHERE NOT EXISTS (
                SELECT 1 FROM booking_items bi
                JOIN bookings b ON bi.booking_id = b.id
-               WHERE bi.room_id = ?
+               WHERE bi.room_id IN (${inPlaceholders})
                  AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                  AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                  AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -11908,7 +12022,7 @@ export default {
              )`
           ).bind(
             bookingId, room_id, subtotal, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode,
-            room_id, fullStart, `+${bufferMins} minutes`, fullEndBuffered
+            ...conflictIds, fullStart, `+${bufferMins} minutes`, fullEndBuffered
           ).run();
         } catch (itemErr) {
           console.warn('Extended item insert failed, falling back to core item schema:', itemErr);
@@ -11918,7 +12032,7 @@ export default {
              WHERE NOT EXISTS (
                SELECT 1 FROM booking_items bi
                JOIN bookings b ON bi.booking_id = b.id
-               WHERE bi.room_id = ?
+               WHERE bi.room_id IN (${inPlaceholders})
                  AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                  AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                  AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -11926,7 +12040,7 @@ export default {
              )`
           ).bind(
             bookingId, room_id, subtotal, fullStart, fullEnd, subtotal,
-            room_id, fullStart, `+${bufferMins} minutes`, fullEndBuffered
+            ...conflictIds, fullStart, `+${bufferMins} minutes`, fullEndBuffered
           ).run();
         }
 
@@ -11934,7 +12048,7 @@ export default {
           await env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId).run();
           const latestConflict = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
           return new Response(JSON.stringify({
-            error: formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins })
+            error: formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }, room_id)
           }), { status: 409, headers: corsHeaders });
         }
 

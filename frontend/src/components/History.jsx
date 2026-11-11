@@ -461,13 +461,17 @@ function HistoryLog({ settings, sysAlert, sysConfirm }) {
     if (!ok) return;
 
     try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
+      const headers = {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
       let res = null;
       if (id) {
-        res = await fetch(`/api/bookings/${id}`, { method: 'DELETE' });
+        res = await fetch(`/api/bookings/${id}`, { method: 'DELETE', headers });
       }
 
       if ((!res || !res.ok) && receiptNo) {
-        res = await fetch(`/api/bookings/${encodeURIComponent(receiptNo)}`, { method: 'DELETE' });
+        res = await fetch(`/api/bookings/${encodeURIComponent(receiptNo)}`, { method: 'DELETE', headers });
       }
 
       if (res && res.ok) {
