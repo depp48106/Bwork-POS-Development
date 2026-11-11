@@ -10442,24 +10442,41 @@ export default {
             return new Response(JSON.stringify({ error: 'ไม่สามารถลบรายการจองนี้ได้ เนื่องจากผูกกับเครดิตชั่วโมงห้องประชุม' }), { status: 409, headers: corsHeaders });
           }
 
-          const statements = [
-            env.DB.prepare('UPDATE line_guidelines_dispatches SET first_booking_id = NULL WHERE first_booking_id = ?').bind(bookingId)
-          ];
-          try {
-            const hasSupportTickets = await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='support_tickets'").first();
-            if (hasSupportTickets) {
-              statements.push(env.DB.prepare('UPDATE support_tickets SET booking_id = NULL WHERE booking_id = ?').bind(bookingId));
-            }
-          } catch (_) {}
+          const tablesRes = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+          const tableNames = new Set((tablesRes?.results || []).map(t => t.name));
+
+          const statements = [];
+          if (tableNames.has('line_guidelines_dispatches')) {
+            statements.push(env.DB.prepare('UPDATE line_guidelines_dispatches SET first_booking_id = NULL WHERE first_booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('support_tickets')) {
+            statements.push(env.DB.prepare('UPDATE support_tickets SET booking_id = NULL WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('line_notification_claims')) {
+            statements.push(env.DB.prepare('DELETE FROM line_notification_claims WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('room_guidelines_acknowledgements')) {
+            statements.push(env.DB.prepare('DELETE FROM room_guidelines_acknowledgements WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('tax_invoice_email_logs')) {
+            statements.push(env.DB.prepare('DELETE FROM tax_invoice_email_logs WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('tax_invoices')) {
+            statements.push(env.DB.prepare('DELETE FROM tax_invoices WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('slip_verifications')) {
+            statements.push(env.DB.prepare('DELETE FROM slip_verifications WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('payment_transactions')) {
+            statements.push(env.DB.prepare('DELETE FROM payment_transactions WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('booking_history')) {
+            statements.push(env.DB.prepare('DELETE FROM booking_history WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('timeline_notes')) {
+            statements.push(env.DB.prepare('DELETE FROM timeline_notes WHERE booking_id = ?').bind(bookingId));
+          }
           statements.push(
-            env.DB.prepare('DELETE FROM line_notification_claims WHERE booking_id = ?').bind(bookingId),
-            env.DB.prepare('DELETE FROM room_guidelines_acknowledgements WHERE booking_id = ?').bind(bookingId),
-            env.DB.prepare('DELETE FROM tax_invoice_email_logs WHERE booking_id = ?').bind(bookingId),
-            env.DB.prepare('DELETE FROM tax_invoices WHERE booking_id = ?').bind(bookingId),
-            env.DB.prepare('DELETE FROM slip_verifications WHERE booking_id = ?').bind(bookingId),
-            env.DB.prepare('DELETE FROM payment_transactions WHERE booking_id = ?').bind(bookingId),
-            env.DB.prepare('DELETE FROM booking_history WHERE booking_id = ?').bind(bookingId),
-            env.DB.prepare('DELETE FROM timeline_notes WHERE booking_id = ?').bind(bookingId),
             env.DB.prepare('DELETE FROM booking_items WHERE booking_id = ?').bind(bookingId),
             env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId)
           );

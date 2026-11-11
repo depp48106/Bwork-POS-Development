@@ -2740,16 +2740,39 @@ app.delete('/api/bookings/:id', async (req, res) => {
 
     // Explicitly delete child records across all related tables in proper dependency order
     await dbQuery.transaction(async () => {
-      await dbQuery.run('UPDATE line_guidelines_dispatches SET first_booking_id = NULL WHERE first_booking_id = ?', [realId]);
-      await dbQuery.run('UPDATE support_tickets SET booking_id = NULL WHERE booking_id = ?', [realId]);
-      await dbQuery.run('DELETE FROM line_notification_claims WHERE booking_id = ?', [realId]);
-      await dbQuery.run('DELETE FROM room_guidelines_acknowledgements WHERE booking_id = ?', [realId]);
-      await dbQuery.run('DELETE FROM tax_invoice_email_logs WHERE booking_id = ?', [realId]);
-      await dbQuery.run('DELETE FROM tax_invoices WHERE booking_id = ?', [realId]);
-      await dbQuery.run('DELETE FROM slip_verifications WHERE booking_id = ?', [realId]);
-      await dbQuery.run('DELETE FROM payment_transactions WHERE booking_id = ?', [realId]);
-      await dbQuery.run('DELETE FROM booking_history WHERE booking_id = ?', [realId]);
-      await dbQuery.run('DELETE FROM timeline_notes WHERE booking_id = ?', [realId]);
+      const tables = await dbQuery.all("SELECT name FROM sqlite_master WHERE type='table'");
+      const tableNames = new Set(tables.map(t => t.name));
+
+      if (tableNames.has('line_guidelines_dispatches')) {
+        await dbQuery.run('UPDATE line_guidelines_dispatches SET first_booking_id = NULL WHERE first_booking_id = ?', [realId]);
+      }
+      if (tableNames.has('support_tickets')) {
+        await dbQuery.run('UPDATE support_tickets SET booking_id = NULL WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('line_notification_claims')) {
+        await dbQuery.run('DELETE FROM line_notification_claims WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('room_guidelines_acknowledgements')) {
+        await dbQuery.run('DELETE FROM room_guidelines_acknowledgements WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('tax_invoice_email_logs')) {
+        await dbQuery.run('DELETE FROM tax_invoice_email_logs WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('tax_invoices')) {
+        await dbQuery.run('DELETE FROM tax_invoices WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('slip_verifications')) {
+        await dbQuery.run('DELETE FROM slip_verifications WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('payment_transactions')) {
+        await dbQuery.run('DELETE FROM payment_transactions WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('booking_history')) {
+        await dbQuery.run('DELETE FROM booking_history WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('timeline_notes')) {
+        await dbQuery.run('DELETE FROM timeline_notes WHERE booking_id = ?', [realId]);
+      }
       await dbQuery.run('DELETE FROM booking_items WHERE booking_id = ?', [realId]);
       await dbQuery.run('DELETE FROM bookings WHERE id = ?', [realId]);
     });
