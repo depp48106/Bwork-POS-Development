@@ -1147,8 +1147,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       return;
     }
     try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
       const res = await fetch(`/api/bookings/${booking.id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
       });
       if (res.ok) {
         await sysAlert('ลบรายการจองออกจากระบบอย่างถาวรเรียบร้อยแล้ว');

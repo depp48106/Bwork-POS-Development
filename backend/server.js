@@ -8,7 +8,7 @@ const { initDatabase, dbQuery, dbPath, hashPassword, verifyPassword } = require(
 const { performBackup } = require('./backup');
 const {
   getAvailabilityMonth, ACTIVE_AVAILABILITY_ROOMS_SQL, ROOM_AVAILABILITY_INTERVALS_SQL,
-  getAvailabilityQueryParams, buildAvailabilityResponse
+  getAvailabilityQueryParams, buildAvailabilityResponse, getConflictingRoomIds
 } = require('./roomAvailabilityQuery.mjs');
 const {
   generateDatabaseDumpSql,
@@ -1252,15 +1252,20 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
   const reqEndMs = new Date(normEnd.replace(' ', 'T')).getTime();
   const reqEndBufferedMs = reqEndMs + bufferMs;
 
+  const targetRoomId = Number(roomId);
+  const conflictIds = getConflictingRoomIds(targetRoomId);
+  const inPlaceholders = conflictIds.map(() => '?').join(', ');
+
   let query = `
-    SELECT bi.id, bi.booking_id, bi.start_time, bi.end_time, b.customer_name, b.payment_status
+    SELECT bi.id, bi.booking_id, bi.room_id, r.name as room_name, bi.start_time, bi.end_time, b.customer_name, b.payment_status
     FROM booking_items bi
     JOIN bookings b ON bi.booking_id = b.id
-    WHERE bi.room_id = ?
+    LEFT JOIN rooms r ON bi.room_id = r.id
+    WHERE bi.room_id IN (${inPlaceholders})
       AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
       AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
   `;
-  const params = [roomId];
+  const params = [...conflictIds];
   if (excludeBookingItemId) {
     query += ' AND bi.id != ?';
     params.push(excludeBookingItemId);
@@ -1310,7 +1315,7 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
   return { hasOverlap: false, bufferMinutes: bufferMins };
 }
 
-function formatOverlapErrorMessage(roomName, overlapResult) {
+function formatOverlapErrorMessage(roomName, overlapResult, requestedRoomId = null) {
   const b = (overlapResult && overlapResult.booking) || {};
   const sTime = b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : (b.start_time || '');
   const eTime = b.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : (b.end_time || '');
@@ -1318,17 +1323,19 @@ function formatOverlapErrorMessage(roomName, overlapResult) {
 
   const customer = b.customer_name ? `คุณ ${b.customer_name}` : 'ลูกค้า';
   const nameLabel = roomName ? `ห้อง "${roomName}"` : 'ห้องนี้';
+  const isDifferentRoom = b.room_id && requestedRoomId && Number(b.room_id) !== Number(requestedRoomId);
+  const conflictLabel = isDifferentRoom ? ` (ทับซ้อนกับห้อง "${b.room_name || b.room_id}")` : '';
 
   if (overlapResult.isCleaningBuffer) {
     if (overlapResult.isNextQueueBuffer) {
-      return `${nameLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
+      return `${nameLabel}${conflictLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
     }
     if (nextAvail >= '18:00') {
-      return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
+      return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
     }
-    return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
+    return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
   }
-  return `${nameLabel} ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: ${customer} ช่วงเวลา ${sTime} - ${eTime} น.)`;
+  return `${nameLabel}${conflictLabel} ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: ${customer} ช่วงเวลา ${sTime} - ${eTime} น.)`;
 }
 
 function normalizeBookingDetails(input) {
@@ -1403,7 +1410,7 @@ app.post('/api/bookings', async (req, res) => {
           if (overlapResult.hasOverlap) {
             const roomObj = await dbQuery.get('SELECT name FROM rooms WHERE id = ?', [item.room_id]);
             const roomName = roomObj ? roomObj.name : `ID: ${item.room_id}`;
-            const err = new Error(formatOverlapErrorMessage(roomName, overlapResult));
+            const err = new Error(formatOverlapErrorMessage(roomName, overlapResult, item.room_id));
             err.statusCode = 409;
             throw err;
           }
@@ -1811,6 +1818,8 @@ app.post('/api/bookings', async (req, res) => {
         if (item.room_id && normStart && normEnd) {
           const bufferMins = await getCleaningBufferMinutes();
           const itemEndBuffered = addMinutesToLocalISO(normEnd, bufferMins);
+          const conflictIds = getConflictingRoomIds(item.room_id);
+          const inPlaceholders = conflictIds.map(() => '?').join(', ');
           const insRes = await dbQuery.run(
             `INSERT INTO booking_items
              (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
@@ -1818,7 +1827,7 @@ app.post('/api/bookings', async (req, res) => {
              WHERE NOT EXISTS (
                SELECT 1 FROM booking_items bi
                JOIN bookings b ON bi.booking_id = b.id
-               WHERE bi.room_id = ?
+               WHERE bi.room_id IN (${inPlaceholders})
                  AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                  AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                  AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -1837,7 +1846,7 @@ app.post('/api/bookings', async (req, res) => {
               item.booking_type || 'hourly',
               itemGuestCount,
               itemPin,
-              item.room_id,
+              ...conflictIds,
               normStart,
               `+${bufferMins} minutes`,
               itemEndBuffered
@@ -1846,7 +1855,7 @@ app.post('/api/bookings', async (req, res) => {
           if (insRes.changes === 0) {
             const rObj = await dbQuery.get('SELECT name FROM rooms WHERE id = ?', [item.room_id]);
             const latestConflict = await checkRoomOverlap(item.room_id, normStart, normEnd);
-            const conflictErr = new Error(formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }));
+            const conflictErr = new Error(formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }, item.room_id));
             conflictErr.statusCode = 409;
             throw conflictErr;
           }
@@ -2320,6 +2329,8 @@ app.get('/api/bookings/check-overlap', async (req, res) => {
         buffer_minutes: overlapResult.bufferMinutes,
         booking: {
           id: overlapResult.booking.booking_id || overlapResult.booking.id,
+          room_id: overlapResult.booking.room_id,
+          room_name: overlapResult.booking.room_name,
           customer_name: overlapResult.booking.customer_name,
           start_time: overlapResult.booking.start_time,
           end_time: overlapResult.booking.end_time,
@@ -2682,7 +2693,7 @@ app.delete('/api/bookings/:id', async (req, res) => {
   try {
     // Find booking by ID or receipt_number
     const booking = await dbQuery.get(
-      'SELECT id FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
+      'SELECT id, customer_name, receipt_number, payment_status, paid_amount FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
       [id, id, id]
     );
 
@@ -2691,11 +2702,45 @@ app.delete('/api/bookings/:id', async (req, res) => {
     }
 
     const realId = booking.id;
-    // Explicitly delete booking_items first, then master booking
-    await dbQuery.run('DELETE FROM booking_items WHERE booking_id = ?', [realId]);
-    await dbQuery.run('DELETE FROM bookings WHERE id = ?', [realId]);
 
-    res.json({ success: true, message: 'ลบ/ยกเลิกรายการจองสำเร็จ' });
+    // Financial / Accounting safety check:
+    // If not admin, do not allow hard deletion of paid bookings
+    const user = req.user;
+    const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+    if (booking.payment_status === 'paid' && !isAdmin) {
+      return res.status(403).json({ error: 'ไม่อนุญาตให้ลบรายการจองที่ชำระเงินแล้ว กรุณายกเลิกการจอง หรือให้ผู้ดูแลระบบ (Admin) ดำเนินการ' });
+    }
+
+    // Check if linked to room hour credits
+    const creditEntry = await dbQuery.get(
+      'SELECT e.id FROM room_hour_credit_entries e JOIN booking_items i ON i.id = e.booking_item_id WHERE i.booking_id = ? LIMIT 1',
+      [realId]
+    );
+    const sourceCredit = await dbQuery.get(
+      'SELECT credit_id FROM room_hour_credits WHERE source_booking_id = ? LIMIT 1',
+      [realId]
+    );
+    if (creditEntry || sourceCredit) {
+      return res.status(409).json({ error: 'ไม่สามารถลบรายการจองนี้ได้ เนื่องจากผูกกับเครดิตชั่วโมงห้องประชุม' });
+    }
+
+    // Explicitly delete child records across all related tables in proper dependency order
+    await dbQuery.transaction(async () => {
+      await dbQuery.run('UPDATE line_guidelines_dispatches SET first_booking_id = NULL WHERE first_booking_id = ?', [realId]);
+      await dbQuery.run('UPDATE support_tickets SET booking_id = NULL WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM line_notification_claims WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM room_guidelines_acknowledgements WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM tax_invoice_email_logs WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM tax_invoices WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM slip_verifications WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM payment_transactions WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM booking_history WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM timeline_notes WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM booking_items WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM bookings WHERE id = ?', [realId]);
+    });
+
+    res.json({ success: true, message: 'ลบรายการจองออกจากระบบอย่างถาวรสำเร็จ' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -4588,7 +4633,7 @@ app.get('/api/bookings/:id/extension-preview', authenticateToken, async (req, re
         is_cleaning_buffer: overlapResult.isCleaningBuffer,
         buffer_minutes: overlapResult.bufferMinutes,
         booking: overlapResult.booking,
-        message: formatOverlapErrorMessage(room.name, overlapResult)
+        message: formatOverlapErrorMessage(room.name, overlapResult, item.room_id)
       } : null,
       cleaning_buffer_minutes: overlapResult.bufferMinutes,
       quota: {
@@ -4690,7 +4735,7 @@ app.post('/api/bookings/:id/extend', authenticateToken, async (req, res) => {
       // 3. TOCTOU Availability & Cleaning Buffer Guard inside Transaction
       const overlapResult = await checkRoomOverlap(item.room_id, item.start_time, newEndISO, null, dbQuery, item.id);
       if (overlapResult.hasOverlap) {
-        const conflictErr = new Error(formatOverlapErrorMessage(room.name, overlapResult));
+        const conflictErr = new Error(formatOverlapErrorMessage(room.name, overlapResult, item.room_id));
         conflictErr.statusCode = 409;
         conflictErr.conflict = overlapResult;
         throw conflictErr;
@@ -6686,7 +6731,7 @@ const handleReschedule = async (req, res) => {
     if (overlapResult && overlapResult.hasOverlap) {
       const targetRoomName = targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`;
       return res.status(400).json({
-        error: formatOverlapErrorMessage(targetRoomName, overlapResult),
+        error: formatOverlapErrorMessage(targetRoomName, overlapResult, targetRoomId),
         code: 'ERR_ROOM_OVERLAP'
       });
     }
@@ -6777,7 +6822,7 @@ const handleReschedule = async (req, res) => {
       // Recheck availability inside transaction
       const overlapInTx = await checkRoomOverlap(targetRoomId, newStartISO, newEndISO, null, dbQuery, currentItem.id);
       if (overlapInTx && overlapInTx.hasOverlap) {
-        const overlapErr = new Error(formatOverlapErrorMessage(targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`, overlapInTx));
+        const overlapErr = new Error(formatOverlapErrorMessage(targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`, overlapInTx, targetRoomId));
         overlapErr.status = 409;
         overlapErr.code = 'ERR_ROOM_OVERLAP';
         throw overlapErr;
@@ -6785,6 +6830,8 @@ const handleReschedule = async (req, res) => {
 
       const bufferMins = await getCleaningBufferMinutes();
       const newEndBufferedISO = addMinutesToLocalISO(newEndISO, bufferMins);
+      const conflictIds = getConflictingRoomIds(targetRoomId);
+      const inPlaceholders = conflictIds.map(() => '?').join(', ');
       const itemUpdateRes = await dbQuery.run(
         `UPDATE booking_items
          SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ?
@@ -6792,7 +6839,7 @@ const handleReschedule = async (req, res) => {
            AND NOT EXISTS (
              SELECT 1 FROM booking_items bi
              JOIN bookings b ON bi.booking_id = b.id
-             WHERE bi.room_id = ?
+             WHERE bi.room_id IN (${inPlaceholders})
                AND bi.id != ?
                AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
@@ -6811,7 +6858,7 @@ const handleReschedule = async (req, res) => {
           currentItem.id,
           bookingId,
           currentItem.start_time,
-          targetRoomId,
+          ...conflictIds,
           currentItem.id,
           newStartISO,
           `+${bufferMins} minutes`,
@@ -8613,10 +8660,11 @@ app.get('/api/public/rooms/schedule', async (req, res) => {
       [startOfDay, endOfDay]
     );
 
-    // Map bookings to each room
+    // Map bookings to each room (including conflicting linked rooms)
     const roomsWithSchedule = rooms.map(room => {
+      const conflictIds = getConflictingRoomIds(room.id);
       const roomBookings = bookingItems
-        .filter(bi => bi.room_id === room.id)
+        .filter(bi => conflictIds.includes(bi.room_id))
         .map(bi => ({
           start_time: bi.start_time ? bi.start_time.split('T')[1].substring(0, 5) : '00:00',
           end_time: bi.end_time ? bi.end_time.split('T')[1].substring(0, 5) : '23:59',
@@ -8876,7 +8924,7 @@ app.post('/api/public/bookings', async (req, res) => {
       // Check for overlap (cross-system safe including 30-min cleaning buffer)
       const overlapResult = await checkRoomOverlap(room_id, fullStart, fullEnd);
       if (overlapResult.hasOverlap) {
-        const err = new Error(formatOverlapErrorMessage(room.name, overlapResult));
+        const err = new Error(formatOverlapErrorMessage(room.name, overlapResult, room_id));
         err.statusCode = 409;
         throw err;
       }
@@ -8964,9 +9012,11 @@ app.post('/api/public/bookings', async (req, res) => {
       );
       const bookingId = bookingResult.id;
 
-      // Insert booking item with atomic conditional overlap check
+      // Insert booking item with atomic conditional overlap check (including conflicting linked rooms)
       const bufferMins = await getCleaningBufferMinutes();
       const fullEndBuffered = addMinutesToLocalISO(fullEnd, bufferMins);
+      const conflictIds = getConflictingRoomIds(room_id);
+      const inPlaceholders = conflictIds.map(() => '?').join(', ');
       const itemInsertRes = await dbQuery.run(
         `INSERT INTO booking_items
          (booking_id, room_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
@@ -8974,7 +9024,7 @@ app.post('/api/public/bookings', async (req, res) => {
          WHERE NOT EXISTS (
            SELECT 1 FROM booking_items bi
            JOIN bookings b ON bi.booking_id = b.id
-           WHERE bi.room_id = ?
+           WHERE bi.room_id IN (${inPlaceholders})
              AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
              AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
              AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -8982,11 +9032,12 @@ app.post('/api/public/bookings', async (req, res) => {
          )`,
         [
           bookingId, room_id, quantity, price, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode,
-          room_id, fullStart, `+${bufferMins} minutes`, fullEndBuffered
+          ...conflictIds, fullStart, `+${bufferMins} minutes`, fullEndBuffered
         ]
       );
       if (itemInsertRes.changes === 0) {
-        const conflictErr = new Error('ห้องไม่ว่างในช่วงเวลาดังกล่าว หรือติดระยะเวลาทำความสะอาด');
+        const latestConflict = await checkRoomOverlap(room_id, fullStart, fullEnd);
+        const conflictErr = new Error(formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }, room_id));
         conflictErr.statusCode = 409;
         throw conflictErr;
       }
