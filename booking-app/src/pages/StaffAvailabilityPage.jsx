@@ -15,7 +15,7 @@ const STATUS = {
 const monthFormat = new Intl.DateTimeFormat('th-TH', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const dateFormat = new Intl.DateTimeFormat('th-TH', { dateStyle: 'full', timeZone: 'UTC' });
 
-function initialDay() {
+function bangkokToday() {
   return new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
@@ -24,10 +24,11 @@ function roomDay(month, number) {
 }
 
 export default function StaffAvailabilityPage() {
-  const [day, setDay] = useState(initialDay);
+  const [day, setDay] = useState(bangkokToday);
   const [roomId, setRoomId] = useState('');
   const [requestVersion, setRequestVersion] = useState(0);
   const [result, setResult] = useState(null);
+  const today = bangkokToday();
   const monthKey = day.slice(0, 7);
   const month = useMemo(() => getAvailabilityMonth(monthKey), [monthKey]);
 
@@ -78,8 +79,8 @@ export default function StaffAvailabilityPage() {
         <div><strong>BWORK Booking</strong><span>สำหรับพนักงาน</span></div>
       </header>
       <div className="staff-availability__content">
-        <h1>ดูเวลาว่างห้องประชุม</h1>
-        <p className="staff-availability__muted">เลือกห้องและแตะวันที่เพื่อดูช่วงเวลาว่างจากตารางจอง POS</p>
+        <h1>ห้องประชุมว่างเมื่อไหร่</h1>
+        <p className="staff-availability__muted">เลือกห้องและวันที่เพื่อดูช่วงเวลาว่างจากตารางจอง POS</p>
         <div className="staff-availability__layout">
           <section className="staff-availability__panel" aria-label="ปฏิทินห้องประชุม">
             {room && (
@@ -94,7 +95,10 @@ export default function StaffAvailabilityPage() {
               <button type="button" onClick={() => changeMonth(-1)} aria-label="เดือนก่อนหน้า">
                 <ChevronLeft size={20} aria-hidden="true" />
               </button>
-              <h2 aria-live="polite">{monthFormat.format(new Date(`${month.start}Z`))}</h2>
+              <div>
+                <h2 aria-live="polite">{monthFormat.format(new Date(`${month.start}Z`))}</h2>
+                <button type="button" className="staff-availability__today" onClick={() => setDay(today)}>วันนี้</button>
+              </div>
               <button type="button" onClick={() => changeMonth(1)} aria-label="เดือนถัดไป">
                 <ChevronRight size={20} aria-hidden="true" />
               </button>
@@ -119,6 +123,7 @@ export default function StaffAvailabilityPage() {
                       type="button"
                       key={date}
                       aria-pressed={date === day}
+                      aria-current={date === today ? 'date' : undefined}
                       aria-label={`${dateFormat.format(new Date(date))} ${STATUS[status].label}`}
                       onClick={() => setDay(date)}
                     >
@@ -140,6 +145,7 @@ export default function StaffAvailabilityPage() {
             {selected && (
               <>
                 <p>{room.name} <span className="staff-availability__muted">· {room.capacity} ที่นั่ง</span></p>
+                <p className="staff-availability__status" data-status={selected.status}>{STATUS[selected.status].label}</p>
                 <h3>ช่วงเวลาว่าง</h3>
                 {selected.ranges.length ? (
                   <ul className="staff-availability__ranges">
@@ -151,7 +157,7 @@ export default function StaffAvailabilityPage() {
                 </p>
               </>
             )}
-            <p className="staff-availability__note">ตัวอย่างสำหรับตรวจเวลาว่าง</p>
+            {!selected && <p className="staff-availability__muted">{current ? 'ไม่มีข้อมูลเวลาว่างสำหรับวันที่เลือก' : 'กำลังโหลดช่วงเวลาว่าง…'}</p>}
           </section>
         </div>
       </div>
