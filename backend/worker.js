@@ -5148,6 +5148,20 @@ export default {
           return new Response(JSON.stringify({ error: 'เวลาจองต้องอยู่ระหว่างเวลาทำการ (08:00 - 18:00 น.)' }), { status: 400, headers: corsHeaders });
         }
 
+        const now = new Date();
+        const bangkokNow = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+        const todayStr = bangkokNow.toISOString().slice(0, 10);
+        if (date < todayStr) {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถจองวันที่ผ่านมาแล้วได้' }), { status: 400, headers: corsHeaders });
+        }
+        if (date === todayStr) {
+          const currentMins = bangkokNow.getUTCHours() * 60 + bangkokNow.getUTCMinutes();
+          const [sH, sM] = sHHMM.split(':').map(Number);
+          if ((sH * 60 + sM) < currentMins) {
+            return new Response(JSON.stringify({ error: 'ไม่สามารถจองเวลาย้อนหลังได้ กรุณาเลือกเวลาปัจจุบันเป็นต้นไป' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
         const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ? AND status = ?').bind(room_id, 'active').first();
         if (!room) {
           return new Response(JSON.stringify({ error: 'ไม่พบห้องที่เลือก หรือห้องไม่พร้อมใช้งาน' }), { status: 404, headers: corsHeaders });

@@ -66,7 +66,6 @@ function getStaffAuthToken() {
 }
 
 export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
-  const hasAuthToken = Boolean(getStaffAuthToken());
   const today = bangkokToday();
   const todayMonthKey = today.slice(0, 7);
   const [currentMonthKey, setCurrentMonthKey] = useState(() => todayMonthKey);
@@ -495,14 +494,9 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     setBookingSuccess(null);
 
     try {
-      const staffToken = getStaffAuthToken();
-      const reqHeaders = { 'Content-Type': 'application/json' };
-      if (staffToken) {
-        reqHeaders['Authorization'] = `Bearer ${staffToken}`;
-      }
-      const res = await fetch(`${API_BASE}/api/staff/rooms/staff-booking`, {
+      const res = await fetch(`${API_BASE}/api/public/rooms/staff-booking`, {
         method: 'POST',
-        headers: reqHeaders,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           room_id: bookingModalRoom.id,
           date: selectedDate,
@@ -544,32 +538,6 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
               <h1 className="staff-header__title">BWORK Booking</h1>
               <span className="staff-header__tag">สำหรับพนักงาน</span>
             </div>
-          </div>
-          <div className="staff-header__right">
-            <a
-              href="/"
-              onClick={(e) => {
-                if (onNavigateToPos) {
-                  e.preventDefault();
-                  onNavigateToPos();
-                }
-              }}
-              className="staff-btn staff-btn--outline"
-              style={{
-                textDecoration: 'none',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                fontSize: '0.82rem',
-                padding: '6px 12px',
-                borderRadius: '6px',
-                color: '#ffffff',
-                border: '1px solid rgba(255,255,255,0.4)',
-                backgroundColor: 'rgba(255,255,255,0.1)'
-              }}
-            >
-              {hasAuthToken ? '← กลับหน้า POS' : 'เข้าสู่ระบบ POS'}
-            </a>
           </div>
         </div>
       </header>
