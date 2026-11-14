@@ -3,6 +3,8 @@ import {
   Calendar,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   Users,
   Clock,
   Building,
@@ -78,6 +80,16 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
   // Selected date for inline week accordion (null = collapsed initially)
   const [selectedDate, setSelectedDate] = useState(null);
+
+  // Today's schedule collapse/expand state:
+  // Desktop: default open (true)
+  // Mobile: default collapsed (false)
+  const [isTodayOpen, setIsTodayOpen] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 900;
+    }
+    return true;
+  });
 
   // View switch: false = Home view (Two-Column with Accordion), true = POS Monthly Calendar view
   const [isPosCalendarView, setIsPosCalendarView] = useState(false);
@@ -815,10 +827,55 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
              - Right: ปฏิทินกะทัดรัด พร้อม Inline Week Accordion ขยายใต้แถวสัปดาห์
              ========================================================================= */
           <div className="staff-main-layout">
-            {/* Left Column: ตารางจองวันนี้ */}
-            <aside className="staff-today-column" aria-label="ตารางจองวันนี้">
+            {/* Left Column (Desktop) / Top Collapsible Bar (Mobile): ตารางจองวันนี้ */}
+            <aside
+              className={`staff-today-column ${isTodayOpen ? 'staff-today-column--open' : 'staff-today-column--collapsed'}`}
+              aria-label="ตารางจองวันนี้"
+            >
+              {/* Desktop Collapsed Strip: shown only on desktop when collapsed */}
+              <button
+                type="button"
+                className="staff-today-collapsed-btn--desktop"
+                onClick={() => setIsTodayOpen(true)}
+                aria-label="เปิดตารางจองวันนี้"
+                title="เปิดตารางจองวันนี้"
+                id="staff-today-expand-desktop-btn"
+              >
+                <ChevronRight size={18} className="staff-today-collapsed-btn__arrow" />
+                <Calendar size={18} className="staff-today-collapsed-btn__icon" />
+                <span className="staff-today-collapsed-btn__label">ตารางจองวันนี้ ({todayBookings.length})</span>
+              </button>
+
+              {/* Main Today Card */}
               <div className="staff-today-card">
-                <div className="staff-today-header">
+                {/* Mobile Tappable Full-Width Bar: "ตารางจองวันนี้ · N รายการ" */}
+                <div
+                  className="staff-today-mobile-bar"
+                  onClick={() => setIsTodayOpen(prev => !prev)}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isTodayOpen}
+                  id="staff-today-mobile-toggle-bar"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setIsTodayOpen(prev => !prev);
+                    }
+                  }}
+                >
+                  <div className="staff-today-mobile-bar__title-group">
+                    <Calendar size={18} className="staff-today-header__icon" />
+                    <span className="staff-today-mobile-bar__title">
+                      ตารางจองวันนี้ · {todayBookings.length} รายการ
+                    </span>
+                  </div>
+                  <span className="staff-today-mobile-bar__arrow" aria-hidden="true">
+                    {isTodayOpen ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                  </span>
+                </div>
+
+                {/* Desktop Header */}
+                <div className="staff-today-desktop-header">
                   <div className="staff-today-header__title-box">
                     <Calendar size={18} className="staff-today-header__icon" />
                     <div>
@@ -828,44 +885,59 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                       </span>
                     </div>
                   </div>
-                  <span className="staff-today-header__badge">
-                    {todayBookings.length} รายการ
-                  </span>
+                  <div className="staff-today-desktop-header__actions">
+                    <span className="staff-today-header__badge">
+                      {todayBookings.length} รายการ
+                    </span>
+                    <button
+                      type="button"
+                      className="staff-today-collapse-btn"
+                      onClick={() => setIsTodayOpen(false)}
+                      aria-label="พับตารางจองวันนี้"
+                      title="พับตารางจองวันนี้"
+                      id="staff-today-collapse-desktop-btn"
+                    >
+                      <ChevronLeft size={16} />
+                    </button>
+                  </div>
                 </div>
 
-                <div className="staff-today-body">
-                  {todayBookings.length === 0 ? (
-                    <div className="staff-today-empty" id="staff-today-empty-msg">
-                      <Clock size={28} className="staff-today-empty__icon" />
-                      <p className="staff-today-empty__text">วันนี้ยังไม่มีรายการจอง</p>
-                    </div>
-                  ) : (
-                    <div className="staff-today-list" id="staff-today-list">
-                      {todayBookings.map((bk, idx) => (
-                        <div key={idx} className="staff-today-item">
-                          <div className="staff-today-item__time-row">
-                            <span className="staff-today-item__time">
-                              <Clock size={13} /> {bk.start_time} - {bk.end_time} น.
-                            </span>
-                            <span className="staff-today-item__room">
-                              <Building size={13} /> {bk.room_name}
-                            </span>
-                          </div>
-                          <div className="staff-today-item__user-row">
-                            <span className="staff-today-item__name">
-                              <User size={13} /> {bk.customer_name}
-                            </span>
-                            {bk.department && bk.department !== '-' && (
-                              <span className="staff-today-item__dept">
-                                {bk.department}
+                {/* Today Body (rendered when isTodayOpen) */}
+                {isTodayOpen && (
+                  <div className="staff-today-body" id="staff-today-body-panel">
+                    {todayBookings.length === 0 ? (
+                      <div className="staff-today-empty" id="staff-today-empty-msg">
+                        <Clock size={28} className="staff-today-empty__icon" />
+                        <p className="staff-today-empty__text">วันนี้ยังไม่มีรายการจอง</p>
+                      </div>
+                    ) : (
+                      <div className="staff-today-list" id="staff-today-list">
+                        {todayBookings.map((bk, idx) => (
+                          <div key={idx} className="staff-today-item">
+                            <div className="staff-today-item__time-row">
+                              <span className="staff-today-item__time">
+                                <Clock size={13} /> {bk.start_time} - {bk.end_time} น.
                               </span>
-                            )}
+                              <span className="staff-today-item__room">
+                                <Building size={13} /> {bk.room_name}
+                              </span>
+                            </div>
+                            <div className="staff-today-item__user-row">
+                              <span className="staff-today-item__name">
+                                <User size={13} /> {bk.customer_name}
+                              </span>
+                              {bk.department && bk.department !== '-' && (
+                                <span className="staff-today-item__dept">
+                                  {bk.department}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </aside>
 
@@ -976,7 +1048,7 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                               >
                                 <span className="staff-cal-day__num">{cell.dayNumber}</span>
                                 <span className={`staff-cal-day__badge ${isPast ? 'staff-cal-day__badge--past' : hasFree ? 'staff-cal-day__badge--free' : 'staff-cal-day__badge--full'}`}>
-                                  {isPast ? 'ผ่านมาแล้ว' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
+                                  {isPast ? 'ผ่านแล้ว' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
                                 </span>
                               </button>
                             );

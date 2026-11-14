@@ -34,6 +34,9 @@
   color: var(--staff-text-main);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Prompt", sans-serif;
   padding-bottom: 40px;
+  overflow-x: hidden;
+  max-width: 100vw;
+  box-sizing: border-box;
 }
 
 /* =========================================================================
@@ -105,6 +108,9 @@
   max-width: 1280px;
   margin: 20px auto 0;
   padding: 0 16px;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
 }
 
 .staff-main-layout {
@@ -117,6 +123,98 @@
 .staff-today-column {
   width: 320px;
   flex-shrink: 0;
+  transition: width 0.2s ease;
+}
+
+.staff-today-column--collapsed {
+  width: 44px;
+}
+
+.staff-today-collapsed-btn--desktop {
+  display: none;
+}
+
+.staff-today-column--collapsed .staff-today-collapsed-btn--desktop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 44px;
+  min-height: 200px;
+  padding: 16px 6px;
+  background-color: #ffffff;
+  border: 1px solid var(--staff-border);
+  border-radius: 12px;
+  cursor: pointer;
+  color: var(--staff-navy-primary);
+  box-shadow: var(--staff-shadow-sm);
+  transition: all 0.2s ease;
+}
+
+.staff-today-collapsed-btn--desktop:hover {
+  background-color: var(--staff-bg-subtle);
+  border-color: var(--staff-navy-border);
+}
+
+.staff-today-collapsed-btn__arrow {
+  color: var(--staff-navy-primary);
+}
+
+.staff-today-collapsed-btn__icon {
+  color: var(--staff-navy-primary);
+}
+
+.staff-today-collapsed-btn__label {
+  writing-mode: vertical-rl;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--staff-navy-primary);
+  white-space: nowrap;
+}
+
+.staff-today-column--collapsed .staff-today-card {
+  display: none;
+}
+
+.staff-today-desktop-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--staff-border);
+  margin-bottom: 12px;
+}
+
+.staff-today-desktop-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.staff-today-collapse-btn {
+  background: none;
+  border: 1px solid var(--staff-border);
+  border-radius: 6px;
+  color: var(--staff-text-muted);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.staff-today-collapse-btn:hover {
+  background-color: var(--staff-bg-subtle);
+  color: var(--staff-navy-primary);
+  border-color: var(--staff-navy-border);
+}
+
+.staff-today-mobile-bar {
+  display: none;
 }
 
 .staff-cal-column {
@@ -1481,31 +1579,127 @@
    Mobile & Tablet Responsiveness (max-width: 899px)
    ========================================================================= */
 @media (max-width: 899px) {
+  .staff-container {
+    margin: 12px auto 0;
+    padding: 0 10px;
+    overflow-x: hidden;
+  }
+
   .staff-main-layout {
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
   }
 
-  .staff-cal-column {
-    order: 1;
-    width: 100%;
-  }
-
+  /* 1. Today's Bookings: Placed above calendar on mobile, collapsed by default */
   .staff-today-column {
-    order: 2;
-    width: 100%;
-    margin-top: 10px;
+    order: 0 !important;
+    width: 100% !important;
+    margin-top: 0;
+    margin-bottom: 6px;
   }
 
-  .staff-cal-day {
-    min-height: 44px;
-    padding: 3px 2px;
+  .staff-today-column--collapsed {
+    width: 100% !important;
+  }
+
+  .staff-today-column--collapsed .staff-today-card {
+    display: block !important;
+  }
+
+  .staff-today-collapsed-btn--desktop {
+    display: none !important;
+  }
+
+  .staff-today-desktop-header {
+    display: none !important;
+  }
+
+  .staff-today-card {
+    padding: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  /* Full-width tappable bar on mobile */
+  .staff-today-mobile-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background-color: #ffffff;
+    border: 1px solid var(--staff-border);
+    border-radius: 12px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: all 0.15s ease;
+    box-shadow: var(--staff-shadow-sm);
+    min-height: 48px;
+    box-sizing: border-box;
+    width: 100%;
+  }
+
+  .staff-today-mobile-bar:active {
+    background-color: var(--staff-bg-subtle);
+    border-color: var(--staff-navy-border);
+  }
+
+  .staff-today-column--open .staff-today-mobile-bar {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    border-bottom: 1px solid var(--staff-border);
+  }
+
+  .staff-today-mobile-bar__title-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .staff-today-mobile-bar__title {
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: var(--staff-navy-primary);
+  }
+
+  .staff-today-mobile-bar__arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--staff-navy-primary);
+  }
+
+  .staff-today-column--open .staff-today-body {
+    background-color: #ffffff;
+    border: 1px solid var(--staff-border);
+    border-top: none;
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+    padding: 14px;
+    box-shadow: var(--staff-shadow-sm);
+  }
+
+  /* 2. Calendar Column */
+  .staff-cal-column {
+    order: 1 !important;
+    width: 100% !important;
+  }
+
+  .staff-cal-card {
+    padding: 14px 10px;
+    overflow-x: hidden;
   }
 
   .staff-cal-nav {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
     gap: 10px;
+  }
+
+  .staff-cal-nav__title-group {
+    justify-content: space-between;
+    width: 100%;
   }
 
   .staff-cal-nav__actions {
@@ -1514,11 +1708,79 @@
 
   .staff-cal-nav__actions .staff-btn {
     width: 100%;
+    height: 42px;
   }
 
+  /* 7-column calendar grid touch targets */
+  .staff-cal-weekdays {
+    gap: 2px;
+  }
+
+  .staff-cal-weekday {
+    font-size: 0.72rem;
+    padding: 2px 0;
+  }
+
+  .staff-cal-row {
+    gap: 2px;
+  }
+
+  .staff-cal-day {
+    min-height: 48px;
+    min-width: 0;
+    padding: 4px 1px;
+    box-sizing: border-box;
+  }
+
+  .staff-cal-day__num {
+    font-size: 0.85rem;
+    line-height: 1.1;
+  }
+
+  .staff-cal-day__badge {
+    font-size: 0.6rem;
+    padding: 2px 2px;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-sizing: border-box;
+    text-align: center;
+  }
+
+  /* 3. Room Cards stacked in single column */
+  .staff-rooms-grid {
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+  }
+
+  .staff-room-card {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  /* 4. POS Monthly Calendar: horizontal scrolling contained inside grid frame */
   .staff-pos-nav {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .staff-pos-cal-card {
+    padding: 12px 8px;
+    overflow-x: hidden;
+  }
+
+  .staff-pos-grid-scroll {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x;
+  }
+
+  .staff-pos-grid {
+    min-width: 700px;
   }
 
   .staff-pos-legend__tip {
@@ -1526,17 +1788,31 @@
     width: 100%;
   }
 
-  /* Bottom Sheet for Mobile Booking Popup */
+  /* 5. Bottom Sheet for Mobile Booking Popup */
   .staff-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1050;
+    display: flex;
     align-items: flex-end;
+    justify-content: center;
     padding: 0;
+    background-color: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(2px);
   }
 
   .staff-modal-container {
+    width: 100%;
     max-width: 100%;
+    margin: 0;
     border-radius: 20px 20px 0 0;
-    max-height: 85vh;
-    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    max-height: 88vh;
+    max-height: 88dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background-color: #ffffff;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
     animation: staffSheetSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
@@ -1545,17 +1821,43 @@
     to { transform: translateY(0); }
   }
 
+  .staff-modal-header {
+    flex-shrink: 0;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--staff-border);
+  }
+
+  .staff-modal-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    padding: 16px 18px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Inputs min 16px to prevent iOS Safari auto-zoom */
+  .staff-form__input,
+  .staff-form__select {
+    font-size: 16px;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+
   .staff-form__row {
     grid-template-columns: 1fr;
-    gap: 10px;
+    gap: 12px;
   }
 
   .staff-modal-footer {
+    margin-top: 20px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     flex-direction: column-reverse;
+    gap: 8px;
   }
 
   .staff-modal-footer .staff-btn {
     width: 100%;
-    height: 44px;
+    height: 46px;
+    font-size: 0.95rem;
   }
 }
