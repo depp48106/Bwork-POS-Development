@@ -42,6 +42,12 @@ function bangkokToday() {
   return bangkok.toISOString().slice(0, 10);
 }
 
+function getBangkokCurrentMinutes() {
+  const now = new Date();
+  const bangkok = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+  return bangkok.getUTCHours() * 60 + bangkok.getUTCMinutes();
+}
+
 function roomDay(monthKey, dayNum) {
   return `${monthKey}-${String(dayNum).padStart(2, '0')}`;
 }
@@ -230,25 +236,56 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     return map;
   }, [rooms]);
 
-  // Calculate day-by-day room availability
+  // Calculate day-by-day room availability using POS cleaning buffer
   const calculateDayAvailability = (dateStr, roomId) => {
     if (!availabilityData) return { ranges: [], status: 'free' };
     const bookings = availabilityData.intervals.filter(i => i.room_id === roomId);
-    return getRoomAvailabilityForDay(dateStr, bookings, availabilityData.cleaning_buffer_minutes);
+    const bufferMins = Number(availabilityData.cleaning_buffer_minutes ?? 30);
+    return getRoomAvailabilityForDay(dateStr, bookings, bufferMins);
   };
 
   // Rooms list with availability for the currently selected date
   const selectedDayRooms = useMemo(() => {
     if (!selectedDate || !rooms.length) return [];
+    const isPastDate = selectedDate < today;
+    const isToday = selectedDate === today;
+    const curMins = isToday ? getBangkokCurrentMinutes() : 0;
+    const nextFutureMins = Math.ceil((curMins + 1) / 30) * 30;
+
     return rooms.map(rm => {
       const dayAvail = calculateDayAvailability(selectedDate, rm.id);
+      let ranges = dayAvail.ranges;
+      let status = dayAvail.status;
+
+      if (isToday) {
+        // Filter out rounds that have already started according to Bangkok time
+        const futureRanges = [];
+        for (const r of ranges) {
+          const [sH, sM] = r.start.split(':').map(Number);
+          const [eH, eM] = r.end.split(':').map(Number);
+          const rStartMins = sH * 60 + sM;
+          const rEndMins = eH * 60 + eM;
+
+          if (rEndMins <= nextFutureMins) {
+            continue; // Range completely passed
+          }
+          const effStart = rStartMins < nextFutureMins
+            ? `${String(Math.floor(nextFutureMins / 60)).padStart(2, '0')}:${String(nextFutureMins % 60).padStart(2, '0')}`
+            : r.start;
+          futureRanges.push({ start: effStart, end: r.end });
+        }
+        ranges = futureRanges;
+        status = ranges.length === 0 ? 'full' : (ranges.length === 1 && ranges[0].start === '08:00' && ranges[0].end === '18:00' ? 'free' : 'partial');
+      }
+
       return {
         ...rm,
-        status: dayAvail.status,
-        ranges: dayAvail.ranges
+        status,
+        ranges,
+        isPastDate
       };
     });
-  }, [selectedDate, rooms, availabilityData]);
+  }, [selectedDate, rooms, availabilityData, today]);
 
   // Today's Bookings list (strictly pinned to bangkokToday() regardless of calendar date/month selection)
   const todayBookings = useMemo(() => {
@@ -290,6 +327,7 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     }
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = roomDay(currentMonthKey, d);
+      const isPast = dateStr < today;
       let freeRoomsCount = 0;
       if (rooms.length > 0 && availabilityData) {
         for (const rm of rooms) {
@@ -301,6 +339,7 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
         dayNumber: d,
         date: dateStr,
         isToday: dateStr === today,
+        isPast,
         freeRoomsCount
       });
     }
@@ -341,10 +380,11 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     return map;
   }, [availabilityData, roomMap]);
 
-  // Group bookings for "ดูเพิ่มเติม" modal in POS monthly view
+  // Group bookings for "ดูเพิ่มเติม" modal in POS monthly view with cleaning buffer
   const dayBookingsGrouped = useMemo(() => {
     if (!dayBookingsModalDate || !monthEventsByDay[dayBookingsModalDate]) return [];
     const events = monthEventsByDay[dayBookingsModalDate];
+    const bufferMins = Number(availabilityData?.cleaning_buffer_minutes ?? 30);
     const groupMap = new Map();
     for (const ev of events) {
       if (!groupMap.has(ev.room_id)) {
@@ -357,8 +397,30 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
       }
       groupMap.get(ev.room_id).bookings.push(ev);
     }
+
+    for (const grp of groupMap.values()) {
+      grp.bookings.sort((a, b) => a.start_time.localeCompare(b.start_time) || a.room_name.localeCompare(b.room_name));
+      const withCleaning = [];
+      for (const b of grp.bookings) {
+        withCleaning.push(b);
+        if (bufferMins > 0 && b.end_time) {
+          const [eH, eM] = b.end_time.split(':').map(Number);
+          const bufEndMins = eH * 60 + eM + bufferMins;
+          const cleanH = String(Math.floor(bufEndMins / 60) % 24).padStart(2, '0');
+          const cleanM = String(bufEndMins % 60).padStart(2, '0');
+          withCleaning.push({
+            isCleaning: true,
+            start_time: b.end_time,
+            end_time: `${cleanH}:${cleanM}`,
+            bufferMins
+          });
+        }
+      }
+      grp.displayItems = withCleaning;
+    }
+
     return Array.from(groupMap.values()).sort((a, b) => a.room_name.localeCompare(b.room_name));
-  }, [dayBookingsModalDate, monthEventsByDay]);
+  }, [dayBookingsModalDate, monthEventsByDay, availabilityData]);
 
   // Active intervals of room selected for booking modal
   const activeIntervals = useMemo(() => {
@@ -377,8 +439,15 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     const startTotal = startH * 60 + startM;
     const endTotal = endH * 60 + endM;
 
+    let minStartMins = startTotal;
+    if (selectedDate === today) {
+      const curMins = getBangkokCurrentMinutes();
+      const nextFutureMins = Math.ceil((curMins + 1) / 30) * 30;
+      minStartMins = Math.max(startTotal, nextFutureMins);
+    }
+
     const startTimes = [];
-    for (let t = startTotal; t < endTotal; t += 30) {
+    for (let t = minStartMins; t < endTotal; t += 30) {
       const h = String(Math.floor(t / 60)).padStart(2, '0');
       const m = String(t % 60).padStart(2, '0');
       startTimes.push(`${h}:${m}`);
@@ -396,7 +465,7 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     }
 
     return { startTimes, endTimes };
-  }, [currentInterval, startTime]);
+  }, [currentInterval, startTime, selectedDate, today]);
 
   // Reset or initialize start/end time when booking room or interval changes
   useEffect(() => {
@@ -467,7 +536,8 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
   // Open booking popup for room
   const handleOpenBookingModal = (roomItem) => {
-    if (roomItem.status === 'full') return;
+    if (selectedDate < today) return;
+    if (roomItem.status === 'full' || !roomItem.ranges?.length) return;
     setBookingError(null);
     setBookingSuccess(null);
     setSelectedIntervalIndex(0);
@@ -487,6 +557,19 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     if (!bookingModalRoom || !selectedDate || !startTime || !endTime || !customerName.trim() || !department.trim()) {
       setBookingError('กรุณากรอกข้อมูลให้ครบถ้วน');
       return;
+    }
+
+    if (selectedDate < today) {
+      setBookingError('ไม่สามารถจองวันที่ผ่านมาแล้วได้');
+      return;
+    }
+
+    if (selectedDate === today) {
+      const [sH, sM] = startTime.split(':').map(Number);
+      if (sH * 60 + sM <= getBangkokCurrentMinutes()) {
+        setBookingError('รอบเวลานี้ได้เริ่มไปแล้ว กรุณาเลือกรอบเวลาถัดไป');
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -509,7 +592,7 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
       const result = await res.json();
       if (!res.ok) {
-        setBookingError(result.error || 'ช่วงเวลานี้ถูกจองไปแล้ว กรุณาเลือกช่วงเวลาใหม่');
+        setBookingError(result.error || 'ห้องไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่น');
         // Refresh room availability while keeping customerName and department intact in state!
         setRequestVersion(v => v + 1);
         return;
@@ -878,21 +961,22 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
                             const isSelected = cell.date === selectedDate;
                             const hasFree = cell.freeRoomsCount > 0;
+                            const isPast = cell.isPast || cell.date < today;
 
                             return (
                               <button
                                 type="button"
                                 key={cell.date}
-                                className={`staff-cal-day ${cell.isToday ? 'staff-cal-day--today' : ''} ${isSelected ? 'staff-cal-day--selected' : ''}`}
+                                className={`staff-cal-day ${cell.isToday ? 'staff-cal-day--today' : ''} ${isSelected ? 'staff-cal-day--selected' : ''} ${isPast ? 'staff-cal-day--past' : ''}`}
                                 aria-pressed={isSelected}
                                 aria-expanded={isSelected}
                                 aria-current={cell.isToday ? 'date' : undefined}
-                                aria-label={`${dateFormat.format(new Date(cell.date))} ${hasFree ? `ว่าง ${cell.freeRoomsCount} ห้อง` : 'ห้องเต็ม'}`}
+                                aria-label={`${dateFormat.format(new Date(cell.date))} ${isPast ? '(ผ่านมาแล้ว)' : hasFree ? `ว่าง ${cell.freeRoomsCount} ห้อง` : 'ห้องเต็ม'}`}
                                 onClick={() => handleToggleDate(cell.date)}
                               >
                                 <span className="staff-cal-day__num">{cell.dayNumber}</span>
-                                <span className={`staff-cal-day__badge ${hasFree ? 'staff-cal-day__badge--free' : 'staff-cal-day__badge--full'}`}>
-                                  {hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
+                                <span className={`staff-cal-day__badge ${isPast ? 'staff-cal-day__badge--past' : hasFree ? 'staff-cal-day__badge--free' : 'staff-cal-day__badge--full'}`}>
+                                  {isPast ? 'ผ่านมาแล้ว' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
                                 </span>
                               </button>
                             );
@@ -1028,9 +1112,13 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
                                         {/* Card Action Button */}
                                         <div className="staff-room-card__footer">
-                                          {isFull ? (
+                                          {selectedDate < today ? (
+                                            <button type="button" className="staff-btn staff-btn--disabled" disabled title="วันที่ผ่านมาแล้ว ไม่สามารถจองย้อนหลังได้">
+                                              วันที่ผ่านมาแล้ว
+                                            </button>
+                                          ) : isFull ? (
                                             <button type="button" className="staff-btn staff-btn--disabled" disabled>
-                                              ห้องเต็ม
+                                              {selectedDate === today && (!rm.ranges || rm.ranges.length === 0) ? 'หมดเวลาจองวันนี้' : 'ห้องเต็ม'}
                                             </button>
                                           ) : (
                                             <button
@@ -1317,23 +1405,35 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                         </span>
                       </div>
                       <div className="staff-day-room-card__bookings">
-                        {grp.bookings.map((b, bIdx) => (
-                          <div key={bIdx} className="staff-day-room-booking-item">
-                            <div className="staff-day-room-booking-item__time">
-                              <Clock size={13} />
-                              <strong>{b.start_time} - {b.end_time} น.</strong>
+                        {(grp.displayItems || grp.bookings).map((item, bIdx) => (
+                          item.isCleaning ? (
+                            <div key={bIdx} className="staff-day-room-booking-item staff-day-room-booking-item--cleaning">
+                              <div className="staff-day-room-booking-item__time" style={{ color: '#64748b' }}>
+                                <Clock size={13} />
+                                <span>{item.start_time} - {item.end_time} น.</span>
+                              </div>
+                              <div className="staff-day-room-booking-item__user">
+                                <span className="staff-cleaning-tag">เว้นทำความสะอาด</span>
+                              </div>
                             </div>
-                            <div className="staff-day-room-booking-item__user">
-                              <span className="staff-day-room-booking-item__name">
-                                <User size={13} /> {b.customer_name}
-                              </span>
-                              {b.department && b.department !== '-' && (
-                                <span className="staff-day-room-booking-item__dept">
-                                  {b.department}
+                          ) : (
+                            <div key={bIdx} className="staff-day-room-booking-item">
+                              <div className="staff-day-room-booking-item__time">
+                                <Clock size={13} />
+                                <strong>{item.start_time} - {item.end_time} น.</strong>
+                              </div>
+                              <div className="staff-day-room-booking-item__user">
+                                <span className="staff-day-room-booking-item__name">
+                                  <User size={13} /> {item.customer_name}
                                 </span>
-                              )}
+                                {item.department && item.department !== '-' && (
+                                  <span className="staff-day-room-booking-item__dept">
+                                    {item.department}
+                                  </span>
+                                )}
+                              </div>
                             </div>
-                          </div>
+                          )
                         ))}
                       </div>
                     </div>

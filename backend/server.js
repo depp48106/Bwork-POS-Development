@@ -8631,8 +8631,8 @@ app.post(['/api/public/rooms/staff-booking', '/api/staff/rooms/staff-booking'], 
   if (date === todayStr) {
     const currentMins = bangkokNow.getUTCHours() * 60 + bangkokNow.getUTCMinutes();
     const [sH, sM] = sHHMM.split(':').map(Number);
-    if ((sH * 60 + sM) < currentMins) {
-      return res.status(400).json({ error: 'ไม่สามารถจองเวลาย้อนหลังได้ กรุณาเลือกเวลาปัจจุบันเป็นต้นไป' });
+    if ((sH * 60 + sM) <= currentMins) {
+      return res.status(400).json({ error: 'ไม่สามารถจองรอบเวลาที่เริ่มไปแล้วหรือย้อนหลังได้ กรุณาเลือกเวลาปัจจุบันเป็นต้นไป' });
     }
   }
 
@@ -8650,7 +8650,7 @@ app.post(['/api/public/rooms/staff-booking', '/api/staff/rooms/staff-booking'], 
 
       const overlapResult = await checkRoomOverlap(room_id, fullStart, fullEnd);
       if (overlapResult.hasOverlap) {
-        const err = new Error(formatOverlapErrorMessage(room.name, overlapResult));
+        const err = new Error('ห้องไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่น');
         err.statusCode = 409;
         throw err;
       }

@@ -474,6 +474,16 @@
   background-color: rgba(255, 255, 255, 0.22);
 }
 
+.staff-cal-day--past {
+  opacity: 0.65;
+  background-color: #f8fafc;
+}
+
+.staff-cal-day__badge--past {
+  color: #64748b;
+  background-color: #e2e8f0;
+}
+
 /* =========================================================================
    Inline Expanded Panel (Week Accordion - Underneath Clicked Week Row)
    ========================================================================= */
@@ -1418,6 +1428,24 @@
   justify-content: space-between;
   gap: 10px;
   font-size: 0.8rem;
+}
+
+.staff-day-room-booking-item--cleaning {
+  background-color: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  color: #64748b;
+}
+
+.staff-cleaning-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background-color: #e2e8f0;
+  color: #475569;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
 }
 
 .staff-day-room-booking-item__time {

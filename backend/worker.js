@@ -5157,8 +5157,8 @@ export default {
         if (date === todayStr) {
           const currentMins = bangkokNow.getUTCHours() * 60 + bangkokNow.getUTCMinutes();
           const [sH, sM] = sHHMM.split(':').map(Number);
-          if ((sH * 60 + sM) < currentMins) {
-            return new Response(JSON.stringify({ error: 'ไม่สามารถจองเวลาย้อนหลังได้ กรุณาเลือกเวลาปัจจุบันเป็นต้นไป' }), { status: 400, headers: corsHeaders });
+          if ((sH * 60 + sM) <= currentMins) {
+            return new Response(JSON.stringify({ error: 'ไม่สามารถจองรอบเวลาที่เริ่มไปแล้วหรือย้อนหลังได้ กรุณาเลือกเวลาปัจจุบันเป็นต้นไป' }), { status: 400, headers: corsHeaders });
           }
         }
 
@@ -5172,7 +5172,7 @@ export default {
 
         const overlapResult = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
         if (overlapResult.hasOverlap) {
-          return new Response(JSON.stringify({ error: formatOverlapErrorMessage(room.name, overlapResult) }), { status: 409, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: 'ห้องไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่น' }), { status: 409, headers: corsHeaders });
         }
 
         const dateStr = date.replace(/-/g, '');
@@ -5192,11 +5192,7 @@ export default {
         const bookingId = bookingInsert.meta?.last_row_id || bookingInsert.lastRowId;
 
         const bufferMins = Math.max(0, await getCleaningBufferMinutes(env));
-        const [eH, eM] = eHHMM.split(':').map(Number);
-        const endBufMins = eH * 60 + eM + bufferMins;
-        const bBufH = Math.floor(endBufMins / 60) % 24;
-        const bBufM = endBufMins % 60;
-        const fullEndBuffered = `${date}T${String(bBufH).padStart(2, '0')}:${String(bBufM).padStart(2, '0')}:00`;
+        const fullEndBuffered = addMinutesToLocalISO(fullEnd, bufferMins);
 
         const insItemRes = await env.DB.prepare(
           `INSERT INTO booking_items
@@ -5218,10 +5214,7 @@ export default {
 
         if (insItemRes?.meta?.changes !== 1) {
           await env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId).run();
-          const latestConflict = await checkRoomOverlap(env, room.id, fullStart, fullEnd);
-          return new Response(JSON.stringify({
-            error: formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins })
-          }), { status: 409, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: 'ห้องไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่น' }), { status: 409, headers: corsHeaders });
         }
 
         return new Response(JSON.stringify({
