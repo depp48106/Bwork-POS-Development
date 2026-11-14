@@ -18,10 +18,9 @@ import {
   getAvailabilityMonth,
   getRoomAvailabilityForDay
 } from '../../../shared/roomAvailability.mjs';
+import { API_BASE } from '../apiConfig.js';
 import { getRoomImageUrl } from '../utils/roomImageHelper';
 import './StaffAvailabilityPage.css';
-
-const API_BASE = import.meta.env.VITE_API_URL || '';
 
 // Internal Builtland departments
 const BUILTLAND_DEPARTMENTS = [
@@ -66,7 +65,8 @@ function getStaffAuthToken() {
   }
 }
 
-export default function StaffAvailabilityPage() {
+export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
+  const hasAuthToken = Boolean(getStaffAuthToken());
   const today = bangkokToday();
   const todayMonthKey = today.slice(0, 7);
   const [currentMonthKey, setCurrentMonthKey] = useState(() => todayMonthKey);
@@ -544,6 +544,32 @@ export default function StaffAvailabilityPage() {
               <h1 className="staff-header__title">BWORK Booking</h1>
               <span className="staff-header__tag">สำหรับพนักงาน</span>
             </div>
+          </div>
+          <div className="staff-header__right">
+            <a
+              href="/"
+              onClick={(e) => {
+                if (onNavigateToPos) {
+                  e.preventDefault();
+                  onNavigateToPos();
+                }
+              }}
+              className="staff-btn staff-btn--outline"
+              style={{
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '0.82rem',
+                padding: '6px 12px',
+                borderRadius: '6px',
+                color: '#ffffff',
+                border: '1px solid rgba(255,255,255,0.4)',
+                backgroundColor: 'rgba(255,255,255,0.1)'
+              }}
+            >
+              {hasAuthToken ? '← กลับหน้า POS' : 'เข้าสู่ระบบ POS'}
+            </a>
           </div>
         </div>
       </header>

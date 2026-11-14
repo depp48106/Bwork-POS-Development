@@ -5177,11 +5177,38 @@ export default {
 
         const bookingId = bookingInsert.meta?.last_row_id || bookingInsert.lastRowId;
 
-        await env.DB.prepare(
+        const bufferMins = Math.max(0, await getCleaningBufferMinutes(env));
+        const [eH, eM] = eHHMM.split(':').map(Number);
+        const endBufMins = eH * 60 + eM + bufferMins;
+        const bBufH = Math.floor(endBufMins / 60) % 24;
+        const bBufM = endBufMins % 60;
+        const fullEndBuffered = `${date}T${String(bBufH).padStart(2, '0')}:${String(bBufM).padStart(2, '0')}:00`;
+
+        const insItemRes = await env.DB.prepare(
           `INSERT INTO booking_items
            (booking_id, room_id, quantity, price, subtotal, start_time, end_time, booking_type, layout, pin_code, checkin_status)
-           VALUES (?, ?, 1, 0, 0, ?, ?, 'hourly', 'standard', ?, 'pending')`
-        ).bind(bookingId, room.id, fullStart, fullEnd, room.pin_code || '------').run();
+           SELECT ?, ?, 1, 0, 0, ?, ?, 'hourly', 'standard', ?, 'pending'
+           WHERE NOT EXISTS (
+             SELECT 1 FROM booking_items bi
+             JOIN bookings b ON bi.booking_id = b.id
+             WHERE bi.room_id = ?
+               AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+               AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
+               AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
+                    AND ? > bi.start_time)
+           )`
+        ).bind(
+          bookingId, room.id, fullStart, fullEnd, room.pin_code || '------',
+          room.id, fullStart, `+${bufferMins} minutes`, fullEndBuffered
+        ).run();
+
+        if (insItemRes?.meta?.changes !== 1) {
+          await env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId).run();
+          const latestConflict = await checkRoomOverlap(env, room.id, fullStart, fullEnd);
+          return new Response(JSON.stringify({
+            error: formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins })
+          }), { status: 409, headers: corsHeaders });
+        }
 
         return new Response(JSON.stringify({
           success: true,

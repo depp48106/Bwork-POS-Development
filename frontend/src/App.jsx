@@ -18,10 +18,17 @@ import LinePreview from './components/LinePreview';
 import { useLiveNotifications } from './hooks/useLiveNotifications';
 import NotificationCenter from './components/NotificationCenter';
 import LiveToastContainer from './components/LiveToastContainer';
+import StaffAvailabilityPage from './pages/StaffAvailabilityPage';
 import { authManager } from './authManager';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname.replace(/\/$/, '');
+      if (path === '/staff-booking') return 'staff-booking';
+    }
+    return 'dashboard';
+  });
   const [pendingTargetBooking, setPendingTargetBooking] = useState(null);
   const [posTargetView, setPosTargetView] = useState(null);
   const [showBasecampQuotaModal, setShowBasecampQuotaModal] = useState(false);
@@ -146,10 +153,26 @@ function App() {
 
   // Ensure current user stays on a permitted tab
   useEffect(() => {
+    if (activeTab === 'staff-booking') return;
     if (user && !hasPermission(activeTab)) {
       setActiveTab(getDefaultLandingTab(user));
     }
   }, [user, activeTab]);
+
+  // Synchronize browser history / popstate for /staff-booking
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handlePopState = () => {
+      const path = window.location.pathname.replace(/\/$/, '');
+      if (path === '/staff-booking') {
+        setActiveTab('staff-booking');
+      } else if (activeTab === 'staff-booking') {
+        setActiveTab('dashboard');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeTab]);
 
   // Dedicated route protection & deep-linking for /promotion-settings
   useEffect(() => {
@@ -537,6 +560,26 @@ function App() {
     return <LinePreview />;
   }
 
+  // Staff Availability Calendar Route (Accessible both anonymously with 0 PII and authenticated with staff session)
+  const isStaffBooking = typeof window !== 'undefined' && (
+    window.location.pathname.replace(/\/$/, '') === '/staff-booking' ||
+    window.location.hash.replace(/\/$/, '') === '#/staff-booking' ||
+    window.location.search.includes('tab=staff-booking') ||
+    activeTab === 'staff-booking'
+  );
+  if (isStaffBooking) {
+    return (
+      <StaffAvailabilityPage
+        onNavigateToPos={() => {
+          setActiveTab('dashboard');
+          if (typeof window !== 'undefined' && window.history?.pushState) {
+            window.history.pushState({}, '', '/');
+          }
+        }}
+      />
+    );
+  }
+
   // If there's no user, we render the login screen (no glass transition needed yet)
   if (!user) {
     return (
@@ -743,6 +786,19 @@ function App() {
                 <span>POS</span>
               </button>
             )}
+            <button
+              type="button"
+              className={`top-menu-item ${activeTab === 'staff-booking' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveTab('staff-booking');
+                if (typeof window !== 'undefined' && window.history?.pushState) {
+                  window.history.pushState({}, '', '/staff-booking');
+                }
+              }}
+            >
+              <Calendar size={15} />
+              <span>จองห้องประชุม</span>
+            </button>
             {hasPermission('pending') && (
               <button 
                 type="button"
@@ -859,7 +915,7 @@ function App() {
         {/* Right Side: User info text, Cart, Theme Toggle & Logout */}
         <div className="top-navbar-controls" style={{ display: 'flex', alignItems: 'center', gap: '12px', justifyContent: 'flex-end' }}>
           {hasPermission('admin-management') && (
-            <button 
+            <button
               type="button"
               className={`top-menu-item ${activeTab === 'settings' ? 'active' : ''}`}
               onClick={handleNavigateToSettings}
@@ -1000,6 +1056,20 @@ function App() {
                   <span>POS</span>
                 </div>
               )}
+              <div
+                className={`menu-card ${activeTab === 'staff-booking' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveTab('staff-booking');
+                  if (typeof window !== 'undefined' && window.history?.pushState) {
+                    window.history.pushState({}, '', '/staff-booking');
+                  }
+                }}
+              >
+                <div className="menu-card-icon-wrapper">
+                  <Calendar size={20} />
+                </div>
+                <span>จองห้องประชุม</span>
+              </div>
               {hasPermission('pending') && (
                 <div
                   className={`menu-card ${activeTab === 'pending' ? 'active' : ''}`}
