@@ -5102,6 +5102,100 @@ export default {
         return new Response(JSON.stringify(availability), { headers });
       }
 
+      if ((pathname === '/api/staff/rooms/availability-month' || pathname === '/api/rooms/availability-month') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) {
+          return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        }
+        const user = auth.user;
+        const isSuperAdmin = user.role === 'admin' || user.username === 'admin';
+        const perms = (user.permissions || '').split(',').map(p => p.trim());
+        const hasStaffPerm = isSuperAdmin || ['pos', 'layout', 'manage', 'dashboard'].some(p => perms.includes(p));
+        if (!hasStaffPerm) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงข้อมูลการจองสำหรับพนักงาน' }), { status: 403, headers: corsHeaders });
+        }
+
+        const {
+          getAvailabilityMonth, ACTIVE_AVAILABILITY_ROOMS_SQL, STAFF_ROOM_AVAILABILITY_INTERVALS_SQL,
+          getAvailabilityQueryParams, buildStaffAvailabilityResponse
+        } = await import('./roomAvailabilityQuery.mjs');
+        const month = getAvailabilityMonth(url.searchParams.get('month'));
+        const headers = { ...corsHeaders, 'Cache-Control': 'no-store' };
+        if (!month) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุเดือนในรูปแบบ YYYY-MM' }), { status: 400, headers });
+        }
+        const bufferMinutes = Math.max(0, await getCleaningBufferMinutes(env));
+        const [{ results: rooms }, { results: items }] = await env.DB.batch([
+          env.DB.prepare(ACTIVE_AVAILABILITY_ROOMS_SQL),
+          env.DB.prepare(STAFF_ROOM_AVAILABILITY_INTERVALS_SQL).bind(...getAvailabilityQueryParams(month, bufferMinutes))
+        ]);
+        const availability = buildStaffAvailabilityResponse(month, rooms, items, bufferMinutes, normalizeToLocalISO);
+        return new Response(JSON.stringify(availability), { headers });
+      }
+
+      if ((pathname === '/api/public/rooms/staff-booking' || pathname === '/api/staff/rooms/staff-booking') && method === 'POST') {
+        const body = await request.json().catch(() => ({}));
+        const { room_id, date, start_time, end_time, customer_name, department } = body;
+        if (!room_id || !date || !start_time || !end_time || !customer_name?.trim() || !department?.trim()) {
+          return new Response(JSON.stringify({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน (ห้อง, วันที่, เวลาเริ่ม-สิ้นสุด, แผนก, ชื่อผู้จอง)' }), { status: 400, headers: corsHeaders });
+        }
+        const sHHMM = start_time.substring(0, 5);
+        const eHHMM = end_time.substring(0, 5);
+        if (eHHMM <= sHHMM) {
+          return new Response(JSON.stringify({ error: 'เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น' }), { status: 400, headers: corsHeaders });
+        }
+        if (sHHMM < '08:00' || eHHMM > '18:00') {
+          return new Response(JSON.stringify({ error: 'เวลาจองต้องอยู่ระหว่างเวลาทำการ (08:00 - 18:00 น.)' }), { status: 400, headers: corsHeaders });
+        }
+
+        const room = await env.DB.prepare('SELECT * FROM rooms WHERE id = ? AND status = ?').bind(room_id, 'active').first();
+        if (!room) {
+          return new Response(JSON.stringify({ error: 'ไม่พบห้องที่เลือก หรือห้องไม่พร้อมใช้งาน' }), { status: 404, headers: corsHeaders });
+        }
+
+        const fullStart = normalizeToLocalISO(date, start_time);
+        const fullEnd = normalizeToLocalISO(date, end_time);
+
+        const overlapResult = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
+        if (overlapResult.hasOverlap) {
+          return new Response(JSON.stringify({ error: formatOverlapErrorMessage(room.name, overlapResult) }), { status: 409, headers: corsHeaders });
+        }
+
+        const dateStr = date.replace(/-/g, '');
+        const countRow = await env.DB.prepare('SELECT COUNT(*) as cnt FROM bookings WHERE created_at LIKE ?').bind(`${date}%`).first();
+        const seq = String((countRow ? countRow.cnt : 0) + 1).padStart(4, '0');
+        const receiptNumber = `STF-${dateStr}-${seq}`;
+
+        const bookingInsert = await env.DB.prepare(
+          `INSERT INTO bookings
+           (customer_name, department, internal_department, contact,
+            subtotal_amount, total_amount, paid_amount, balance_amount, payment_status, payment_method,
+            receipt_number, pin_code, checkin_status, booking_source, booking_channel, customer_type,
+            created_at)
+           VALUES (?, ?, ?, ?, 0, 0, 0, 0, 'paid', 'internal', ?, ?, 'pending', 'staff', 'staff_calendar', 'builtland', datetime('now', '+7 hours'))`
+        ).bind(customer_name.trim(), department.trim(), department.trim(), '-', receiptNumber, room.pin_code || '------').run();
+
+        const bookingId = bookingInsert.meta?.last_row_id || bookingInsert.lastRowId;
+
+        await env.DB.prepare(
+          `INSERT INTO booking_items
+           (booking_id, room_id, quantity, price, subtotal, start_time, end_time, booking_type, layout, pin_code, checkin_status)
+           VALUES (?, ?, 1, 0, 0, ?, ?, 'hourly', 'standard', ?, 'pending')`
+        ).bind(bookingId, room.id, fullStart, fullEnd, room.pin_code || '------').run();
+
+        return new Response(JSON.stringify({
+          success: true,
+          booking_id: bookingId,
+          receipt_number: receiptNumber,
+          room_name: room.name,
+          date,
+          start_time: sHHMM,
+          end_time: eHHMM,
+          customer_name: customer_name.trim(),
+          department: department.trim()
+        }), { status: 200, headers: corsHeaders });
+      }
+
       if (pathname === '/api/public/rooms/schedule') {
         const date = url.searchParams.get('date');
         const { results: rooms } = await env.DB.prepare("SELECT * FROM rooms WHERE status = 'active' ORDER BY name ASC").all();

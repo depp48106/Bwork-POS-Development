@@ -8,7 +8,8 @@ const { initDatabase, dbQuery, dbPath, hashPassword, verifyPassword } = require(
 const { performBackup } = require('./backup');
 const {
   getAvailabilityMonth, ACTIVE_AVAILABILITY_ROOMS_SQL, ROOM_AVAILABILITY_INTERVALS_SQL,
-  getAvailabilityQueryParams, buildAvailabilityResponse
+  STAFF_ROOM_AVAILABILITY_INTERVALS_SQL, getAvailabilityQueryParams,
+  buildAvailabilityResponse, buildStaffAvailabilityResponse
 } = require('./roomAvailabilityQuery.mjs');
 const {
   generateDatabaseDumpSql,
@@ -8581,6 +8582,120 @@ app.get('/api/public/rooms/availability-month', async (req, res) => {
   } catch (err) {
     console.error('Monthly room availability failed:', err);
     return res.status(500).json({ error: 'ไม่สามารถโหลดตารางห้องประชุมได้' });
+  }
+});
+
+// Authenticated staff monthly room availability endpoint (requires staff permissions: pos, layout, manage, dashboard)
+app.get(['/api/staff/rooms/availability-month', '/api/rooms/availability-month'], authenticateToken, requireAnyPermission('pos', 'layout', 'manage', 'dashboard'), async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const month = getAvailabilityMonth(req.query.month);
+  if (!month) {
+    return res.status(400).json({ error: 'กรุณาระบุเดือนในรูปแบบ YYYY-MM' });
+  }
+  try {
+    const bufferMinutes = Math.max(0, await getCleaningBufferMinutes());
+    const [rooms, items] = await Promise.all([
+      dbQuery.all(ACTIVE_AVAILABILITY_ROOMS_SQL),
+      dbQuery.all(STAFF_ROOM_AVAILABILITY_INTERVALS_SQL, getAvailabilityQueryParams(month, bufferMinutes))
+    ]);
+    return res.json(buildStaffAvailabilityResponse(month, rooms, items, bufferMinutes, normalizeToLocalISO));
+  } catch (err) {
+    console.error('Staff monthly room availability failed:', err);
+    return res.status(500).json({ error: 'ไม่สามารถโหลดตารางห้องประชุมได้' });
+  }
+});
+
+// Staff booking endpoint (single-page staff calendar booking)
+app.post(['/api/public/rooms/staff-booking', '/api/staff/rooms/staff-booking'], async (req, res) => {
+  const { room_id, date, start_time, end_time, customer_name, department } = req.body || {};
+  if (!room_id || !date || !start_time || !end_time || !customer_name?.trim() || !department?.trim()) {
+    return res.status(400).json({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน (ห้อง, วันที่, เวลาเริ่ม-สิ้นสุด, แผนก, ชื่อผู้จอง)' });
+  }
+
+  const sHHMM = start_time.substring(0, 5);
+  const eHHMM = end_time.substring(0, 5);
+  if (eHHMM <= sHHMM) {
+    return res.status(400).json({ error: 'เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น' });
+  }
+  if (sHHMM < '08:00' || eHHMM > '18:00') {
+    return res.status(400).json({ error: 'เวลาจองต้องอยู่ระหว่างเวลาทำการ (08:00 - 18:00 น.)' });
+  }
+
+  // Check past date / time based on Bangkok wall-clock
+  const now = new Date();
+  const bangkokNow = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+  const todayStr = bangkokNow.toISOString().slice(0, 10);
+  if (date < todayStr) {
+    return res.status(400).json({ error: 'ไม่สามารถจองวันที่ผ่านมาแล้วได้' });
+  }
+  if (date === todayStr) {
+    const currentMins = bangkokNow.getUTCHours() * 60 + bangkokNow.getUTCMinutes();
+    const [sH, sM] = sHHMM.split(':').map(Number);
+    if ((sH * 60 + sM) < currentMins) {
+      return res.status(400).json({ error: 'ไม่สามารถจองเวลาย้อนหลังได้ กรุณาเลือกเวลาปัจจุบันเป็นต้นไป' });
+    }
+  }
+
+  try {
+    const result = await dbQuery.transaction(async () => {
+      const room = await dbQuery.get('SELECT * FROM rooms WHERE id = ? AND status = ?', [room_id, 'active']);
+      if (!room) {
+        const err = new Error('ไม่พบห้องที่เลือก หรือห้องไม่พร้อมใช้งาน');
+        err.statusCode = 404;
+        throw err;
+      }
+
+      const fullStart = normalizeToLocalISO(date, start_time);
+      const fullEnd = normalizeToLocalISO(date, end_time);
+
+      const overlapResult = await checkRoomOverlap(room_id, fullStart, fullEnd);
+      if (overlapResult.hasOverlap) {
+        const err = new Error(formatOverlapErrorMessage(room.name, overlapResult));
+        err.statusCode = 409;
+        throw err;
+      }
+
+      const dateStr = date.replace(/-/g, '');
+      const countRow = await dbQuery.get('SELECT COUNT(*) as cnt FROM bookings WHERE created_at LIKE ?', [`${date}%`]);
+      const seq = String((countRow ? countRow.cnt : 0) + 1).padStart(4, '0');
+      const receiptNumber = `STF-${dateStr}-${seq}`;
+
+      const bookingInsert = await dbQuery.run(
+        `INSERT INTO bookings
+         (customer_name, department, internal_department, contact,
+          subtotal_amount, total_amount, paid_amount, balance_amount, payment_status, payment_method,
+          receipt_number, pin_code, checkin_status, booking_source, booking_channel, customer_type,
+          created_at)
+         VALUES (?, ?, ?, ?, 0, 0, 0, 0, 'paid', 'internal', ?, ?, 'pending', 'staff', 'staff_calendar', 'builtland', datetime('now', 'localtime'))`,
+        [customer_name.trim(), department.trim(), department.trim(), '-', receiptNumber, room.pin_code || '------']
+      );
+
+      const bookingId = bookingInsert.id || bookingInsert.lastID;
+
+      await dbQuery.run(
+        `INSERT INTO booking_items
+         (booking_id, room_id, quantity, price, subtotal, start_time, end_time, booking_type, layout, pin_code, checkin_status)
+         VALUES (?, ?, 1, 0, 0, ?, ?, 'hourly', 'standard', ?, 'pending')`,
+        [bookingId, room.id, fullStart, fullEnd, room.pin_code || '------']
+      );
+
+      return {
+        success: true,
+        booking_id: bookingId,
+        receipt_number: receiptNumber,
+        room_name: room.name,
+        date,
+        start_time: sHHMM,
+        end_time: eHHMM,
+        customer_name: customer_name.trim(),
+        department: department.trim()
+      };
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('Staff booking failed:', err);
+    res.status(err.statusCode || 500).json({ error: err.message || 'บันทึกการจองไม่สำเร็จ' });
   }
 });
 
