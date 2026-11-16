@@ -45,10 +45,20 @@
 .staff-header {
   background-color: var(--staff-navy-primary);
   color: #ffffff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 2px 10px rgba(19, 36, 64, 0.15);
   position: sticky;
   top: 0;
   z-index: 40;
+  transition: background-color 0.2s ease, backdrop-filter 0.2s ease;
+}
+
+@supports (backdrop-filter: blur(12px)) or (-webkit-backdrop-filter: blur(12px)) {
+  .staff-header {
+    background-color: rgba(19, 36, 64, 0.88);
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  }
 }
 
 .staff-header__inner {
@@ -412,9 +422,22 @@
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--staff-border);
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background-color: #ffffff;
+  border: 1px solid var(--staff-border);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(19, 36, 64, 0.04);
+}
+
+@supports (backdrop-filter: blur(10px)) or (-webkit-backdrop-filter: blur(10px)) {
+  .staff-cal-nav {
+    background-color: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(10px) saturate(160%);
+    -webkit-backdrop-filter: blur(10px) saturate(160%);
+    border: 1px solid rgba(19, 36, 64, 0.1);
+    box-shadow: 0 4px 16px rgba(19, 36, 64, 0.05);
+  }
 }
 
 .staff-cal-nav__title-group {
@@ -1045,8 +1068,21 @@
   gap: 16px;
   flex-wrap: wrap;
   margin-bottom: 16px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--staff-border);
+  padding: 12px 16px;
+  background-color: #ffffff;
+  border: 1px solid var(--staff-border);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(19, 36, 64, 0.04);
+}
+
+@supports (backdrop-filter: blur(10px)) or (-webkit-backdrop-filter: blur(10px)) {
+  .staff-pos-nav {
+    background-color: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(10px) saturate(160%);
+    -webkit-backdrop-filter: blur(10px) saturate(160%);
+    border: 1px solid rgba(19, 36, 64, 0.1);
+    box-shadow: 0 4px 16px rgba(19, 36, 64, 0.05);
+  }
 }
 
 .staff-pos-nav__title-group {
@@ -1073,29 +1109,38 @@
   flex-wrap: wrap;
 }
 
+.staff-pos-nav--mobile {
+  display: none;
+}
+
 .staff-pos-grid-scroll {
   width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   margin-bottom: 16px;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x pan-y;
 }
 
 .staff-pos-grid {
   min-width: 720px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   background-color: var(--staff-border);
   border: 1px solid var(--staff-border);
   border-radius: 10px;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .staff-pos-weekdays {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 1px;
-  background-color: #f1f5f9;
+  background-color: var(--staff-border);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .staff-pos-weekday-cell {
@@ -1105,6 +1150,11 @@
   font-weight: 700;
   color: var(--staff-navy-primary);
   background-color: #f8fafc;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .staff-pos-body {
@@ -1112,12 +1162,17 @@
   flex-direction: column;
   gap: 1px;
   background-color: var(--staff-border);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .staff-pos-row {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 1px;
+  background-color: var(--staff-border);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .staff-pos-cell {
@@ -1129,6 +1184,9 @@
   cursor: pointer;
   transition: all 0.15s ease;
   user-select: none;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .staff-pos-cell:hover {
@@ -1155,6 +1213,8 @@
   align-items: center;
   justify-content: space-between;
   margin-bottom: 4px;
+  min-width: 0;
+  width: 100%;
 }
 
 .staff-pos-cell__day-num {
@@ -1208,6 +1268,9 @@
   flex-direction: column;
   gap: 4px;
   flex: 1;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
 }
 
 /* Event Chips in POS Calendar Cells (Actionable Button) */
@@ -1219,6 +1282,8 @@
   font-family: inherit;
   text-align: left;
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   cursor: pointer;
   padding: 4px 6px;
   border-radius: 6px;
@@ -1366,6 +1431,11 @@
   cursor: pointer;
   text-align: center;
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition: all 0.15s ease;
 }
 
@@ -2133,11 +2203,136 @@
     box-sizing: border-box;
   }
 
-  /* 4. POS Monthly Calendar: horizontal scrolling contained inside grid frame */
-  .staff-pos-nav {
+  /* 4. POS Monthly Calendar: Mobile Top Control Bar */
+  .staff-pos-nav--desktop {
+    display: none !important;
+  }
+
+  .staff-pos-nav--mobile {
+    display: flex;
     flex-direction: column;
-    align-items: stretch;
     gap: 10px;
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 12px;
+  }
+
+  /* แถว 1: ปุ่ม “กลับหน้าจองห้อง” ชิดซ้าย พร้อมไอคอนลูกศรซ้ายอันเดียว */
+  .staff-pos-nav-mobile__row-back {
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+    width: 100%;
+  }
+
+  .staff-pos-nav-mobile__btn-back {
+    height: 38px;
+    padding: 0 14px;
+    font-size: 0.84rem;
+    font-weight: 600;
+    border-radius: 8px;
+    background-color: #ffffff;
+    color: var(--staff-navy-primary);
+    border: 1px solid var(--staff-border);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    transition: all 0.15s ease;
+  }
+
+  .staff-pos-nav-mobile__btn-back:hover,
+  .staff-pos-nav-mobile__btn-back:active {
+    border-color: var(--staff-navy-primary);
+    background-color: var(--staff-navy-light);
+  }
+
+  /* แถว 2: แถบเลือกเดือนแบบ Liquid Glass (ลูกศรซ้าย - ชื่อเดือน/ปีกึ่งกลาง - ลูกศรขวา) */
+  .staff-pos-nav-mobile__month-bar {
+    display: grid;
+    grid-template-columns: 44px 1fr 44px;
+    align-items: center;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px;
+    background-color: #ffffff; /* Solid fallback */
+    border: 1px solid var(--staff-border);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(19, 36, 64, 0.04);
+  }
+
+  @supports (backdrop-filter: blur(10px)) or (-webkit-backdrop-filter: blur(10px)) {
+    .staff-pos-nav-mobile__month-bar {
+      background-color: rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(10px) saturate(160%);
+      -webkit-backdrop-filter: blur(10px) saturate(160%);
+      border: 1px solid rgba(19, 36, 64, 0.1);
+      box-shadow: 0 4px 16px rgba(19, 36, 64, 0.05);
+    }
+  }
+
+  /* ปุ่มลูกศรซ้าย-ขวา พื้นที่แตะอย่างน้อย 44x44 px */
+  .staff-pos-nav-mobile__arrow-btn {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--staff-border);
+    background-color: #ffffff;
+    color: var(--staff-navy-primary);
+    border-radius: 8px;
+    cursor: pointer;
+    padding: 0;
+    transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+    flex-shrink: 0;
+  }
+
+  .staff-pos-nav-mobile__arrow-btn:hover,
+  .staff-pos-nav-mobile__arrow-btn:active {
+    background-color: var(--staff-navy-light);
+    border-color: var(--staff-navy-primary);
+  }
+
+  /* ชื่อเดือนและปี พ.ศ. กึ่งกลางจริงแม้ชื่อยาว */
+  .staff-pos-nav-mobile__month-title {
+    margin: 0;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--staff-navy-primary);
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 6px;
+    line-height: 1.3;
+  }
+
+  @media (max-width: 350px) {
+    .staff-pos-nav-mobile__month-title {
+      font-size: 0.92rem;
+      padding: 0 2px;
+    }
+  }
+
+  /* แถว 3: ปุ่ม “เดือนปัจจุบัน” ชิดขวา เฉพาะเมื่อดูเดือนอื่น */
+  .staff-pos-nav-mobile__row-today {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    width: 100%;
+  }
+
+  .staff-pos-nav-mobile__btn-today {
+    height: 36px;
+    padding: 0 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border-radius: 8px;
   }
 
   .staff-pos-cal-card {
@@ -2150,7 +2345,7 @@
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-x: contain;
-    touch-action: pan-x;
+    touch-action: pan-x pan-y;
   }
 
   .staff-pos-grid {

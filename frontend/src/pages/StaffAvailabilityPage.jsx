@@ -38,6 +38,56 @@ const BUILTLAND_DEPARTMENTS = [
 const WEEKDAYS = ['จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.', 'อา.'];
 const WEEKDAYS_FULL = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์', 'อาทิตย์'];
 
+// Room sorting helper according to room number:
+// 1. Pluto (201)
+// 2. Jupiter (300)
+// 3. Jupiter & Co-Working
+// 4. Mars (301)
+// 5. Mercury (302)
+// 6. Saturn (303)
+// 7. Venus (304)
+// 8. Uranus (305)
+// 9. Neptune (306)
+// 10. เหมาโซน Co-working
+function getRoomSortKey(r) {
+  const name = (r?.name || '').trim();
+  const lower = name.toLowerCase();
+
+  // 1. เหมาโซน Co-working / Whole zone package always goes last
+  if (name.includes('เหมาโซน') || (lower.includes('co-working') && !lower.includes('jupiter'))) {
+    return { num: 999999, sub: 99, name };
+  }
+
+  // 2. Jupiter handling: treat as 300 even if no number in name
+  let num = null;
+  const match = name.match(/\d+/);
+  if (match) {
+    num = parseInt(match[0], 10);
+  } else if (lower.includes('jupiter')) {
+    num = 300;
+  } else {
+    num = 999000;
+  }
+
+  // 3. Sub-rank: standalone room comes before combo package (& Co-Working)
+  let sub = 0;
+  if (lower.includes('&') || lower.includes('co-working')) {
+    sub = 1;
+  }
+
+  return { num, sub, name };
+}
+
+function sortRoomsByNumber(roomList) {
+  return [...roomList].sort((a, b) => {
+    const keyA = getRoomSortKey(a);
+    const keyB = getRoomSortKey(b);
+    if (keyA.num !== keyB.num) return keyA.num - keyB.num;
+    if (keyA.sub !== keyB.sub) return keyA.sub - keyB.sub;
+    return keyA.name.localeCompare(keyB.name, 'th');
+  });
+}
+
 function bangkokToday() {
   const now = new Date();
   const bangkok = new Date(now.getTime() + 7 * 60 * 60 * 1000);
@@ -340,10 +390,10 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     }
   }, [currentMonthKey, todayMonthKey, availabilityData]);
 
-  // Merge room list with metadata (image_url, capacity)
+  // Merge room list with metadata (image_url, capacity) and sort by room number
   const rooms = useMemo(() => {
     const rawList = availabilityData?.rooms || roomsMetadata;
-    return rawList.map(r => {
+    const merged = rawList.map(r => {
       const meta = roomsMetadata.find(m => m.id === r.id);
       return {
         ...r,
@@ -352,6 +402,7 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
         description: meta?.description || r.description || ''
       };
     });
+    return sortRoomsByNumber(merged);
   }, [availabilityData, roomsMetadata]);
 
   // Room lookup map
@@ -772,8 +823,8 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
              ========================================================================= */
           <section className="staff-pos-section" aria-label="ตารางจองห้องประชุมรายเดือนแบบ POS">
             <div className="staff-pos-cal-card">
-              {/* POS Month Navigation Bar */}
-              <div className="staff-pos-nav">
+              {/* POS Month Navigation Bar - Desktop (min-width: 900px) */}
+              <div className="staff-pos-nav staff-pos-nav--desktop">
                 <div className="staff-pos-nav__title-group">
                   <Calendar size={22} className="staff-pos-nav__icon" />
                   <h2 className="staff-pos-nav__title" id="staff-pos-month-title">
@@ -823,9 +874,68 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                     title="กลับหน้าจองห้อง"
                   >
                     <ChevronLeft size={15} />
-                    <span>← กลับหน้าจองห้อง</span>
+                    <span>กลับหน้าจองห้อง</span>
                   </button>
                 </div>
+              </div>
+
+              {/* POS Month Navigation Bar - Mobile (max-width: 899px) */}
+              <div className="staff-pos-nav--mobile">
+                {/* แถว 1: ปุ่ม “กลับหน้าจองห้อง” ชิดซ้าย พร้อมไอคอนลูกศรซ้ายเพียงอันเดียว */}
+                <div className="staff-pos-nav-mobile__row-back">
+                  <button
+                    type="button"
+                    className="staff-btn staff-btn--outline staff-pos-nav-mobile__btn-back"
+                    onClick={handleClosePosView}
+                    id="staff-btn-back-to-booking-mobile"
+                    title="กลับหน้าจองห้อง"
+                  >
+                    <ChevronLeft size={16} />
+                    <span>กลับหน้าจองห้อง</span>
+                  </button>
+                </div>
+
+                {/* แถว 2: แถบเลือกเดือนแบบ Liquid Glass (ลูกศรซ้าย - ชื่อเดือน/ปีกึ่งกลาง - ลูกศรขวา) */}
+                <div className="staff-pos-nav-mobile__month-bar">
+                  <button
+                    type="button"
+                    className="staff-pos-nav-mobile__arrow-btn"
+                    onClick={() => changeMonth(-1)}
+                    title="เดือนก่อนหน้า"
+                    aria-label="เดือนก่อนหน้า"
+                  >
+                    <ChevronLeft size={22} />
+                  </button>
+
+                  <h2 className="staff-pos-nav-mobile__month-title" id="staff-pos-month-title-mobile">
+                    {monthDisplay || 'กำลังโหลด…'}
+                  </h2>
+
+                  <button
+                    type="button"
+                    className="staff-pos-nav-mobile__arrow-btn"
+                    onClick={() => changeMonth(1)}
+                    title="เดือนถัดไป"
+                    aria-label="เดือนถัดไป"
+                  >
+                    <ChevronRight size={22} />
+                  </button>
+                </div>
+
+                {/* แถว 3: ปุ่ม “เดือนปัจจุบัน” ชิดขวา เฉพาะตอนเปิดดูเดือนอื่น (หายไปทั้งแถวเมื่ออยู่เดือนปัจจุบัน) */}
+                {currentMonthKey !== todayMonthKey && (
+                  <div className="staff-pos-nav-mobile__row-today">
+                    <button
+                      type="button"
+                      className="staff-btn staff-btn--today staff-pos-nav-mobile__btn-today"
+                      onClick={jumpToToday}
+                      title="เดือนปัจจุบัน (วันนี้)"
+                    >
+                      <Calendar size={14} />
+                      <span>เดือนปัจจุบัน</span>
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Status & Error notice */}
