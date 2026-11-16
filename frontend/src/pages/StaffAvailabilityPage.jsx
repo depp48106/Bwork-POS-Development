@@ -170,6 +170,9 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
   // Day Bookings Detail Modal (for "ดูเพิ่มเติม" in POS calendar view)
   const [dayBookingsModalDate, setDayBookingsModalDate] = useState(null);
 
+  // Single Event Detail Modal / Bottom Sheet (when clicking a booking chip in POS calendar view)
+  const [selectedEventDetail, setSelectedEventDetail] = useState(null);
+
   // Form states (kept across conflict/refresh)
   const [customerName, setCustomerName] = useState('');
   const [department, setDepartment] = useState(BUILTLAND_DEPARTMENTS[0]);
@@ -869,17 +872,28 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                               role="button"
                               tabIndex={0}
                               onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
+                                if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
                                   e.preventDefault();
                                   handleSelectDateFromPosCalendar(cell.date);
                                 }
                               }}
-                              title={`คลิกเพื่อกลับหน้าจองห้องและเลือกวันที่ ${cell.dayNumber}`}
+                              title={`คลิกพื้นที่ว่างหรือเลขวันที่เพื่อกลับหน้าจองและเลือกวันที่ ${cell.dayNumber}`}
                             >
                               <div className="staff-pos-cell__head">
-                                <span className={`staff-pos-cell__day-num ${cell.isToday ? 'staff-pos-cell__day-num--today' : ''}`}>
-                                  {cell.dayNumber}
-                                </span>
+                                <button
+                                  type="button"
+                                  className="staff-pos-cell__day-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleSelectDateFromPosCalendar(cell.date);
+                                  }}
+                                  title={`เลือกวันที่ ${cell.dayNumber} และกลับหน้าจอง`}
+                                  aria-label={`เลือกวันที่ ${cell.dayNumber} และกลับหน้าจอง`}
+                                >
+                                  <span className={`staff-pos-cell__day-num ${cell.isToday ? 'staff-pos-cell__day-num--today' : ''}`}>
+                                    {cell.dayNumber}
+                                  </span>
+                                </button>
                                 {dayEvents.length > 0 && (
                                   <span className="staff-pos-cell__queue-badge">
                                     {dayEvents.length} คิว
@@ -889,26 +903,54 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
                               {/* Booked Events List Chips */}
                               <div className="staff-pos-events">
-                                {dayEvents.slice(0, 2).map((ev, evIdx) => (
-                                  <div
-                                    key={evIdx}
-                                    className={`staff-pos-event-chip staff-pos-event-chip--${ev.booker_type_code}`}
-                                    title={`${ev.room_name} เวลา ${ev.start_time} - ${ev.end_time} น. · ${ev.booker_type} · ${ev.current_status}${ev.customer_name ? ` (${ev.customer_name})` : ''}`}
-                                  >
-                                    <div className="staff-pos-event-chip__top">
-                                      <span className="staff-pos-event-chip__room">{ev.room_name}</span>
-                                      <span className="staff-pos-event-chip__time">{ev.start_time}-{ev.end_time}</span>
-                                    </div>
-                                    <div className="staff-pos-event-chip__bottom">
-                                      <span className={`staff-pos-event-chip__type staff-pos-event-chip__type--${ev.booker_type_code}`}>
-                                        {ev.booker_type}
-                                      </span>
-                                      <span className={`staff-pos-event-chip__status staff-pos-event-chip__status--${ev.status_code}`}>
-                                        {ev.current_status}
-                                      </span>
-                                    </div>
-                                  </div>
-                                ))}
+                                {dayEvents.slice(0, 2).map((ev, evIdx) => {
+                                  const hasBookerName = Boolean(ev.customer_name && ev.customer_name.trim());
+                                  const chipPrimaryText = hasBookerName
+                                    ? `${ev.customer_name} (${ev.booker_type})`
+                                    : ev.booker_type;
+
+                                  return (
+                                    <button
+                                      type="button"
+                                      key={evIdx}
+                                      className={`staff-pos-event-chip staff-pos-event-chip--${ev.booker_type_code}`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedEventDetail({
+                                          ...ev,
+                                          date: cell.date,
+                                          dateFormatted: dateFormat.format(new Date(cell.date))
+                                        });
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          setSelectedEventDetail({
+                                            ...ev,
+                                            date: cell.date,
+                                            dateFormatted: dateFormat.format(new Date(cell.date))
+                                          });
+                                        }
+                                      }}
+                                      title={`${chipPrimaryText} | ${ev.room_name} ${ev.start_time} - ${ev.end_time} น. | ${ev.current_status}`}
+                                      aria-label={`ดูรายละเอียดการจอง: ${chipPrimaryText} ${ev.room_name} ${ev.start_time} ถึง ${ev.end_time}`}
+                                    >
+                                      <div className="staff-pos-event-chip__main-row">
+                                        <span className="staff-pos-event-chip__title" title={chipPrimaryText}>
+                                          {chipPrimaryText}
+                                        </span>
+                                      </div>
+                                      <div className="staff-pos-event-chip__sub-row">
+                                        <span className="staff-pos-event-chip__room">{ev.room_name}</span>
+                                        <span className="staff-pos-event-chip__time">{ev.start_time}-{ev.end_time}</span>
+                                        <span className={`staff-pos-event-chip__status staff-pos-event-chip__status--${ev.status_code}`}>
+                                          {ev.current_status}
+                                        </span>
+                                      </div>
+                                    </button>
+                                  );
+                                })}
 
                                 {/* ปุ่ม "ดูเพิ่มเติม" เปิดรายละเอียดในหน้ารายเดือนโดยไม่เรียกการทำงานของช่องวัน */}
                                 {dayEvents.length > 0 && (
@@ -918,6 +960,13 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setDayBookingsModalDate(cell.date);
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setDayBookingsModalDate(cell.date);
+                                      }
                                     }}
                                     title={`ดูรายละเอียดการจองวันที่ ${cell.dayNumber} ทั้งหมด ${dayEvents.length} รายการ`}
                                   >
@@ -1721,6 +1770,134 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                 type="button"
                 className="staff-btn staff-btn--outline"
                 onClick={() => setDayBookingsModalDate(null)}
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          SINGLE BOOKING DETAIL MODAL (DESKTOP) / BOTTOM SHEET (MOBILE)
+          - กดรายการจอง -> เปิดรายละเอียดของรายการนั้น เช่น ห้อง วัน เวลา ประเภท สถานะ
+          - แสดงชื่อผู้จองกับแผนกเฉพาะเมื่อ Staff API ส่งให้ (มีสิทธิ์)
+          - อยู่ในหน้ารายเดือนเดิม ไม่พาออกจากหน้ารายเดือน
+          ========================================================================= */}
+      {selectedEventDetail && (
+        <div
+          className="staff-modal-backdrop"
+          onClick={() => setSelectedEventDetail(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="staff-event-detail-title"
+        >
+          <div
+            className="staff-modal-container staff-modal-container--sm"
+            onClick={(e) => e.stopPropagation()}
+            id="staff-event-detail-modal"
+          >
+            <div className="staff-modal-header">
+              <div>
+                <h3 className="staff-modal-title" id="staff-event-detail-title">
+                  รายละเอียดรายการจอง
+                </h3>
+                <p className="staff-modal-meta">
+                  {selectedEventDetail.dateFormatted || selectedEventDetail.date}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="staff-modal-close"
+                onClick={() => setSelectedEventDetail(null)}
+                aria-label="ปิดรายละเอียดรายการ"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="staff-modal-body">
+              <div className="staff-detail-grid">
+                {/* Room Info */}
+                <div className="staff-detail-item">
+                  <span className="staff-detail-item__label">
+                    <Building size={16} /> ห้องประชุม
+                  </span>
+                  <span className="staff-detail-item__value staff-detail-item__value--highlight">
+                    {selectedEventDetail.room_name}
+                    {selectedEventDetail.room_capacity ? (
+                      <span className="staff-detail-item__sub">({selectedEventDetail.room_capacity} ที่นั่ง)</span>
+                    ) : null}
+                  </span>
+                </div>
+
+                {/* Time Info */}
+                <div className="staff-detail-item">
+                  <span className="staff-detail-item__label">
+                    <Clock size={16} /> ช่วงเวลาที่จอง
+                  </span>
+                  <span className="staff-detail-item__value">
+                    {selectedEventDetail.start_time} - {selectedEventDetail.end_time} น.
+                  </span>
+                </div>
+
+                {/* Booker Type Badge */}
+                <div className="staff-detail-item">
+                  <span className="staff-detail-item__label">
+                    <Users size={16} /> ประเภทผู้จอง
+                  </span>
+                  <div className="staff-detail-item__value">
+                    <span className={`staff-booker-type-badge staff-booker-type-badge--${selectedEventDetail.booker_type_code}`}>
+                      {selectedEventDetail.booker_type}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Real-time Status Pill */}
+                <div className="staff-detail-item">
+                  <span className="staff-detail-item__label">
+                    <AlertCircle size={16} /> สถานะการใช้งาน
+                  </span>
+                  <div className="staff-detail-item__value">
+                    <span className={`staff-status-pill staff-status-pill--${selectedEventDetail.status_code}`}>
+                      <span className="staff-status-pill__dot" />
+                      {selectedEventDetail.current_status}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Authorized Booker Details (shown ONLY when Staff API provides them) */}
+                {selectedEventDetail.customer_name ? (
+                  <>
+                    <div className="staff-detail-item staff-detail-item--full staff-detail-item--card">
+                      <span className="staff-detail-item__label">
+                        <User size={16} /> ชื่อผู้จอง (ข้อมูลภายใน)
+                      </span>
+                      <span className="staff-detail-item__value staff-detail-item__value--user" id="staff-detail-booker-name">
+                        {selectedEventDetail.customer_name}
+                      </span>
+                    </div>
+
+                    {selectedEventDetail.department && selectedEventDetail.department !== '-' ? (
+                      <div className="staff-detail-item staff-detail-item--full staff-detail-item--card">
+                        <span className="staff-detail-item__label">
+                          <Building size={16} /> แผนก / สังกัด
+                        </span>
+                        <span className="staff-detail-item__value" id="staff-detail-booker-dept">
+                          {selectedEventDetail.department}
+                        </span>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="staff-modal-footer">
+              <button
+                type="button"
+                className="staff-btn staff-btn--outline staff-btn--full"
+                onClick={() => setSelectedEventDetail(null)}
               >
                 ปิด
               </button>

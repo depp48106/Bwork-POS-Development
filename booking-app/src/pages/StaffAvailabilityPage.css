@@ -1184,6 +1184,25 @@
   border-radius: 4px;
 }
 
+.staff-pos-cell__day-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  outline: none;
+  border-radius: 50%;
+}
+
+.staff-pos-cell__day-btn:focus-visible {
+  outline: 2px solid var(--staff-navy-primary);
+}
+
+.staff-pos-cell__day-btn:hover .staff-pos-cell__day-num:not(.staff-pos-cell__day-num--today) {
+  background-color: var(--staff-navy-light);
+  color: var(--staff-navy-primary);
+}
+
 .staff-pos-events {
   display: flex;
   flex-direction: column;
@@ -1191,61 +1210,88 @@
   flex: 1;
 }
 
-/* Event Chips in POS Calendar Cells */
+/* Event Chips in POS Calendar Cells (Actionable Button) */
 .staff-pos-event-chip {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  outline: none;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
   padding: 4px 6px;
   border-radius: 6px;
-  font-size: 0.68rem;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   overflow: hidden;
-  border: 1px solid transparent;
-  transition: all 0.15s ease;
+  margin-bottom: 3px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+  user-select: none;
 }
 
-.staff-pos-event-chip__top {
+.staff-pos-event-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.12);
+}
+
+.staff-pos-event-chip:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+}
+
+.staff-pos-event-chip__main-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 4px;
+  overflow: hidden;
+  width: 100%;
 }
 
-.staff-pos-event-chip__room {
+.staff-pos-event-chip__title {
+  font-size: 0.68rem;
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.staff-pos-event-chip__sub-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 0.62rem;
+  width: 100%;
+}
+
+.staff-pos-event-chip__room {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .staff-pos-event-chip__time {
   font-weight: 600;
   flex-shrink: 0;
-  font-size: 0.65rem;
-}
-
-.staff-pos-event-chip__bottom {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-}
-
-.staff-pos-event-chip__type {
   font-size: 0.62rem;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .staff-pos-event-chip__status {
-  font-size: 0.6rem;
+  font-size: 0.58rem;
   font-weight: 600;
   padding: 1px 4px;
   border-radius: 3px;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* Builtland staff chip: Navy #132440, white text #ffffff */
@@ -1605,6 +1651,76 @@
   padding: 20px;
   overflow-y: auto;
   flex: 1;
+}
+
+/* Single Event Detail Grid */
+.staff-detail-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.staff-detail-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background-color: var(--staff-bg-subtle);
+  border: 1px solid var(--staff-border);
+  border-radius: 10px;
+  font-size: 0.85rem;
+}
+
+.staff-detail-item--full {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.staff-detail-item--card {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  background-color: #f8fafc;
+  border-left: 3px solid var(--staff-navy-primary);
+}
+
+.staff-detail-item__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--staff-text-muted);
+}
+
+.staff-detail-item__value {
+  font-weight: 600;
+  color: var(--staff-text-main);
+  text-align: right;
+}
+
+.staff-detail-item--card .staff-detail-item__value {
+  text-align: left;
+}
+
+.staff-detail-item__value--highlight {
+  color: var(--staff-navy-primary);
+  font-weight: 700;
+}
+
+.staff-detail-item__value--user {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--staff-navy-primary);
+  word-break: break-word;
+}
+
+.staff-detail-item__sub {
+  font-size: 0.78rem;
+  font-weight: normal;
+  color: var(--staff-text-muted);
+  margin-left: 6px;
 }
 
 .staff-modal-footer {

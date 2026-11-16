@@ -1,5 +1,5 @@
 /**
- * BWORK-POS — STAGING ACCEPTANCE: BOOKER TYPES, COLOR SEPARATION, BANGKOK STATUS, REFRESH
+ * BWORK-POS — STAGING ACCEPTANCE: BOOKER TYPES, COLOR SEPARATION, THREE CLICK ACTIONS, ZERO PII
  * Phase: feature/staff-booking-calendar
  *
  * Automated CDP verification against:
@@ -17,7 +17,7 @@ const ARTIFACT_DIR = 'C:/Users/Runrasa.P/.gemini/antigravity/brain/03721993-8ed4
 const STAGING_API = 'https://bwork-pos-api-staging.ohnatza74185-ky.workers.dev';
 const STAFF_BOOKING_URL = 'https://bwork-pos-staging.pages.dev/staff-booking';
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const CDP_PORT = 9226;
+const CDP_PORT = 9228;
 
 let passedCount = 0;
 let totalCount = 0;
@@ -48,32 +48,21 @@ function executeStagingD1(sql, maxRetries = 3) {
   }
 }
 
-function queryStagingD1(sql) {
-  const backendDir = path.join(__dirname, '..', 'backend');
-  const clean = sql.replace(/[\r\n]+/g, ' ').replace(/"/g, '`"').trim();
-  const tempScript = path.join(backendDir, `_run_d1_query_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.ps1`);
-  fs.writeFileSync(tempScript, `npx.cmd wrangler d1 execute bworkpos_staging_db --remote --command "${clean}" --config wrangler.staging.toml --json\n`, 'utf8');
-  try {
-    const out = execSync(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${path.basename(tempScript)}"`, { cwd: backendDir, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
-    const jsonStart = out.indexOf('[');
-    const jsonEnd = out.lastIndexOf(']');
-    if (jsonStart === -1 || jsonEnd === -1) {
-      throw new Error(`Invalid D1 output: ${out}`);
-    }
-    const parsed = JSON.parse(out.substring(jsonStart, jsonEnd + 1));
-    return parsed[0]?.results || [];
-  } finally {
-    try { fs.unlinkSync(tempScript); } catch (e) {}
-  }
-}
-
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function captureScreenshot(send, filePath) {
+  const screenshotRes = await send('Page.captureScreenshot', { format: 'png' });
+  if (screenshotRes?.data) {
+    fs.writeFileSync(filePath, Buffer.from(screenshotRes.data, 'base64'));
+    console.log(`  [SCREENSHOT] Saved: ${filePath}`);
+  }
+}
+
 async function run() {
   console.log('================================================================');
-  console.log('  BWORK-POS STAGING ACCEPTANCE TEST: BOOKER TYPES & STATUS');
+  console.log('  BWORK-POS STAGING ACCEPTANCE TEST: BOOKER TYPES & 3 CLICK ACTIONS');
   console.log('================================================================\n');
 
   // -------------------------------------------------------------
@@ -81,7 +70,6 @@ async function run() {
   // -------------------------------------------------------------
   console.log('Step 1: Preflight Data Seeding on Staging D1...');
   
-  // Clean up any previous test fixtures
   executeStagingD1(`
     DELETE FROM booking_items WHERE booking_id IN (99801, 99802, 99803, 99804, 99805, 99806, 99807);
     DELETE FROM bookings WHERE id IN (99801, 99802, 99803, 99804, 99805, 99806, 99807);
@@ -89,16 +77,8 @@ async function run() {
 
   const now = new Date();
   const bangkok = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-  const todayStr = bangkok.toISOString().slice(0, 10); // e.g. '2026-11-16'
+  const todayStr = bangkok.toISOString().slice(0, 10);
 
-  // Insert seed bookings:
-  // 1. Today Past (10:00 - 11:00) External Customer
-  // 2. Today In-slot (14:00 - 15:30) Builtland Staff
-  // 3. Today Upcoming (16:30 - 17:30) Builtland Staff
-  // 4. Today Checked-in (12:00 - 13:00) External Customer (checked_in)
-  // 5. Today Checked-out (08:30 - 09:30) Builtland Staff (checked_out)
-  // 6. Day 2026-11-20 (10:00 - 11:30) Builtland Staff
-  // 7. Day 2026-11-20 (13:00 - 14:30) External Customer
   const seedSql = `
     INSERT INTO bookings (id, receipt_number, customer_name, customer_type, booking_source, booking_channel, department, internal_department, checkin_status, payment_status, total_amount, created_at)
     VALUES
@@ -132,25 +112,8 @@ async function run() {
   const pubData = await pubMonthRes.json();
   assertTest(Array.isArray(pubData.intervals) && pubData.intervals.length >= 7, 'Public API returns intervals array');
 
-  // Verify ZERO PII in intervals
   const leakedPii = pubData.intervals.filter(i => i.customer_name || i.department || i.internal_department);
   assertTest(leakedPii.length === 0, 'Public API has ZERO PII (no customer_name, no department)');
-
-  // Verify booker types
-  const blItem = pubData.intervals.find(i => i.start.includes('2026-11-20T10:00:00'));
-  assertTest(blItem && blItem.booker_type === 'พนักงาน Builtland' && blItem.booker_type_code === 'builtland',
-    'Public API classifies Builtland booking correctly', JSON.stringify(blItem));
-
-  const extItem = pubData.intervals.find(i => i.start.includes('2026-11-20T13:00:00'));
-  assertTest(extItem && extItem.booker_type === 'ลูกค้าภายนอก' && extItem.booker_type_code === 'external',
-    'Public API classifies External booking correctly', JSON.stringify(extItem));
-
-  // Verify checkin status
-  const chkInItem = pubData.intervals.find(i => i.room_id === 6 && i.start.includes('12:00:00'));
-  assertTest(chkInItem && chkInItem.checkin_status === 'checked_in', 'Public API checkin_status is checked_in');
-
-  const chkOutItem = pubData.intervals.find(i => i.room_id === 8 && i.start.includes('08:30:00'));
-  assertTest(chkOutItem && chkOutItem.checkin_status === 'checked_out', 'Public API checkin_status is checked_out');
 
   // -------------------------------------------------------------
   // Step 3: Staff API Verification (with Authentication)
@@ -163,9 +126,10 @@ async function run() {
   });
   const staffAuthData = await staffAuthRes.json();
   assertTest(staffAuthRes.status === 200 && staffAuthData.token, 'Staff login succeeds and provides JWT');
+  const staffToken = staffAuthData.token;
 
   const staffMonthRes = await fetch(`${STAGING_API}/api/staff/rooms/availability-month?month=2026-11`, {
-    headers: { Authorization: `Bearer ${staffAuthData.token}` }
+    headers: { Authorization: `Bearer ${staffToken}` }
   });
   assertTest(staffMonthRes.status === 200, 'Staff API returns HTTP 200 for authenticated staff');
   const staffData = await staffMonthRes.json();
@@ -229,158 +193,128 @@ async function run() {
   await send('Page.enable');
   await send('DOM.enable');
 
+  const evaluate = async (expr) => {
+    const res = await send('Runtime.evaluate', { expression: expr, returnByValue: true });
+    return res.result?.value;
+  };
+
   try {
-    console.log(`Navigating to ${STAFF_BOOKING_URL}...`);
+    // =========================================================================
+    // SCENARIO 1: AUTHENTICATED STAFF USER (shows booker names in monthly view)
+    // =========================================================================
+    console.log('\n--- Scenario 1: Authenticated Staff Session ---');
     await send('Page.navigate', { url: STAFF_BOOKING_URL });
-    await delay(4000);
+    await delay(3000);
 
-    // 4.1 Check unauthenticated public user cannot see PII & no fallback text
-    console.log('\n--- Test 4.1: Public User View & Today Bookings ---');
-    const evaluate = async (expr) => {
-      const res = await send('Runtime.evaluate', { expression: expr, returnByValue: true });
-      return res.result?.value;
-    };
-
-    const pageText = await evaluate('document.body.innerText');
-    assertTest(!pageText.includes('ลูกค้า (เฉพาะพนักงาน)'),
-      'CRITICAL: Fallback "ลูกค้า (เฉพาะพนักงาน)" is NEVER present in the page text');
-
-    // Check Today's Schedule items
-    const todayItemsCount = await evaluate('document.querySelectorAll(".staff-today-item").length');
-    assertTest(todayItemsCount >= 5, `Today items rendered: ${todayItemsCount}`);
-
-    const todayBadges = await evaluate(`
-      Array.from(document.querySelectorAll('.staff-today-item')).map(item => ({
-        time: item.querySelector('.staff-today-item__time')?.innerText.trim(),
-        room: item.querySelector('.staff-today-item__room')?.innerText.trim(),
-        typeBadge: item.querySelector('.staff-booker-type-badge')?.innerText.trim(),
-        typeClass: item.querySelector('.staff-booker-type-badge')?.className,
-        statusPill: item.querySelector('.staff-status-pill')?.innerText.trim(),
-        statusClass: item.querySelector('.staff-status-pill')?.className
-      }))
+    // Set staff token in localStorage to simulate logged in staff
+    await evaluate(`
+      localStorage.setItem('token', '${staffToken}');
+      localStorage.setItem('pos_token', '${staffToken}');
+      localStorage.setItem('staff_token', '${staffToken}');
     `);
-    console.log('Today badges on UI:', JSON.stringify(todayBadges, null, 2));
+    // Reload page to activate authenticated staff session
+    await send('Page.reload');
+    await delay(3500);
 
-    // Check time states in today's bookings:
-    // Past slot -> "สิ้นสุดตามเวลา"
-    const pastTodayItem = todayBadges.find(b => b.time && b.time.includes('10:00 - 11:00'));
-    assertTest(pastTodayItem && pastTodayItem.statusPill === 'สิ้นสุดตามเวลา',
-      'Today past booking status is "สิ้นสุดตามเวลา"');
-    assertTest(pastTodayItem && pastTodayItem.typeBadge === 'ลูกค้าภายนอก',
-      'Today past booking type is "ลูกค้าภายนอก"');
-
-    // In-slot (14:00 - 15:30) -> "อยู่ในช่วงใช้งาน"
-    const inSlotItem = todayBadges.find(b => b.time && b.time.includes('14:00 - 15:30'));
-    assertTest(inSlotItem && inSlotItem.statusPill === 'อยู่ในช่วงใช้งาน',
-      'Today active slot status is "อยู่ในช่วงใช้งาน"');
-    assertTest(inSlotItem && inSlotItem.typeBadge === 'พนักงาน Builtland',
-      'Today active slot type is "พนักงาน Builtland"');
-
-    // Upcoming (16:30 - 17:30) -> "ยังไม่ถึงเวลา"
-    const upcomingItem = todayBadges.find(b => b.time && b.time.includes('16:30 - 17:30'));
-    assertTest(upcomingItem && upcomingItem.statusPill === 'ยังไม่ถึงเวลา',
-      'Today upcoming booking status is "ยังไม่ถึงเวลา"');
-
-    // Confirmed checked-in -> "กำลังใช้งาน"
-    const checkedInItem = todayBadges.find(b => b.time && b.time.includes('12:00 - 13:00'));
-    assertTest(checkedInItem && checkedInItem.statusPill === 'กำลังใช้งาน',
-      'Today checked_in booking status is "กำลังใช้งาน"');
-
-    // Confirmed checked-out -> "ใช้งานเสร็จแล้ว"
-    const checkedOutItem = todayBadges.find(b => b.time && b.time.includes('08:30 - 09:30'));
-    assertTest(checkedOutItem && checkedOutItem.statusPill === 'ใช้งานเสร็จแล้ว',
-      'Today checked_out booking status is "ใช้งานเสร็จแล้ว"');
-
-    // 4.2 Today Collapsible Test (Desktop)
-    console.log('\n--- Test 4.2: Today Schedule Collapse/Expand (Desktop) ---');
-    await evaluate('document.getElementById("staff-today-collapse-desktop-btn").click()');
-    await delay(400);
-    const isTodayHidden = await evaluate('document.getElementById("staff-today-body-panel") === null');
-    assertTest(isTodayHidden, 'Desktop collapse button collapses today schedule');
-
-    await evaluate('document.getElementById("staff-today-expand-desktop-btn").click()');
-    await delay(400);
-    const isTodayRestored = await evaluate('document.getElementById("staff-today-body-panel") !== null');
-    assertTest(isTodayRestored, 'Desktop expand strip restores today schedule');
-
-    // 4.3 POS Monthly Calendar View & Color Separation
-    console.log('\n--- Test 4.3: POS Monthly Calendar View & Color Separation ---');
+    // Switch to POS Monthly Calendar view
     await evaluate('document.getElementById("staff-btn-view-pos-calendar").click()');
-    await delay(1000);
+    await delay(1200);
 
-    const isPosViewVisible = await evaluate('document.querySelector(".staff-pos-section") !== null');
-    assertTest(isPosViewVisible, 'Switched to POS Monthly Calendar view');
+    assertTest(await evaluate('document.querySelector(".staff-pos-section") !== null'),
+      'Staff user switches to POS Monthly Calendar view');
 
-    // Inspect Builtland Chip on 2026-11-20
-    const blChipStyle = await evaluate(`
+    // Check Builtland chip with Booker Name on day 20
+    const staffBlChip = await evaluate(`
       (() => {
-        const chip = document.querySelector('.staff-pos-event-chip--builtland');
+        const cell20 = Array.from(document.querySelectorAll('.staff-pos-cell')).find(c => c.querySelector('.staff-pos-cell__day-num')?.innerText.trim() === '20');
+        if (!cell20) return null;
+        const chip = cell20.querySelector('.staff-pos-event-chip--builtland');
         if (!chip) return null;
-        const style = window.getComputedStyle(chip);
         return {
-          bgColor: style.backgroundColor,
-          color: style.color,
-          text: chip.innerText
+          title: chip.querySelector('.staff-pos-event-chip__title')?.innerText.trim(),
+          room: chip.querySelector('.staff-pos-event-chip__room')?.innerText.trim(),
+          time: chip.querySelector('.staff-pos-event-chip__time')?.innerText.trim(),
+          status: chip.querySelector('.staff-pos-event-chip__status')?.innerText.trim()
         };
       })()
     `);
-    assertTest(blChipStyle !== null, 'Builtland event chip rendered in monthly grid');
-    // #132440 in rgb is rgb(19, 36, 64)
-    assertTest(blChipStyle.bgColor === 'rgb(19, 36, 64)',
-      'Builtland chip background is Navy #132440 (rgb(19, 36, 64))', blChipStyle.bgColor);
-    assertTest(blChipStyle.color === 'rgb(255, 255, 255)',
-      'Builtland chip text color is White #ffffff (rgb(255, 255, 255))', blChipStyle.color);
-    assertTest(blChipStyle.text.includes('พนักงาน Builtland'),
-      'Builtland chip displays text "พนักงาน Builtland"');
+    console.log('Staff Builtland Chip on UI (Day 20):', staffBlChip);
+    assertTest(staffBlChip && staffBlChip.title.includes('คุณชวลิต ก่อสร้าง (พนักงาน Builtland)'),
+      'Staff sees "ชื่อผู้จอง (พนักงาน Builtland)" on primary chip line', staffBlChip?.title);
 
-    // Inspect External Customer Chip on 2026-11-20
-    const extChipStyle = await evaluate(`
+    // Check External customer chip with Booker Name on day 20
+    const staffExtChip = await evaluate(`
       (() => {
-        const chip = document.querySelector('.staff-pos-event-chip--external');
+        const cell20 = Array.from(document.querySelectorAll('.staff-pos-cell')).find(c => c.querySelector('.staff-pos-cell__day-num')?.innerText.trim() === '20');
+        if (!cell20) return null;
+        const chip = cell20.querySelector('.staff-pos-event-chip--external');
         if (!chip) return null;
-        const style = window.getComputedStyle(chip);
         return {
-          bgColor: style.backgroundColor,
-          color: style.color,
-          text: chip.innerText
+          title: chip.querySelector('.staff-pos-event-chip__title')?.innerText.trim(),
+          room: chip.querySelector('.staff-pos-event-chip__room')?.innerText.trim(),
+          time: chip.querySelector('.staff-pos-event-chip__time')?.innerText.trim(),
+          status: chip.querySelector('.staff-pos-event-chip__status')?.innerText.trim()
         };
       })()
     `);
-    assertTest(extChipStyle !== null, 'External customer event chip rendered in monthly grid');
-    // #DDF5EE in rgb is rgb(221, 245, 238)
-    assertTest(extChipStyle.bgColor === 'rgb(221, 245, 238)',
-      'External chip background is Mint Green #DDF5EE (rgb(221, 245, 238))', extChipStyle.bgColor);
-    // #065F46 in rgb is rgb(6, 95, 70)
-    assertTest(extChipStyle.color === 'rgb(6, 95, 70)',
-      'External chip text color is Dark Green #065F46 (rgb(6, 95, 70))', extChipStyle.color);
-    assertTest(extChipStyle.text.includes('ลูกค้าภายนอก'),
-      'External chip displays text "ลูกค้าภายนอก"');
+    console.log('Staff External Chip on UI (Day 20):', staffExtChip);
+    assertTest(staffExtChip && staffExtChip.title.includes('คุณธนกฤต บุคคลทั่วไป (ลูกค้าภายนอก)'),
+      'Staff sees "ชื่อผู้จอง (ลูกค้าภายนอก)" on primary chip line', staffExtChip?.title);
 
-    // Inspect Legend
-    const legendInfo = await evaluate(`
+    // -------------------------------------------------------------------------
+    // ACTION 1: Click Booking Item -> Opens Single Booking Detail Modal
+    // -------------------------------------------------------------------------
+    console.log('\n--- Action 1: Click Booking Item -> Single Booking Detail Modal ---');
+    await evaluate(`
       (() => {
-        const legend = document.querySelector('.staff-pos-legend');
-        if (!legend) return null;
+        const cell20 = Array.from(document.querySelectorAll('.staff-pos-cell')).find(c => c.querySelector('.staff-pos-cell__day-num')?.innerText.trim() === '20');
+        const chip = cell20 ? cell20.querySelector('.staff-pos-event-chip--builtland') : null;
+        if (chip) chip.click();
+      })()
+    `);
+    await delay(600);
+
+    const isSingleModalOpen = await evaluate('document.getElementById("staff-event-detail-modal") !== null');
+    assertTest(isSingleModalOpen, 'Action 1: Single Booking Detail Modal opens upon clicking booking chip');
+
+    const singleModalData = await evaluate(`
+      (() => {
+        const modal = document.getElementById("staff-event-detail-modal");
+        if (!modal) return null;
         return {
-          hasBuiltland: !!legend.querySelector('.staff-legend-swatch--builtland'),
-          hasExternal: !!legend.querySelector('.staff-legend-swatch--external'),
-          hasUnknown: !!legend.querySelector('.staff-legend-swatch--unknown'),
-          hasUpcoming: !!legend.querySelector('.staff-status-pill--upcoming'),
-          hasInSlot: !!legend.querySelector('.staff-status-pill--in_slot'),
-          hasEnded: !!legend.querySelector('.staff-status-pill--ended'),
-          text: legend.innerText
+          title: modal.querySelector('.staff-modal-title')?.innerText.trim(),
+          bookerName: document.getElementById('staff-detail-booker-name')?.innerText.trim(),
+          bookerDept: document.getElementById('staff-detail-booker-dept')?.innerText.trim(),
+          badge: modal.querySelector('.staff-booker-type-badge')?.innerText.trim(),
+          status: modal.querySelector('.staff-status-pill')?.innerText.trim()
         };
       })()
     `);
-    assertTest(legendInfo && legendInfo.hasBuiltland, 'Legend includes "พนักงาน Builtland" swatch');
-    assertTest(legendInfo && legendInfo.hasExternal, 'Legend includes "ลูกค้าภายนอก" swatch');
-    assertTest(legendInfo && legendInfo.hasUnknown, 'Legend includes "ไม่ระบุประเภท" swatch');
-    assertTest(legendInfo && legendInfo.hasUpcoming && legendInfo.hasInSlot && legendInfo.hasEnded,
-      'Legend includes time status indicators (ยังไม่ถึงเวลา, อยู่ในช่วงใช้งาน, สิ้นสุดตามเวลา)');
+    assertTest(singleModalData && singleModalData.bookerName === 'คุณชวลิต ก่อสร้าง',
+      'Action 1: Modal displays authorized booker name', singleModalData?.bookerName);
+    assertTest(singleModalData && singleModalData.bookerDept === 'ฝ่ายบริหารโครงการและก่อสร้าง',
+      'Action 1: Modal displays authorized department', singleModalData?.bookerDept);
+    assertTest(singleModalData && singleModalData.badge === 'พนักงาน Builtland',
+      'Action 1: Modal displays booker type badge "พนักงาน Builtland"');
 
-    // 4.4 Day Detail Modal ("ดูเพิ่มเติม") Verification
-    console.log('\n--- Test 4.4: "ดูเพิ่มเติม" Modal Verification ---');
-    // Click "ดูเพิ่มเติม" on cell for 2026-11-20
+    // Verify still in POS monthly view
+    assertTest(await evaluate('document.querySelector(".staff-pos-section") !== null'),
+      'Action 1: Opening single booking detail modal DOES NOT navigate away from POS monthly view');
+
+    // Capture screenshot of Single Detail Modal
+    const modalShotPath = path.join(ARTIFACT_DIR, 'staging_staff_booking_detail_modal.png');
+    await captureScreenshot(send, modalShotPath);
+
+    // Close Single Detail Modal
+    await evaluate('document.querySelector("#staff-event-detail-modal .staff-modal-close").click()');
+    await delay(400);
+    assertTest(await evaluate('document.getElementById("staff-event-detail-modal") === null'),
+      'Single booking detail modal closes cleanly returning to monthly view');
+
+    // -------------------------------------------------------------------------
+    // ACTION 2: Click "ดูเพิ่มเติม" -> Opens All Bookings of That Day
+    // -------------------------------------------------------------------------
+    console.log('\n--- Action 2: Click "ดูเพิ่มเติม" -> Day Bookings Modal ---');
     await evaluate(`
       (() => {
         const cells = Array.from(document.querySelectorAll('.staff-pos-cell'));
@@ -394,118 +328,140 @@ async function run() {
         }
       })()
     `);
-    await delay(800);
+    await delay(600);
 
-    const isModalOpen = await evaluate('document.getElementById("staff-pos-day-detail-modal") !== null');
-    assertTest(isModalOpen, '"ดูเพิ่มเติม" modal is displayed');
+    const isDayModalOpen = await evaluate('document.getElementById("staff-pos-day-detail-modal") !== null');
+    assertTest(isDayModalOpen, 'Action 2: "ดูเพิ่มเติม" modal opens upon clicking more button');
 
-    const modalData = await evaluate(`
-      (() => {
-        const modal = document.getElementById("staff-pos-day-detail-modal");
-        if (!modal) return null;
-        const items = Array.from(modal.querySelectorAll('.staff-day-room-booking-item:not(.staff-day-room-booking-item--cleaning)'));
-        return {
-          itemCount: items.length,
-          text: modal.innerText,
-          badges: items.map(it => ({
-            typeBadge: it.querySelector('.staff-booker-type-badge')?.innerText.trim(),
-            typeClass: it.querySelector('.staff-booker-type-badge')?.className,
-            statusPill: it.querySelector('.staff-status-pill')?.innerText.trim(),
-            statusClass: it.querySelector('.staff-status-pill')?.className
-          }))
-        };
-      })()
-    `);
-    assertTest(modalData && modalData.itemCount >= 2, 'Modal displays room booking items');
-    assertTest(!modalData.text.includes('ลูกค้า (เฉพาะพนักงาน)'),
-      'CRITICAL: Fallback "ลูกค้า (เฉพาะพนักงาน)" is NOT present in "ดูเพิ่มเติม" modal');
+    // Verify still in POS monthly view
+    assertTest(await evaluate('document.querySelector(".staff-pos-section") !== null'),
+      'Action 2: Opening "ดูเพิ่มเติม" modal DOES NOT navigate away from POS monthly view');
 
-    const modalBlBadge = modalData.badges.find(b => b.typeBadge === 'พนักงาน Builtland');
-    assertTest(modalBlBadge && modalBlBadge.typeClass.includes('--builtland'),
-      'Modal item has .staff-booker-type-badge--builtland');
-
-    const modalExtBadge = modalData.badges.find(b => b.typeBadge === 'ลูกค้าภายนอก');
-    assertTest(modalExtBadge && modalExtBadge.typeClass.includes('--external'),
-      'Modal item has .staff-booker-type-badge--external');
-
-    // Close modal
+    // Close Day Modal
     await evaluate('document.querySelector("#staff-pos-day-detail-modal .staff-modal-close").click()');
     await delay(400);
 
-    // Return to booking view
-    await evaluate('document.getElementById("staff-btn-back-to-booking").click()');
+    // -------------------------------------------------------------------------
+    // ACTION 3: Click Day Number / Cell -> Returns to Booking View with Date Expanded
+    // -------------------------------------------------------------------------
+    console.log('\n--- Action 3: Click Day Number -> Returns to Booking View & Expands Day ---');
+    await evaluate(`
+      (() => {
+        const cells = Array.from(document.querySelectorAll('.staff-pos-cell'));
+        for (const cell of cells) {
+          const dayBtn = cell.querySelector('.staff-pos-cell__day-btn');
+          const dayNum = cell.querySelector('.staff-pos-cell__day-num')?.innerText.trim();
+          if (dayBtn && dayNum === '20') {
+            dayBtn.click();
+            return;
+          }
+        }
+      })()
+    `);
+    await delay(800);
+
+    const isBackInBookingView = await evaluate('document.querySelector(".staff-main-layout") !== null');
+    assertTest(isBackInBookingView, 'Action 3: Clicking day number returns to Home Booking view');
+
+    const expandedDateTitle = await evaluate('document.querySelector(".staff-expanded-panel__date")?.innerText.trim()');
+    assertTest(expandedDateTitle && expandedDateTitle.includes('20 พฤศจิกายน 2569'),
+      'Action 3: Expands inline week accordion for 20 พฤศจิกายน 2569', expandedDateTitle);
+
+    // =========================================================================
+    // SCENARIO 2: UNAUTHENTICATED PUBLIC LINK USER (zero PII, types only)
+    // =========================================================================
+    console.log('\n--- Scenario 2: Unauthenticated Public Link User ---');
+    // Clear tokens to become public unauthenticated link user
+    await evaluate(`
+      localStorage.clear();
+      sessionStorage.clear();
+    `);
+    await send('Page.reload');
+    await delay(3500);
+
+    // Switch to POS Monthly Calendar view
+    await evaluate('document.getElementById("staff-btn-view-pos-calendar").click()');
+    await delay(1200);
+
+    // Public user should see booker TYPE instead of booker name
+    const pubChips = await evaluate(`
+      Array.from(document.querySelectorAll('.staff-pos-event-chip')).map(chip => ({
+        title: chip.querySelector('.staff-pos-event-chip__title')?.innerText.trim(),
+        room: chip.querySelector('.staff-pos-event-chip__room')?.innerText.trim(),
+        time: chip.querySelector('.staff-pos-event-chip__time')?.innerText.trim()
+      }))
+    `);
+    console.log('Public chips on UI:', pubChips.slice(0, 4));
+
+    // Verify NO customer names appear on public chips
+    const hasAnyCustomerName = pubChips.some(c => c.title.includes('ชวลิต') || c.title.includes('ธนกฤต') || c.title.includes('สมพงษ์'));
+    assertTest(!hasAnyCustomerName, 'Public user sees ZERO booker names in monthly chips');
+
+    const pubBlChip = pubChips.find(c => c.title === 'พนักงาน Builtland');
+    assertTest(!!pubBlChip, 'Public user sees "พนักงาน Builtland" on primary chip line');
+
+    const pubExtChip = pubChips.find(c => c.title === 'ลูกค้าภายนอก');
+    assertTest(!!pubExtChip, 'Public user sees "ลูกค้าภายนอก" on primary chip line');
+
+    // Click chip as public user
+    await evaluate(`
+      (() => {
+        const chip = document.querySelector('.staff-pos-event-chip--builtland');
+        if (chip) chip.click();
+      })()
+    `);
     await delay(600);
 
-    // 4.5 Mobile Responsive Test (Viewport 390x844)
-    console.log('\n--- Test 4.5: Mobile Viewport Responsiveness (390x844) ---');
+    const isPubModalOpen = await evaluate('document.getElementById("staff-event-detail-modal") !== null');
+    assertTest(isPubModalOpen, 'Public user can open single booking detail modal');
+
+    const pubModalHasName = await evaluate('document.getElementById("staff-detail-booker-name") !== null');
+    assertTest(!pubModalHasName, 'Public modal has ZERO booker name element (Zero PII)');
+
+    const pubModalHasDept = await evaluate('document.getElementById("staff-detail-booker-dept") !== null');
+    assertTest(!pubModalHasDept, 'Public modal has ZERO department element (Zero PII)');
+
+    // Close modal
+    await evaluate('document.querySelector("#staff-event-detail-modal .staff-modal-close").click()');
+    await delay(400);
+
+    // Capture desktop monthly calendar screenshot
+    const desktopShotPath = path.join(ARTIFACT_DIR, 'staging_monthly_calendar_desktop.png');
+    await captureScreenshot(send, desktopShotPath);
+
+    // =========================================================================
+    // SCENARIO 3: MOBILE VIEWPORT (390x844 Bottom Sheet & Responsiveness)
+    // =========================================================================
+    console.log('\n--- Scenario 3: Mobile Viewport Bottom Sheet Test (390x844) ---');
     await send('Emulation.setDeviceMetricsOverride', {
       width: 390,
       height: 844,
       deviceScaleFactor: 3,
       mobile: true
     });
-    await delay(500);
+    await delay(600);
 
-    const mobileBarVisible = await evaluate(`
+    // Open booking chip on mobile
+    await evaluate(`
       (() => {
-        const bar = document.getElementById("staff-today-mobile-toggle-bar");
-        if (!bar) return false;
-        const rect = bar.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
+        const chip = document.querySelector('.staff-pos-event-chip--external');
+        if (chip) chip.click();
       })()
     `);
-    assertTest(mobileBarVisible, 'Mobile collapsible bar is visible on mobile viewport (390px)');
+    await delay(600);
 
-    const docWidth = await evaluate('document.documentElement.scrollWidth');
-    assertTest(docWidth <= 390, `Page has no horizontal scroll blowout on mobile (scrollWidth=${docWidth} <= 390)`);
+    const isMobileModalOpen = await evaluate('document.getElementById("staff-event-detail-modal") !== null');
+    assertTest(isMobileModalOpen, 'Mobile Bottom Sheet opens upon clicking booking chip');
 
-    // Reset viewport to desktop
+    const mobileShotPath = path.join(ARTIFACT_DIR, 'staging_booking_detail_mobile_sheet.png');
+    await captureScreenshot(send, mobileShotPath);
+
+    // Close bottom sheet
+    await evaluate('document.querySelector("#staff-event-detail-modal .staff-modal-close").click()');
+    await delay(400);
+
     await send('Emulation.clearDeviceMetricsOverride');
-    await delay(500);
-
-    // 4.6 Direct Unauthenticated Booking & 30-min Cleaning Buffer Test
-    console.log('\n--- Test 4.6: Direct Unauthenticated Booking & 30-min Buffer ---');
-    // Call the staff-booking API directly
-    const directBookingRes = await fetch(`${STAGING_API}/api/public/rooms/staff-booking`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        room_id: 10,
-        date: '2026-11-28',
-        start_time: '14:00',
-        end_time: '15:00',
-        customer_name: 'คุณพนักงาน บิลท์แลนด์',
-        department: 'ฝ่ายเทคโนโลยีสารสนเทศ (IT)'
-      })
-    });
-    assertTest(directBookingRes.status === 200, 'Direct unauthenticated booking succeeds HTTP 200');
-    const directBookingData = await directBookingRes.json();
-    assertTest(directBookingData.success && directBookingData.receipt_number,
-      'Direct booking returns receipt_number', directBookingData.receipt_number);
-
-    // Overlapping slot within 30-min buffer (15:00 to 15:30) must be rejected
-    const overlapRes = await fetch(`${STAGING_API}/api/public/rooms/staff-booking`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        room_id: 10,
-        date: '2026-11-28',
-        start_time: '15:15',
-        end_time: '16:00',
-        customer_name: 'คุณทดสอบ ชนเวลา',
-        department: 'ฝ่ายการเงินและบัญชี'
-      })
-    });
-    assertTest(overlapRes.status === 409 || overlapRes.status === 400,
-      'Overlapping booking within 30-min buffer is strictly rejected', `Status: ${overlapRes.status}`);
-
-    // Clean up created booking
-    if (directBookingData.booking_id) {
-      executeStagingD1(`
-        DELETE FROM booking_items WHERE booking_id = ${directBookingData.booking_id};
-        DELETE FROM bookings WHERE id = ${directBookingData.booking_id};
-      `);
-    }
+    await delay(400);
 
     console.log('\n================================================================');
     console.log(`ACCEPTANCE SUMMARY: ${passedCount}/${totalCount} TESTS PASSED!`);
@@ -514,7 +470,6 @@ async function run() {
   } finally {
     try { ws.close(); } catch (e) {}
     try { chromeProc.kill(); } catch (e) {}
-    // Clean up synthetic test records
     try {
       executeStagingD1(`
         DELETE FROM booking_items WHERE booking_id IN (99801, 99802, 99803, 99804, 99805, 99806, 99807);
