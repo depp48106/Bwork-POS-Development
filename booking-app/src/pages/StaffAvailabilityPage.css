@@ -360,6 +360,13 @@
   border-radius: 4px;
 }
 
+.staff-today-item__badges-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .staff-today-item__user-row {
   display: flex;
   align-items: center;
@@ -1180,35 +1187,125 @@
 .staff-pos-events {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   flex: 1;
 }
 
+/* Event Chips in POS Calendar Cells */
 .staff-pos-event-chip {
-  background-color: #f1f5f9;
-  border-left: 3px solid var(--staff-navy-primary);
-  padding: 2px 5px;
-  border-radius: 3px;
+  padding: 4px 6px;
+  border-radius: 6px;
   font-size: 0.68rem;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.staff-pos-event-chip__top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 4px;
-  overflow: hidden;
-  white-space: nowrap;
 }
 
 .staff-pos-event-chip__room {
   font-weight: 700;
-  color: var(--staff-navy-primary);
-  text-overflow: ellipsis;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .staff-pos-event-chip__time {
   font-weight: 600;
-  color: var(--staff-text-muted);
   flex-shrink: 0;
+  font-size: 0.65rem;
+}
+
+.staff-pos-event-chip__bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.staff-pos-event-chip__type {
+  font-size: 0.62rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.staff-pos-event-chip__status {
+  font-size: 0.6rem;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* Builtland staff chip: Navy #132440, white text #ffffff */
+.staff-pos-event-chip--builtland {
+  background-color: #132440;
+  color: #ffffff;
+  border-color: #132440;
+}
+.staff-pos-event-chip--builtland .staff-pos-event-chip__room {
+  color: #ffffff;
+}
+.staff-pos-event-chip--builtland .staff-pos-event-chip__time {
+  color: rgba(255, 255, 255, 0.85);
+}
+.staff-pos-event-chip--builtland .staff-pos-event-chip__type {
+  color: #ffffff;
+}
+.staff-pos-event-chip--builtland .staff-pos-event-chip__status {
+  background-color: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+/* External customer chip: Mint green #DDF5EE, dark green text #065F46 */
+.staff-pos-event-chip--external {
+  background-color: #DDF5EE;
+  color: #065F46;
+  border-color: #a7f3d0;
+}
+.staff-pos-event-chip--external .staff-pos-event-chip__room {
+  color: #065F46;
+}
+.staff-pos-event-chip--external .staff-pos-event-chip__time {
+  color: #047857;
+}
+.staff-pos-event-chip--external .staff-pos-event-chip__type {
+  color: #065F46;
+}
+.staff-pos-event-chip--external .staff-pos-event-chip__status {
+  background-color: rgba(6, 95, 70, 0.12);
+  color: #065F46;
+}
+
+/* Unknown booker chip: Mid grey #E2E8F0, dark grey text #475569 */
+.staff-pos-event-chip--unknown {
+  background-color: #E2E8F0;
+  color: #475569;
+  border-color: #cbd5e1;
+}
+.staff-pos-event-chip--unknown .staff-pos-event-chip__room {
+  color: #1e293b;
+}
+.staff-pos-event-chip--unknown .staff-pos-event-chip__time {
+  color: #475569;
+}
+.staff-pos-event-chip--unknown .staff-pos-event-chip__type {
+  color: #334155;
+}
+.staff-pos-event-chip--unknown .staff-pos-event-chip__status {
+  background-color: rgba(71, 85, 105, 0.12);
+  color: #334155;
 }
 
 .staff-pos-more-btn {
@@ -1231,36 +1328,182 @@
   color: #ffffff;
 }
 
+/* Booker Type Badges: Builtland Staff vs External Customer vs Unknown */
+.staff-booker-type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.staff-booker-type-badge--builtland {
+  background-color: #132440;
+  color: #ffffff;
+  border: 1px solid #132440;
+}
+
+.staff-booker-type-badge--external {
+  background-color: #DDF5EE;
+  color: #065F46;
+  border: 1px solid #a7f3d0;
+}
+
+.staff-booker-type-badge--unknown {
+  background-color: #E2E8F0;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+/* Real-time Status Pills */
+.staff-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.staff-status-pill__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+@keyframes pulseStatusDot {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+.staff-status-pill--upcoming {
+  background-color: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+.staff-status-pill--upcoming .staff-status-pill__dot {
+  background-color: #94a3b8;
+}
+
+.staff-status-pill--in_slot {
+  background-color: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.staff-status-pill--in_slot .staff-status-pill__dot {
+  background-color: #3b82f6;
+  animation: pulseStatusDot 2s infinite ease-in-out;
+}
+
+.staff-status-pill--in_use {
+  background-color: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+.staff-status-pill--in_use .staff-status-pill__dot {
+  background-color: #10b981;
+  animation: pulseStatusDot 2s infinite ease-in-out;
+}
+
+.staff-status-pill--ended {
+  background-color: #f8fafc;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+.staff-status-pill--ended .staff-status-pill__dot {
+  background-color: #94a3b8;
+}
+
+.staff-status-pill--completed {
+  background-color: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+.staff-status-pill--completed .staff-status-pill__dot {
+  background-color: #64748b;
+}
+
+/* POS Legend Bar */
 .staff-pos-legend {
   display: flex;
   align-items: center;
   gap: 16px;
   flex-wrap: wrap;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   color: var(--staff-text-muted);
-  padding-top: 12px;
+  padding-top: 14px;
   border-top: 1px solid var(--staff-border);
 }
 
-.staff-legend-swatch {
+.staff-legend-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.staff-legend-group__label {
+  font-weight: 700;
+  color: var(--staff-navy-primary);
+  font-size: 0.74rem;
+}
+
+.staff-legend-swatch--builtland {
+  background-color: #132440;
+  color: #ffffff;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: inline-block;
+}
+
+.staff-legend-swatch--external {
+  background-color: #DDF5EE;
+  color: #065F46;
+  border: 1px solid #a7f3d0;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: inline-block;
+}
+
+.staff-legend-swatch--unknown {
+  background-color: #E2E8F0;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: inline-block;
+}
+
+.staff-legend-swatch-dot {
   width: 12px;
   height: 12px;
   border-radius: 3px;
   display: inline-block;
 }
 
-.staff-legend-swatch--today {
+.staff-legend-swatch-dot--today {
   background-color: var(--staff-navy-primary);
 }
 
-.staff-legend-swatch--selected {
+.staff-legend-swatch-dot--selected {
   outline: 2px solid var(--staff-navy-primary);
   background-color: #ffffff;
-}
-
-.staff-legend-swatch--booked {
-  background-color: #f1f5f9;
-  border-left: 3px solid var(--staff-navy-primary);
 }
 
 .staff-pos-legend__tip {
@@ -1519,13 +1762,28 @@
 .staff-day-room-booking-item {
   background-color: #ffffff;
   border: 1px solid var(--staff-border);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: 8px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.staff-day-room-booking-item__left {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  font-size: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.staff-day-room-booking-item__badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .staff-day-room-booking-item--cleaning {
@@ -1786,6 +2044,21 @@
   .staff-pos-legend__tip {
     margin-left: 0;
     width: 100%;
+  }
+
+  .staff-pos-legend {
+    gap: 10px;
+  }
+
+  .staff-day-room-booking-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .staff-day-room-booking-item__left {
+    width: 100%;
+    justify-content: space-between;
   }
 
   /* 5. Bottom Sheet for Mobile Booking Popup */

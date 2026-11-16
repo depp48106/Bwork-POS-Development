@@ -26,10 +26,10 @@ test('monthly Worker availability uses POS reservations without returning custom
     INSERT INTO rooms VALUES (4, 'Mars (301)', 6, 'active', 'private'),
                              (5, 'Mercury (302)', 8, 'active', NULL),
                              (6, 'Saturn (303)', 4, 'inactive', NULL);
-    CREATE TABLE bookings (id INTEGER, payment_status TEXT, customer_name TEXT);
-    INSERT INTO bookings VALUES (1, 'paid', 'private'), (2, 'pending', 'private'),
-      (3, 'cancelled', 'private'), (4, 'failed', 'private'), (5, 'rejected', 'private'),
-      (6, NULL, 'private');
+    CREATE TABLE bookings (id INTEGER, payment_status TEXT, customer_name TEXT, checkin_status TEXT, customer_type TEXT, booking_source TEXT, booking_channel TEXT, department TEXT, internal_department TEXT);
+    INSERT INTO bookings (id, payment_status, customer_name, customer_type) VALUES (1, 'paid', 'private', 'builtland'), (2, 'pending', 'private', 'walkin'),
+      (3, 'cancelled', 'private', 'walkin'), (4, 'failed', 'private', 'walkin'), (5, 'rejected', 'private', 'walkin'),
+      (6, NULL, 'private', 'walkin');
     CREATE TABLE booking_items (booking_id INTEGER, room_id INTEGER, start_time TEXT, end_time TEXT, checkin_status TEXT);
     INSERT INTO booking_items VALUES
       (1, 4, '2026-11-12T09:00:00', '2026-11-12T11:00:00', NULL),
@@ -66,7 +66,8 @@ test('monthly Worker availability uses POS reservations without returning custom
     { id: 4, name: 'Mars (301)', capacity: 6 }, { id: 5, name: 'Mercury (302)', capacity: 8 }
   ]);
   assert.equal(data.intervals.length, 3);
-  assert.ok(data.intervals.every(item => Object.keys(item).sort().join(',') === 'end,room_id,start'));
+  assert.ok(data.intervals.every(item => Object.keys(item).sort().join(',') === 'booker_type,booker_type_code,checkin_status,end,room_id,start'));
+  assert.ok(data.intervals.every(item => !('customer_name' in item) && !('department' in item) && !('internal_department' in item)));
   assert.deepEqual(getRoomAvailabilityForDay('2026-11-12', data.intervals, data.cleaning_buffer_minutes), {
     status: 'partial',
     ranges: [{ start: '08:00', end: '08:30' }, { start: '11:30', end: '12:30' }, { start: '14:30', end: '18:00' }]

@@ -50,6 +50,75 @@ function getBangkokCurrentMinutes() {
   return bangkok.getUTCHours() * 60 + bangkok.getUTCMinutes();
 }
 
+// Current Bangkok time helper (wall-clock Asia/Bangkok)
+function getBangkokNow() {
+  const now = new Date();
+  const bangkok = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+  const iso = bangkok.toISOString();
+  const dateStr = iso.slice(0, 10);
+  const timeStr = iso.slice(11, 16);
+  const currentIso = `${dateStr}T${timeStr}:00`;
+  return { now, bangkok, dateStr, timeStr, currentIso };
+}
+
+// Booker type resolution helper:
+// Builtland Staff vs External Customer vs Unknown
+function resolveBookerTypeClient(item) {
+  if (item.booker_type && item.booker_type_code) {
+    return { type: item.booker_type, code: item.booker_type_code };
+  }
+  const cType = (item.customer_type || '').toLowerCase().trim();
+  const bSource = (item.booking_source || '').toLowerCase().trim();
+  const bChannel = (item.booking_channel || '').toLowerCase().trim();
+  const dept = (item.internal_department || item.department || '').trim();
+
+  // 1. Builtland Staff
+  if (
+    cType === 'builtland' ||
+    bSource === 'staff' ||
+    bChannel === 'staff_calendar' ||
+    (dept && dept !== '-' && !['walkin', 'online', 'general'].includes(dept.toLowerCase()))
+  ) {
+    return { type: 'พนักงาน Builtland', code: 'builtland' };
+  }
+
+  // 2. External Customer
+  const externalTypes = ['walkin', 'basecamp', 'vip_corp', 'general', 'corporate', 'external', 'online', 'customer'];
+  const externalSources = ['online', 'pos', 'walkin', 'line', 'pos_web'];
+  if (externalTypes.includes(cType) || externalSources.includes(bSource) || externalSources.includes(bChannel)) {
+    return { type: 'ลูกค้าภายนอก', code: 'external' };
+  }
+
+  // 3. Fallback for unidentifiable records
+  return { type: 'ไม่ระบุประเภท', code: 'unknown' };
+}
+
+// Status computation (Bangkok time + POS confirmed checkin/checkout)
+function computeEventStatus(item, currentBangkokIso) {
+  const cs = (item.checkin_status || '').toLowerCase().trim();
+  if (cs === 'checked_in') {
+    return { label: 'กำลังใช้งาน', code: 'in_use', isActual: true };
+  }
+  if (cs === 'checked_out' || cs === 'completed') {
+    return { label: 'ใช้งานเสร็จแล้ว', code: 'completed', isActual: true };
+  }
+
+  const sIso = (item.start || item.start_iso || '').replace(' ', 'T').slice(0, 19);
+  const eIso = (item.end || item.end_iso || '').replace(' ', 'T').slice(0, 19);
+
+  if (!sIso || !eIso) {
+    return { label: 'ยังไม่ถึงเวลา', code: 'upcoming', isActual: false };
+  }
+
+  if (currentBangkokIso < sIso) {
+    return { label: 'ยังไม่ถึงเวลา', code: 'upcoming', isActual: false };
+  } else if (currentBangkokIso >= sIso && currentBangkokIso < eIso) {
+    return { label: 'อยู่ในช่วงใช้งาน', code: 'in_slot', isActual: false };
+  } else {
+    return { label: 'สิ้นสุดตามเวลา', code: 'ended', isActual: false };
+  }
+}
+
 function roomDay(monthKey, dayNum) {
   return `${monthKey}-${String(dayNum).padStart(2, '0')}`;
 }
@@ -115,6 +184,47 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
   // Data fetching states
   const [requestVersion, setRequestVersion] = useState(0);
+  // Current Bangkok wall-clock ISO for time-based status calculations
+  const [bangkokNowIso, setBangkokNowIso] = useState(() => getBangkokNow().currentIso);
+
+  // 1-minute interval ticker to recalculate status while page is open
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setBangkokNowIso(getBangkokNow().currentIso);
+    }, 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Recalculate status immediately and refetch latest POS data when returning to tab
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        setBangkokNowIso(getBangkokNow().currentIso);
+        setRequestVersion(v => v + 1);
+      }
+    };
+    const handleFocus = () => {
+      setBangkokNowIso(getBangkokNow().currentIso);
+      setRequestVersion(v => v + 1);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, []);
+
+  // Periodic polling every 60s while tab is visible to reflect POS changes (new bookings, reschedules, cancellations)
+  useEffect(() => {
+    const pollTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        setRequestVersion(v => v + 1);
+      }
+    }, 60000);
+    return () => clearInterval(pollTimer);
+  }, []);
   const [availabilityData, setAvailabilityData] = useState(null);
   const [todayAvailabilityData, setTodayAvailabilityData] = useState(null);
   const [roomsMetadata, setRoomsMetadata] = useState([]);
@@ -310,14 +420,21 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
         const rm = roomMap.get(item.room_id);
         const sT = (item.start || '').includes('T') ? item.start.split('T')[1].substring(0, 5) : (item.start || '').substring(0, 5);
         const eT = (item.end || '').includes('T') ? item.end.split('T')[1].substring(0, 5) : (item.end || '').substring(0, 5);
+        const bookerTypeObj = resolveBookerTypeClient(item);
+        const statusObj = computeEventStatus(item, bangkokNowIso);
         list.push({
           room_id: item.room_id,
           room_name: rm?.name || `ห้อง ${item.room_id}`,
           start_time: sT,
           end_time: eT,
-          customer_name: item.customer_name || 'ลูกค้า (เฉพาะพนักงาน)',
-          department: item.internal_department || (item.customer_type === 'builtland' ? 'Builtland' : (item.customer_name ? (item.customer_type || '-') : '-')),
+          customer_name: item.customer_name || '',
+          department: item.internal_department || item.department || '',
           customer_type: item.customer_type,
+          booker_type: bookerTypeObj.type,
+          booker_type_code: bookerTypeObj.code,
+          current_status: statusObj.label,
+          status_code: statusObj.code,
+          checkin_status: item.checkin_status,
           start_iso: item.start,
           end_iso: item.end
         });
@@ -325,7 +442,7 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     }
     list.sort((a, b) => a.start_time.localeCompare(b.start_time) || a.room_name.localeCompare(b.room_name));
     return list;
-  }, [todayAvailabilityData, availabilityData, currentMonthKey, todayMonthKey, today, roomMap]);
+  }, [todayAvailabilityData, availabilityData, currentMonthKey, todayMonthKey, today, roomMap, bangkokNowIso]);
 
   // Build calendar weeks (chunks of 7)
   const calendarWeeks = useMemo(() => {
@@ -374,14 +491,21 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
       const rm = roomMap.get(item.room_id);
       const sT = (item.start || '').includes('T') ? item.start.split('T')[1].substring(0, 5) : (item.start || '').substring(0, 5);
       const eT = (item.end || '').includes('T') ? item.end.split('T')[1].substring(0, 5) : (item.end || '').substring(0, 5);
+      const bookerTypeObj = resolveBookerTypeClient(item);
+      const statusObj = computeEventStatus(item, bangkokNowIso);
       map[dateKey].push({
         room_id: item.room_id,
         room_name: rm?.name || `ห้อง ${item.room_id}`,
         room_capacity: rm?.capacity || 10,
         start_time: sT,
         end_time: eT,
-        customer_name: item.customer_name || 'ลูกค้า (เฉพาะพนักงาน)',
-        department: item.internal_department || (item.customer_type === 'builtland' ? 'Builtland' : (item.customer_name ? (item.customer_type || '-') : '-')),
+        customer_name: item.customer_name || '',
+        department: item.internal_department || item.department || '',
+        booker_type: bookerTypeObj.type,
+        booker_type_code: bookerTypeObj.code,
+        current_status: statusObj.label,
+        status_code: statusObj.code,
+        checkin_status: item.checkin_status,
         start_iso: item.start,
         end_iso: item.end
       });
@@ -390,7 +514,7 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
       map[d].sort((a, b) => a.start_time.localeCompare(b.start_time) || a.room_name.localeCompare(b.room_name));
     });
     return map;
-  }, [availabilityData, roomMap]);
+  }, [availabilityData, roomMap, bangkokNowIso]);
 
   // Group bookings for "ดูเพิ่มเติม" modal in POS monthly view with cleaning buffer
   const dayBookingsGrouped = useMemo(() => {
@@ -768,11 +892,21 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                                 {dayEvents.slice(0, 2).map((ev, evIdx) => (
                                   <div
                                     key={evIdx}
-                                    className="staff-pos-event-chip"
-                                    title={`${ev.room_name} เวลา ${ev.start_time} - ${ev.end_time} น. (${ev.customer_name})`}
+                                    className={`staff-pos-event-chip staff-pos-event-chip--${ev.booker_type_code}`}
+                                    title={`${ev.room_name} เวลา ${ev.start_time} - ${ev.end_time} น. · ${ev.booker_type} · ${ev.current_status}${ev.customer_name ? ` (${ev.customer_name})` : ''}`}
                                   >
-                                    <span className="staff-pos-event-chip__room">{ev.room_name}</span>
-                                    <span className="staff-pos-event-chip__time">{ev.start_time}-{ev.end_time}</span>
+                                    <div className="staff-pos-event-chip__top">
+                                      <span className="staff-pos-event-chip__room">{ev.room_name}</span>
+                                      <span className="staff-pos-event-chip__time">{ev.start_time}-{ev.end_time}</span>
+                                    </div>
+                                    <div className="staff-pos-event-chip__bottom">
+                                      <span className={`staff-pos-event-chip__type staff-pos-event-chip__type--${ev.booker_type_code}`}>
+                                        {ev.booker_type}
+                                      </span>
+                                      <span className={`staff-pos-event-chip__status staff-pos-event-chip__status--${ev.status_code}`}>
+                                        {ev.current_status}
+                                      </span>
+                                    </div>
                                   </div>
                                 ))}
 
@@ -802,18 +936,58 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
               {/* POS Footer Legend */}
               <div className="staff-pos-legend">
-                <div className="staff-legend-item">
-                  <span className="staff-legend-swatch staff-legend-swatch--today" />
-                  <span>วันนี้</span>
+                <div className="staff-legend-group">
+                  <span className="staff-legend-group__label">ประเภทผู้จอง:</span>
+                  <div className="staff-legend-item">
+                    <span className="staff-legend-swatch staff-legend-swatch--builtland">
+                      พนักงาน Builtland
+                    </span>
+                  </div>
+                  <div className="staff-legend-item">
+                    <span className="staff-legend-swatch staff-legend-swatch--external">
+                      ลูกค้าภายนอก
+                    </span>
+                  </div>
+                  <div className="staff-legend-item">
+                    <span className="staff-legend-swatch staff-legend-swatch--unknown">
+                      ไม่ระบุประเภท
+                    </span>
+                  </div>
                 </div>
-                <div className="staff-legend-item">
-                  <span className="staff-legend-swatch staff-legend-swatch--selected" />
-                  <span>วันที่เลือก</span>
+
+                <div className="staff-legend-group">
+                  <span className="staff-legend-group__label">สถานะการใช้งาน:</span>
+                  <div className="staff-legend-item">
+                    <span className="staff-status-pill staff-status-pill--upcoming">
+                      <span className="staff-status-pill__dot" />
+                      ยังไม่ถึงเวลา
+                    </span>
+                  </div>
+                  <div className="staff-legend-item">
+                    <span className="staff-status-pill staff-status-pill--in_slot">
+                      <span className="staff-status-pill__dot" />
+                      อยู่ในช่วงใช้งาน
+                    </span>
+                  </div>
+                  <div className="staff-legend-item">
+                    <span className="staff-status-pill staff-status-pill--ended">
+                      <span className="staff-status-pill__dot" />
+                      สิ้นสุดตามเวลา
+                    </span>
+                  </div>
                 </div>
-                <div className="staff-legend-item">
-                  <span className="staff-legend-swatch staff-legend-swatch--booked" />
-                  <span>มีการจองห้องประชุม</span>
+
+                <div className="staff-legend-group">
+                  <div className="staff-legend-item">
+                    <span className="staff-legend-swatch-dot staff-legend-swatch-dot--today" />
+                    <span>วันนี้</span>
+                  </div>
+                  <div className="staff-legend-item">
+                    <span className="staff-legend-swatch-dot staff-legend-swatch-dot--selected" />
+                    <span>วันที่เลือก</span>
+                  </div>
                 </div>
+
                 <div className="staff-pos-legend__tip">
                   💡 คลิกที่วันใดๆ เพื่อกลับสู่หน้าจองห้องและเปิดแผงจองของวันนั้นทันที
                 </div>
@@ -922,16 +1096,29 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                                 <Building size={13} /> {bk.room_name}
                               </span>
                             </div>
-                            <div className="staff-today-item__user-row">
-                              <span className="staff-today-item__name">
-                                <User size={13} /> {bk.customer_name}
+                            <div className="staff-today-item__badges-row">
+                              <span className={`staff-booker-type-badge staff-booker-type-badge--${bk.booker_type_code}`}>
+                                {bk.booker_type}
                               </span>
-                              {bk.department && bk.department !== '-' && (
-                                <span className="staff-today-item__dept">
-                                  {bk.department}
-                                </span>
-                              )}
+                              <span className={`staff-status-pill staff-status-pill--${bk.status_code}`}>
+                                <span className="staff-status-pill__dot" />
+                                {bk.current_status}
+                              </span>
                             </div>
+                            {(bk.customer_name || (bk.department && bk.department !== '-')) && (
+                              <div className="staff-today-item__user-row">
+                                {bk.customer_name && (
+                                  <span className="staff-today-item__name">
+                                    <User size={13} /> {bk.customer_name}
+                                  </span>
+                                )}
+                                {bk.department && bk.department !== '-' && (
+                                  <span className="staff-today-item__dept">
+                                    {bk.department}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -1490,20 +1677,35 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                             </div>
                           ) : (
                             <div key={bIdx} className="staff-day-room-booking-item">
-                              <div className="staff-day-room-booking-item__time">
-                                <Clock size={13} />
-                                <strong>{item.start_time} - {item.end_time} น.</strong>
-                              </div>
-                              <div className="staff-day-room-booking-item__user">
-                                <span className="staff-day-room-booking-item__name">
-                                  <User size={13} /> {item.customer_name}
-                                </span>
-                                {item.department && item.department !== '-' && (
-                                  <span className="staff-day-room-booking-item__dept">
-                                    {item.department}
+                              <div className="staff-day-room-booking-item__left">
+                                <div className="staff-day-room-booking-item__time">
+                                  <Clock size={13} />
+                                  <strong>{item.start_time} - {item.end_time} น.</strong>
+                                </div>
+                                <div className="staff-day-room-booking-item__badges">
+                                  <span className={`staff-booker-type-badge staff-booker-type-badge--${item.booker_type_code}`}>
+                                    {item.booker_type}
                                   </span>
-                                )}
+                                  <span className={`staff-status-pill staff-status-pill--${item.status_code}`}>
+                                    <span className="staff-status-pill__dot" />
+                                    {item.current_status}
+                                  </span>
+                                </div>
                               </div>
+                              {(item.customer_name || (item.department && item.department !== '-')) && (
+                                <div className="staff-day-room-booking-item__user">
+                                  {item.customer_name && (
+                                    <span className="staff-day-room-booking-item__name">
+                                      <User size={13} /> {item.customer_name}
+                                    </span>
+                                  )}
+                                  {item.department && item.department !== '-' && (
+                                    <span className="staff-day-room-booking-item__dept">
+                                      {item.department}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           )
                         ))}
