@@ -1366,27 +1366,31 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
   return { hasOverlap: false, overlap: false, bufferMinutes: bufferMins };
 }
 
-function formatOverlapErrorMessage(roomName, overlapResult, requestedRoomId = null) {
+function formatOverlapErrorMessage(roomName, overlapResult, requestedRoomId = null, isPublic = false) {
   const b = (overlapResult && overlapResult.booking) || {};
   const sTime = b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : (b.start_time || '');
   const eTime = b.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : (b.end_time || '');
   const nextAvail = b.end_buffered_time && b.end_buffered_time.includes('T') ? b.end_buffered_time.split('T')[1].substring(0, 5) : eTime;
 
-  const customer = b.customer_name ? `คุณ ${b.customer_name}` : 'ลูกค้า';
+  const customer = isPublic ? '' : (b.customer_name ? `คุณ ${b.customer_name}` : 'ลูกค้า');
   const nameLabel = roomName ? `ห้อง "${roomName}"` : 'ห้องนี้';
   const isDifferentRoom = b.room_id && requestedRoomId && Number(b.room_id) !== Number(requestedRoomId);
   const conflictLabel = isDifferentRoom ? ` (ทับซ้อนกับห้อง "${b.room_name || b.room_id}")` : '';
 
   if (overlapResult.isCleaningBuffer) {
     if (overlapResult.isNextQueueBuffer) {
-      return `${nameLabel}${conflictLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
+      const queueSuffix = isPublic ? `ก่อนคิวถัดไป (เริ่มเวลา ${sTime} น.)` : `ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
+      return `${nameLabel}${conflictLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ${queueSuffix}`;
     }
     if (nextAvail >= '18:00') {
-      return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
+      const queuePrefix = isPublic ? 'ต่อจากคิวก่อนหน้า' : `ต่อจากคิว${customer}`;
+      return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ${queuePrefix} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
     }
-    return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
+    const queuePrefix = isPublic ? 'ต่อจากคิวก่อนหน้า' : `ต่อจากคิว${customer}`;
+    return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ${queuePrefix} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
   }
-  return `${nameLabel}${conflictLabel} มีผู้จองแล้วในช่วงเวลานี้ (${customer} ใช้งาน ${sTime} - ${eTime} น.)`;
+  const timeDesc = isPublic ? `(เวลา ${sTime} - ${eTime} น.)` : `(${customer} ใช้งาน ${sTime} - ${eTime} น.)`;
+  return `${nameLabel}${conflictLabel} มีผู้จองแล้วในช่วงเวลานี้ ${timeDesc}`;
 }
 
 // ==========================================
@@ -12036,7 +12040,7 @@ export default {
 
         const overlapResult = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
         if (overlapResult.hasOverlap) {
-          return new Response(JSON.stringify({ error: formatOverlapErrorMessage(room.name, overlapResult) }), { status: 409, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: formatOverlapErrorMessage(room.name, overlapResult, null, true) }), { status: 409, headers: corsHeaders });
         }
 
         // Server-side price calculation
@@ -12176,7 +12180,7 @@ export default {
           await env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId).run();
           const latestConflict = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
           return new Response(JSON.stringify({
-            error: formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }, room_id)
+            error: formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }, room_id, true)
           }), { status: 409, headers: corsHeaders });
         }
 
