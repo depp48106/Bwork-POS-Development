@@ -2213,8 +2213,8 @@ function buildLineBookingConfirmationFlex(booking, item, room, options = {}) {
                 label: options.guidelinesLabel || 'ข้อปฏิบัติการใช้ห้อง',
                 uri: options.guidelinesUrl
               },
-              style: 'secondary',
-              color: '#0f172a',
+              style: 'primary',
+              color: '#132440',
               height: 'md',
               margin: 'sm'
             }
