@@ -6,6 +6,9 @@ export const API_BASE = (() => {
   if (import.meta.env.VITE_API_BASE) {
     return import.meta.env.VITE_API_BASE;
   }
+  if (import.meta.env.MODE === 'staging') {
+    return 'https://bwork-pos-api-staging.ohnatza74185-ky.workers.dev';
+  }
   if (typeof window !== 'undefined') {
     const host = window.location.hostname;
     if (host.includes('staging')) {
