@@ -309,6 +309,33 @@ export function sanitizeConfirmationCardFilename(bookingRef) {
   return `BWORK-Booking-Confirmation-${safeRef}.jpg`;
 }
 
+async function fetchConfirmationImageDataUrl(src) {
+  const url = new URL(src, document.baseURI);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(url, {
+      mode: 'cors',
+      credentials: 'omit',
+      signal: controller.signal
+    });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    if (!blob.size || !blob.type.startsWith('image/')) return null;
+
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+      reader.onerror = reader.onabort = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /**
  * Exports the rendered Meeting Room Booking Confirmation Card DOM element as a high-resolution JPEG file.
  * - Captures the entire #wifi-customer-card document (including all rooms when taller than viewport)
@@ -344,18 +371,21 @@ export async function exportConfirmationCardAsJpg(element, bookingRef, options =
   // 2. Ensure all <img> elements inside the card have settled
   await ensureReceiptImagesLoaded(element);
 
-  // 3. Pre-inline loaded same-origin images & guard against broken/CORS-blocked images
+  // 3. Inline images before capture, including room images served by the API Worker.
   const restoredAttrs = [];
-  if (typeof element.querySelectorAll === 'function' && typeof document !== 'undefined') {
-    const imgs = Array.from(element.querySelectorAll('img'));
-    for (const img of imgs) {
-      const origSrc = img.getAttribute('src');
-      if (!img.complete || img.naturalWidth === 0 || img.naturalHeight === 0) {
-        img.setAttribute('data-export-hide', 'true');
-        restoredAttrs.push(() => img.removeAttribute('data-export-hide'));
-        continue;
-      }
-      if (origSrc && !origSrc.startsWith('data:')) {
+  try {
+    if (typeof element.querySelectorAll === 'function' && typeof document !== 'undefined') {
+      const images = Array.from(element.querySelectorAll('img'));
+      await Promise.all(images.map(async (img) => {
+        const origSrc = img.getAttribute('src');
+        if (!img.complete || img.naturalWidth === 0 || img.naturalHeight === 0) {
+          img.setAttribute('data-export-hide', 'true');
+          restoredAttrs.push(() => img.removeAttribute('data-export-hide'));
+          return;
+        }
+        if (!origSrc || origSrc.startsWith('data:')) return;
+
+        let inlined;
         try {
           const c = document.createElement('canvas');
           c.width = img.naturalWidth;
@@ -363,22 +393,26 @@ export async function exportConfirmationCardAsJpg(element, bookingRef, options =
           const ctx = c.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0);
-            const inlined = c.toDataURL('image/png');
-            if (inlined && inlined.startsWith('data:image/')) {
-              img.setAttribute('src', inlined);
-              restoredAttrs.push(() => img.setAttribute('src', origSrc));
-            }
+            inlined = c.toDataURL('image/png');
           }
-        } catch (_) {
-          // Cross-origin or untrusted image that cannot be drawn to canvas -> hide broken img node safely
+        } catch (_) {}
+        if (!inlined?.startsWith('data:image/')) {
+          try {
+            inlined = await fetchConfirmationImageDataUrl(img.currentSrc || origSrc);
+          } catch (_) {}
+        }
+
+        if (inlined?.startsWith('data:image/')) {
+          img.setAttribute('src', inlined);
+          restoredAttrs.push(() => img.setAttribute('src', origSrc));
+        } else {
           img.setAttribute('data-export-hide', 'true');
           restoredAttrs.push(() => img.removeAttribute('data-export-hide'));
         }
-      }
+      }));
+      await ensureReceiptImagesLoaded(element);
     }
-  }
 
-  try {
     const cssWidth = Math.max(
       Math.round(Number(element.scrollWidth) || 0),
       Math.round(Number(element.offsetWidth) || 0),

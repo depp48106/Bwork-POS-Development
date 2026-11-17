@@ -8,8 +8,7 @@ const { initDatabase, dbQuery, dbPath, hashPassword, verifyPassword } = require(
 const { performBackup } = require('./backup');
 const {
   getAvailabilityMonth, ACTIVE_AVAILABILITY_ROOMS_SQL, ROOM_AVAILABILITY_INTERVALS_SQL,
-  STAFF_ROOM_AVAILABILITY_INTERVALS_SQL, getAvailabilityQueryParams,
-  buildAvailabilityResponse, buildStaffAvailabilityResponse
+  getAvailabilityQueryParams, buildAvailabilityResponse, getConflictingRoomIds
 } = require('./roomAvailabilityQuery.mjs');
 const {
   generateDatabaseDumpSql,
@@ -40,6 +39,26 @@ const {
   isEncryptedWifiPayload,
   isValidKey
 } = require('./wifiCryptoHelper');
+const {
+  resolveRoomGuidelines,
+  buildLineGuidelinesMessage,
+  isGuidelinesEnforcedForBooking,
+  isBoundLineUserId,
+  isServerConfirmedLineBinding,
+  GUIDELINES_CUTOVER_ISO
+} = require('../shared/roomGuidelinesPolicy.mjs');
+const {
+  DEFAULT_SENDER_NAME,
+  DEFAULT_SENDER_EMAIL,
+  DEFAULT_REPLY_TO,
+  isGmailConfigured,
+  isLiveDispatchEnabled,
+  isEmailAllowedInStaging,
+  isValidEmail,
+  generateTaxInvoiceEmailContent,
+  buildMimeMessage,
+  sendTaxInvoiceEmail
+} = require('./services/gmailService');
 const crypto = require('crypto');
 
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
@@ -149,6 +168,15 @@ app.use('/uploads', async (req, res, next) => {
 
   // If public catalog asset, allow static middleware to serve
   if (!isFinancialOrSensitive) {
+    if (cleanPath.startsWith('rooms/')) {
+      const targetOnDisk = path.join(__dirname, 'uploads', cleanPath);
+      if (!fs.existsSync(targetOnDisk)) {
+        const fallbackOnDisk = path.join(__dirname, 'uploads', cleanPath.replace(/^rooms\//, ''));
+        if (fs.existsSync(fallbackOnDisk)) {
+          req.url = req.url.replace(/^\/rooms\//, '/');
+        }
+      }
+    }
     return next();
   }
 
@@ -440,7 +468,8 @@ app.use('/api/admin', authenticateToken, requireAnyPermission('admin-management'
 app.use('/api/basecamp', authenticateToken, requireAnyPermission('pos', 'manage', 'pending', 'history'));
 const { createCustomerRouter } = require('./customerContracts/routes');
 const { calculateCustomerQuota } = require('./customerContracts/service');
-app.use('/api/customers', authenticateToken, requireAnyPermission('customers', 'admin-management'), createCustomerRouter(dbQuery));
+app.use('/api/customers', authenticateToken, requireAnyPermission('customers', 'admin-management', 'pos'), createCustomerRouter(dbQuery));
+app.use('/api/customer-types', authenticateToken, requireAnyPermission('customers', 'admin-management', 'pos'), (req, res, next) => { req.url = '/types' + req.url.slice(1); next(); }, createCustomerRouter(dbQuery));
 
 const { createHourCreditService } = require('./hourCredits/service');
 const { creditRouter, creditMutationGuard } = require('./hourCredits/routes');
@@ -1223,15 +1252,20 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
   const reqEndMs = new Date(normEnd.replace(' ', 'T')).getTime();
   const reqEndBufferedMs = reqEndMs + bufferMs;
 
+  const targetRoomId = Number(roomId);
+  const conflictIds = getConflictingRoomIds(targetRoomId);
+  const inPlaceholders = conflictIds.map(() => '?').join(', ');
+
   let query = `
-    SELECT bi.id, bi.booking_id, bi.start_time, bi.end_time, b.customer_name, b.payment_status
+    SELECT bi.id, bi.booking_id, bi.room_id, r.name as room_name, bi.start_time, bi.end_time, b.customer_name, b.payment_status
     FROM booking_items bi
     JOIN bookings b ON bi.booking_id = b.id
-    WHERE bi.room_id = ?
+    LEFT JOIN rooms r ON bi.room_id = r.id
+    WHERE bi.room_id IN (${inPlaceholders})
       AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
       AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
   `;
-  const params = [roomId];
+  const params = [...conflictIds];
   if (excludeBookingItemId) {
     query += ' AND bi.id != ?';
     params.push(excludeBookingItemId);
@@ -1281,7 +1315,7 @@ async function checkRoomOverlap(roomId, startISO, endISO, excludeBookingId = nul
   return { hasOverlap: false, bufferMinutes: bufferMins };
 }
 
-function formatOverlapErrorMessage(roomName, overlapResult) {
+function formatOverlapErrorMessage(roomName, overlapResult, requestedRoomId = null) {
   const b = (overlapResult && overlapResult.booking) || {};
   const sTime = b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : (b.start_time || '');
   const eTime = b.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : (b.end_time || '');
@@ -1289,17 +1323,19 @@ function formatOverlapErrorMessage(roomName, overlapResult) {
 
   const customer = b.customer_name ? `คุณ ${b.customer_name}` : 'ลูกค้า';
   const nameLabel = roomName ? `ห้อง "${roomName}"` : 'ห้องนี้';
+  const isDifferentRoom = b.room_id && requestedRoomId && Number(b.room_id) !== Number(requestedRoomId);
+  const conflictLabel = isDifferentRoom ? ` (ทับซ้อนกับห้อง "${b.room_name || b.room_id}")` : '';
 
   if (overlapResult.isCleaningBuffer) {
     if (overlapResult.isNextQueueBuffer) {
-      return `${nameLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
+      return `${nameLabel}${conflictLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
     }
     if (nextAvail >= '18:00') {
-      return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
+      return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
     }
-    return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
+    return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
   }
-  return `${nameLabel} ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: ${customer} ช่วงเวลา ${sTime} - ${eTime} น.)`;
+  return `${nameLabel}${conflictLabel} มีผู้จองแล้วในช่วงเวลานี้ (${customer} ใช้งาน ${sTime} - ${eTime} น.)`;
 }
 
 function normalizeBookingDetails(input) {
@@ -1374,7 +1410,7 @@ app.post('/api/bookings', async (req, res) => {
           if (overlapResult.hasOverlap) {
             const roomObj = await dbQuery.get('SELECT name FROM rooms WHERE id = ?', [item.room_id]);
             const roomName = roomObj ? roomObj.name : `ID: ${item.room_id}`;
-            const err = new Error(formatOverlapErrorMessage(roomName, overlapResult));
+            const err = new Error(formatOverlapErrorMessage(roomName, overlapResult, item.room_id));
             err.statusCode = 409;
             throw err;
           }
@@ -1424,52 +1460,31 @@ app.post('/api/bookings', async (req, res) => {
         }
       }
 
+      // Backend Validation: reject inactive customer types for new bookings
+      if (customer_type && customer_type !== 'walkin') {
+        try {
+          const typeRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'customer_types'");
+          if (typeRow && typeRow.value) {
+            const configuredTypes = JSON.parse(typeRow.value);
+            if (Array.isArray(configuredTypes)) {
+              const matchedType = configuredTypes.find(t => String(t.id).toLowerCase() === String(customer_type).toLowerCase());
+              if (matchedType && matchedType.active === false) {
+                return res.status(400).json({ error: `ประเภทลูกค้า '${matchedType.name || matchedType.label || customer_type}' ถูกปิดใช้งานแล้ว ไม่สามารถเลือกสร้างการจองใหม่ได้` });
+              }
+            }
+          }
+        } catch (tErr) {
+          console.warn('[Booking] Could not verify customer_type active status:', tErr.message);
+        }
+      }
+
       let grossSubtotal = Math.round(serverTotal * 100) / 100;
       let quotaHoursUsed = 0;
       let effectiveBillingOption = billing_option || 'paid';
       const customerId = req.body.customer_id ? parseInt(req.body.customer_id, 10) : null;
       let contractId = req.body.contract_id ? parseInt(req.body.contract_id, 10) : null;
 
-      if (customer_type === 'shop') {
-        const firstItemDate = items[0]?.start_time || getBangkokLocalISO(new Date());
-        let remainingQuota = 0;
-        let contractEligible = true;
-
-        if (customerId) {
-          const quotaCalc = await calculateCustomerQuota(dbQuery, {
-            customerId,
-            customerType: 'shop',
-            serviceDate: firstItemDate
-          });
-          remainingQuota = quotaCalc.remaining_quota;
-          contractEligible = quotaCalc.contract_eligible;
-          if (quotaCalc.contract && !contractId) {
-            contractId = quotaCalc.contract.id;
-          }
-        } else {
-          contractEligible = false;
-        }
-
-        if (!contractEligible) {
-          quotaHoursUsed = 0;
-          grossSubtotal = Math.round(serverTotal * 100) / 100;
-          effectiveBillingOption = 'paid';
-        } else {
-          quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
-          const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
-          grossSubtotal = totalBookingHours > 0
-            ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
-            : 0;
-
-          if (quotaHoursUsed > 0 && grossSubtotal === 0) {
-            effectiveBillingOption = 'quota';
-          } else if (quotaHoursUsed > 0 && grossSubtotal > 0) {
-            effectiveBillingOption = 'quota_partial';
-          } else {
-            effectiveBillingOption = 'standard';
-          }
-        }
-      } else if (customer_type === 'basecamp') {
+      if (customer_type === 'basecamp') {
         const firstItemDate = items[0]?.start_time || getBangkokLocalISO(new Date());
         let remainingQuota = 0;
         let contractEligible = true;
@@ -1520,6 +1535,45 @@ app.post('/api/bookings', async (req, res) => {
           quotaHoursUsed = 0;
           grossSubtotal = Math.round(serverTotal * 100) / 100;
           effectiveBillingOption = 'standard';
+        } else {
+          quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
+          const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+          grossSubtotal = totalBookingHours > 0
+            ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
+            : 0;
+
+          if (quotaHoursUsed > 0 && grossSubtotal === 0) {
+            effectiveBillingOption = 'quota';
+          } else if (quotaHoursUsed > 0 && grossSubtotal > 0) {
+            effectiveBillingOption = 'quota_partial';
+          } else {
+            effectiveBillingOption = 'standard';
+          }
+        }
+      } else if (customer_type === 'shop' || customerId || (customer_type !== 'walkin' && customer_type !== 'builtland')) {
+        const firstItemDate = items[0]?.start_time || getBangkokLocalISO(new Date());
+        let remainingQuota = 0;
+        let contractEligible = true;
+
+        if (customerId) {
+          const quotaCalc = await calculateCustomerQuota(dbQuery, {
+            customerId,
+            customerType: customer_type,
+            serviceDate: firstItemDate
+          });
+          remainingQuota = quotaCalc.remaining_quota;
+          contractEligible = quotaCalc.contract_eligible;
+          if (quotaCalc.contract && !contractId) {
+            contractId = quotaCalc.contract.id;
+          }
+        } else {
+          contractEligible = false;
+        }
+
+        if (!contractEligible) {
+          quotaHoursUsed = 0;
+          grossSubtotal = Math.round(serverTotal * 100) / 100;
+          effectiveBillingOption = 'paid';
         } else {
           quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
           const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
@@ -1688,7 +1742,7 @@ app.post('/api/bookings', async (req, res) => {
           normalizedDetails.value,
           slipUrl,
           isTaxReq,
-          tax_payer_type === 'individual' ? 'individual' : 'corporate',
+          isTaxReq ? (tax_payer_type === 'individual' ? 'individual' : 'corporate') : null,
           cleanTaxName,
           cleanTaxId,
           cleanBranchType,
@@ -1764,6 +1818,8 @@ app.post('/api/bookings', async (req, res) => {
         if (item.room_id && normStart && normEnd) {
           const bufferMins = await getCleaningBufferMinutes();
           const itemEndBuffered = addMinutesToLocalISO(normEnd, bufferMins);
+          const conflictIds = getConflictingRoomIds(item.room_id);
+          const inPlaceholders = conflictIds.map(() => '?').join(', ');
           const insRes = await dbQuery.run(
             `INSERT INTO booking_items
              (booking_id, room_id, service_id, quantity, price, start_time, end_time, subtotal, layout, booking_type, guest_count, pin_code, checkin_status)
@@ -1771,7 +1827,7 @@ app.post('/api/bookings', async (req, res) => {
              WHERE NOT EXISTS (
                SELECT 1 FROM booking_items bi
                JOIN bookings b ON bi.booking_id = b.id
-               WHERE bi.room_id = ?
+               WHERE bi.room_id IN (${inPlaceholders})
                  AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                  AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                  AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -1790,7 +1846,7 @@ app.post('/api/bookings', async (req, res) => {
               item.booking_type || 'hourly',
               itemGuestCount,
               itemPin,
-              item.room_id,
+              ...conflictIds,
               normStart,
               `+${bufferMins} minutes`,
               itemEndBuffered
@@ -1799,7 +1855,7 @@ app.post('/api/bookings', async (req, res) => {
           if (insRes.changes === 0) {
             const rObj = await dbQuery.get('SELECT name FROM rooms WHERE id = ?', [item.room_id]);
             const latestConflict = await checkRoomOverlap(item.room_id, normStart, normEnd);
-            const conflictErr = new Error(formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }));
+            const conflictErr = new Error(formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }, item.room_id));
             conflictErr.statusCode = 409;
             throw conflictErr;
           }
@@ -2273,6 +2329,8 @@ app.get('/api/bookings/check-overlap', async (req, res) => {
         buffer_minutes: overlapResult.bufferMinutes,
         booking: {
           id: overlapResult.booking.booking_id || overlapResult.booking.id,
+          room_id: overlapResult.booking.room_id,
+          room_name: overlapResult.booking.room_name,
           customer_name: overlapResult.booking.customer_name,
           start_time: overlapResult.booking.start_time,
           end_time: overlapResult.booking.end_time,
@@ -2341,10 +2399,16 @@ app.get('/api/bookings/:id', async (req, res) => {
 // - Automatic LINE notifications are STRICTLY FORBIDDEN
 function sanitizeRoomImageUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return null;
-  const trimmed = rawUrl.trim();
+  let trimmed = rawUrl.trim();
   if (!trimmed) return null;
   if (/^(https?:|\/\/|javascript:|vbscript:|file:)/i.test(trimmed)) {
     return null;
+  }
+  if (trimmed.includes('..') || trimmed.includes(String.fromCharCode(92))) {
+    return null;
+  }
+  if (!trimmed.startsWith('/') && (trimmed.startsWith('uploads/') || trimmed.startsWith('rooms/'))) {
+    trimmed = '/' + (trimmed.startsWith('rooms/') ? 'uploads/' + trimmed : trimmed);
   }
   if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
     return trimmed;
@@ -2629,7 +2693,7 @@ app.delete('/api/bookings/:id', async (req, res) => {
   try {
     // Find booking by ID or receipt_number
     const booking = await dbQuery.get(
-      'SELECT id FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
+      'SELECT id, customer_name, receipt_number, payment_status, paid_amount FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
       [id, id, id]
     );
 
@@ -2638,11 +2702,82 @@ app.delete('/api/bookings/:id', async (req, res) => {
     }
 
     const realId = booking.id;
-    // Explicitly delete booking_items first, then master booking
-    await dbQuery.run('DELETE FROM booking_items WHERE booking_id = ?', [realId]);
-    await dbQuery.run('DELETE FROM bookings WHERE id = ?', [realId]);
 
-    res.json({ success: true, message: 'ลบ/ยกเลิกรายการจองสำเร็จ' });
+    // Financial / Accounting safety check:
+    // If not admin, do not allow hard deletion of paid bookings
+    let user = req.user;
+    if (!user && req.headers['authorization']) {
+      const authHeader = req.headers['authorization'];
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+      const tokenUser = token ? verifyToken(token) : null;
+      if (tokenUser) {
+        user = await dbQuery.get(
+          `SELECT u.id, u.username, u.role, COALESCE(u.permissions, r.permissions, '') AS permissions, u.fullname
+           FROM users u
+           LEFT JOIN roles r ON u.role = r.name
+           WHERE u.id = ?`,
+          [tokenUser.id]
+        );
+      }
+    }
+    const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+    if (booking.payment_status === 'paid' && !isAdmin) {
+      return res.status(403).json({ error: 'ไม่อนุญาตให้ลบรายการจองที่ชำระเงินแล้ว กรุณายกเลิกการจอง หรือให้ผู้ดูแลระบบ (Admin) ดำเนินการ' });
+    }
+
+    // Check if linked to room hour credits
+    const creditEntry = await dbQuery.get(
+      'SELECT e.id FROM room_hour_credit_entries e JOIN booking_items i ON i.id = e.booking_item_id WHERE i.booking_id = ? LIMIT 1',
+      [realId]
+    );
+    const sourceCredit = await dbQuery.get(
+      'SELECT credit_id FROM room_hour_credits WHERE source_booking_id = ? LIMIT 1',
+      [realId]
+    );
+    if (creditEntry || sourceCredit) {
+      return res.status(409).json({ error: 'ไม่สามารถลบรายการจองนี้ได้ เนื่องจากผูกกับเครดิตชั่วโมงห้องประชุม' });
+    }
+
+    // Explicitly delete child records across all related tables in proper dependency order
+    await dbQuery.transaction(async () => {
+      const tables = await dbQuery.all("SELECT name FROM sqlite_master WHERE type='table'");
+      const tableNames = new Set(tables.map(t => t.name));
+
+      if (tableNames.has('line_guidelines_dispatches')) {
+        await dbQuery.run('UPDATE line_guidelines_dispatches SET first_booking_id = NULL WHERE first_booking_id = ?', [realId]);
+      }
+      if (tableNames.has('support_tickets')) {
+        await dbQuery.run('UPDATE support_tickets SET booking_id = NULL WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('line_notification_claims')) {
+        await dbQuery.run('DELETE FROM line_notification_claims WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('room_guidelines_acknowledgements')) {
+        await dbQuery.run('DELETE FROM room_guidelines_acknowledgements WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('tax_invoice_email_logs')) {
+        await dbQuery.run('DELETE FROM tax_invoice_email_logs WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('tax_invoices')) {
+        await dbQuery.run('DELETE FROM tax_invoices WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('slip_verifications')) {
+        await dbQuery.run('DELETE FROM slip_verifications WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('payment_transactions')) {
+        await dbQuery.run('DELETE FROM payment_transactions WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('booking_history')) {
+        await dbQuery.run('DELETE FROM booking_history WHERE booking_id = ?', [realId]);
+      }
+      if (tableNames.has('timeline_notes')) {
+        await dbQuery.run('DELETE FROM timeline_notes WHERE booking_id = ?', [realId]);
+      }
+      await dbQuery.run('DELETE FROM booking_items WHERE booking_id = ?', [realId]);
+      await dbQuery.run('DELETE FROM bookings WHERE id = ?', [realId]);
+    });
+
+    res.json({ success: true, message: 'ลบรายการจองออกจากระบบอย่างถาวรสำเร็จ' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2975,7 +3110,7 @@ function formatRescheduleTimeDisplay(startTime, endTime) {
 }
 
 // Helper to build LINE OA Flex Message for booking confirmation
-function buildLineConfirmationFlex(booking, item, room) {
+function buildLineConfirmationFlex(booking, item, room, options = {}) {
   const customerName = booking?.customer_name || 'ลูกค้าคนพิเศษ';
   const roomName = room?.name || 'ห้องประชุม B-WORK';
   const receiptNo = booking?.receipt_number || `BK-${String(booking?.id || 0).padStart(6, '0')}`;
@@ -3103,7 +3238,35 @@ function buildLineConfirmationFlex(booking, item, room) {
                 margin: 'sm'
               }
             ]
-          }
+          },
+          ...(options?.guidelinesUrl ? [
+            {
+              type: 'box',
+              layout: 'vertical',
+              margin: 'md',
+              paddingAll: '12px',
+              backgroundColor: '#f8fafc',
+              cornerRadius: '10px',
+              borderWidth: '1px',
+              borderColor: '#e2e8f0',
+              contents: [
+                {
+                  type: 'text',
+                  text: 'ข้อปฏิบัติการใช้ห้อง',
+                  size: 'xs',
+                  weight: 'bold',
+                  color: '#334155'
+                },
+                {
+                  type: 'text',
+                  text: 'กรุณาอ่านข้อปฏิบัติก่อนเข้าใช้บริการ BWORK',
+                  size: 'xxs',
+                  color: '#64748b',
+                  margin: 'xs'
+                }
+              ]
+            }
+          ] : [])
         ]
       },
       footer: {
@@ -3121,7 +3284,21 @@ function buildLineConfirmationFlex(booking, item, room) {
             style: 'primary',
             color: '#065f46',
             height: 'md'
-          }
+          },
+          ...(options?.guidelinesUrl ? [
+            {
+              type: 'button',
+              action: {
+                type: 'uri',
+                label: options.guidelinesLabel || 'ข้อปฏิบัติการใช้ห้อง',
+                uri: options.guidelinesUrl
+              },
+              style: 'secondary',
+              color: '#0f172a',
+              height: 'md',
+              margin: 'sm'
+            }
+          ] : [])
         ]
       }
     }
@@ -3172,11 +3349,11 @@ async function ensureServerNotificationClaimsTable(db) {
       )
     `);
     await db.run(`
-      CREATE INDEX IF NOT EXISTS idx_line_claims_booking_status 
+      CREATE INDEX IF NOT EXISTS idx_line_claims_booking_status
       ON line_notification_claims (booking_id, notification_type, status)
     `);
     await db.run(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_line_claims_retry_key 
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_line_claims_retry_key
       ON line_notification_claims (retry_key)
     `);
     serverClaimsTableEnsured = true;
@@ -3222,7 +3399,7 @@ async function acquireServerNotificationClaim(db, bookingId, notificationType = 
   // 2. Atomic insert
   try {
     const insertRes = await db.run(`
-      INSERT OR IGNORE INTO line_notification_claims 
+      INSERT OR IGNORE INTO line_notification_claims
       (booking_id, notification_type, status, claim_token, retry_key, claimed_at, updated_at)
       VALUES (?, ?, 'processing', ?, ?, ?, ?)
     `, [bookingId, notificationType, claimToken, freshRetryKey, nowIso, nowIso]);
@@ -3581,60 +3758,76 @@ async function sendLineNotification(bookingId) {
       booking.pin_code = pinCode;
     }
 
-    const flexCard = buildLineConfirmationFlex(booking, item, room);
+    // Guidelines link attachment check:
+    // Only attach guidelines link on first time per (line_user_id, rule_set, rule_version)
+    // for server-confirmed LINE binding when feature toggle is enabled.
+    let guidelinesUrl = null;
+    let guidelinesConfig = null;
+    let guidelinesClaimed = false;
+
+    const lineGuidelinesSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'");
+    const isGuidelinesDispatchEnabled = (lineGuidelinesSetting && (lineGuidelinesSetting.value === 'true' || lineGuidelinesSetting.value === '1' || lineGuidelinesSetting.value === 1 || lineGuidelinesSetting.value === true));
+
+    if (isGuidelinesDispatchEnabled) {
+      guidelinesConfig = resolveRoomGuidelines(item?.room_id, room?.name);
+      if (guidelinesConfig && guidelinesConfig.required) {
+        const isLineConfirmed = isServerConfirmedLineBinding({
+          lineUserId: booking.line_user_id,
+          isVerified: booking.line_user_id_verified,
+          bookingSource: booking.booking_source
+        });
+
+        if (isLineConfirmed) {
+          try {
+            const claimRes = await dbQuery.run(
+              `INSERT INTO line_guidelines_dispatches
+               (line_user_id, rule_set, rule_version, first_booking_id, status, error_message, dispatched_at)
+               VALUES (?, ?, ?, ?, 'claimed', NULL, CURRENT_TIMESTAMP)`,
+              [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId]
+            );
+            if (claimRes && (claimRes.changes > 0 || claimRes.lastID)) {
+              guidelinesClaimed = true;
+              guidelinesUrl = guidelinesConfig.image_url;
+            }
+          } catch (claimErr) {
+            // Row already exists. Atomically re-claim if and only if status is currently 'retryable_rejected'
+            try {
+              const reclaimRes = await dbQuery.run(
+                `UPDATE line_guidelines_dispatches
+                 SET status = 'claimed',
+                     first_booking_id = ?,
+                     dispatched_at = CURRENT_TIMESTAMP,
+                     error_message = NULL
+                 WHERE line_user_id = ?
+                   AND rule_set = ?
+                   AND rule_version = ?
+                   AND status = 'retryable_rejected'`,
+                [bookingId, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version]
+              );
+              if (reclaimRes && reclaimRes.changes > 0) {
+                guidelinesClaimed = true;
+                guidelinesUrl = guidelinesConfig.image_url;
+              } else {
+                guidelinesClaimed = false;
+                guidelinesUrl = null;
+              }
+            } catch (reclaimErr) {
+              guidelinesClaimed = false;
+              guidelinesUrl = null;
+            }
+          }
+        }
+      }
+    }
+
+    const flexCard = buildLineConfirmationFlex(booking, item, room, {
+      guidelinesUrl,
+      guidelinesLabel: 'ข้อปฏิบัติการใช้ห้อง'
+    });
 
     // Staging / Test Hard-Block or Mock Check
-    const isStagingOrMock = process.env.ENVIRONMENT === 'staging' || process.env.DISABLE_LIVE_LINE === 'true' || process.env.STAGING_MOCK_LINE_API === 'true' || process.env.NODE_ENV === 'test';
-    if (isStagingOrMock) {
-      await finalizeServerNotificationClaim(dbQuery, bookingId, 'booking_confirmation', claim.claimToken, {
-        status: 'sent',
-        httpStatus: 200,
-        errorMessage: null,
-        acceptedRequestId: null
-      });
-
-      try {
-        await dbQuery.run(
-          "INSERT INTO booking_history (booking_id, action, details, performed_by, created_at) VALUES (?, 'line_confirmation_notified', ?, 'system', ?)",
-          [bookingId, JSON.stringify({ status: 'sent', mocked: true, http_status: 200, timestamp: nowIso }), nowIso]
-        );
-      } catch (_) {}
-
-      logSafeNotificationDiagnostic('booking_confirmation', {
-        booking_id: bookingId,
-        eligible: true,
-        attempted: true,
-        status: 'sent',
-        reason: 'staging_environment_mock',
-        http_status: 200,
-        line_user_id: booking.line_user_id
-      });
-      return {
-        success: true,
-        sent: false,
-        mocked: true,
-        status: 'sent',
-        http_status: 200,
-        pin_code: pinCode,
-        line_pushed: false,
-        flexCard,
-        booking,
-        retry_key: claim.retryKey
-      };
-    }
-
-    const timeoutMs = options.timeoutMs || 10000;
-    const retryKey = claim.retryKey || null;
-    let timeoutId = null;
-    let isTimedOut = false;
-
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    if (controller) {
-      timeoutId = setTimeout(() => {
-        isTimedOut = true;
-        try { controller.abort(); } catch (_) {}
-      }, timeoutMs);
-    }
+    const mockOutcome = options.mockLineOutcome || (process.env.MOCK_LINE_OUTCOME ? JSON.parse(process.env.MOCK_LINE_OUTCOME) : null);
+    const isStagingOrMock = Boolean(mockOutcome) || process.env.ENVIRONMENT === 'staging' || process.env.DISABLE_LIVE_LINE === 'true' || process.env.STAGING_MOCK_LINE_API === 'true' || process.env.NODE_ENV === 'test';
 
     let linePushed = false;
     let isDeduplicated = false;
@@ -3642,57 +3835,95 @@ async function sendLineNotification(bookingId) {
     let networkError = false;
     let isTimeout = false;
     let acceptedRequestId = null;
+    let isLineAccepted409 = false;
 
-    try {
-      const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + channelAccessToken
-      };
-      if (retryKey) {
-        headers['X-Line-Retry-Key'] = retryKey;
-      }
-
-      const fetchOptions = {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          to: booking.line_user_id,
-          messages: [flexCard]
-        })
-      };
-      if (controller) {
-        fetchOptions.signal = controller.signal;
-      }
-
-      const lineRes = await fetch('https://api.line.me/v2/bot/message/push', fetchOptions);
-      if (timeoutId) clearTimeout(timeoutId);
-
-      acceptedRequestId = lineRes.headers?.get ? lineRes.headers.get('x-line-accepted-request-id') : null;
-
-      let bodyJson = null;
-      let bodyText = '';
-      try {
-        bodyText = await lineRes.text();
-        bodyJson = JSON.parse(bodyText);
-      } catch (_) {}
-
-      const isLineAccepted409 = lineRes.status === 409 && (
-        (bodyJson && typeof bodyJson.message === 'string' && bodyJson.message.toLowerCase().includes('already accepted')) ||
-        Boolean(acceptedRequestId)
-      );
-
-      httpStatus = lineRes.status;
-      if (lineRes.ok || isLineAccepted409) {
+    if (isStagingOrMock) {
+      if (mockOutcome) {
+        if (mockOutcome.network_error || mockOutcome.is_timeout || mockOutcome.status === 'timeout') {
+          networkError = true;
+          isTimeout = true;
+          httpStatus = null;
+        } else {
+          httpStatus = mockOutcome.status || (mockOutcome.ok ? 200 : 400);
+          const ok = mockOutcome.ok !== undefined ? Boolean(mockOutcome.ok) : (httpStatus >= 200 && httpStatus < 300);
+          if (ok) {
+            linePushed = true;
+            isDeduplicated = Boolean(mockOutcome.deduplicated);
+          } else {
+            linePushed = false;
+            networkError = false;
+          }
+        }
+      } else {
         linePushed = true;
-        isDeduplicated = isLineAccepted409;
-        httpStatus = isLineAccepted409 ? 200 : lineRes.status;
+        isDeduplicated = false;
+        httpStatus = 200;
       }
-    } catch (pushErr) {
-      if (timeoutId) clearTimeout(timeoutId);
-      networkError = true;
-      isTimeout = isTimedOut || pushErr?.name === 'AbortError' || String(pushErr?.message || '').toLowerCase().includes('abort') || String(pushErr?.message || '').toLowerCase().includes('timeout');
-      console.warn('LINE push notification error in server:', pushErr.message);
-      httpStatus = null;
+    } else {
+      const timeoutMs = options.timeoutMs || 10000;
+      const retryKey = claim.retryKey || null;
+      let timeoutId = null;
+      let isTimedOut = false;
+
+      const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (controller) {
+        timeoutId = setTimeout(() => {
+          isTimedOut = true;
+          try { controller.abort(); } catch (_) {}
+        }, timeoutMs);
+      }
+
+      try {
+        const headers = {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + channelAccessToken
+        };
+        if (retryKey) {
+          headers['X-Line-Retry-Key'] = retryKey;
+        }
+
+        const fetchOptions = {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            to: booking.line_user_id,
+            messages: [flexCard]
+          })
+        };
+        if (controller) {
+          fetchOptions.signal = controller.signal;
+        }
+
+        const lineRes = await fetch('https://api.line.me/v2/bot/message/push', fetchOptions);
+        if (timeoutId) clearTimeout(timeoutId);
+
+        acceptedRequestId = lineRes.headers?.get ? lineRes.headers.get('x-line-accepted-request-id') : null;
+
+        let bodyJson = null;
+        let bodyText = '';
+        try {
+          bodyText = await lineRes.text();
+          bodyJson = JSON.parse(bodyText);
+        } catch (_) {}
+
+        isLineAccepted409 = lineRes.status === 409 && (
+          (bodyJson && typeof bodyJson.message === 'string' && bodyJson.message.toLowerCase().includes('already accepted')) ||
+          Boolean(acceptedRequestId)
+        );
+
+        httpStatus = lineRes.status;
+        if (lineRes.ok || isLineAccepted409) {
+          linePushed = true;
+          isDeduplicated = isLineAccepted409;
+          httpStatus = isLineAccepted409 ? 200 : lineRes.status;
+        }
+      } catch (pushErr) {
+        if (timeoutId) clearTimeout(timeoutId);
+        networkError = true;
+        isTimeout = isTimedOut || pushErr?.name === 'AbortError' || String(pushErr?.message || '').toLowerCase().includes('abort') || String(pushErr?.message || '').toLowerCase().includes('timeout');
+        console.warn('LINE push notification error in server:', pushErr.message);
+        httpStatus = null;
+      }
     }
 
     if (linePushed) {
@@ -3703,15 +3934,28 @@ async function sendLineNotification(bookingId) {
         acceptedRequestId
       });
 
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches
+             SET status = 'sent', error_message = NULL
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`,
+            [booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId]
+          );
+        } catch (_) {}
+      }
+
       try {
         await dbQuery.run(
           "INSERT INTO booking_history (booking_id, action, details, performed_by, created_at) VALUES (?, 'line_confirmation_notified', ?, 'system', ?)",
-          [bookingId, JSON.stringify({ 
-            status: 'sent', 
-            http_status: httpStatus, 
+          [bookingId, JSON.stringify({
+            status: 'sent',
+            mocked: isStagingOrMock,
+            http_status: httpStatus,
             deduplicated: isDeduplicated,
             accepted_request_id: acceptedRequestId,
-            timestamp: nowIso 
+            guidelines_attached: Boolean(guidelinesUrl),
+            timestamp: nowIso
           }), nowIso]
         );
       } catch (_) {}
@@ -3721,24 +3965,37 @@ async function sendLineNotification(bookingId) {
         eligible: true,
         attempted: true,
         status: 'sent',
+        reason: isStagingOrMock ? 'staging_environment_mock' : null,
         http_status: httpStatus,
         line_user_id: booking.line_user_id
       });
       return {
         success: true,
-        sent: !isDeduplicated,
+        sent: !isStagingOrMock && !isDeduplicated,
         deduplicated: isDeduplicated,
-        mocked: false,
+        mocked: isStagingOrMock,
         status: 'sent',
         http_status: httpStatus,
         pin_code: pinCode,
-        line_pushed: true,
+        line_pushed: !isStagingOrMock,
         flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
         booking,
         accepted_request_id: acceptedRequestId,
         retry_key: claim.retryKey
       };
     } else if (networkError) {
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches
+             SET status = 'unknown', error_message = ?
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`,
+            [isTimeout ? 'timeout' : 'network_error', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId]
+          );
+        } catch (_) {}
+      }
       // Delivery state is unknown - do not allow blind retry
       await finalizeServerNotificationClaim(dbQuery, bookingId, 'booking_confirmation', claim.claimToken, {
         status: 'delivery_unknown',
@@ -3766,17 +4023,33 @@ async function sendLineNotification(bookingId) {
       return {
         success: false,
         sent: false,
-        mocked: false,
+        mocked: isStagingOrMock,
         status: 'delivery_unknown',
         reason: isTimeout ? 'timeout' : 'network_error',
         http_status: null,
         pin_code: pinCode,
         line_pushed: false,
         flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
         booking,
         retry_key: claim.retryKey
       };
     } else {
+      const isDefiniteRejection = (httpStatus >= 400 && httpStatus < 500 && !isLineAccepted409);
+      const guidelinesStatus = isDefiniteRejection ? 'retryable_rejected' : 'unknown';
+
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await dbQuery.run(
+            `UPDATE line_guidelines_dispatches
+             SET status = ?, error_message = ?
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`,
+            [guidelinesStatus, httpStatus === 409 ? 'unexpected_409_conflict' : ('line_api_status_' + httpStatus), booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId]
+          );
+        } catch (_) {}
+      }
+
       await finalizeServerNotificationClaim(dbQuery, bookingId, 'booking_confirmation', claim.claimToken, {
         status: 'failed',
         httpStatus: httpStatus,
@@ -3803,13 +4076,15 @@ async function sendLineNotification(bookingId) {
       return {
         success: false,
         sent: false,
-        mocked: false,
+        mocked: isStagingOrMock,
         status: 'failed',
         reason: httpStatus === 409 ? 'unexpected_409_conflict' : 'line_api_error',
         http_status: httpStatus,
         pin_code: pinCode,
         line_pushed: false,
         flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
         booking,
         retry_key: claim.retryKey
       };
@@ -4777,19 +5052,33 @@ app.get('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => 
     if (!booking) {
       return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
     }
-    const invoices = await dbQuery.all(
-      `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
-              tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
-              file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
-       FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`,
-      [bookingId]
-    );
+    let invoices = [];
+    try {
+      invoices = await dbQuery.all(
+        `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                file_url, file_name, content_type, file_size, status, notes, uploaded_by,
+                email_status, email_sent_at, email_dry_run, email_message_id, email_recipient, email_error,
+                created_at, updated_at
+         FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`,
+        [bookingId]
+      );
+    } catch (_) {
+      invoices = await dbQuery.all(
+        `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
+         FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`,
+        [bookingId]
+      );
+    }
     res.json({
       success: true,
       booking_id: bookingId,
+      live_dispatch_enabled: isLiveDispatchEnabled(),
       tax_data: {
         tax_invoice_required: Number(booking.tax_invoice_required) || 0,
-        tax_payer_type: booking.tax_payer_type || 'corporate',
+        tax_payer_type: booking.tax_payer_type || null,
         tax_name: booking.tax_name || '',
         tax_id: booking.tax_id || '',
         tax_branch_type: booking.tax_branch_type || 'head',
@@ -4897,6 +5186,7 @@ app.put('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => 
 
     const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
     const nowIso = getBangkokLocalISO(new Date());
+
     try {
       await dbQuery.run(
         `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
@@ -4905,9 +5195,23 @@ app.put('/api/bookings/:id/tax-invoice', authenticateToken, async (req, res) => 
       );
     } catch (_) {}
 
+    let updatedInvoices = [];
+    try {
+      updatedInvoices = await dbQuery.all(
+        `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                file_url, file_name, content_type, file_size, status, notes, uploaded_by,
+                email_status, email_sent_at, email_dry_run, email_message_id, email_recipient, email_error,
+                created_at, updated_at
+         FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`,
+        [bookingId]
+      );
+    } catch (_) {}
+
     res.json({
       success: true,
       message: 'บันทึกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว',
+      invoices: updatedInvoices || [],
       tax_data: {
         tax_invoice_required: isRequired,
         tax_payer_type: payerType,
@@ -5074,6 +5378,757 @@ app.delete('/api/bookings/:id/tax-invoice/attachment/:invoiceId', authenticateTo
   }
 });
 
+const taxEmailDispatchDebounce = new Map();
+
+// Preview Tax Invoice Email (Bilingual template & attachment check)
+app.get('/api/bookings/:id/tax-invoice/email-preview', authenticateToken, requireAnyPermission('pos', 'manage', 'admin'), async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ error: 'รหัสการจองไม่ถูกต้อง' });
+    }
+
+    const booking = await dbQuery.get(
+      `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+              tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+              tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+       FROM bookings WHERE id = ?`,
+      [bookingId]
+    );
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    const invoiceId = req.query.invoice_id ? Number(req.query.invoice_id) : null;
+    let invoice = null;
+    if (invoiceId) {
+      invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE id = ?', [invoiceId]);
+      if (!invoice) {
+        return res.status(404).json({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' });
+      }
+      if (Number(invoice.booking_id) !== bookingId) {
+        return res.status(400).json({ error: 'เอกสารใบกำกับภาษีไม่ตรงกับรายการจองนี้' });
+      }
+    } else {
+      invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC LIMIT 1', [bookingId]);
+    }
+
+    if (!invoice) {
+      return res.status(400).json({ error: 'ยังไม่มีเอกสารใบกำกับภาษีสำหรับรายการจองนี้ กรุณาแนบเอกสารก่อนดูตัวอย่าง' });
+    }
+
+    // Check recipient email (authoritative strictly from booking tax info)
+    const recipientEmail = (booking.tax_email || '').trim();
+    if (!recipientEmail) {
+      return res.status(400).json({ error: 'ยังไม่ได้ระบุอีเมลผู้รับ กรุณากรอกและบันทึกอีเมลในข้อมูลใบกำกับภาษีก่อนดูตัวอย่าง' });
+    }
+    if (!isValidEmail(recipientEmail)) {
+      return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง กรุณาตรวจสอบและบันทึกอีเมลใหม่' });
+    }
+
+    // Verify PDF attachment on server
+    if (!invoice.file_url) {
+      return res.status(400).json({ error: 'ไม่พบลิงก์ไฟล์เอกสารใบกำกับภาษี' });
+    }
+    const cleanUrl = invoice.file_url.replace(/^\//, '');
+    const diskPath = path.join(__dirname, cleanUrl);
+    if (!fs.existsSync(diskPath)) {
+      return res.status(404).json({ error: 'ไม่พบไฟล์เอกสาร PDF บนเซิร์ฟเวอร์' });
+    }
+
+    const stat = fs.statSync(diskPath);
+    if (stat.size === 0) {
+      return res.status(400).json({ error: 'ไฟล์เอกสารว่างเปล่า' });
+    }
+    if (stat.size > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: 'ขนาดไฟล์เกิน 10MB' });
+    }
+
+    // Check magic bytes %PDF-
+    const fd = fs.openSync(diskPath, 'r');
+    const headerBuf = Buffer.alloc(4);
+    fs.readSync(fd, headerBuf, 0, 4, 0);
+    fs.closeSync(fd);
+    if (headerBuf.toString('utf8', 0, 4) !== '%PDF') {
+      return res.status(400).json({ error: 'เอกสารที่แนบไม่ใช่ไฟล์ PDF สำหรับการส่ง e-Tax Invoice' });
+    }
+
+    const senderName = process.env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+    const senderEmail = process.env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+    const replyTo = process.env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
+    const liveDispatchEnabled = isLiveDispatchEnabled(process.env);
+    const gmailConfigured = isGmailConfigured(process.env);
+    const appEnv = process.env.APP_ENV || 'development';
+    const stagingAllowed = isEmailAllowedInStaging(recipientEmail, process.env, appEnv);
+
+    const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
+      booking,
+      invoice,
+      recipientEmail,
+      senderEmail,
+      senderName,
+      replyTo
+    });
+
+    res.json({
+      success: true,
+      email_preview: {
+        to: recipientEmail,
+        from: senderEmail,
+      fromName: senderName,
+        reply_to: replyTo,
+        subject,
+        text: textBody,
+        html: htmlBody,
+        file_name: invoice.file_name || 'Tax_Invoice.pdf',
+        file_size: stat.size,
+        invoice_number: invoice.invoice_number || `INV-${bookingId}`,
+        dry_run: true,
+        live_dispatch_enabled: liveDispatchEnabled,
+        gmail_configured: gmailConfigured,
+        staging_allowed: stagingAllowed,
+        app_env: appEnv
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Gmail OAuth2 Server-side Connection Test (Admin Only; strictly no emails dispatched, no secrets leaked)
+app.all('/api/admin/gmail/test-oauth', authenticateToken, requireAnyPermission('admin'), async (req, res) => {
+  try {
+    const { isGmailConfigured, isLiveDispatchEnabled, getGmailAccessToken, getEffectiveEnvironment, DEFAULT_SENDER_EMAIL, DEFAULT_SENDER_NAME } = require('./services/gmailService');
+    if (!isGmailConfigured()) {
+      return res.status(400).json({
+        success: false,
+        oauth_connected: false,
+        error: 'ยังไม่ได้ตั้งค่า Gmail OAuth2 Credentials ในระบบ'
+      });
+    }
+
+    const accessToken = await getGmailAccessToken();
+    if (!accessToken) {
+      throw new Error('Google OAuth2 ไม่ส่งคืน Access Token');
+    }
+
+    res.json({
+      success: true,
+      oauth_connected: true,
+      message: 'เชื่อมต่อและแลกเปลี่ยน Google OAuth2 Token สำเร็จ (ไม่มีการส่งอีเมล)',
+      app_env: getEffectiveEnvironment(),
+      sender_email: process.env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL,
+      sender_name: process.env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME,
+      live_dispatch_enabled: isLiveDispatchEnabled()
+    });
+  } catch (err) {
+    const cleanError = String(err?.message || 'OAuth token exchange failed').replace(/([a-zA-Z0-9_\-\.]{25,})/g, '[REDACTED]');
+    res.status(500).json({
+      success: false,
+      oauth_connected: false,
+      error: cleanError
+    });
+  }
+});
+
+// Admin Gmail Test Switch (Get status / Toggle test switch)
+app.get('/api/admin/gmail/test-switch', authenticateToken, requireAnyPermission('admin'), async (req, res) => {
+  try {
+    const { isTestDispatchEnabled, isLiveDispatchEnabled } = require('./services/gmailService');
+    const row = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_dispatch_enabled'");
+    const dbVal = row?.value !== undefined ? String(row.value).trim().toLowerCase() === 'true' : null;
+    const testEnabled = dbVal !== null ? dbVal : isTestDispatchEnabled();
+    res.json({
+      success: true,
+      test_dispatch_enabled: testEnabled,
+      customer_live_dispatch_enabled: isLiveDispatchEnabled()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/gmail/test-switch', authenticateToken, requireAnyPermission('admin'), async (req, res) => {
+  try {
+    const { isLiveDispatchEnabled } = require('./services/gmailService');
+    const enabled = Boolean(req.body?.enabled);
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_dispatch_enabled', ?)", [enabled ? 'true' : 'false']);
+    res.json({
+      success: true,
+      test_dispatch_enabled: enabled,
+      customer_live_dispatch_enabled: isLiveDispatchEnabled()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin Gmail Isolated Test Send (Strict recipient kunakornwhynatt@gmail.com, in-memory PDF, no customer data accessed)
+app.post('/api/admin/gmail/test-send', authenticateToken, requireAnyPermission('admin'), async (req, res) => {
+  const {
+    isGmailConfigured,
+    isLiveDispatchEnabled,
+    isTestDispatchEnabled,
+    createTestSamplePdfBuffer,
+    generateTestEmailContent,
+    buildMimeMessage,
+    getGmailAccessToken,
+    base64UrlEncode,
+    DEFAULT_SENDER_EMAIL,
+    DEFAULT_SENDER_NAME,
+    DEFAULT_REPLY_TO,
+    TARGET_TEST_RECIPIENT,
+    TEST_EMAIL_SUBJECT
+  } = require('./services/gmailService');
+
+  // Enforce server-side target recipient and subject strictly
+  const targetEmail = TARGET_TEST_RECIPIENT;
+  const subject = TEST_EMAIL_SUBJECT;
+  const isDryRun = req.body?.dry_run !== false;
+  const staffName = req.user?.username || req.user?.name || req.user?.role || 'admin';
+
+  // Check test dispatch switch state from DB or env
+  const row = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_dispatch_enabled'");
+  const dbVal = row?.value !== undefined ? String(row.value).trim().toLowerCase() === 'true' : null;
+  const testSwitchEnabled = dbVal !== null ? dbVal : isTestDispatchEnabled();
+
+  const pdfBuffer = createTestSamplePdfBuffer();
+  const senderEmail = process.env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+  const senderName = process.env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+  const replyTo = process.env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
+  const nowIso = new Date().toISOString();
+
+  const { textBody, htmlBody } = generateTestEmailContent({
+    recipientEmail: targetEmail,
+    senderEmail,
+    senderName
+  });
+
+  // 1. Dry Run Mode
+  if (isDryRun) {
+    const simulatedMsgId = 'dry_run_test_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+    // Record audit log in settings
+    try {
+      const logsRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'");
+      let logs = [];
+      if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+      if (!Array.isArray(logs)) logs = [];
+      logs.unshift({
+        id: 'test_audit_' + Date.now(),
+        timestamp: nowIso,
+        status: 'dry_run',
+        is_dry_run: true,
+        recipient: targetEmail,
+        subject,
+        message_id: simulatedMsgId,
+        file_name: 'BWORK_TEST_SAMPLE.pdf',
+        file_size: pdfBuffer.length,
+        dispatched_by: staffName
+      });
+      if (logs.length > 50) logs = logs.slice(0, 50);
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)", [JSON.stringify(logs)]);
+    } catch (_) {}
+
+    return res.json({
+      success: true,
+      dry_run: true,
+      status: 'dry_run',
+      message: 'จำลองการส่งอีเมลทดสอบเรียบร้อยแล้ว (Dry-run)',
+      data: {
+        recipient: targetEmail,
+        subject,
+        message_id: simulatedMsgId,
+        file_name: 'BWORK_TEST_SAMPLE.pdf',
+        file_size: pdfBuffer.length,
+        dispatched_by: staffName,
+        test_dispatch_switch: testSwitchEnabled,
+        customer_dispatch_switch: isLiveDispatchEnabled()
+      }
+    });
+  }
+
+  // 2. Live Dispatch Validations
+  if (!testSwitchEnabled) {
+    return res.status(400).json({
+      success: false,
+      error: 'ระบบยังไม่ได้เปิดสวิตช์ทดสอบส่งอีเมล (GMAIL_TEST_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)'
+    });
+  }
+
+  if (!isGmailConfigured()) {
+    return res.status(400).json({
+      success: false,
+      error: 'ยังไม่ได้ตั้งค่า Gmail API OAuth2 Credentials ในระบบ กรุณาตรวจสอบการตั้งค่า'
+    });
+  }
+
+  // Durable Concurrency Check via settings key gmail_test_send_claim
+  const claimRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_claim'");
+  let claim = null;
+  if (claimRow?.value) {
+    try { claim = JSON.parse(claimRow.value); } catch (_) {}
+  }
+  if (claim && claim.status === 'claiming') {
+    const elapsedSec = (Date.now() - new Date(claim.claimed_at).getTime()) / 1000;
+    if (elapsedSec < 60) {
+      return res.status(429).json({
+        error: 'กำลังดำเนินการส่งอีเมลทดสอบอยู่ กรุณารอสักครู่ (In-flight)'
+      });
+    }
+  }
+
+  // Set claim to claiming
+  await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)", [
+    JSON.stringify({
+      status: 'claiming',
+      claimed_at: nowIso,
+      dispatched_by: staffName
+    })
+  ]);
+
+  try {
+    const accessToken = await getGmailAccessToken();
+    const mimePayload = buildMimeMessage({
+      from: `${senderName} <${senderEmail}>`,
+      to: targetEmail,
+      replyTo,
+      subject,
+      text: textBody,
+      html: htmlBody,
+      attachmentBuffer: pdfBuffer,
+      attachmentFileName: 'BWORK_TEST_SAMPLE.pdf'
+    });
+
+    const base64UrlRaw = base64UrlEncode(mimePayload);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+
+    let gmailRes;
+    try {
+      gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + accessToken,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ raw: base64UrlRaw }),
+        signal: controller.signal
+      });
+    } catch (netErr) {
+      clearTimeout(timer);
+      // Mark uncertain in claim and audit log
+      const uncertainItem = {
+        id: 'test_audit_' + Date.now(),
+        timestamp: new Date().toISOString(),
+        status: 'uncertain',
+        is_dry_run: false,
+        recipient: targetEmail,
+        subject,
+        error: netErr.message || 'Timeout/Network error',
+        dispatched_by: staffName
+      };
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)", [
+        JSON.stringify({ status: 'uncertain', error: uncertainItem.error, updated_at: uncertainItem.timestamp })
+      ]);
+      const logsRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'");
+      let logs = [];
+      if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+      if (!Array.isArray(logs)) logs = [];
+      logs.unshift(uncertainItem);
+      if (logs.length > 50) logs = logs.slice(0, 50);
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)", [JSON.stringify(logs)]);
+
+      return res.status(504).json({
+        success: false,
+        status: 'uncertain',
+        error: 'คำขอส่งอีเมลไปยัง Gmail API หมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกสถานะเป็น "uncertain" และจะไม่ส่งซ้ำอัตโนมัติ เพื่อความปลอดภัย กรุณาตรวจสอบก่อนทำรายการใหม่'
+      });
+    }
+    clearTimeout(timer);
+
+    if (!gmailRes.ok) {
+      const errBody = await gmailRes.text().catch(() => '');
+      const errMsg = `Gmail API ส่งข้อความไม่สำเร็จ (HTTP ${gmailRes.status}): ${errBody}`;
+      const failedItem = {
+        id: 'test_audit_' + Date.now(),
+        timestamp: new Date().toISOString(),
+        status: 'failed',
+        is_dry_run: false,
+        recipient: targetEmail,
+        subject,
+        error: errMsg,
+        dispatched_by: staffName
+      };
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)", [
+        JSON.stringify({ status: 'failed', error: errMsg, updated_at: failedItem.timestamp })
+      ]);
+      const logsRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'");
+      let logs = [];
+      if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+      if (!Array.isArray(logs)) logs = [];
+      logs.unshift(failedItem);
+      if (logs.length > 50) logs = logs.slice(0, 50);
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)", [JSON.stringify(logs)]);
+
+      return res.status(500).json({
+        success: false,
+        status: 'failed',
+        error: errMsg
+      });
+    }
+
+    const gmailData = await gmailRes.json().catch(() => ({}));
+    const finalMsgId = gmailData.id || ('gmail_test_' + Date.now());
+
+    // Record success audit log
+    const successItem = {
+      id: 'test_audit_' + Date.now(),
+      timestamp: new Date().toISOString(),
+      status: 'gmail_accepted',
+      is_dry_run: false,
+      recipient: targetEmail,
+      subject,
+      message_id: finalMsgId,
+      file_name: 'BWORK_TEST_SAMPLE.pdf',
+      file_size: pdfBuffer.length,
+      dispatched_by: staffName
+    };
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)", [
+      JSON.stringify({ status: 'gmail_accepted', message_id: finalMsgId, updated_at: successItem.timestamp })
+    ]);
+    const logsRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'");
+    let logs = [];
+    if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+    if (!Array.isArray(logs)) logs = [];
+    logs.unshift(successItem);
+    if (logs.length > 50) logs = logs.slice(0, 50);
+    await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)", [JSON.stringify(logs)]);
+
+    return res.json({
+      success: true,
+      dry_run: false,
+      status: 'gmail_accepted',
+      message: 'Gmail API รับคำขอส่งอีเมลทดสอบเรียบร้อยแล้ว (รอคิวส่งของ Gmail)',
+      data: {
+        recipient: targetEmail,
+        subject,
+        message_id: finalMsgId,
+        file_name: 'BWORK_TEST_SAMPLE.pdf',
+        file_size: pdfBuffer.length,
+        dispatched_by: staffName,
+        test_dispatch_switch: false,
+        customer_dispatch_switch: false
+      }
+    });
+  } catch (outerErr) {
+    return res.status(500).json({
+      success: false,
+      error: 'เกิดข้อผิดพลาดในการประมวลผลคำขอส่งอีเมล: ' + outerErr.message
+    });
+  } finally {
+    // Crucial requirement: Reset test switch back to false immediately even if error occurs!
+    try {
+      await dbQuery.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_dispatch_enabled', 'false')");
+    } catch (_) {}
+  }
+});
+
+// Send Tax Invoice Email (Simulated Dry-run by default, OAuth2 Gmail live dispatch with atomic claim & uncertainty handling)
+app.post('/api/bookings/:id/tax-invoice/send-email', authenticateToken, requireAnyPermission('pos', 'manage', 'admin'), async (req, res) => {
+  try {
+    const bookingId = Number(req.params.id);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ error: 'รหัสการจองไม่ถูกต้อง' });
+    }
+
+    // Rapid-click / Double-submission debounce protection (4 seconds per booking)
+    const now = Date.now();
+    const lastAttempt = taxEmailDispatchDebounce.get(bookingId);
+    if (lastAttempt && (now - lastAttempt < 4000)) {
+      return res.status(429).json({ error: 'กำลังดำเนินการส่งอีเมล กรุณารอสักครู่ (Debounced)' });
+    }
+    taxEmailDispatchDebounce.set(bookingId, now);
+
+    const booking = await dbQuery.get(
+      `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+              tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+              tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+       FROM bookings WHERE id = ?`,
+      [bookingId]
+    );
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+
+    const { invoice_id, recipient_email, dry_run } = req.body || {};
+    // Strict default: dry_run is TRUE unless explicitly passed false
+    const isDryRun = dry_run !== false;
+
+    let invoice = null;
+    if (invoice_id) {
+      const parsedInvoiceId = Number(invoice_id);
+      invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE id = ?', [parsedInvoiceId]);
+      if (!invoice) {
+        return res.status(404).json({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' });
+      }
+      if (Number(invoice.booking_id) !== bookingId) {
+        return res.status(400).json({ error: 'ข้อมูลเอกสารใบกำกับภาษีไม่ตรงกับรายการจองนี้' });
+      }
+    } else {
+      invoice = await dbQuery.get('SELECT * FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC LIMIT 1', [bookingId]);
+    }
+
+    if (!invoice) {
+      return res.status(400).json({ error: 'ไม่พบเอกสารใบกำกับภาษีสำหรับรายการจองนี้' });
+    }
+
+    // Validate recipient email (authoritative strictly from booking tax info)
+    const authoritativeEmail = (booking.tax_email || '').trim();
+    if (!authoritativeEmail) {
+      return res.status(400).json({ error: 'ยังไม่ได้ระบุอีเมลผู้รับในระบบ กรุณากรอกและบันทึกข้อมูลก่อนส่ง' });
+    }
+    if (!isValidEmail(authoritativeEmail)) {
+      return res.status(400).json({ error: 'รูปแบบอีเมลผู้รับในระบบไม่ถูกต้อง กรุณาแก้ไขและบันทึกข้อมูลใหม่' });
+    }
+    if (!recipient_email || recipient_email.trim().toLowerCase() !== authoritativeEmail.toLowerCase()) {
+      return res.status(400).json({
+        error: `อีเมลผู้รับที่ยืนยัน (${recipient_email || 'ไม่ระบุ'}) ไม่ตรงกับข้อมูลล่าสุดที่บันทึกไว้ในระบบ (${authoritativeEmail}) กรุณาตรวจสอบและยืนยันใหม่`
+      });
+    }
+    const targetEmail = authoritativeEmail;
+
+    // Live dispatch validations (if dry_run is false)
+    const appEnv = process.env.APP_ENV || 'development';
+    if (!isDryRun) {
+      if (!isLiveDispatchEnabled(process.env)) {
+        return res.status(400).json({
+          error: 'ระบบยังไม่ได้เปิดสวิตช์ส่งอีเมลจริง (GMAIL_LIVE_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)'
+        });
+      }
+      if (!isGmailConfigured(process.env)) {
+        return res.status(400).json({
+          error: 'ยังไม่ได้ตั้งค่า Gmail API OAuth2 Credentials ในระบบ กรุณาตรวจสอบการตั้งค่า'
+        });
+      }
+      if (appEnv !== 'production' && !isEmailAllowedInStaging(targetEmail, process.env, appEnv)) {
+        return res.status(400).json({
+          error: `โหมด ${appEnv} อนุญาตให้ส่งอีเมลจริงเฉพาะอีเมลใน Staging Allowlist เท่านั้น (${targetEmail} ไม่อยู่ในรายการที่อนุญาต)`
+        });
+      }
+    }
+
+    // Read and validate PDF
+    if (!invoice.file_url) {
+      return res.status(400).json({ error: 'ไม่พบไฟล์เอกสารใบกำกับภาษี' });
+    }
+    const cleanUrl = invoice.file_url.replace(/^\//, '');
+    const diskPath = path.join(__dirname, cleanUrl);
+    if (!fs.existsSync(diskPath)) {
+      return res.status(404).json({ error: 'ไม่พบไฟล์เอกสาร PDF บนเซิร์ฟเวอร์' });
+    }
+
+    const pdfBuffer = fs.readFileSync(diskPath);
+    if (pdfBuffer.length === 0) {
+      return res.status(400).json({ error: 'ไฟล์เอกสารว่างเปล่า' });
+    }
+    if (pdfBuffer.length > 10 * 1024 * 1024) {
+      return res.status(400).json({ error: 'ขนาดไฟล์เกิน 10MB' });
+    }
+
+    // Validate PDF magic bytes
+    if (pdfBuffer.length < 4 || pdfBuffer.toString('utf8', 0, 4) !== '%PDF') {
+      return res.status(400).json({ error: 'เอกสารที่แนบไม่ใช่ไฟล์ PDF สำหรับการส่ง e-Tax Invoice' });
+    }
+
+    // Durable Idempotency / Atomic Database Claim
+    // Prevents duplicate sends from rapid clicks or race conditions
+    const claimRes = await dbQuery.run(
+      `UPDATE tax_invoices
+       SET email_status = 'claiming',
+           email_sent_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND (
+           email_status IS NULL
+           OR email_status IN ('unsent', 'failed', 'dry_run')
+           OR (email_status = 'claiming' AND (strftime('%s', 'now') - strftime('%s', email_sent_at)) > 60)
+         )`,
+      [invoice.id]
+    );
+
+    if (claimRes.changes === 0) {
+      const currentInvoice = await dbQuery.get('SELECT email_status, email_sent_at FROM tax_invoices WHERE id = ?', [invoice.id]);
+      if (currentInvoice?.email_status === 'claiming') {
+        return res.status(429).json({ error: 'กำลังดำเนินการส่งอีเมลสำหรับเอกสารนี้ กรุณารอสักครู่ (In-flight)' });
+      }
+      if (currentInvoice?.email_status === 'gmail_accepted') {
+        return res.status(409).json({ error: 'เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้' });
+      }
+      if (currentInvoice?.email_status === 'uncertain') {
+        return res.status(409).json({ error: 'สถานะการส่งก่อนหน้าไม่แน่นอน (uncertain) เพื่อความปลอดภัยป้องกันการส่งซ้ำ ระบบไม่อนุญาตให้ส่งซ้ำโดยไม่ตรวจสอบ กรุณาตรวจสอบบันทึกการส่งหรือติดต่อผู้ดูแลระบบ' });
+      }
+      return res.status(409).json({ error: `ไม่สามารถส่งอีเมลได้ในสถานะปัจจุบัน (${currentInvoice?.email_status || 'unknown'})` });
+    }
+
+    const staffName = req.user?.username || req.user?.name || req.user?.role || 'staff';
+
+    // Dispatch email (dry-run or live Gmail)
+    let result;
+    try {
+      result = await sendTaxInvoiceEmail({
+        booking,
+        invoice,
+        recipientEmail: targetEmail,
+        pdfBuffer,
+        fileName: invoice.file_name || `Tax_Invoice_${invoice.invoice_number || bookingId}.pdf`,
+        dry_run: isDryRun,
+        dispatchedBy: staffName,
+        env: process.env
+      });
+    } catch (dispatchErr) {
+      const isUncertain = Boolean(dispatchErr.isUncertain || dispatchErr.code === 'DISPATCH_UNCERTAIN');
+      const errorStatus = isUncertain ? 'uncertain' : 'failed';
+      const errMsg = dispatchErr.message || 'ส่งอีเมลไม่สำเร็จ';
+
+      // Update invoice status on failure/uncertain
+      try {
+        await dbQuery.run(
+          `UPDATE tax_invoices
+           SET email_status = ?,
+               email_error = ?,
+               email_sent_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [errorStatus, errMsg, invoice.id]
+        );
+      } catch (uErr) {
+        console.warn('[Server] Could not update tax_invoices on dispatch failure:', uErr.message);
+      }
+
+      // Log dispatch failure/uncertainty
+      try {
+        await dbQuery.run(
+          `INSERT INTO tax_invoice_email_logs (
+            booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+            file_name, file_size, dispatched_by, payload_preview, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          [
+            bookingId,
+            invoice.id,
+            targetEmail,
+            `[B-WORK] ใบกำกับภาษี #${invoice.invoice_number || invoice.id}`,
+            errorStatus,
+            isDryRun ? 1 : 0,
+            invoice.file_name || 'Tax_Invoice.pdf',
+            pdfBuffer.length,
+            staffName,
+            JSON.stringify({ error: errMsg, isUncertain })
+          ]
+        );
+      } catch (lErr) {
+        console.warn('[Server] Could not log tax_invoice_email_logs failure:', lErr.message);
+      }
+
+      if (isUncertain) {
+        return res.status(504).json({
+          success: false,
+          status: 'uncertain',
+          error: 'คำขอส่งอีเมลไปยัง Gmail API หมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกสถานะเป็น "uncertain" และจะไม่ส่งซ้ำอัตโนมัติ เพื่อป้องกันอีเมลซ้ำซ้อน กรุณาตรวจสอบก่อนทำรายการใหม่',
+          details: errMsg
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        status: 'failed',
+        error: errMsg
+      });
+    }
+
+    const finalStatus = result.status; // 'gmail_accepted' | 'dry_run'
+    const isDryRunResult = result.dry_run ? 1 : 0;
+    const nowIso = getBangkokLocalISO(new Date());
+
+    // Update tax_invoices table with accepted / dry_run status
+    try {
+      await dbQuery.run(
+        `UPDATE tax_invoices
+         SET email_status = ?,
+             email_sent_at = ?,
+             email_dry_run = ?,
+             email_message_id = ?,
+             email_recipient = ?,
+             email_error = NULL
+         WHERE id = ?`,
+        [finalStatus, nowIso, isDryRunResult, result.message_id, targetEmail, invoice.id]
+      );
+    } catch (updateErr) {
+      console.warn('[Server] Could not update tax_invoices email status:', updateErr.message);
+    }
+
+    // Insert into tax_invoice_email_logs
+    try {
+      await dbQuery.run(
+        `INSERT INTO tax_invoice_email_logs (
+          booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+          message_id, file_name, file_size, dispatched_by, payload_preview, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          bookingId,
+          invoice.id,
+          targetEmail,
+          result.subject,
+          finalStatus,
+          isDryRunResult,
+          result.message_id,
+          result.file_name,
+          result.file_size,
+          staffName,
+          JSON.stringify({ to: targetEmail, subject: result.subject, status: finalStatus }),
+          nowIso
+        ]
+      );
+    } catch (logErr) {
+      console.warn('[Server] Could not insert into tax_invoice_email_logs:', logErr.message);
+    }
+
+    // Insert into booking_history
+    try {
+      const historyAction = finalStatus === 'gmail_accepted' ? 'send_tax_invoice_email_gmail' : 'send_tax_invoice_email_dry_run';
+      const historyDetail = finalStatus === 'gmail_accepted'
+        ? `ส่งคำขออีเมลใบกำกับภาษีเข้า Gmail API สำเร็จ (Message ID: ${result.message_id}) ไปยัง ${targetEmail}`
+        : `จำลองส่งอีเมลใบกำกับภาษี (Dry-run) #${invoice.invoice_number || invoice.id} ไปยัง ${targetEmail}`;
+
+      await dbQuery.run(
+        `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [bookingId, historyAction, historyDetail, staffName, nowIso]
+      );
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      dry_run: result.dry_run,
+      status: finalStatus,
+      message: finalStatus === 'gmail_accepted'
+        ? 'Gmail API รับคำขอส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (รอคิวส่งของ Gmail)'
+        : 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
+      data: {
+        booking_id: bookingId,
+        invoice_id: invoice.id,
+        invoice_number: invoice.invoice_number,
+        recipient: targetEmail,
+        message_id: result.message_id,
+        file_name: result.file_name,
+        file_size: result.file_size,
+        timestamp: result.timestamp,
+        email_preview: result.email_preview
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const handleUpdateBookingDetails = async (req, res) => {
   const { id } = req.params;
   if (!id || isNaN(Number(id))) {
@@ -5150,6 +6205,88 @@ async function sendLineBookingCustomerInfoUpdateServer(booking, newCustomerName,
     return { sent: lineRes.ok, status: lineRes.status };
   } catch (err) {
     console.error('Error sending customer info update LINE message:', err);
+    return { sent: false, error: err.message };
+  }
+}
+
+
+async function verifyLineIdTokenWithLineApi({ idToken, channelId }) {
+  if (!idToken || typeof idToken !== 'string') return null;
+  const trimmed = idToken.trim();
+
+  if (typeof global.mockVerifyLineIdToken === 'function') {
+    return global.mockVerifyLineIdToken({ idToken: trimmed, channelId });
+  }
+
+  const parts = trimmed.split('.');
+  if (parts.length !== 3) return null;
+
+
+  try {
+    const params = new URLSearchParams();
+    params.append('id_token', trimmed);
+    if (channelId) {
+      params.append('client_id', channelId);
+    }
+
+    const res = await fetch('https://api.line.me/oauth2/v2.1/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const payload = await res.json();
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.iss !== 'https://access.line.me' || !payload.sub) {
+      return null;
+    }
+    if (channelId && payload.aud && payload.aud !== channelId && !String(channelId).includes(payload.aud)) {
+      return null;
+    }
+    if (payload.exp && typeof payload.exp === 'number' && payload.exp < (nowSec - 60)) {
+      return null;
+    }
+
+    return payload.sub.trim();
+  } catch (err) {
+    console.warn('[LineVerify] Error calling LINE Verify ID Token API:', err.message);
+    return null;
+  }
+}
+
+async function sendRoomGuidelinesLineMessageServer({ booking, guidelinesConfig }) {
+  try {
+    if (!booking || !booking.line_user_id) return { sent: false, reason: 'no_line_recipient' };
+
+    if (process.env.NODE_ENV === 'test' && !process.env.LIVE_LINE_TEST) {
+      return { sent: true, mocked: true, status: 200 };
+    }
+
+    const tokenSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_access_token'");
+    const channelAccessToken = tokenSetting?.value || process.env.LINE_CHANNEL_ACCESS_TOKEN;
+    if (!channelAccessToken) return { sent: false, reason: 'no_channel_access_token' };
+
+    const textContent = buildLineGuidelinesMessage(guidelinesConfig);
+
+    const lineRes = await fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${channelAccessToken}`
+      },
+      body: JSON.stringify({
+        to: booking.line_user_id,
+        messages: [{ type: 'text', text: textContent }]
+      })
+    });
+
+    return { sent: lineRes.ok, status: lineRes.status };
+  } catch (err) {
+    console.error('Error sending room guidelines LINE message:', err);
     return { sent: false, error: err.message };
   }
 }
@@ -5715,7 +6852,7 @@ const handleReschedule = async (req, res) => {
       // Recheck availability inside transaction
       const overlapInTx = await checkRoomOverlap(targetRoomId, newStartISO, newEndISO, null, dbQuery, currentItem.id);
       if (overlapInTx && overlapInTx.hasOverlap) {
-        const overlapErr = new Error(formatOverlapErrorMessage(targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`, overlapInTx));
+        const overlapErr = new Error(formatOverlapErrorMessage(targetRoomObj ? targetRoomObj.name : `ID: ${targetRoomId}`, overlapInTx, targetRoomId));
         overlapErr.status = 409;
         overlapErr.code = 'ERR_ROOM_OVERLAP';
         throw overlapErr;
@@ -5723,6 +6860,8 @@ const handleReschedule = async (req, res) => {
 
       const bufferMins = await getCleaningBufferMinutes();
       const newEndBufferedISO = addMinutesToLocalISO(newEndISO, bufferMins);
+      const conflictIds = getConflictingRoomIds(targetRoomId);
+      const inPlaceholders = conflictIds.map(() => '?').join(', ');
       const itemUpdateRes = await dbQuery.run(
         `UPDATE booking_items
          SET room_id = ?, start_time = ?, end_time = ?, subtotal = ?, price = ?, booking_type = ?, layout = ?, pin_code = ?
@@ -5730,7 +6869,7 @@ const handleReschedule = async (req, res) => {
            AND NOT EXISTS (
              SELECT 1 FROM booking_items bi
              JOIN bookings b ON bi.booking_id = b.id
-             WHERE bi.room_id = ?
+             WHERE bi.room_id IN (${inPlaceholders})
                AND bi.id != ?
                AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
@@ -5749,7 +6888,7 @@ const handleReschedule = async (req, res) => {
           currentItem.id,
           bookingId,
           currentItem.start_time,
-          targetRoomId,
+          ...conflictIds,
           currentItem.id,
           newStartISO,
           `+${bufferMins} minutes`,
@@ -7503,7 +8642,6 @@ app.get('/api/public/rooms', async (req, res) => {
   }
 });
 
-// Get daily room schedule matrix (shows booked intervals for a specific date)
 app.get('/api/public/rooms/availability-month', async (req, res) => {
   res.set('Cache-Control', 'no-store');
   const month = getAvailabilityMonth(req.query.month);
@@ -7667,8 +8805,9 @@ app.get('/api/public/rooms/schedule', async (req, res) => {
 
     // Map bookings to each room
     const roomsWithSchedule = rooms.map(room => {
+      const conflictIds = getConflictingRoomIds(room.id);
       const roomBookings = bookingItems
-        .filter(bi => bi.room_id === room.id)
+        .filter(bi => conflictIds.includes(bi.room_id))
         .map(bi => ({
           start_time: bi.start_time ? bi.start_time.split('T')[1].substring(0, 5) : '00:00',
           end_time: bi.end_time ? bi.end_time.split('T')[1].substring(0, 5) : '23:59',
@@ -7782,8 +8921,8 @@ app.post('/api/public/bookings', async (req, res) => {
   const {
     customer_name, contact, email, department, note, room_id, booking_date,
     start_time, end_time, booking_type, layout, total_amount, line_user_id,
-    tax_invoice_required, tax_name, tax_address, tax_id, tax_phone,
-    tax_delivery_method, tax_postal_address, guest_count, guests
+    tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone,
+    tax_delivery_method, tax_online_subchannel, tax_postal_address, tax_email, guest_count, guests
   } = req.body;
 
   if (!customer_name || !contact || !room_id || !booking_date || !start_time || !end_time) {
@@ -7824,6 +8963,90 @@ app.post('/api/public/bookings', async (req, res) => {
     const [sH, sM] = start_time.split(':').map(Number);
     if ((sH * 60 + sM) < currentMins) {
       return res.status(400).json({ error: 'ไม่สามารถจองเวลาย้อนหลังได้ กรุณาเลือกเวลาปัจจุบันเป็นต้นไป' });
+    }
+  }
+
+  // Validate Tax Invoice Information when requested
+  const isTaxInvoiceRequired = tax_invoice_required === 1 || tax_invoice_required === true || tax_invoice_required === '1' || tax_invoice_required === 'true';
+  let cleanTaxPayerType = null;
+  let cleanTaxName = null;
+  let cleanTaxId = null;
+  let cleanTaxBranchType = null;
+  let cleanTaxBranchNumber = null;
+  let cleanTaxAddress = null;
+  let cleanTaxPhone = null;
+  let cleanTaxDeliveryMethod = null;
+  let cleanTaxPostalAddress = null;
+  let cleanTaxEmail = null;
+
+  if (isTaxInvoiceRequired) {
+    cleanTaxPayerType = String(tax_payer_type || '').toLowerCase().trim();
+    if (cleanTaxPayerType !== 'individual' && cleanTaxPayerType !== 'corporate') {
+      return res.status(400).json({ error: 'กรุณาระบุประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)' });
+    }
+    cleanTaxName = String(tax_name || '').trim();
+    if (!cleanTaxName) {
+      return res.status(400).json({ error: cleanTaxPayerType === 'individual' ? 'กรุณากรอกชื่อ–นามสกุลสำหรับออกใบกำกับภาษี' : 'กรุณากรอกชื่อนิติบุคคลสำหรับออกใบกำกับภาษี' });
+    }
+    cleanTaxId = String(tax_id || '').replace(/[-\s]/g, '').trim();
+    if (!cleanTaxId || cleanTaxId.length !== 13 || !/^\d{13}$/.test(cleanTaxId)) {
+      return res.status(400).json({ error: 'เลขประจำตัวผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' });
+    }
+    cleanTaxAddress = String(tax_address || '').trim();
+    if (!cleanTaxAddress) {
+      return res.status(400).json({ error: cleanTaxPayerType === 'individual' ? 'ที่อยู่สำหรับออกใบกำกับภาษีจำเป็นต้องระบุ' : 'ที่อยู่จดทะเบียนสำหรับออกใบกำกับภาษีจำเป็นต้องระบุ' });
+    }
+    cleanTaxPhone = String(tax_phone || contact || '').trim();
+    if (!cleanTaxPhone) {
+      return res.status(400).json({ error: 'กรุณาระบุเบอร์โทรศัพท์สำหรับใบกำกับภาษี' });
+    }
+    if (cleanTaxPayerType === 'corporate') {
+      cleanTaxBranchType = (tax_branch_type === 'branch' ? 'branch' : 'head');
+      if (cleanTaxBranchType === 'branch') {
+        cleanTaxBranchNumber = String(tax_branch_number || '').trim();
+        if (!cleanTaxBranchNumber) {
+          return res.status(400).json({ error: 'กรุณาระบุเลขที่สาขาสำหรับนิติบุคคล' });
+        }
+      } else {
+        cleanTaxBranchNumber = null;
+      }
+    } else {
+      cleanTaxBranchType = null;
+      cleanTaxBranchNumber = null;
+    }
+    cleanTaxDeliveryMethod = String(tax_delivery_method || 'online').trim();
+    const cleanSubchannel = tax_online_subchannel ? String(tax_online_subchannel).trim().toLowerCase() : null;
+
+    if (cleanTaxDeliveryMethod === 'postal') {
+      cleanTaxPostalAddress = String(tax_postal_address || '').trim();
+      if (!cleanTaxPostalAddress) {
+        return res.status(400).json({ error: 'กรุณาระบุที่อยู่สำหรับจัดส่งทางไปรษณีย์' });
+      }
+      cleanTaxEmail = null;
+    } else {
+      cleanTaxPostalAddress = null;
+      if (cleanSubchannel === 'email') {
+        cleanTaxEmail = String(tax_email || '').trim();
+        if (!cleanTaxEmail) {
+          return res.status(400).json({ error: 'กรุณาระบุอีเมลสำหรับรับใบกำกับภาษี' });
+        }
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(cleanTaxEmail)) {
+          return res.status(400).json({ error: 'รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง' });
+        }
+      } else if (cleanSubchannel === 'line') {
+        cleanTaxEmail = null;
+      } else {
+        if (tax_email && String(tax_email).trim()) {
+          cleanTaxEmail = String(tax_email).trim();
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(cleanTaxEmail)) {
+            return res.status(400).json({ error: 'รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง' });
+          }
+        } else {
+          cleanTaxEmail = null;
+        }
+      }
     }
   }
 
@@ -7894,25 +9117,38 @@ app.post('/api/public/bookings', async (req, res) => {
         pinCode = await generateUniquePinCode();
       }
 
+      // Verify line_user_id cryptographic binding via lineIdToken if provided
+      let isLineVerified = 0;
+      const lineIdToken = req.headers['x-line-id-token'] || req.body?.line_id_token;
+      if (line_user_id && lineIdToken && typeof lineIdToken === 'string') {
+        try {
+          const channelIdRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_id'");
+          const channelId = channelIdRow?.value?.trim() || process.env.LINE_CHANNEL_ID || '2011136579';
+          const verifiedSub = await verifyLineIdTokenWithLineApi({ idToken: lineIdToken, channelId });
+          if (verifiedSub && verifiedSub.trim() === String(line_user_id).trim()) {
+            isLineVerified = 1;
+          }
+        } catch (_) {}
+      }
+
       // Insert master booking (with mandatory guest_count, booking_channel = 'line_oa', customer_type = 'general')
       const bookingResult = await dbQuery.run(
         `INSERT INTO bookings (
           customer_name, department, contact,
           subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
           payment_status, payment_method,
-          receipt_number, pin_code, qr_token, booking_source, booking_channel, customer_type, customer_email, checkin_status, line_user_id,
-          tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
+          receipt_number, pin_code, qr_token, booking_source, booking_channel, customer_type, customer_email, checkin_status, line_user_id, line_user_id_verified,
+          tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone, tax_delivery_method, tax_postal_address, tax_email,
           guest_count,
           created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           customer_name, department || note || '', contact,
           promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, 0, promoPricing.total_amount,
           'pending', 'transfer',
-          receiptNumber, pinCode, accessToken, 'online', 'line_oa', 'general', email || null, 'pending', line_user_id || null,
-          tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
-          tax_delivery_method || null, tax_postal_address || null,
+          receiptNumber, pinCode, accessToken, 'online', 'line_oa', 'general', email || null, 'pending', line_user_id || null, isLineVerified,
+          isTaxInvoiceRequired ? 1 : 0, cleanTaxPayerType, cleanTaxName, cleanTaxAddress, cleanTaxId, cleanTaxBranchType, cleanTaxBranchNumber, cleanTaxPhone, cleanTaxDeliveryMethod, cleanTaxPostalAddress, cleanTaxEmail,
           parsedGuests,
           getBangkokLocalISO(new Date())
         ]
@@ -8082,6 +9318,139 @@ app.post('/api/public/bookings/:id/request-pin', async (req, res) => {
   }
 });
 
+// Customer acknowledges room guidelines before payment
+app.post('/api/public/bookings/:id/acknowledge-rules', async (req, res) => {
+  const { id } = req.params;
+
+  let numericId = null;
+  if (!isNaN(id)) {
+    numericId = parseInt(id, 10);
+  } else if (typeof id === 'string' && id.startsWith('BK-')) {
+    const raw = id.replace('BK-', '');
+    if (!isNaN(raw)) {
+      numericId = parseInt(raw, 10);
+    }
+  }
+
+  try {
+    const booking = await dbQuery.get(
+      'SELECT * FROM bookings WHERE id = ? OR id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)',
+      [numericId, id, id, id]
+    );
+
+    if (!booking) {
+      return res.status(404).json({ error: 'ไม่พบข้อมูลการจอง' });
+    }
+    if (!hasPublicBookingAccess(req, booking)) {
+      return res.status(403).json({ error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' });
+    }
+
+    if (booking.payment_status === 'cancelled') {
+      return res.status(400).json({ error: 'รายการจองนี้ถูกยกเลิกแล้ว ไม่สามารถดำเนินการต่อได้' });
+    }
+
+    // Resolve room details
+    const items = await dbQuery.all(
+      `SELECT bi.*, r.name as room_name, r.capacity, r.image_url, r.description
+       FROM booking_items bi
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE bi.booking_id = ?`,
+      [booking.id]
+    );
+
+    const firstItem = items && items.length > 0 ? items[0] : null;
+    const guidelinesConfig = resolveRoomGuidelines(firstItem?.room_id, firstItem?.room_name);
+
+    if (!guidelinesConfig.required) {
+      return res.json({
+        success: true,
+        required: false,
+        message: 'ห้องนี้ไม่จำเป็นต้องรับทราบข้อปฏิบัติ'
+      });
+    }
+
+    // Client rule validation: rule_set & rule_version are strictly required and must match server room policy
+    const clientRuleSet = req.body?.rule_set;
+    const clientRuleVersion = req.body?.rule_version;
+    if (!clientRuleSet || !clientRuleVersion) {
+      return res.status(400).json({ error: 'กรุณาระบุรหัสชุดข้อปฏิบัติ (rule_set) และเวอร์ชัน (rule_version) ให้ครบถ้วน' });
+    }
+    if (clientRuleSet !== guidelinesConfig.rule_set || clientRuleVersion !== guidelinesConfig.rule_version) {
+      return res.status(400).json({ error: 'รหัสชุดข้อปฏิบัติหรือเวอร์ชันไม่ถูกต้องหรือไม่ตรงกับห้องที่จอง' });
+    }
+
+    // Idempotent: record in room_guidelines_acknowledgements
+    try {
+      await dbQuery.run(
+        `INSERT OR IGNORE INTO room_guidelines_acknowledgements
+         (booking_id, room_id, rule_set, rule_version, customer_contact, line_user_id, acknowledged_at)
+         VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        [
+          booking.id,
+          firstItem?.room_id || null,
+          guidelinesConfig.rule_set,
+          guidelinesConfig.rule_version,
+          booking.contact || null,
+          booking.line_user_id || null
+        ]
+      );
+    } catch (e) {
+      console.warn('[Guidelines] Error inserting acknowledgement row:', e.message);
+    }
+
+    // Update booking record
+    await dbQuery.run(
+      `UPDATE bookings
+       SET guidelines_acknowledged_at = COALESCE(guidelines_acknowledged_at, CURRENT_TIMESTAMP),
+           guidelines_rule_set = ?,
+           guidelines_rule_version = ?
+       WHERE id = ?`,
+      [guidelinesConfig.rule_set, guidelinesConfig.rule_version, booking.id]
+    );
+
+    const updatedBooking = await dbQuery.get('SELECT guidelines_acknowledged_at FROM bookings WHERE id = ?', [booking.id]);
+    const acknowledgedAt = updatedBooking?.guidelines_acknowledged_at || new Date().toISOString();
+
+    // Verify Server-Confirmed LINE Recipient if token provided
+    const channelIdRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_id'");
+    const channelId = channelIdRow?.value?.trim() || process.env.LINE_CHANNEL_ID || '2011136579';
+
+    let verifiedLineUserId = null;
+    const lineIdToken = req.headers['x-line-id-token'] || req.body?.line_id_token;
+    if (lineIdToken && typeof lineIdToken === 'string') {
+      try {
+        verifiedLineUserId = await verifyLineIdTokenWithLineApi({ idToken: lineIdToken, channelId });
+      } catch (_) {
+        verifiedLineUserId = null;
+      }
+    }
+
+    if (verifiedLineUserId && booking.line_user_id && verifiedLineUserId === booking.line_user_id.trim()) {
+      try {
+        await dbQuery.run('UPDATE bookings SET line_user_id_verified = 1 WHERE id = ?', [booking.id]);
+        booking.line_user_id_verified = 1;
+      } catch (_) {}
+    }
+
+    return res.json({
+      success: true,
+      acknowledged: true,
+      required: true,
+      rule_set: guidelinesConfig.rule_set,
+      rule_version: guidelinesConfig.rule_version,
+      acknowledged_at: acknowledgedAt,
+      line_notification: {
+        status: 'skipped_decoupled_to_confirmation',
+        deduplicated: false,
+        message: 'ข้อปฏิบัติจะถูกแนบไปกับข้อความยืนยันการจองทาง LINE หลังชำระเงินสำเร็จ'
+      }
+    });
+  } catch (err) {
+    console.error('Error acknowledging room guidelines:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get booking status (public - requires contact for verification)
 app.get('/api/public/bookings/:id', async (req, res) => {
   const { id } = req.params;
@@ -8142,6 +9511,18 @@ app.get('/api/public/bookings/:id', async (req, res) => {
     const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
     const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
 
+    const guidelinesPolicy = resolveRoomGuidelines(roomInfo?.id, roomInfo?.name);
+    const enforcementSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'");
+    const enforcementEnabled = enforcementSetting ? (enforcementSetting.value === 'true' || enforcementSetting.value === '1') : false;
+    const cutoverSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_cutover_at'");
+    const cutoverAt = cutoverSetting?.value || GUIDELINES_CUTOVER_ISO;
+    const guidelinesEnforced = isGuidelinesEnforcedForBooking({
+      guidelinesPolicy,
+      enforcementSetting: enforcementEnabled,
+      cutoverAt,
+      bookingCreatedAt: booking.created_at
+    });
+
     res.json({
       ...sanitizePublicBooking(booking),
       rejection_reason: rejectionReason,
@@ -8152,7 +9533,15 @@ app.get('/api/public/bookings/:id', async (req, res) => {
       end_time: items && items.length ? (items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time) : null,
       booking_date: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : booking.created_at?.split('T')[0]) : null,
       paymentDeadline: new Date(new Date(booking.created_at).getTime() + paymentWindowMinutes * 60 * 1000).toISOString(),
-      payment_window_minutes: paymentWindowMinutes
+      payment_window_minutes: paymentWindowMinutes,
+      guidelines_enforcement_enabled: enforcementEnabled,
+      guidelines_enforcement_cutover_at: cutoverAt,
+      guidelines_enforced: guidelinesEnforced,
+      guidelines_acknowledged: Boolean(booking.guidelines_acknowledged_at),
+      guidelines_acknowledged_at: booking.guidelines_acknowledged_at || null,
+      guidelines_required: Boolean(guidelinesPolicy.required),
+      guidelines_rule_set: booking.guidelines_rule_set || guidelinesPolicy.rule_set,
+      guidelines_rule_version: booking.guidelines_rule_version || guidelinesPolicy.rule_version
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -8192,6 +9581,23 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     }
     const targetBookingId = booking.id;
 
+    // Verify Server-Confirmed LINE Recipient if token provided
+    let verifiedUploadLineUserId = null;
+    const uploadLineIdToken = req.headers['x-line-id-token'] || req.body?.line_id_token;
+    if (uploadLineIdToken && typeof uploadLineIdToken === 'string') {
+      try {
+        const channelIdRow = await dbQuery.get("SELECT value FROM settings WHERE key = 'line_channel_id'");
+        const channelId = channelIdRow?.value?.trim() || process.env.LINE_CHANNEL_ID || '2011136579';
+        verifiedUploadLineUserId = await verifyLineIdTokenWithLineApi({ idToken: uploadLineIdToken, channelId });
+      } catch (_) {}
+    }
+    if (verifiedUploadLineUserId && booking.line_user_id && verifiedUploadLineUserId === booking.line_user_id.trim() && !booking.line_user_id_verified) {
+      try {
+        await dbQuery.run('UPDATE bookings SET line_user_id_verified = 1 WHERE id = ?', [booking.id]);
+        booking.line_user_id_verified = 1;
+      } catch (_) {}
+    }
+
     if (booking.payment_status === 'paid') {
       return res.status(409).json({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้ว ไม่สามารถแนบสลิปซ้ำได้' });
     }
@@ -8199,9 +9605,38 @@ app.post('/api/public/bookings/:id/upload-slip', async (req, res) => {
     const pwSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'payment_window_minutes'");
     const paymentWindowMinutes = Math.max(1, parseInt(pwSetting?.value || '15', 10) || 15);
     const paymentWindowMs = paymentWindowMinutes * 60 * 1000;
-    const createdAtMs = new Date(String(booking.created_at).replace(' ', 'T')).getTime();
+    const rawCreated = String(booking.created_at || '').trim().replace(' ', 'T');
+    const normalizedCreated = (rawCreated.endsWith('Z') || rawCreated.includes('+')) ? rawCreated : (rawCreated ? rawCreated + 'Z' : '');
+    const createdAtMs = normalizedCreated ? new Date(normalizedCreated).getTime() : NaN;
     const isDepositRemaining = (booking.payment_status === 'deposit' || Number(booking.paid_amount || 0) > 0) && Number(booking.balance_amount || 0) > 0;
     const isExpiredByTime = !isDepositRemaining && !isNaN(createdAtMs) && (Date.now() - createdAtMs >= paymentWindowMs);
+
+    // Guidelines Acknowledgement Precondition Check
+    const bookingItems = await dbQuery.all(
+      `SELECT bi.room_id, r.name as room_name
+       FROM booking_items bi
+       LEFT JOIN rooms r ON bi.room_id = r.id
+       WHERE bi.booking_id = ?`,
+      [booking.id]
+    );
+    const guidelinesPolicy = resolveRoomGuidelines(bookingItems && bookingItems[0]?.room_id, bookingItems && bookingItems[0]?.room_name);
+    const enforcementSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'");
+    const enforcementEnabled = enforcementSetting ? (enforcementSetting.value === 'true' || enforcementSetting.value === '1') : false;
+    const cutoverSetting = await dbQuery.get("SELECT value FROM settings WHERE key = 'guidelines_enforcement_cutover_at'");
+    const cutoverAt = cutoverSetting?.value || GUIDELINES_CUTOVER_ISO;
+    const isEnforced = isGuidelinesEnforcedForBooking({
+      guidelinesPolicy,
+      enforcementSetting: enforcementEnabled,
+      cutoverAt,
+      bookingCreatedAt: booking.created_at
+    });
+    if (isEnforced && !booking.guidelines_acknowledged_at) {
+      return res.status(400).json({
+        success: false,
+        error: 'กรุณารับทราบข้อปฏิบัติการใช้ห้องประชุมก่อนส่งหลักฐานการชำระเงิน',
+        code: 'GUIDELINES_NOT_ACKNOWLEDGED'
+      });
+    }
 
     if (booking.payment_status === 'cancelled' || isExpiredByTime) {
       if (booking.payment_status !== 'cancelled') {
@@ -9057,6 +10492,9 @@ const buildLineBookingCancellationFlex = buildLineBookingCancelledFlex;
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     app,
+    sendLineNotification,
+    verifyLineIdTokenWithLineApi,
+    sendRoomGuidelinesLineMessageServer,
     dbInitPromise,
     autoCancelInterval,
     createToken,

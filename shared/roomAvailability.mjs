@@ -5,6 +5,36 @@ const SLOT_MS = 30 * MINUTE_MS;
 export const ROOM_OPEN_TIME = '08:00';
 export const ROOM_CLOSE_TIME = '18:00';
 
+// Physical space relationship matrix:
+// Room 10: 'Jupiter (300)'
+// Room 12: 'Jupiter (300) & Co-Working' (Combined bundle containing Room 10 and Room 13)
+// Room 13: 'เหมาโซน Co-working'
+// Conflict mapping:
+// - Room 10 conflicts with [10, 12]
+// - Room 12 conflicts with [12, 10, 13]
+// - Room 13 conflicts with [13, 12]
+// - Room 10 and Room 13 are physically separate spaces and do NOT conflict with each other.
+export const ROOM_CONFLICT_MAP = Object.freeze({
+  10: Object.freeze([10, 12]),
+  12: Object.freeze([12, 10, 13]),
+  13: Object.freeze([13, 12])
+});
+
+export function getConflictingRoomIds(roomId) {
+  const id = Number(roomId);
+  if (!id) return [];
+  return ROOM_CONFLICT_MAP[id] ? Array.from(ROOM_CONFLICT_MAP[id]) : [id];
+}
+
+export function areRoomsConflicting(roomA, roomB) {
+  const a = Number(roomA);
+  const b = Number(roomB);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const list = ROOM_CONFLICT_MAP[a];
+  return list ? list.includes(b) : false;
+}
+
 function civilTime(value) {
   return Date.parse(`${value}Z`);
 }

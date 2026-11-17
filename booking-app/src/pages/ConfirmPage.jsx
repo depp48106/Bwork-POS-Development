@@ -1,14 +1,29 @@
 import jsQR from 'jsqr';
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   CheckCircle2, Copy, Upload, Check,
-  ShieldCheck, AlertCircle, Download, CreditCard, QrCode, Clock, Calendar
+  ShieldCheck, AlertCircle, Download, CreditCard, QrCode, Clock, Calendar,
+  BookOpen, X, ZoomIn, ZoomOut, RotateCcw
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { calcPaymentTimeLeft } from '../utils/paymentCountdown';
 import { generateGoogleCalendarUrl, downloadIcsFile } from '../utils/calendarUtils';
+import { getBookingRoomGuidelines } from '../utils/roomGuidelines';
+
+/**
+ * Helper to determine room guidelines flyer and summary points.
+ * Single Source of Truth from shared policy.
+ */
+export function getRoomGuidelines(booking) {
+  const g = getBookingRoomGuidelines(booking);
+  if (!g || !g.required) return null;
+  return {
+    ...g,
+    src: g.local_image_src || g.image_url
+  };
+}
 
 export default function ConfirmPage() {
   const navigate = useNavigate();
@@ -86,6 +101,53 @@ export default function ConfirmPage() {
     } catch (e) {}
     return 15 * 60;
   });
+  const [showGuidelinesModal, setShowGuidelinesModal] = useState(false);
+  const [guidelinesZoom, setGuidelinesZoom] = useState(1);
+  const activeBookingIdRef = useRef(bookingId);
+
+  const [guidelinesAcknowledged, setGuidelinesAcknowledged] = useState(() => {
+    try {
+      if (location.state?.booking) {
+        const b = location.state.booking;
+        if (String(b.id) === String(bookingId) || String(b.booking_id) === String(bookingId) || String(b.receipt_number) === String(bookingId)) {
+          if (b.guidelines_acknowledged || b.guidelines_acknowledged_at) return true;
+        }
+      }
+      const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (parsed && (String(parsed.id) === String(bookingId) || String(parsed.booking_id) === String(bookingId) || String(parsed.receipt_number) === String(bookingId))) {
+        if (parsed.guidelines_acknowledged || parsed.guidelines_acknowledged_at) return true;
+      }
+    } catch (e) {}
+    return false;
+  });
+  const [guidelinesCheckboxTicked, setGuidelinesCheckboxTicked] = useState(false);
+  const [isAcknowledgingGuidelines, setIsAcknowledgingGuidelines] = useState(false);
+  const [guidelinesAcknowledgeError, setGuidelinesAcknowledgeError] = useState(null);
+
+  // When switching bookings: reset previous state immediately and discard stale in-flight results
+  useEffect(() => {
+    activeBookingIdRef.current = bookingId;
+    setGuidelinesAcknowledged(false);
+    setGuidelinesCheckboxTicked(false);
+    setGuidelinesAcknowledgeError(null);
+  }, [bookingId]);
+
+  // Lock body scroll and listen for Escape key when guidelines modal is open
+  useEffect(() => {
+    if (!showGuidelinesModal) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setShowGuidelinesModal(false);
+    };
+    const origOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = origOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showGuidelinesModal]);
+
   const [isExpired, setIsExpired] = useState(() => {
     try {
       const raw = typeof window !== 'undefined' ? sessionStorage.getItem('completed_booking_result') : null;
@@ -105,6 +167,94 @@ export default function ConfirmPage() {
 
   // Check if booking slip is in rejected status
   const isRejected = Boolean(booking?.payment_status === 'rejected' || booking?.slip_verify_status === 'rejected');
+
+  // Sync guidelines acknowledgement status whenever fresh booking data arrives
+  useEffect(() => {
+    if (!booking) return;
+    if (booking.guidelines_acknowledged === false) {
+      // If server explicitly reports unacknowledged, immediately lock!
+      setGuidelinesAcknowledged(false);
+    } else if (booking.guidelines_acknowledged || booking.guidelines_acknowledged_at) {
+      setGuidelinesAcknowledged(true);
+    }
+  }, [booking?.guidelines_acknowledged, booking?.guidelines_acknowledged_at]);
+
+  // Handler to acknowledge room guidelines via API
+  const handleAcknowledgeRules = async () => {
+    if (!guidelinesCheckboxTicked || isAcknowledgingGuidelines) return;
+    setIsAcknowledgingGuidelines(true);
+    setGuidelinesAcknowledgeError(null);
+
+    try {
+      const rawAccessToken = query.get('access_token') || booking?.qr_token || '';
+      const rawContact = query.get('contact') || booking?.contact || '';
+      let idToken = '';
+      if (typeof window !== 'undefined' && window.liff && window.liff.isLoggedIn()) {
+        try { idToken = window.liff.getIDToken() || ''; } catch (e) {}
+      }
+      const headers = { 'Content-Type': 'application/json' };
+      if (rawAccessToken) headers['X-Booking-Token'] = rawAccessToken;
+      if (rawContact) headers['X-Booking-Contact'] = rawContact;
+      if (idToken) headers['X-Line-ID-Token'] = idToken;
+
+      const targetId = bookingId || booking?.id;
+      const currentGuidelines = getRoomGuidelines(booking);
+
+      const res = await fetch(`${API_BASE}/api/public/bookings/${targetId}/acknowledge-rules`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          rule_set: currentGuidelines?.rule_set,
+          rule_version: currentGuidelines?.rule_version,
+          access_token: rawAccessToken || undefined,
+          contact: rawContact || undefined,
+          line_id_token: idToken || undefined
+        })
+      });
+
+      const data = await res.json();
+
+      // Discard stale in-flight response if user switched bookings while request was pending
+      if (String(activeBookingIdRef.current) !== String(targetId)) {
+        return;
+      }
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'ไม่สามารถบันทึกการรับทราบข้อปฏิบัติได้');
+      }
+
+      setGuidelinesAcknowledged(true);
+      setBooking(prev => prev ? {
+        ...prev,
+        guidelines_acknowledged: true,
+        guidelines_acknowledged_at: data.acknowledged_at || new Date().toISOString(),
+        guidelines_rule_set: data.rule_set,
+        guidelines_rule_version: data.rule_version
+      } : prev);
+
+      try {
+        const raw = sessionStorage.getItem('completed_booking_result');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (String(parsed.id) === String(targetId) || String(parsed.booking_id) === String(targetId)) {
+            parsed.guidelines_acknowledged = true;
+            parsed.guidelines_acknowledged_at = data.acknowledged_at || new Date().toISOString();
+            sessionStorage.setItem('completed_booking_result', JSON.stringify(parsed));
+          }
+        }
+      } catch (e) {}
+    } catch (err) {
+      const targetId = bookingId || booking?.id;
+      // Discard error if user has already switched to another booking
+      if (String(activeBookingIdRef.current) !== String(targetId)) {
+        return;
+      }
+      console.error('Error acknowledging room guidelines:', err);
+      setGuidelinesAcknowledgeError(err.message || 'เกิดข้อผิดพลาดในการบันทึก กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsAcknowledgingGuidelines(false);
+    }
+  };
 
   // Dynamic Countdown Timer based on paymentDeadline as Source of Truth
   useEffect(() => {
@@ -213,6 +363,11 @@ export default function ConfirmPage() {
 
       const data = await res.json();
       if (res.ok && data && !data.error) {
+        // Discard stale responses from prior booking if user switched
+        if (activeBookingIdRef.current !== bookingId && String(activeBookingIdRef.current) !== String(bookingId)) {
+          return null;
+        }
+
         // Canonical booking code verification
         if (queryCode) {
           const validCodes = [
@@ -482,18 +637,25 @@ export default function ConfirmPage() {
       const currentToken = booking?.access_token || statusAccess?.accessToken;
 
       // Send Base64 payload + QR data (Enables 100% Automated Instant Verification)
+      let idToken = '';
+      if (typeof window !== 'undefined' && window.liff && window.liff.isLoggedIn()) {
+        try { idToken = window.liff.getIDToken() || ''; } catch (e) {}
+      }
+
       const res = await fetch(`${API_BASE}/api/public/bookings/${targetId}/upload-slip`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(currentToken ? { 'X-Booking-Token': currentToken } : {}),
-          ...(currentContact ? { 'X-Booking-Contact': currentContact } : {})
+          ...(currentContact ? { 'X-Booking-Contact': currentContact } : {}),
+          ...(idToken ? { 'X-Line-ID-Token': idToken } : {})
         },
         body: JSON.stringify({
           slip_image: finalPayload,
           qr_data: slipQrData,
           contact: currentContact,
-          access_token: currentToken
+          access_token: currentToken,
+          line_id_token: idToken || undefined
         })
       });
 
@@ -540,6 +702,13 @@ export default function ConfirmPage() {
   const isDeposit = Boolean((booking?.payment_status === 'deposit' || Number(booking?.paid_amount || 0) > 0) && Number(booking?.balance_amount || 0) > 0);
   const payableAmt = isDeposit ? parseFloat(booking.balance_amount || 0) : totalAmt;
   const qrImageSrc = paymentSettings.qr_image || '/bwork_payment_qr.png';
+  const roomGuidelines = getRoomGuidelines(booking);
+  const isEnforced = booking?.guidelines_enforced !== undefined
+    ? Boolean(booking.guidelines_enforced)
+    : (booking?.guidelines_enforcement_enabled !== undefined
+        ? Boolean(booking.guidelines_enforcement_enabled)
+        : false);
+  const isGuidelinesGated = Boolean(roomGuidelines && isEnforced && !guidelinesAcknowledged);
 
   const isPaidOrAutoApproved = Boolean(booking?.payment_status === 'paid');
   const bookingForCalendar = booking ? {
@@ -1085,7 +1254,267 @@ export default function ConfirmPage() {
           {/* PAYMENT DETAILS CARD & SLIP UPLOAD CARD (Active or Rejected Only) */}
           {!isExpired && (
             <>
-              <div className="booking-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              {/* ROOM GUIDELINES GATE / ACKNOWLEDGEMENT CARD */}
+              {roomGuidelines && isEnforced && !guidelinesAcknowledged && (
+                <div
+                  id="guidelines-gate-card"
+                  style={{
+                    width: '100%',
+                    maxWidth: '360px',
+                    margin: '0 auto 16px',
+                    padding: '18px 16px',
+                    backgroundColor: '#ffffff',
+                    border: '2px solid #bfdbfe',
+                    borderRadius: '20px',
+                    boxShadow: '0 4px 16px rgba(37, 99, 235, 0.08)',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                    <ShieldCheck size={20} color="#2563eb" style={{ flexShrink: 0 }} />
+                    <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: '#1e3a8a' }}>
+                      {roomGuidelines.title}
+                    </h3>
+                  </div>
+
+                  {/* Concise summary bullets (ข้อปฏิบัติย่อ) */}
+                  <div
+                    style={{
+                      backgroundColor: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '12px',
+                      padding: '12px 14px',
+                      marginBottom: '12px',
+                      fontSize: '0.84rem',
+                      lineHeight: 1.5,
+                      color: '#334155'
+                    }}
+                  >
+                    <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {(roomGuidelines.summary_points || []).map((point, idx) => (
+                        <li key={idx} style={{ paddingLeft: '2px' }}>
+                          {point}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {/* Read full guidelines flyer modal trigger */}
+                  <button
+                    type="button"
+                    id="btn-view-full-guidelines"
+                    onClick={() => {
+                      setGuidelinesZoom(1);
+                      setShowGuidelinesModal(true);
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      backgroundColor: '#eff6ff',
+                      color: '#1d4ed8',
+                      border: '1px solid #bfdbfe',
+                      borderRadius: '12px',
+                      fontSize: '0.86rem',
+                      fontWeight: 700,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <BookOpen size={16} />
+                    <span>อ่านข้อปฏิบัติฉบับเต็ม</span>
+                  </button>
+
+                  {/* Mandatory acknowledgement checkbox */}
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '10px',
+                      marginTop: '12px',
+                      cursor: 'pointer',
+                      padding: '10px 12px',
+                      backgroundColor: guidelinesCheckboxTicked ? '#f0fdf4' : '#f8fafc',
+                      border: guidelinesCheckboxTicked ? '1.5px solid #86efac' : '1px solid #cbd5e1',
+                      borderRadius: '12px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      id="checkbox-acknowledge-guidelines"
+                      checked={guidelinesCheckboxTicked}
+                      onChange={e => setGuidelinesCheckboxTicked(e.target.checked)}
+                      style={{
+                        width: '18px',
+                        height: '18px',
+                        marginTop: '2px',
+                        cursor: 'pointer',
+                        accentColor: '#2563eb',
+                        flexShrink: 0
+                      }}
+                    />
+                    <span style={{ fontSize: '0.84rem', fontWeight: 700, color: '#1e293b', lineHeight: 1.4 }}>
+                      ฉันได้อ่านและรับทราบข้อปฏิบัติของห้องที่จองแล้ว
+                    </span>
+                  </label>
+
+                  {/* Confirm acknowledgement button */}
+                  <button
+                    type="button"
+                    id="btn-confirm-acknowledge-guidelines"
+                    disabled={!guidelinesCheckboxTicked || isAcknowledgingGuidelines}
+                    onClick={handleAcknowledgeRules}
+                    style={{
+                      width: '100%',
+                      marginTop: '12px',
+                      padding: '13px 16px',
+                      backgroundColor: guidelinesCheckboxTicked ? '#2563eb' : '#cbd5e1',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '12px',
+                      fontSize: '0.94rem',
+                      fontWeight: 800,
+                      cursor: guidelinesCheckboxTicked && !isAcknowledgingGuidelines ? 'pointer' : 'not-allowed',
+                      boxShadow: guidelinesCheckboxTicked ? '0 4px 12px rgba(37, 99, 235, 0.25)' : 'none',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    {isAcknowledgingGuidelines ? 'กำลังยืนยัน...' : 'ยืนยันรับทราบเพื่อชำระเงิน'}
+                  </button>
+
+                  {/* Error feedback if API fails */}
+                  {guidelinesAcknowledgeError && (
+                    <div
+                      style={{
+                        marginTop: '10px',
+                        padding: '8px 12px',
+                        backgroundColor: '#fef2f2',
+                        border: '1px solid #fecaca',
+                        borderRadius: '8px',
+                        color: '#dc2626',
+                        fontSize: '0.82rem',
+                        fontWeight: 600,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      <AlertCircle size={15} style={{ flexShrink: 0 }} />
+                      <span>{guidelinesAcknowledgeError}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* POST-ACKNOWLEDGEMENT SUCCESS BADGE & RE-VIEW BUTTON */}
+              {roomGuidelines && guidelinesAcknowledged && (
+                <div
+                  id="guidelines-acknowledged-badge"
+                  style={{
+                    maxWidth: '360px',
+                    width: '100%',
+                    margin: '0 auto 14px',
+                    padding: '10px 14px',
+                    backgroundColor: '#f0fdf4',
+                    border: '1.5px solid #86efac',
+                    borderRadius: '14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#16a34a', fontWeight: 800, fontSize: '0.86rem' }}>
+                    <CheckCircle2 size={16} />
+                    <span>รับทราบข้อปฏิบัติเรียบร้อยแล้ว</span>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-re-view-guidelines"
+                    onClick={() => {
+                      setGuidelinesZoom(1);
+                      setShowGuidelinesModal(true);
+                    }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#2563eb',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      textDecoration: 'underline',
+                      padding: '2px 4px'
+                    }}
+                  >
+                    ดูข้อปฏิบัติอีกครั้ง
+                  </button>
+                </div>
+              )}
+
+              {roomGuidelines && !isEnforced && !guidelinesAcknowledged && (
+                <div style={{ marginBottom: '16px', textAlign: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => { setGuidelinesZoom(1); setShowGuidelinesModal(true); }}
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      background: '#f0f9ff',
+                      border: '1px solid #bae6fd',
+                      borderRadius: '10px',
+                      color: '#0284c7',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    <BookOpen size={16} />
+                    <span>ดูข้อปฏิบัติการใช้ห้อง</span>
+                  </button>
+                </div>
+              )}
+
+              {/* GATED QR CARD: Hidden until guidelines acknowledged (if required) */}
+              {isGuidelinesGated ? (
+                <div
+                  id="gated-qr-placeholder"
+                  className="booking-card"
+                  style={{
+                    padding: '28px 18px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    textAlign: 'center',
+                    backgroundColor: '#f8fafc',
+                    border: '2px dashed #cbd5e1',
+                    borderRadius: '20px',
+                    maxWidth: '360px',
+                    margin: '0 auto',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '12px' }}>
+                    <QrCode size={24} color="#64748b" />
+                  </div>
+                  <div style={{ fontSize: '0.94rem', fontWeight: 800, color: '#334155', marginBottom: '6px' }}>
+                    QR Code สำหรับชำระเงินถูกล็อกไว้
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: '#64748b', lineHeight: 1.5, maxWidth: '280px' }}>
+                    กรุณาอ่านและกดยืนยันรับทราบข้อปฏิบัติด้านบน เพื่อแสดง QR Code สำหรับสแกนชำระเงิน
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="booking-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             <div style={{
               display: 'flex',
               flexDirection: 'column',
@@ -1120,7 +1549,7 @@ export default function ConfirmPage() {
                 <img
                   src={qrImageSrc}
                   alt="B WORK Payment QR Code"
-                  style={{ width: '100%', height: 'auto', display: 'block', borderRadius: '10px' }}
+                  style={{ width: '100%', height: 'auto', display: 'block', borderRadius: '8px', objectFit: 'contain' }}
                 />
               </div>
 
@@ -1308,8 +1737,258 @@ export default function ConfirmPage() {
               </button>
             </form>
           </div>
+                </>
+              )}
             </>
           )}
+        </div>
+      )}
+
+      {/* ROOM GUIDELINES MODAL (In-web popup, scrollable, zoomable, closeable on mobile) */}
+      {showGuidelinesModal && roomGuidelines && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={roomGuidelines.title}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowGuidelinesModal(false);
+            }
+          }}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.82)',
+            backdropFilter: 'blur(4px)',
+            WebkitBackdropFilter: 'blur(4px)',
+            zIndex: 9999,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '12px',
+            boxSizing: 'border-box'
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#ffffff',
+              borderRadius: '18px',
+              maxWidth: '560px',
+              width: '100%',
+              maxHeight: '92vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              overflow: 'hidden',
+              position: 'relative',
+              border: '1px solid #e2e8f0'
+            }}
+          >
+            {/* Modal Header */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 16px',
+                borderBottom: '1px solid #e2e8f0',
+                backgroundColor: '#ffffff',
+                gap: '8px',
+                flexShrink: 0
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                <BookOpen size={18} style={{ color: '#2563eb', flexShrink: 0 }} />
+                <span
+                  style={{
+                    fontSize: '0.88rem',
+                    fontWeight: 800,
+                    color: '#0f172a',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}
+                  title={roomGuidelines.title}
+                >
+                  {roomGuidelines.title}
+                </span>
+              </div>
+
+              {/* Controls: Zoom & Close */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                {/* Zoom Controls */}
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    backgroundColor: '#f1f5f9',
+                    borderRadius: '8px',
+                    padding: '2px',
+                    gap: '2px'
+                  }}
+                >
+                  <button
+                    type="button"
+                    title="ย่อรูป"
+                    aria-label="ย่อรูป"
+                    disabled={guidelinesZoom <= 1}
+                    onClick={() => setGuidelinesZoom(z => Math.max(1, Math.round((z - 0.25) * 100) / 100))}
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      border: 'none',
+                      backgroundColor: 'transparent',
+                      color: guidelinesZoom <= 1 ? '#94a3b8' : '#334155',
+                      cursor: guidelinesZoom <= 1 ? 'not-allowed' : 'pointer',
+                      borderRadius: '6px'
+                    }}
+                  >
+                    <ZoomOut size={15} />
+                  </button>
+
+                  <button
+                    type="button"
+                    title="รีเซ็ตขนาด"
+                    aria-label="รีเซ็ตขนาด"
+                    onClick={() => setGuidelinesZoom(1)}
+                    style={{
+                      padding: '0 6px',
+                      height: '28px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      border: 'none',
+                      backgroundColor: 'transparent',
+                      color: '#475569',
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      borderRadius: '6px'
+                    }}
+                  >
+                    {Math.round(guidelinesZoom * 100)}%
+                  </button>
+
+                  <button
+                    type="button"
+                    title="ขยายรูป"
+                    aria-label="ขยายรูป"
+                    disabled={guidelinesZoom >= 2.5}
+                    onClick={() => setGuidelinesZoom(z => Math.min(2.5, Math.round((z + 0.25) * 100) / 100))}
+                    style={{
+                      width: '28px',
+                      height: '28px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      border: 'none',
+                      backgroundColor: 'transparent',
+                      color: guidelinesZoom >= 2.5 ? '#94a3b8' : '#334155',
+                      cursor: guidelinesZoom >= 2.5 ? 'not-allowed' : 'pointer',
+                      borderRadius: '6px'
+                    }}
+                  >
+                    <ZoomIn size={15} />
+                  </button>
+                </div>
+
+                {/* Close Button */}
+                <button
+                  type="button"
+                  id="btn-close-guidelines-modal"
+                  aria-label="ปิดหน้าต่างข้อปฏิบัติ"
+                  onClick={() => setShowGuidelinesModal(false)}
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '8px',
+                    border: '1px solid #cbd5e1',
+                    backgroundColor: '#ffffff',
+                    color: '#475569',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body - Scrollable & Zoomable Image */}
+            <div
+              style={{
+                flex: 1,
+                overflow: 'auto',
+                WebkitOverflowScrolling: 'touch',
+                touchAction: 'pan-x pan-y pinch-zoom',
+                padding: '12px',
+                backgroundColor: '#f8fafc',
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'flex-start'
+              }}
+            >
+              <img
+                src={roomGuidelines.src}
+                alt={roomGuidelines.title}
+                onDoubleClick={() => setGuidelinesZoom(z => (z > 1 ? 1 : 1.75))}
+                style={{
+                  width: `${guidelinesZoom * 100}%`,
+                  maxWidth: 'none',
+                  height: 'auto',
+                  display: 'block',
+                  borderRadius: '10px',
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
+                  transition: 'width 0.18s ease-out',
+                  cursor: guidelinesZoom > 1 ? 'zoom-out' : 'zoom-in',
+                  margin: '0 auto'
+                }}
+              />
+            </div>
+
+            {/* Modal Footer */}
+            <div
+              style={{
+                padding: '10px 16px',
+                borderTop: '1px solid #e2e8f0',
+                backgroundColor: '#ffffff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '10px',
+                flexShrink: 0
+              }}
+            >
+              <div style={{ fontSize: '0.74rem', color: '#64748b' }}>
+                แตะ 2 ครั้งหรือใช้ปุ่ม +/- เพื่อขยาย
+              </div>
+              <button
+                type="button"
+                id="btn-footer-close-guidelines"
+                onClick={() => setShowGuidelinesModal(false)}
+                className="btn-secondary"
+                style={{
+                  padding: '8px 18px',
+                  fontSize: '0.82rem',
+                  fontWeight: 700,
+                  width: 'auto',
+                  minWidth: '90px'
+                }}
+              >
+                ปิดหน้าต่าง
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

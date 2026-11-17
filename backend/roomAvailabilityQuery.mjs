@@ -1,4 +1,5 @@
-export { getAvailabilityMonth } from '../shared/roomAvailability.mjs';
+export { getAvailabilityMonth, getConflictingRoomIds, ROOM_CONFLICT_MAP } from '../shared/roomAvailability.mjs';
+import { getConflictingRoomIds } from '../shared/roomAvailability.mjs';
 
 export const ACTIVE_AVAILABILITY_ROOMS_SQL = `
   SELECT id, name, capacity FROM rooms WHERE status = 'active' ORDER BY name ASC
@@ -97,44 +98,60 @@ export function getAvailabilityQueryParams(month, bufferMinutes) {
 
 // Anonymous response builder for public endpoint (no customer names, no departments)
 export function buildAvailabilityResponse(month, rooms, items, bufferMinutes, normalizeTime) {
+  const intervals = [];
+  for (const item of items) {
+    const { type, code } = resolveBookerType(item);
+    const checkin = resolveCheckinStatus(item);
+    const normStart = normalizeTime(item.start_time);
+    const normEnd = normalizeTime(item.end_time);
+    const conflictIds = getConflictingRoomIds(item.room_id);
+    for (const rid of conflictIds) {
+      intervals.push({
+        room_id: rid,
+        start: normStart,
+        end: normEnd,
+        booker_type: type,
+        booker_type_code: code,
+        checkin_status: checkin
+      });
+    }
+  }
   return {
     month: month.month,
     cleaning_buffer_minutes: bufferMinutes,
     rooms,
-    intervals: items.map(item => {
-      const { type, code } = resolveBookerType(item);
-      return {
-        room_id: item.room_id,
-        start: normalizeTime(item.start_time),
-        end: normalizeTime(item.end_time),
-        booker_type: type,
-        booker_type_code: code,
-        checkin_status: resolveCheckinStatus(item)
-      };
-    })
+    intervals
   };
 }
 
 // Staff response builder for authenticated staff endpoint
 export function buildStaffAvailabilityResponse(month, rooms, items, bufferMinutes, normalizeTime) {
-  return {
-    month: month.month,
-    cleaning_buffer_minutes: bufferMinutes,
-    rooms,
-    intervals: items.map(item => {
-      const { type, code } = resolveBookerType(item);
-      return {
-        room_id: item.room_id,
-        start: normalizeTime(item.start_time),
-        end: normalizeTime(item.end_time),
+  const intervals = [];
+  for (const item of items) {
+    const { type, code } = resolveBookerType(item);
+    const checkin = resolveCheckinStatus(item);
+    const normStart = normalizeTime(item.start_time);
+    const normEnd = normalizeTime(item.end_time);
+    const conflictIds = getConflictingRoomIds(item.room_id);
+    for (const rid of conflictIds) {
+      intervals.push({
+        room_id: rid,
+        start: normStart,
+        end: normEnd,
         booker_type: type,
         booker_type_code: code,
-        checkin_status: resolveCheckinStatus(item),
+        checkin_status: checkin,
         customer_name: item.customer_name || null,
         internal_department: item.internal_department || null,
         customer_type: item.customer_type || null,
         booking_source: item.booking_source || null
-      };
-    })
+      });
+    }
+  }
+  return {
+    month: month.month,
+    cleaning_buffer_minutes: bufferMinutes,
+    rooms,
+    intervals
   };
 }

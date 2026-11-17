@@ -1,6 +1,7 @@
 import TaxInvoiceManagementModal from './TaxInvoiceManagementModal';
 import AttachSlipModal from './AttachSlipModal';
 import RoomExtensionModal from './RoomExtensionModal';
+import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
 import AuthenticatedSlipImage from './AuthenticatedSlipImage';
 import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
 import React, { useState, useEffect, useMemo, useDeferredValue, useRef, useCallback } from 'react';
@@ -1146,8 +1147,12 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
       return;
     }
     try {
+      const token = localStorage.getItem('pos_token') || localStorage.getItem('token') || '';
       const res = await fetch(`/api/bookings/${booking.id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        }
       });
       if (res.ok) {
         await sysAlert('ลบรายการจองออกจากระบบอย่างถาวรเรียบร้อยแล้ว');
@@ -3792,7 +3797,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                   const b = activeActionMenuBooking;
                   setActiveActionMenuBooking(null);
                   setActionMenuPos(null);
-                  const roomItem = (b.items || []).find(it => it.room_id);
+                  const eligibleRooms = (b.items || []).filter(it => it && it.room_id && it.checkin_status !== 'cancelled');
+                  const roomItem = eligibleRooms.length === 1 ? eligibleRooms[0] : null;
                   setExtensionModalData({ booking: b, item: roomItem });
                 }}
                 className="action-menu-item"
@@ -5402,7 +5408,8 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                       id="pb-detail-btn-extend-room"
                       className="pb-detail-btn-secondary"
                       onClick={() => {
-                        const roomItem = (b.items || []).find(it => it.room_id);
+                        const eligibleRooms = (b.items || []).filter(it => it && it.room_id && it.checkin_status !== 'cancelled');
+                        const roomItem = eligibleRooms.length === 1 ? eligibleRooms[0] : null;
                         setExtensionModalData({ booking: b, item: roomItem });
                       }}
                       style={{
@@ -9337,6 +9344,7 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
           isOpen={!!extensionModalData}
           booking={extensionModalData.booking}
           initialItem={extensionModalData.item}
+          settings={settings}
           onClose={() => setExtensionModalData(null)}
           onSuccess={(updatedBooking) => {
             const bId = extensionModalData.booking?.id;
@@ -9705,9 +9713,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                           }}
                         >
                           <img
-                            src={rawSingleRoomImage}
+                            key={rawSingleRoomImage}
+                            src={getRoomImageUrl(rawSingleRoomImage)}
                             alt={singleRoomName}
-                            onError={() => setFailedCardImages(prev => ({ ...prev, [rawSingleRoomImage]: true }))}
+                            onError={(e) => {
+                              if (!handleRoomImageError(e, rawSingleRoomImage)) {
+                                setFailedCardImages(prev => ({ ...prev, [rawSingleRoomImage]: true }));
+                              }
+                            }}
                             style={{
                               width: '100%',
                               height: '100%',
@@ -9953,9 +9966,14 @@ function PendingBookings({ settings, sysAlert, sysConfirm, onNavigateToBook, tar
                                 {isMultiRoom && (
                                   itemRoomImg ? (
                                     <img
-                                      src={itemRoomImg}
+                                      key={itemRoomImg}
+                                      src={getRoomImageUrl(itemRoomImg)}
                                       alt={sch.room_name}
-                                      onError={() => setFailedCardImages(prev => ({ ...prev, [sch.room_image_url]: true }))}
+                                      onError={(e) => {
+                                        if (!handleRoomImageError(e, itemRoomImg)) {
+                                          setFailedCardImages(prev => ({ ...prev, [itemRoomImg]: true }));
+                                        }
+                                      }}
                                       style={{
                                         width: '56px',
                                         height: '40px',

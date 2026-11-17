@@ -16,6 +16,363 @@ async function hashPassword(password) {
 }
 
 // ==========================================
+// 1.14 TAX INVOICE EMAIL DISPATCH HELPERS (DRY-RUN / GMAIL)
+const DEFAULT_SENDER_NAME = 'บริษัท บิลท์ ฮาร์ท จำกัด';
+const DEFAULT_SENDER_EMAIL = 'coworkings.bwork@gmail.com';
+const DEFAULT_REPLY_TO = 'coworkings.bwork@gmail.com';
+const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+
+let cachedWorkerAccessToken = null;
+let cachedWorkerTokenExpiry = 0;
+
+function isGmailConfigured(env) {
+  return Boolean(
+    env?.GMAIL_CLIENT_ID &&
+    env?.GMAIL_CLIENT_SECRET &&
+    env?.GMAIL_REFRESH_TOKEN
+  );
+}
+
+function isLiveDispatchEnabled(env) {
+  return String(env?.GMAIL_LIVE_DISPATCH_ENABLED || '').toLowerCase() === 'true';
+}
+const TARGET_TEST_RECIPIENT = 'kunakornwhynatt@gmail.com';
+const TEST_EMAIL_SUBJECT = '[BWORK TEST] ทดสอบส่งเอกสาร PDF — ไม่ใช่ใบกำกับภาษีจริง';
+
+function isTestDispatchEnabledWorker(env) {
+  return String(env?.GMAIL_TEST_DISPATCH_ENABLED || '').toLowerCase() === 'true';
+}
+
+function createTestSamplePdfUint8Array() {
+  const content = 'BT /F1 16 Tf 50 720 Td ([BWORK TEST DOCUMENT] - NOT A REAL TAX INVOICE) Tj 0 -30 Td /F1 11 Tf (This is an automated system integration test message from B-WORK POS.) Tj 0 -20 Td (Recipient: kunakornwhynatt@gmail.com) Tj 0 -20 Td (Sender: Built Heart Co., Ltd. <coworkings.bwork@gmail.com>) Tj 0 -20 Td (Date: ' + new Date().toISOString() + ') Tj 0 -30 Td (IMPORTANT: DO NOT USE FOR TAX DEDUCTION OR OFFICIAL PURPOSE.) Tj ET';
+  const streamLen = new TextEncoder().encode(content).length;
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+
+  offsets.push(pdf.length);
+  pdf += '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '4 0 obj\n<< /Length ' + streamLen + ' >>\nstream\n' + content + '\nendstream\nendobj\n';
+
+  offsets.push(pdf.length);
+  pdf += '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n';
+
+  const startxref = pdf.length;
+  pdf += 'xref\n0 6\n0000000000 65535 f \n';
+  for (let i = 0; i < offsets.length; i++) {
+    pdf += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+  }
+  pdf += 'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n' + startxref + '\n%%EOF';
+
+  return new TextEncoder().encode(pdf);
+}
+
+function generateTestEmailContentWorker({
+  recipientEmail = TARGET_TEST_RECIPIENT,
+  senderEmail = DEFAULT_SENDER_EMAIL,
+  senderName = DEFAULT_SENDER_NAME
+} = {}) {
+  const subject = TEST_EMAIL_SUBJECT;
+  const dateFormatted = new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
+
+  const textBody = `เรียน คุณากร ไวยณัทท์,
+
+นี่คืออีเมลทดสอบระบบ (System Integration Test) จากระบบ BWORK POS ของ บริษัท บิลท์ ฮาร์ท จำกัด
+ตามที่ได้รับการอนุมัติการทดสอบส่งอีเมลจริงผ่าน Google Gmail API ร่วมกับไฟล์แนบ PDF
+
+--------------------------------------------------
+[ข้อความสำคัญ / IMPORTANT DISCLAIMER]
+เอกสาร PDF ที่แนบมาพร้อมกับอีเมลฉบับนี้ เป็น "เอกสารข้อมูลสมมติเพื่อการทดสอบระบบเท่านั้น"
+ไม่ใช่ใบกำกับภาษี หรือใบเสร็จรับเงินจริง และไม่สามารถนำไปใช้ในทางภาษีหรืออ้างอิงทางบัญชีใด ๆ ทั้งสิ้น
+--------------------------------------------------
+
+ข้อมูลการทดสอบ:
+- ผู้ส่ง: บริษัท บิลท์ ฮาร์ท จำกัด <${senderEmail}>
+- ผู้รับ: ${recipientEmail}
+- หัวข้อ: ${subject}
+- ไฟล์แนบ: BWORK_TEST_SAMPLE.pdf
+- วันและเวลาที่ทดสอบ: ${dateFormatted}
+- การเชื่อมต่อ: Google OAuth2 Gmail API (scope: gmail.send)
+
+ขอแสดงความนับถือ,
+ทีมพัฒนาระบบ BWORK POS
+บริษัท บิลท์ ฮาร์ท จำกัด`;
+
+  const htmlBody = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${subject}</title><style>body { font-family: -apple-system, BlinkMacSystemFont, 'Prompt', 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f1f5f9; color: #1e293b; } .container { max-width: 600px; margin: 24px auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; } .header { background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%); color: #ffffff; padding: 32px 24px; text-align: center; } .header h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.5px; } .header p { margin: 8px 0 0; font-size: 14px; opacity: 0.9; } .body { padding: 32px 24px; } .disclaimer-box { background-color: #fef2f2; border: 2px solid #ef4444; border-radius: 12px; padding: 16px; margin: 20px 0; color: #991b1b; } .disclaimer-box h3 { margin: 0 0 8px; font-size: 16px; font-weight: 800; } .disclaimer-box p { margin: 0; font-size: 13px; line-height: 1.5; } .card { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 20px 0; } .card-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #cbd5e1; font-size: 14px; } .card-row:last-child { border-bottom: none; } .label { color: #64748b; font-weight: 600; } .value { color: #0f172a; font-weight: 700; text-align: right; } .attachment-box { display: flex; align-items: center; gap: 12px; background: rgba(79, 70, 229, 0.08); border: 1.5px solid #818cf8; border-radius: 10px; padding: 14px 18px; margin: 20px 0; } .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px; text-align: center; font-size: 12px; color: #64748b; }</style></head><body><div class="container"><div class="header"><h1>${senderName}</h1><p>ระบบ BWORK POS — Gmail API Integration Test</p></div><div class="body"><p style="font-size: 16px; line-height: 1.6; margin-top: 0;">เรียน <strong>คุณากร ไวยณัทท์</strong>,</p><p style="font-size: 14px; line-height: 1.6; color: #475569;">นี่คืออีเมลทดสอบระบบ (System Integration Test) ที่ส่งผ่าน Google Gmail API โดยระบบ BWORK POS จาก Production Environment</p><div class="disclaimer-box"><h3>⚠️ ข้อความแจ้งเตือนสำคัญ (Important Disclaimer)</h3><p>เอกสาร PDF ที่แนบมานี้เป็น <strong>เอกสารข้อมูลสมมติเพื่อการทดสอบระบบเท่านั้น</strong> ไม่ใช่ใบกำกับภาษี หรือใบเสร็จรับเงินจริง และไม่สามารถนำไปใช้ในทางภาษีหรืออ้างอิงทางบัญชีได้</p></div><div class="card"><div class="card-row"><span class="label">ผู้ส่ง:</span><span class="value">${senderName}</span></div><div class="card-row"><span class="label">อีเมลผู้ส่ง:</span><span class="value">${senderEmail}</span></div><div class="card-row"><span class="label">ผู้รับ:</span><span class="value">${recipientEmail}</span></div><div class="card-row"><span class="label">หัวข้อ:</span><span class="value">${subject}</span></div><div class="card-row"><span class="label">วันเวลาที่ส่ง:</span><span class="value">${dateFormatted}</span></div><div class="card-row"><span class="label">สถานะการทดสอบ:</span><span class="value" style="color: #4f46e5;">Gmail API Live Dispatch (1 Approved Test)</span></div></div><div class="attachment-box"><div style="font-size: 24px;">📄</div><div><div style="font-weight: 800; font-size: 14px; color: #4338ca;">ไฟล์แนบ: BWORK_TEST_SAMPLE.pdf</div><div style="font-size: 12px; color: #64748b;">เอกสาร PDF ข้อมูลสมมติในหน่วยความจำ (In-memory generated)</div></div></div></div><div class="footer"><div>© ${new Date().getFullYear()} บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.)</div><div style="margin-top: 4px;">B-WORK Coworking Space & Meeting Rooms</div><div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">ข้อความนี้ส่งจากการทดสอบระบบของผู้ดูแลระบบ</div></div></div></body></html>`;
+
+  return { subject, textBody, htmlBody };
+}
+
+
+function isValidEmail(email) {
+  if (!email || typeof email !== 'string') return false;
+  const re = /^[a-zA-Z0-9.!#$%'*+/=?^_`\{\|\}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+  return re.test(email.trim());
+}
+
+function getEffectiveEnvironment(env) {
+  const raw = String(env?.APP_ENV || env?.ENVIRONMENT || '').trim().toLowerCase();
+  if (raw === 'production') return 'production';
+  if (raw === 'staging') return 'staging';
+  if (raw === 'test') return 'test';
+  // Missing, empty, or unknown values MUST NEVER be considered production!
+  return 'development';
+}
+
+function isEmailAllowedInStaging(email, env, appEnv = getEffectiveEnvironment(env)) {
+  if (appEnv === 'production') return true;
+  const rawList = env?.GMAIL_STAGING_ALLOWLIST || '';
+  if (!rawList.trim()) return false;
+  const target = String(email || '').trim().toLowerCase();
+  const allowed = rawList.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  return allowed.some(pattern => {
+    if (pattern.startsWith('@')) return target.endsWith(pattern);
+    return target === pattern;
+  });
+}
+
+function encodeMimeHeader(text, maxBytesPerWord = 45) {
+  if (!text) return '';
+  const str = String(text);
+
+  // Avoid re-encoding if already RFC 2047 encoded
+  if (/^=\?UTF-8\?[BQ]\?[^?]+\?=(\s+=\?UTF-8\?[BQ]\?[^?]+\?=)*$/i.test(str.trim())) {
+    return str.trim();
+  }
+
+  // Pure printable ASCII (0x20 to 0x7E) does not require RFC 2047 encoding
+  if (/^[\x20-\x7E]+$/.test(str)) {
+    return str;
+  }
+
+  const codePoints = Array.from(str);
+  const words = [];
+  let currentBytes = [];
+
+  for (const char of codePoints) {
+    const charBytes = new TextEncoder().encode(char);
+    if (currentBytes.length + charBytes.length > maxBytesPerWord) {
+      if (currentBytes.length > 0) {
+        words.push(makeEncodedWordWorker(currentBytes));
+        currentBytes = [];
+      }
+    }
+    for (let i = 0; i < charBytes.length; i++) {
+      currentBytes.push(charBytes[i]);
+    }
+  }
+
+  if (currentBytes.length > 0) {
+    words.push(makeEncodedWordWorker(currentBytes));
+  }
+
+  return words.join(' ');
+}
+
+function makeEncodedWordWorker(bytesArray) {
+  const uint8 = new Uint8Array(bytesArray);
+  let binary = '';
+  for (let i = 0; i < uint8.length; i++) {
+    binary += String.fromCharCode(uint8[i]);
+  }
+  const b64 = btoa(binary);
+  const word = `=?UTF-8?B?${b64}?=`;
+  if (word.length > 75) {
+    throw new Error(`RFC 2047 violation: encoded-word length ${word.length} exceeds 75 characters`);
+  }
+  return word;
+}
+
+function formatFromHeaderWorker(from, fromName) {
+  let name = String(fromName || '').trim();
+  let email = String(from || '').trim();
+
+  const match = email.match(/^(.*?)\s*<([^>]+)>$/);
+  if (match) {
+    if (!name) name = match[1].trim();
+    email = match[2].trim();
+  } else {
+    email = email.replace(/[<>]/g, '').trim();
+  }
+
+  name = name.replace(/^["']|["']$/g, '').trim();
+
+  if (!name) {
+    return `<${email}>`;
+  }
+
+  return `${encodeMimeHeader(name)} <${email}>`;
+}
+
+function base64UrlEncode(strOrBytes) {
+  let base64 = '';
+  if (typeof strOrBytes === 'string') {
+    const utf8Bytes = new TextEncoder().encode(strOrBytes);
+    let binary = '';
+    for (let i = 0; i < utf8Bytes.length; i++) binary += String.fromCharCode(utf8Bytes[i]);
+    base64 = btoa(binary);
+  } else {
+    const uint8 = new Uint8Array(strOrBytes);
+    let binary = '';
+    for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+    base64 = btoa(binary);
+  }
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function generateTaxInvoiceEmailContent({
+  booking,
+  invoice,
+  recipientEmail,
+  senderEmail = DEFAULT_SENDER_EMAIL,
+  senderName = DEFAULT_SENDER_NAME,
+  replyTo = DEFAULT_REPLY_TO
+}) {
+  const bookingId = booking?.id || booking?.booking_id || '-';
+  const bookingCode = booking?.receipt_number || booking?.booking_code || ('BK-' + String(bookingId).padStart(6, '0'));
+  const invoiceNumber = invoice?.invoice_number || ('INV-' + bookingId);
+  const customerName = invoice?.tax_name || booking?.tax_name || booking?.customer_name || 'ท่านผู้มีอุปการคุณ';
+  const taxId = invoice?.tax_id || booking?.tax_id || '-';
+  const branchText = invoice?.tax_payer_type === 'individual'
+    ? 'บุคคลธรรมดา'
+    : (invoice?.tax_branch_type === 'branch' ? ('สาขา ' + (invoice?.tax_branch_number || '')) : 'สำนักงานใหญ่');
+  const amount = Number(booking?.total_amount || 0).toLocaleString('th-TH', { minimumFractionDigits: 2 });
+  const dateStr = invoice?.created_at ? new Date(invoice.created_at).toLocaleDateString('th-TH', {
+    year: 'numeric', month: 'long', day: 'numeric'
+  }) : new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  const subject = '[B-WORK] ใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบ เลขที่ ' + invoiceNumber + ' (' + bookingCode + ')';
+
+  const textBody = `เรียน ${customerName},
+
+บริษัท บิลท์ ฮาร์ท จำกัด (สำนักงานใหญ่) ขอขอบพระคุณที่ท่านได้ใช้บริการ บีเวิร์ค โคเวิร์กกิ้ง สเปซ (B-WORK Coworking Space & Meeting Rooms)
+
+ทางเราได้จัดทำเอกสารใบกำกับภาษี / ใบเสร็จรับเงินอิเล็กทรอนิกส์ (e-Tax Invoice / Receipt) สำหรับรายการจองของท่านเรียบร้อยแล้ว โดยมีรายละเอียดดังต่อไปนี้:
+
+- รหัสการจอง: ${bookingCode}
+- เลขที่ใบกำกับภาษี: ${invoiceNumber}
+- วันที่ออกเอกสาร: ${dateStr}
+- ผู้เสียภาษี: ${customerName}
+- เลขประจำตัวผู้เสียภาษี: ${taxId} (${branchText})
+- ยอดเงินรวมทั้งสิ้น: ฿${amount} บาท
+
+ท่านสามารถเปิดดูหรือดาวน์โหลดไฟล์เอกสารใบกำกับภาษีอิเล็กทรอนิกส์ (ไฟล์แนบ PDF) ที่แนบมาพร้อมกับอีเมลฉบับนี้
+
+หากท่านมีข้อสงสัยหรือต้องการสอบถามข้อมูลเพิ่มเติม สามารถติดต่อเราได้ที่:
+โทร: 02-000-0000
+อีเมล: ${replyTo}
+LINE Official: @bwork
+
+ขอแสดงความนับถือ,
+${senderName}
+บริษัท บิลท์ ฮาร์ท จำกัด`;
+
+  const htmlBody = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${subject}</title><style>body { font-family: -apple-system, BlinkMacSystemFont, 'Prompt', 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f1f5f9; color: #1e293b; } .container { max-width: 600px; margin: 24px auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.06); border: 1px solid #e2e8f0; } .header { background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: #ffffff; padding: 32px 24px; text-align: center; } .header h1 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.5px; } .header p { margin: 8px 0 0; font-size: 14px; opacity: 0.9; } .body { padding: 32px 24px; } .card { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 20px 0; } .card-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed #cbd5e1; font-size: 14px; } .card-row:last-child { border-bottom: none; } .label { color: #64748b; font-weight: 600; } .value { color: #0f172a; font-weight: 700; text-align: right; } .attachment-box { display: flex; align-items: center; gap: 12px; background: rgba(2, 132, 199, 0.08); border: 1.5px solid #38bdf8; border-radius: 10px; padding: 14px 18px; margin: 20px 0; } .footer { background-color: #f8fafc; border-top: 1px solid #e2e8f0; padding: 24px; text-align: center; font-size: 12px; color: #64748b; }</style></head><body><div class="container"><div class="header"><h1>${senderName}</h1><p>ใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบอิเล็กทรอนิกส์</p></div><div class="body"><p style="font-size: 16px; line-height: 1.6; margin-top: 0;">เรียน <strong>${customerName}</strong>,</p><p style="font-size: 14px; line-height: 1.6; color: #475569;">บริษัท บิลท์ ฮาร์ท จำกัด ขอขอบพระคุณที่ท่านได้ใช้บริการห้องประชุมและพื้นที่ทำงาน B-WORK ทางเราได้ออกเอกสารใบกำกับภาษีสำหรับรายการของท่านเรียบร้อยแล้ว รายละเอียดดังตารางด้านล่างนี้:</p><div class="card"><div class="card-row"><span class="label">รหัสการจอง:</span><span class="value">${bookingCode}</span></div><div class="card-row"><span class="label">เลขที่ใบกำกับภาษี:</span><span class="value" style="color: #0284c7;">${invoiceNumber}</span></div><div class="card-row"><span class="label">วันที่ออกเอกสาร:</span><span class="value">${dateStr}</span></div><div class="card-row"><span class="label">ผู้เสียภาษี:</span><span class="value">${customerName}</span></div><div class="card-row"><span class="label">เลขประจำตัวผู้เสียภาษี:</span><span class="value">${taxId} (${branchText})</span></div><div class="card-row" style="padding-top: 12px;"><span class="label" style="font-size: 15px;">ยอดเงินรวมทั้งสิ้น:</span><span class="value" style="font-size: 18px; color: #059669;">฿${amount}</span></div></div><div class="attachment-box"><div style="font-size: 24px;">📄</div><div><div style="font-weight: 800; font-size: 14px; color: #0369a1;">เอกสารใบกำกับภาษี (ไฟล์แนบ PDF)</div><div style="font-size: 12px; color: #64748b;">กรุณาตรวจสอบเอกสารฉบับสมบูรณ์ที่แนบมากับอีเมลนี้</div></div></div><p style="font-size: 13px; color: #64748b; line-height: 1.5;">หากท่านต้องการสอบถามข้อมูลเพิ่มเติม หรือแก้ไขข้อมูลภาษี กรุณาติดต่อฝ่ายบริการลูกค้า โทร 02-000-0000 หรือ LINE: @bwork</p></div><div class="footer"><div>© ${new Date().getFullYear()} บริษัท บิลท์ ฮาร์ท จำกัด (Built Heart Co., Ltd.) · สำนักงานใหญ่</div><div style="margin-top: 4px;">B-WORK Coworking Space & Meeting Rooms · ถนนสุขุมวิท กรุงเทพมหานคร</div><div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">อีเมลฉบับนี้ส่งโดยระบบอัตโนมัติ กรุณาอย่าตอบกลับ</div></div></div></body></html>`;
+
+  return { subject, textBody, htmlBody };
+}
+
+async function getGmailAccessTokenWorker({ clientId, clientSecret, refreshToken, fetchFn = fetch }) {
+  const now = Date.now();
+  if (cachedWorkerAccessToken && cachedWorkerTokenExpiry > now + 60000) {
+    return cachedWorkerAccessToken;
+  }
+  const tokenUrl = 'https://oauth2.googleapis.com/token';
+  const params = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token'
+  });
+  const res = await fetchFn(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString()
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`การขอ Access Token จาก Google OAuth2 ล้มเหลว (HTTP ${res.status}): ${errText}`);
+  }
+  const data = await res.json();
+  if (!data.access_token) {
+    throw new Error('ไม่พบ access_token ในผลตอบกลับของ Google OAuth2');
+  }
+  cachedWorkerAccessToken = data.access_token;
+  cachedWorkerTokenExpiry = now + ((data.expires_in || 3600) * 1000);
+  return cachedWorkerAccessToken;
+}
+
+function buildMimeMessageWorker({
+  from,
+  fromName,
+  to,
+  replyTo,
+  subject,
+  text,
+  html,
+  attachmentBytes,
+  attachmentFileName = 'Tax_Invoice.pdf'
+}) {
+  const mixedBoundary = 'mixed_bnd_' + Math.random().toString(36).substring(2);
+  const altBoundary = 'alt_bnd_' + Math.random().toString(36).substring(2);
+  const safeFilename = encodeMimeHeader(attachmentFileName);
+
+  let binary = '';
+  const uint8 = new Uint8Array(attachmentBytes);
+  for (let i = 0; i < uint8.length; i++) binary += String.fromCharCode(uint8[i]);
+  const base64Attachment = (btoa(binary).match(/.{1,76}/g) || []).join('\r\n');
+
+  let mime = '';
+  const formattedFrom = formatFromHeaderWorker(from, fromName);
+  mime += 'From: ' + formattedFrom + '\r\n';
+  mime += 'To: ' + to + '\r\n';
+  if (replyTo) {
+    const cleanReplyTo = String(replyTo).trim().replace(/[<>]/g, '');
+    mime += 'Reply-To: <' + cleanReplyTo + '>\r\n';
+  }
+  mime += 'Subject: ' + encodeMimeHeader(subject) + '\r\n';
+  mime += 'MIME-Version: 1.0\r\n';
+  mime += 'Content-Type: multipart/mixed; boundary="' + mixedBoundary + '"\r\n\r\n';
+
+  mime += '--' + mixedBoundary + '\r\n';
+  mime += 'Content-Type: multipart/alternative; boundary="' + altBoundary + '"\r\n\r\n';
+
+  mime += '--' + altBoundary + '\r\n';
+  mime += 'Content-Type: text/plain; charset=UTF-8\r\n';
+  mime += 'Content-Transfer-Encoding: base64\r\n\r\n';
+  const textBytes = new TextEncoder().encode(text);
+  let textBinary = '';
+  for (let i = 0; i < textBytes.length; i++) textBinary += String.fromCharCode(textBytes[i]);
+  mime += btoa(textBinary) + '\r\n\r\n';
+
+  mime += '--' + altBoundary + '\r\n';
+  mime += 'Content-Type: text/html; charset=UTF-8\r\n';
+  mime += 'Content-Transfer-Encoding: base64\r\n\r\n';
+  const htmlBytes = new TextEncoder().encode(html);
+  let htmlBinary = '';
+  for (let i = 0; i < htmlBytes.length; i++) htmlBinary += String.fromCharCode(htmlBytes[i]);
+  mime += btoa(htmlBinary) + '\r\n\r\n';
+
+  mime += '--' + altBoundary + '--\r\n\r\n';
+
+  mime += '--' + mixedBoundary + '\r\n';
+  mime += 'Content-Type: application/pdf; name="' + safeFilename + '"\r\n';
+  mime += 'Content-Disposition: attachment; filename="' + safeFilename + '"\r\n';
+  mime += 'Content-Transfer-Encoding: base64\r\n\r\n';
+  mime += base64Attachment + '\r\n\r\n';
+
+  mime += '--' + mixedBoundary + '--';
+  return mime;
+}
+
 // 1.15 ROOM WI-FI CREDENTIAL ENCRYPTION (WEB CRYPTO)
 // ==========================================
 const WIFI_PAYLOAD_REGEX = /^v1:([0-9a-fA-F]{24}):([0-9a-fA-F]{32}):([0-9a-fA-F]+)$/;
@@ -723,6 +1080,113 @@ async function authenticateUser(request, env, requiredRole = null) {
 }
 
 // ==========================================
+// 1.15 ROOM GUIDELINES POLICY & LINE NOTIFICATION
+// ==========================================
+const ROOM_GUIDELINES_VERSIONS = {
+  MEETING_ROOM: 'v1',
+  JUPITER: 'v1'
+};
+
+const GUIDELINES_CUTOVER_ISO = '2026-11-09T00:00:00.000Z';
+
+const ROOM_GUIDELINES_CONFIG = {
+  meeting_room_201_306: {
+    rule_set: 'meeting_room_201_306',
+    rule_version: ROOM_GUIDELINES_VERSIONS.MEETING_ROOM,
+    title: 'ข้อปฏิบัติการใช้ห้องประชุม (201, 301-306)',
+    line_title: 'ข้อปฏิบัติการใช้ห้องประชุม (201, 301-306)',
+    image_url: 'https://bwork-booking.pages.dev/rules/room301-306.png',
+    local_image_src: '/rules/room301-306.png',
+    summary_points: [
+      'การใช้ห้องเกินเวลา: หากใช้ห้องเกินเวลาที่จองไว้มากกว่า 15 นาที คิดค่าบริการเพิ่ม 1 ชั่วโมง ตามอัตราของห้องนั้น ๆ',
+      'อาหารและเครื่องดื่ม: ไม่อนุญาตให้นำอาหารเข้ามารับประทานในห้องประชุม ยกเว้นเครื่องดื่มและเบเกอรี่ หากฝ่าฝืน บริษัทขอสงวนสิทธิ์ยุติการให้บริการทันที โดยไม่คืนเงินทุกกรณี',
+      'การรักษาความสะอาด: กรุณารักษาความสะอาดและจัดเก็บพื้นที่หลังใช้งานให้เรียบร้อย',
+      'ความเสียหายและทรัพย์สินส่วนตัว: ผู้ใช้บริการต้องรับผิดชอบความเสียหายต่ออุปกรณ์ที่เกิดจากการใช้งานผิดประเภท หรือความประมาท บริษัทไม่รับผิดชอบต่อทรัพย์สินส่วนตัวที่สูญหาย'
+    ]
+  },
+  jupiter_auditorium: {
+    rule_set: 'jupiter_auditorium',
+    rule_version: ROOM_GUIDELINES_VERSIONS.JUPITER,
+    title: 'ข้อปฏิบัติการใช้ห้อง Jupiter Auditorium',
+    line_title: 'ข้อปฏิบัติการใช้ห้อง Jupiter Auditorium',
+    image_url: 'https://bwork-booking.pages.dev/rules/jupiter.jpg',
+    local_image_src: '/rules/jupiter.jpg',
+    summary_points: [
+      'การใช้ห้องเกินเวลา: กรุณาใช้ห้องประชุมตามเวลาที่จองไว้ หากเกินกว่า 15 นาที คิดค่าบริการเพิ่ม 1 ชั่วโมง (เศษเวลานับเป็น 1 ชั่วโมง)',
+      'อาหารและเครื่องดื่ม: ไม่อนุญาตให้นำอาหารเข้ามารับประทานภายในห้องประชุม (ยกเว้นเครื่องดื่มและเบรกที่จัดเตรียมไว้)',
+      'การรักษาความสะอาด: ขอความกรุณาช่วยรักษาความสะอาด และดูแลความเรียบร้อยภายในพื้นที่เข้าใช้งาน',
+      'ความเสียหายและทรัพย์สิน: หากอุปกรณ์ภายในห้องเกิดความเสียหายจากการติดตั้ง สูญหาย ตกหล่น ใช้งานผิดวิธี หรือเกิดจากความประมาท ผู้ใช้บริการต้องรับผิดชอบค่าเสียหาย และบริษัทไม่รับผิดชอบต่อทรัพย์สินส่วนตัวที่สูญหาย'
+    ]
+  }
+};
+
+const ROOM_301_IDS = [4, 5, 6, 7, 8, 9, 11];
+const ROOM_301_REGEX = /\b(201|30[1-6])\b/;
+
+function resolveRoomGuidelines(rawRoomId, rawRoomName) {
+  const roomId = rawRoomId !== undefined && rawRoomId !== null && rawRoomId !== '' ? Number(rawRoomId) : null;
+  const roomName = String(rawRoomName || '').trim().toLowerCase();
+
+  if (roomId === 10 || roomId === 12 || roomName.includes('jupiter')) {
+    return {
+      required: true,
+      ...ROOM_GUIDELINES_CONFIG.jupiter_auditorium
+    };
+  }
+
+  if ((roomId !== null && ROOM_301_IDS.includes(roomId)) || ROOM_301_REGEX.test(roomName)) {
+    return {
+      required: true,
+      ...ROOM_GUIDELINES_CONFIG.meeting_room_201_306
+    };
+  }
+
+  return {
+    required: false,
+    rule_set: null,
+    rule_version: null,
+    title: null,
+    image_url: null,
+    local_image_src: null,
+    summary_points: []
+  };
+}
+
+function isGuidelinesEnforcedForBooking({ guidelinesPolicy, enforcementSetting, cutoverAt = GUIDELINES_CUTOVER_ISO, bookingCreatedAt }) {
+  if (!guidelinesPolicy || !guidelinesPolicy.required) return false;
+  const isEnabled = enforcementSetting === true || enforcementSetting === 'true' || enforcementSetting === 1 || enforcementSetting === '1';
+  if (!isEnabled) return false;
+  if (cutoverAt && bookingCreatedAt) {
+    const rawCreated = String(bookingCreatedAt || '').trim().replace(' ', 'T');
+    const normalizedCreated = (rawCreated.endsWith('Z') || rawCreated.includes('+')) ? rawCreated : (rawCreated ? rawCreated + 'Z' : '');
+    const cutoverMs = typeof cutoverAt === 'number' ? cutoverAt : new Date(cutoverAt).getTime();
+    const createdMs = normalizedCreated ? new Date(normalizedCreated).getTime() : NaN;
+    if (!isNaN(cutoverMs) && !isNaN(createdMs) && createdMs < cutoverMs) return false;
+  }
+  return true;
+}
+
+function isBoundLineUserId(lineUserId) {
+  if (typeof lineUserId !== 'string') return false;
+  const trimmed = lineUserId.trim();
+  return trimmed.startsWith('U') && trimmed.length >= 10;
+}
+
+function isServerConfirmedLineBinding({ lineUserId, isVerified, verifiedTokenUserId } = {}) {
+  if (!isBoundLineUserId(lineUserId)) return false;
+  if (verifiedTokenUserId && verifiedTokenUserId.trim() === lineUserId.trim()) return true;
+  if (isVerified === true || isVerified === 1 || isVerified === '1' || isVerified === 'true') return true;
+  // NOTE: booking_source, client LINE ID, and unverified JWT payloads are strictly forbidden as proof
+  return false;
+}
+
+function buildLineGuidelinesMessage(guidelinesConfig) {
+  const title = guidelinesConfig?.line_title || guidelinesConfig?.title || 'ข้อปฏิบัติการใช้ห้องประชุม';
+  const fullUrl = guidelinesConfig?.image_url || 'https://bwork-booking.pages.dev/rules/room301-306.png';
+  return `${title}\nกรุณาอ่านข้อปฏิบัติก่อนเข้าใช้บริการ BWORK\n\nอ่านข้อปฏิบัติฉบับเต็ม:\n${fullUrl}`;
+}
+
+// ==========================================
 // 2. TIMESTAMPS & OVERLAP HELPERS
 // ==========================================
 function normalizeToLocalISO(dateStr, timeStr) {
@@ -814,6 +1278,22 @@ function addMinutesToLocalISO(isoString, minutes) {
   return `${y}-${mo}-${d}T${newH}:${newM}:${newS}`;
 }
 
+// Physical space relationship matrix:
+// Room 10: 'Jupiter (300)'
+// Room 12: 'Jupiter (300) & Co-Working'
+// Room 13: 'เหมาโซน Co-working'
+const WORKER_ROOM_CONFLICT_MAP = {
+  10: [10, 12],
+  12: [12, 10, 13],
+  13: [13, 12]
+};
+
+function getWorkerConflictingRoomIds(roomId) {
+  const id = Number(roomId);
+  if (!id) return [];
+  return WORKER_ROOM_CONFLICT_MAP[id] ? Array.from(WORKER_ROOM_CONFLICT_MAP[id]) : [id];
+}
+
 async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId = null, excludeBookingItemId = null) {
   const normStart = normalizeToLocalISO(startISO);
   const normEnd = normalizeToLocalISO(endISO);
@@ -824,15 +1304,20 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
   const reqEndMs = new Date(normEnd.replace(' ', 'T')).getTime();
   const reqEndBufferedMs = reqEndMs + bufferMs;
 
+  const targetRoomId = Number(roomId);
+  const conflictIds = getWorkerConflictingRoomIds(targetRoomId);
+  const inPlaceholders = conflictIds.map(() => '?').join(', ');
+
   let query = `
-    SELECT bi.id, bi.booking_id, bi.start_time, bi.end_time, b.customer_name, b.payment_status
+    SELECT bi.id, bi.booking_id, bi.room_id, r.name as room_name, bi.start_time, bi.end_time, b.customer_name, b.payment_status
     FROM booking_items bi
     JOIN bookings b ON bi.booking_id = b.id
-    WHERE bi.room_id = ?
+    LEFT JOIN rooms r ON bi.room_id = r.id
+    WHERE bi.room_id IN (${inPlaceholders})
       AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
       AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
   `;
-  const params = [roomId];
+  const params = [...conflictIds];
   if (excludeBookingItemId) {
     query += " AND bi.id != ?";
     params.push(excludeBookingItemId);
@@ -881,7 +1366,7 @@ async function checkRoomOverlap(env, roomId, startISO, endISO, excludeBookingId 
   return { hasOverlap: false, overlap: false, bufferMinutes: bufferMins };
 }
 
-function formatOverlapErrorMessage(roomName, overlapResult) {
+function formatOverlapErrorMessage(roomName, overlapResult, requestedRoomId = null) {
   const b = (overlapResult && overlapResult.booking) || {};
   const sTime = b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : (b.start_time || '');
   const eTime = b.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : (b.end_time || '');
@@ -889,17 +1374,19 @@ function formatOverlapErrorMessage(roomName, overlapResult) {
 
   const customer = b.customer_name ? `คุณ ${b.customer_name}` : 'ลูกค้า';
   const nameLabel = roomName ? `ห้อง "${roomName}"` : 'ห้องนี้';
+  const isDifferentRoom = b.room_id && requestedRoomId && Number(b.room_id) !== Number(requestedRoomId);
+  const conflictLabel = isDifferentRoom ? ` (ทับซ้อนกับห้อง "${b.room_name || b.room_id}")` : '';
 
   if (overlapResult.isCleaningBuffer) {
     if (overlapResult.isNextQueueBuffer) {
-      return `${nameLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
+      return `${nameLabel}${conflictLabel} ต้องมีเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ก่อนคิวถัดไป (${customer} เริ่มเวลา ${sTime} น.)`;
     }
     if (nextAvail >= '18:00') {
-      return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
+      return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) จนถึงเวลาปิดทำการ (18:00 น.)`;
     }
-    return `${nameLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
+    return `${nameLabel}${conflictLabel} อยู่ในช่วงเวลาทำความสะอาด (${overlapResult.bufferMinutes || 30} นาที) ต่อจากคิว${customer} (ใช้งานถึง ${eTime} น.) สามารถจองได้ตั้งแต่เวลา ${nextAvail} น. เป็นต้นไป`;
   }
-  return `${nameLabel} ไม่ว่างในช่วงเวลาดังกล่าว (มีผู้ใช้งาน: ${customer} ช่วงเวลา ${sTime} - ${eTime} น.)`;
+  return `${nameLabel}${conflictLabel} มีผู้จองแล้วในช่วงเวลานี้ (${customer} ใช้งาน ${sTime} - ${eTime} น.)`;
 }
 
 // ==========================================
@@ -1543,7 +2030,7 @@ function formatThaiDateDisplay(isoString) {
 }
 
 // 1. Flex Message: ยืนยันการจองห้องประชุมสำเร็จ (ไม่แสดงรหัสผ่านในขั้นตอนนี้)
-function buildLineBookingConfirmationFlex(booking, item, room) {
+function buildLineBookingConfirmationFlex(booking, item, room, options = {}) {
   const customerName = booking?.customer_name || 'ลูกค้าคนพิเศษ';
   const roomName = room?.name || 'ห้องประชุม B-WORK';
   const receiptNo = booking?.receipt_number || `BK-${String(booking?.id || 0).padStart(6, '0')}`;
@@ -1671,7 +2158,35 @@ function buildLineBookingConfirmationFlex(booking, item, room) {
                 margin: 'sm'
               }
             ]
-          }
+          },
+          ...(options?.guidelinesUrl ? [
+            {
+              type: 'box',
+              layout: 'vertical',
+              margin: 'md',
+              paddingAll: '12px',
+              backgroundColor: '#f8fafc',
+              cornerRadius: '10px',
+              borderWidth: '1px',
+              borderColor: '#e2e8f0',
+              contents: [
+                {
+                  type: 'text',
+                  text: 'ข้อปฏิบัติการใช้ห้อง',
+                  size: 'xs',
+                  weight: 'bold',
+                  color: '#334155'
+                },
+                {
+                  type: 'text',
+                  text: 'กรุณาอ่านข้อปฏิบัติก่อนเข้าใช้บริการ BWORK',
+                  size: 'xxs',
+                  color: '#64748b',
+                  margin: 'xs'
+                }
+              ]
+            }
+          ] : [])
         ]
       },
       footer: {
@@ -1689,7 +2204,21 @@ function buildLineBookingConfirmationFlex(booking, item, room) {
             style: 'primary',
             color: '#065f46',
             height: 'md'
-          }
+          },
+          ...(options?.guidelinesUrl ? [
+            {
+              type: 'button',
+              action: {
+                type: 'uri',
+                label: options.guidelinesLabel || 'ข้อปฏิบัติการใช้ห้อง',
+                uri: options.guidelinesUrl
+              },
+              style: 'secondary',
+              color: '#0f172a',
+              height: 'md',
+              margin: 'sm'
+            }
+          ] : [])
         ]
       }
     }
@@ -1852,11 +2381,11 @@ async function ensureLineNotificationClaimsTable(db) {
       )
     `).run();
     await db.prepare(`
-      CREATE INDEX IF NOT EXISTS idx_line_claims_booking_status 
+      CREATE INDEX IF NOT EXISTS idx_line_claims_booking_status
       ON line_notification_claims (booking_id, notification_type, status)
     `).run();
     await db.prepare(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_line_claims_retry_key 
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_line_claims_retry_key
       ON line_notification_claims (retry_key)
     `).run();
     workerClaimsTableEnsured = true;
@@ -1902,7 +2431,7 @@ async function acquireNotificationClaim(db, bookingId, notificationType = 'booki
   // 2. Attempt atomic insert with unique constraint
   try {
     const insertRes = await db.prepare(`
-      INSERT OR IGNORE INTO line_notification_claims 
+      INSERT OR IGNORE INTO line_notification_claims
       (booking_id, notification_type, status, claim_token, retry_key, claimed_at, updated_at)
       VALUES (?, ?, 'processing', ?, ?, ?, ?)
     `).bind(bookingId, notificationType, claimToken, freshRetryKey, nowIso, nowIso).run();
@@ -2097,7 +2626,39 @@ async function finalizeNotificationClaim(db, bookingId, notificationType, claimT
 }
 
 async function dispatchLineMessagePush(env, channelAccessToken, { to, messages }, options = {}) {
-  if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true' || env.STAGING_MOCK_LINE_API === 'true')) {
+  const mockOutcome = options.mockLineOutcome || (env && env.MOCK_LINE_OUTCOME);
+  if (mockOutcome) {
+    if (mockOutcome.network_error || mockOutcome.is_timeout || mockOutcome.status === 'timeout') {
+      return {
+        sent: false,
+        deduplicated: false,
+        mocked: true,
+        status: null,
+        raw_status: null,
+        ok: false,
+        success: false,
+        network_error: true,
+        is_timeout: true,
+        reason: mockOutcome.reason || 'timeout'
+      };
+    }
+    const httpStatus = mockOutcome.status || (mockOutcome.ok ? 200 : 400);
+    const ok = mockOutcome.ok !== undefined ? Boolean(mockOutcome.ok) : (httpStatus >= 200 && httpStatus < 300);
+    return {
+      sent: ok,
+      deduplicated: Boolean(mockOutcome.deduplicated),
+      mocked: true,
+      status: httpStatus,
+      raw_status: httpStatus,
+      ok: ok,
+      success: ok,
+      network_error: false,
+      is_timeout: false,
+      reason: mockOutcome.reason || (ok ? 'mock_success' : 'mock_line_error')
+    };
+  }
+
+  if (env && (getEffectiveEnvironment(env) === 'staging' || env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true' || env.STAGING_MOCK_LINE_API === 'true')) {
     return {
       sent: false,
       deduplicated: false,
@@ -2394,40 +2955,91 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
     const item = await env.DB.prepare('SELECT * FROM booking_items WHERE booking_id = ? LIMIT 1').bind(bookingId).first();
     const room = item?.room_id ? await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(item.room_id).first() : null;
 
-    const flexCard = buildLineBookingConfirmationFlex(booking, item, room);
+    let guidelinesUrl = null;
+    let guidelinesConfig = null;
+    let guidelinesClaimed = false;
+
+    const lineGuidelinesSetting = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_guidelines_dispatch_enabled'").first();
+    const isGuidelinesDispatchEnabled = (lineGuidelinesSetting && (lineGuidelinesSetting.value === 'true' || lineGuidelinesSetting.value === '1' || lineGuidelinesSetting.value === 1 || lineGuidelinesSetting.value === true)) && (env.DISABLE_LIVE_LINE !== 'true');
+
+    if (isGuidelinesDispatchEnabled) {
+      guidelinesConfig = resolveRoomGuidelines(item?.room_id, room?.name);
+      if (guidelinesConfig && guidelinesConfig.required) {
+        const isLineConfirmed = isServerConfirmedLineBinding({
+          lineUserId: booking.line_user_id,
+          isVerified: booking.line_user_id_verified,
+          bookingSource: booking.booking_source
+        });
+
+        if (isLineConfirmed) {
+          try {
+            await env.DB.prepare(`
+              CREATE TABLE IF NOT EXISTS line_guidelines_dispatches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                line_user_id TEXT NOT NULL,
+                rule_set TEXT NOT NULL,
+                rule_version TEXT NOT NULL,
+                first_booking_id INTEGER REFERENCES bookings(id),
+                status TEXT NOT NULL DEFAULT 'sent',
+                error_message TEXT,
+                dispatched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(line_user_id, rule_set, rule_version)
+              )
+            `).run();
+          } catch (_) {}
+
+          try {
+            const claimRes = await env.DB.prepare(
+              `INSERT INTO line_guidelines_dispatches
+               (line_user_id, rule_set, rule_version, first_booking_id, status, error_message, dispatched_at)
+               VALUES (?, ?, ?, ?, 'claimed', NULL, datetime('now'))`
+            ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId).run();
+
+            if (claimRes && (claimRes.success || (claimRes.meta && claimRes.meta.changes > 0))) {
+              guidelinesClaimed = true;
+              guidelinesUrl = guidelinesConfig.image_url;
+            }
+          } catch (claimErr) {
+            // Row already exists. Atomically re-claim if and only if status is currently 'retryable_rejected'
+            try {
+              const reclaimRes = await env.DB.prepare(
+                `UPDATE line_guidelines_dispatches
+                 SET status = 'claimed',
+                     first_booking_id = ?,
+                     dispatched_at = datetime('now'),
+                     error_message = NULL
+                 WHERE line_user_id = ?
+                   AND rule_set = ?
+                   AND rule_version = ?
+                   AND status = 'retryable_rejected'`
+              ).bind(bookingId, booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version).run();
+
+              if (reclaimRes && ((reclaimRes.meta && reclaimRes.meta.changes > 0) || reclaimRes.changes > 0)) {
+                guidelinesClaimed = true;
+                guidelinesUrl = guidelinesConfig.image_url;
+              } else {
+                guidelinesClaimed = false;
+                guidelinesUrl = null;
+              }
+            } catch (reclaimErr) {
+              guidelinesClaimed = false;
+              guidelinesUrl = null;
+            }
+          }
+        }
+      }
+    }
+
+    const flexCard = buildLineBookingConfirmationFlex(booking, item, room, {
+      guidelinesUrl,
+      guidelinesLabel: 'ข้อปฏิบัติการใช้ห้อง'
+    });
 
     // 8. Dispatch LINE Push with stable X-Line-Retry-Key
     const dispatch = await dispatchLineMessagePush(env, channelAccessToken, {
       to: booking.line_user_id,
       messages: [flexCard]
-    }, { timeoutMs: options.timeoutMs || 10000, retryKey: claim.retryKey });
-
-    if (dispatch.mocked) {
-      await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
-        status: 'sent',
-        httpStatus: 200,
-        errorMessage: null,
-        acceptedRequestId: null
-      });
-
-      try {
-        await env.DB.prepare(
-          `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
-           VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
-        ).bind(bookingId, JSON.stringify({ status: 'sent', mocked: true, http_status: 200, timestamp: nowIso }), nowIso).run();
-      } catch (_) {}
-
-      logSafeNotificationDiagnostic('booking_confirmation', {
-        booking_id: bookingId,
-        eligible: true,
-        attempted: true,
-        status: 'sent',
-        reason: 'staging_environment_mock',
-        http_status: 200,
-        line_user_id: booking.line_user_id
-      });
-      return { success: true, sent: false, mocked: true, status: 'sent', http_status: 200, retry_key: claim.retryKey };
-    }
+    }, { timeoutMs: options.timeoutMs || 10000, retryKey: claim.retryKey, mockLineOutcome: options.mockLineOutcome });
 
     if (dispatch.ok) {
       await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
@@ -2437,16 +3049,28 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         acceptedRequestId: dispatch.accepted_request_id || null
       });
 
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await env.DB.prepare(
+            `UPDATE line_guidelines_dispatches
+             SET status = 'sent', error_message = NULL
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`
+          ).bind(booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId).run();
+        } catch (_) {}
+      }
+
       try {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
            VALUES (?, 'line_confirmation_notified', ?, 'system', ?)`
-        ).bind(bookingId, JSON.stringify({ 
-          status: 'sent', 
-          http_status: dispatch.status, 
+        ).bind(bookingId, JSON.stringify({
+          status: 'sent',
+          mocked: Boolean(dispatch.mocked),
+          http_status: dispatch.status,
           deduplicated: dispatch.deduplicated || false,
           accepted_request_id: dispatch.accepted_request_id || null,
-          timestamp: nowIso 
+          guidelines_attached: Boolean(guidelinesUrl),
+          timestamp: nowIso
         }), nowIso).run();
       } catch (_) {}
 
@@ -2455,22 +3079,36 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         eligible: true,
         attempted: true,
         status: 'sent',
+        reason: dispatch.mocked ? 'staging_environment_mock' : null,
         http_status: dispatch.status,
         line_user_id: booking.line_user_id
       });
-      return { 
-        success: true, 
-        sent: dispatch.sent, 
+      return {
+        success: true,
+        sent: !dispatch.mocked && Boolean(dispatch.sent),
         deduplicated: dispatch.deduplicated || false,
-        mocked: false, 
-        status: 'sent', 
+        mocked: Boolean(dispatch.mocked),
+        status: 'sent',
         http_status: dispatch.status,
+        flexCard,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
         accepted_request_id: dispatch.accepted_request_id || null,
         retry_key: claim.retryKey
       };
     }
 
     if (dispatch.network_error) {
+      if (guidelinesClaimed && guidelinesConfig) {
+        try {
+          await env.DB.prepare(
+            `UPDATE line_guidelines_dispatches
+             SET status = 'unknown', error_message = ?
+             WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`
+          ).bind(dispatch.reason || 'timeout', booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId).run();
+        } catch (_) {}
+      }
+
       // Network timeout or socket drop - Delivery state is unknown!
       // Do not allow blind retries to prevent customer duplicate messages.
       await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
@@ -2484,7 +3122,12 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         await env.DB.prepare(
           `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
            VALUES (?, 'line_confirmation_failed', ?, 'system', ?)`
-        ).bind(bookingId, JSON.stringify({ status: 'delivery_unknown', reason: dispatch.reason, timestamp: nowIso }), nowIso).run();
+        ).bind(bookingId, JSON.stringify({
+          status: 'delivery_unknown',
+          mocked: Boolean(dispatch.mocked),
+          reason: dispatch.reason,
+          timestamp: nowIso
+        }), nowIso).run();
       } catch (_) {}
 
       logSafeNotificationDiagnostic('booking_confirmation', {
@@ -2496,20 +3139,45 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
         http_status: null,
         line_user_id: booking.line_user_id
       });
-      return { success: false, sent: false, mocked: false, status: 'delivery_unknown', reason: dispatch.reason, http_status: null, retry_key: claim.retryKey };
+      return {
+        success: false,
+        sent: false,
+        mocked: Boolean(dispatch.mocked),
+        status: 'delivery_unknown',
+        reason: dispatch.reason,
+        http_status: null,
+        guidelinesAttached: Boolean(guidelinesUrl),
+        guidelinesUrl: guidelinesUrl || null,
+        retry_key: claim.retryKey
+      };
     }
 
     // Explicit HTTP 4xx/5xx rejection from LINE API
+    const httpStatus = dispatch.raw_status || dispatch.status;
+    const isDefiniteRejection = (httpStatus >= 400 && httpStatus < 500 && !dispatch.deduplicated);
+    const guidelinesStatus = isDefiniteRejection ? 'retryable_rejected' : 'unknown';
+
+    if (guidelinesClaimed && guidelinesConfig) {
+      try {
+        await env.DB.prepare(
+          `UPDATE line_guidelines_dispatches
+           SET status = ?, error_message = ?
+           WHERE line_user_id = ? AND rule_set = ? AND rule_version = ? AND first_booking_id = ? AND status = 'claimed'`
+        ).bind(guidelinesStatus, dispatch.reason || ('line_api_status_' + httpStatus), booking.line_user_id, guidelinesConfig.rule_set, guidelinesConfig.rule_version, bookingId).run();
+      } catch (_) {}
+    }
+
     const errorDetail = {
       status: 'failed',
+      mocked: Boolean(dispatch.mocked),
       reason: dispatch.reason || 'line_api_error',
-      http_status: dispatch.raw_status || dispatch.status,
+      http_status: httpStatus,
       timestamp: nowIso
     };
 
     await finalizeNotificationClaim(env.DB, bookingId, 'booking_confirmation', claim.claimToken, {
       status: 'failed',
-      httpStatus: dispatch.raw_status || dispatch.status,
+      httpStatus: httpStatus,
       errorMessage: dispatch.reason || 'line_api_error',
       acceptedRequestId: null
     });
@@ -2527,10 +3195,20 @@ async function triggerLineBookingConfirmation(env, bookingId, options = {}) {
       attempted: true,
       status: 'failed',
       reason: dispatch.reason || 'line_api_error',
-      http_status: dispatch.raw_status || dispatch.status,
+      http_status: httpStatus,
       line_user_id: booking.line_user_id
     });
-    return { success: false, sent: false, mocked: false, status: 'failed', reason: dispatch.reason || 'line_api_error', http_status: dispatch.raw_status || dispatch.status, retry_key: claim.retryKey };
+    return {
+      success: false,
+      sent: false,
+      mocked: Boolean(dispatch.mocked),
+      status: 'failed',
+      reason: dispatch.reason || 'line_api_error',
+      http_status: httpStatus,
+      guidelinesAttached: Boolean(guidelinesUrl),
+      guidelinesUrl: guidelinesUrl || null,
+      retry_key: claim.retryKey
+    };
   } catch (err) {
     console.error('[LINE-Confirmation] Unexpected error in worker:', err?.message || err);
     return { success: false, sent: false, mocked: false, status: 'failed', reason: 'internal_error', error: err?.message || String(err) };
@@ -3233,6 +3911,33 @@ async function ensureD1Schema(env) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`).run();
+
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_status TEXT DEFAULT 'unsent'`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_sent_at DATETIME`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_dry_run INTEGER DEFAULT 0`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_message_id TEXT`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_recipient TEXT`).run(); } catch (_) {}
+    try { await env.DB.prepare(`ALTER TABLE tax_invoices ADD COLUMN email_error TEXT`).run(); } catch (_) {}
+
+    try {
+      await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tax_invoice_email_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+        tax_invoice_id INTEGER REFERENCES tax_invoices(id) ON DELETE CASCADE,
+        recipient_email TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'dry_run',
+        is_dry_run INTEGER DEFAULT 1,
+        message_id TEXT,
+        file_name TEXT,
+        file_size INTEGER,
+        dispatched_by TEXT,
+        payload_preview TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )`).run();
+      try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_tax_invoice_email_logs_booking ON tax_invoice_email_logs(booking_id)`).run(); } catch (_) {}
+      try { await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_tax_invoice_email_logs_status ON tax_invoice_email_logs(status)`).run(); } catch (_) {}
+    } catch (_) {}
   } catch (e) {}
 
   if (env.ENABLE_SUPPORT_TICKETS === "true") {
@@ -3325,6 +4030,59 @@ function generateWorkerTicketToken() {
   const bytes = new Uint8Array(24);
   crypto.getRandomValues(bytes);
   return 'tkt_sec_' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+
+async function verifyWorkerLineIdTokenWithApi(env, tokenString, expectedAudience = '2011136579') {
+  if (!tokenString || typeof tokenString !== 'string') return null;
+  const trimmed = tokenString.trim();
+
+  if (typeof env.verifyLineIdToken === 'function') {
+    return env.verifyLineIdToken(trimmed, expectedAudience);
+  }
+
+  if (typeof globalThis.mockVerifyLineIdToken === 'function') {
+    const res = await globalThis.mockVerifyLineIdToken({ idToken: trimmed, channelId: expectedAudience });
+    return res ? { userId: res, name: null } : null;
+  }
+
+  const parts = trimmed.split('.');
+  if (parts.length !== 3) return null;
+
+  try {
+    const params = new URLSearchParams();
+    params.append('id_token', trimmed);
+    if (expectedAudience) {
+      params.append('client_id', expectedAudience);
+    }
+
+    const res = await fetch('https://api.line.me/oauth2/v2.1/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString()
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const payload = await res.json();
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (payload.iss !== 'https://access.line.me' || !payload.sub) {
+      return null;
+    }
+    if (expectedAudience && payload.aud && payload.aud !== expectedAudience && !String(expectedAudience).includes(payload.aud)) {
+      return null;
+    }
+    if (payload.exp && typeof payload.exp === 'number' && payload.exp < (nowSec - 60)) {
+      return null;
+    }
+
+    return { userId: payload.sub.trim(), name: payload.name || null };
+  } catch (err) {
+    console.warn('[WorkerLineVerify] Error verifying LINE ID token:', err?.message || err);
+    return null;
+  }
 }
 
 function verifyWorkerLineIdToken(tokenString, expectedAudience = null) {
@@ -3607,7 +4365,9 @@ export default {
 
             if (!isAuthorizedCustomer && lineIdToken && bookingRow.line_user_id) {
               hasSuppliedCredentials = true;
-              const verifiedLine = verifyWorkerLineIdToken(lineIdToken);
+              const channelIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_id'").first();
+              const channelId = channelIdRow?.value?.trim() || env.LINE_CHANNEL_ID || '2011136579';
+              const verifiedLine = await verifyWorkerLineIdTokenWithApi(env, lineIdToken, channelId);
               if (verifiedLine && verifiedLine.userId && safeEqualString(verifiedLine.userId, bookingRow.line_user_id.trim())) {
                 isAuthorizedCustomer = true;
               }
@@ -3667,7 +4427,7 @@ export default {
         ).bind(username, passHash).first();
 
         // Fallback for default admin (disabled in staging so dedicated Staging Admin password hash is enforced)
-        if (!user && !(env && env.ENVIRONMENT === 'staging') && (username === 'admin' && password === 'admin123')) {
+        if (!user && !(env && (getEffectiveEnvironment(env) === 'staging' || env.ENVIRONMENT === 'staging')) && (username === 'admin' && password === 'admin123')) {
           user = await env.DB.prepare("SELECT * FROM users WHERE LOWER(username) = 'admin'").first();
         }
 
@@ -4515,10 +5275,11 @@ export default {
           const safeRoom = { ...room };
           delete safeRoom.pin_code;
           delete safeRoom.builtland_pin_code;
+          const conflictIds = getWorkerConflictingRoomIds(room.id);
           return {
             ...safeRoom,
             bookings: (bookings || [])
-              .filter(b => b.room_id === room.id)
+              .filter(b => conflictIds.includes(b.room_id))
               .map(b => {
                 const safeB = { ...b };
                 delete safeB.pin_code;
@@ -5027,7 +5788,7 @@ export default {
       // ----------------------------------------------------
       // CUSTOMER, SHOP & CONTRACT MANAGEMENT ENDPOINTS
       // ----------------------------------------------------
-      if (pathname.startsWith('/api/customers')) {
+      if (pathname.startsWith('/api/customers') || pathname.startsWith('/api/customer-types')) {
         const auth = await authenticateUser(request, env);
         if (auth.error) {
           return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -5035,12 +5796,74 @@ export default {
         const user = auth.user;
         if (user && user.role !== 'admin') {
           const perms = (user.permissions || '').split(',').map(p => p.trim());
-          if (!perms.some(p => ['customers', 'admin-management'].includes(p))) {
+          const isCustomerTypes = pathname === '/api/customer-types' || pathname === '/api/customers/types';
+          const allowedPerms = isCustomerTypes ? ['customers', 'admin-management', 'pos'] : ['customers', 'admin-management'];
+          if (!perms.some(p => allowedPerms.includes(p))) {
             return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงข้อมูลลูกค้า' }), { status: 403, headers: corsHeaders });
           }
         }
 
-        // 1. GET /api/customers/contracts/alerts
+        // 1.0. GET /api/customer-types & GET /api/customers/types
+      if ((pathname === '/api/customer-types' || pathname === '/api/customers/types') && method === 'GET') {
+        const DEFAULT_TYPES = [
+          { id: 'walkin', name: 'Walk-in', label: 'Walk-in (ลูกค้านอก)', active: true, system: true, category: 'retail' },
+          { id: 'builtland', name: 'Builtland', label: 'Builtland (พนักงาน)', active: true, system: true, category: 'internal' },
+          { id: 'basecamp', name: 'Basecamp', label: 'Basecamp (ผู้เช่าชั้น 4)', active: true, has_units: true, category: 'crm' },
+          { id: 'shop', name: 'Shop', label: 'Shop (ร้านค้า)', active: true, category: 'crm' },
+          { id: 'ondemand', name: 'OnDemand', label: 'OnDemand', active: true, category: 'crm' },
+          { id: 'virtual_office', name: 'Virtual Office', label: 'Virtual Office', active: true, category: 'crm' }
+        ];
+        let types = [...DEFAULT_TYPES];
+        try {
+          const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'customer_types'").first();
+          if (row && row.value) {
+            const parsed = JSON.parse(row.value);
+            if (Array.isArray(parsed) && parsed.length > 0) types = parsed;
+          }
+        } catch (e) {
+          console.warn('[Worker] Failed to parse settings customer_types:', e);
+        }
+
+        try {
+          const { results: rows } = await env.DB.prepare("SELECT DISTINCT customer_type FROM customers WHERE customer_type IS NOT NULL AND customer_type != ''").all();
+          const existingIds = new Set(types.map(t => String(t.id).toLowerCase()));
+          if (rows) {
+            for (const r of rows) {
+              const cType = String(r.customer_type).trim().toLowerCase();
+              if (cType && !existingIds.has(cType)) {
+                const words = cType.split(/[_s-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1));
+                const formatted = words.join(' ');
+                types.push({
+                  id: cType,
+                  name: formatted,
+                  label: formatted,
+                  active: true,
+                  category: 'crm'
+                });
+                existingIds.add(cType);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[Worker] Failed to query distinct customer_type:', e);
+        }
+
+        return new Response(JSON.stringify({ success: true, types }), { status: 200, headers: corsHeaders });
+      }
+
+      // 1.0.1. POST /api/customer-types & POST /api/customers/types
+      if ((pathname === '/api/customer-types' || pathname === '/api/customers/types') && method === 'POST') {
+        const body = await request.json();
+        const { types } = body;
+        if (!Array.isArray(types)) {
+          return new Response(JSON.stringify({ error: 'types ต้องเป็น Array' }), { status: 400, headers: corsHeaders });
+        }
+        await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('customer_types', ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+          .bind(JSON.stringify(types), JSON.stringify(types)).run();
+        return new Response(JSON.stringify({ success: true, types }), { status: 200, headers: corsHeaders });
+      }
+
+      // 1. GET /api/customers/contracts/alerts
       if (pathname === '/api/customers/contracts/alerts' && method === 'GET') {
         try {
           const today = url.searchParams.get('date') || getBangkokLocalISO(new Date()).slice(0, 10);
@@ -6109,52 +6932,31 @@ export default {
           }
         }
 
+        // Backend Validation: reject inactive customer types for new bookings
+        if (customer_type && customer_type !== 'walkin') {
+          try {
+            const typeRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'customer_types'").first();
+            if (typeRow && typeRow.value) {
+              const configuredTypes = JSON.parse(typeRow.value);
+              if (Array.isArray(configuredTypes)) {
+                const matchedType = configuredTypes.find(t => String(t.id).toLowerCase() === String(customer_type).toLowerCase());
+                if (matchedType && matchedType.active === false) {
+                  return new Response(JSON.stringify({ error: `ประเภทลูกค้า '${matchedType.name || matchedType.label || customer_type}' ถูกปิดใช้งานแล้ว ไม่สามารถเลือกสร้างการจองใหม่ได้` }), { status: 400, headers: corsHeaders });
+                }
+              }
+            }
+          } catch (tErr) {
+            console.warn('[Worker] Could not verify customer_type active status:', tErr);
+          }
+        }
+
         let verifiedTotal = body.total_amount !== undefined ? body.total_amount : Math.round(serverTotal * 100) / 100;
         let quotaHoursUsed = 0;
         let effectiveBillingOption = billing_option || 'paid';
         const customerId = body.customer_id ? parseInt(body.customer_id, 10) : null;
         let contractId = body.contract_id ? parseInt(body.contract_id, 10) : null;
 
-        if (customer_type === 'shop') {
-          const firstItemDate = items[0]?.start_time || new Date().toISOString();
-          let remainingQuota = 0;
-          let contractEligible = true;
-
-          if (customerId) {
-            const quotaCalc = await calculateWorkerCustomerQuota(env, {
-              customerId,
-              customerType: 'shop',
-              serviceDate: firstItemDate
-            });
-            remainingQuota = quotaCalc.remaining_quota;
-            contractEligible = quotaCalc.contract_eligible;
-            if (quotaCalc.contract && !contractId) {
-              contractId = quotaCalc.contract.id;
-            }
-          } else {
-            contractEligible = false;
-          }
-
-          if (!contractEligible) {
-            quotaHoursUsed = 0;
-            verifiedTotal = Math.round(serverTotal * 100) / 100;
-            effectiveBillingOption = 'paid';
-          } else {
-            quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
-            const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
-            verifiedTotal = totalBookingHours > 0
-              ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
-              : 0;
-
-            if (quotaHoursUsed > 0 && verifiedTotal === 0) {
-              effectiveBillingOption = 'quota';
-            } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
-              effectiveBillingOption = 'quota_partial';
-            } else {
-              effectiveBillingOption = 'standard';
-            }
-          }
-        } else if (customer_type === 'basecamp') {
+        if (customer_type === 'basecamp') {
           const firstItemDate = items[0]?.start_time || new Date().toISOString();
           let remainingQuota = 0;
           let contractEligible = true;
@@ -6174,40 +6976,73 @@ export default {
             }
           } else {
             const maxQuota = basecamp_sub_type === 'office' ? 4 : 2;
-            const targetMonthStr = normalizeToLocalISO(firstItemDate).substring(0, 7);
-
-            try {
-              const quotaRow = await env.DB.prepare(
-                `SELECT COALESCE(SUM(b.quota_hours_used), 0) as used_hours
-                 FROM bookings b
-                 WHERE b.customer_type = 'basecamp'
-                   AND b.basecamp_sub_type = ?
-                   AND b.basecamp_unit = ?
-                   AND (b.payment_status != 'cancelled' OR b.payment_status IS NULL)
-                   AND (
-                     EXISTS (
-                       SELECT 1 FROM booking_items bi
-                       WHERE bi.booking_id = b.id
-                         AND strftime('%Y-%m', bi.start_time) = ?
-                     )
-                     OR (
-                       NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
-                       AND strftime('%Y-%m', b.created_at) = ?
-                     )
-                   )`
-              ).bind(basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr).first();
-
-              const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
-              remainingQuota = Math.max(0, maxQuota - usedQuota);
-            } catch (qErr) {
-              console.error('Error fetching quota in worker:', qErr);
-            }
+            const targetMonthStr = firstItemDate.slice(0, 7);
+            const quotaRow = await env.DB.prepare(
+              `SELECT COALESCE(SUM(b.quota_hours_used), 0) AS used_hours
+               FROM bookings b
+               WHERE b.customer_type = 'basecamp'
+                 AND b.basecamp_sub_type = ?
+                 AND b.basecamp_unit = ?
+                 AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+                 AND (
+                   EXISTS (
+                     SELECT 1 FROM booking_items bi
+                     WHERE bi.booking_id = b.id
+                       AND substr(bi.start_time, 1, 7) = ?
+                   )
+                   OR (
+                     NOT EXISTS (SELECT 1 FROM booking_items bi WHERE bi.booking_id = b.id)
+                     AND substr(b.created_at, 1, 7) = ?
+                   )
+                 )`
+            ).bind(basecamp_sub_type, basecamp_unit, targetMonthStr, targetMonthStr).first();
+            const usedQuota = quotaRow ? Number(quotaRow.used_hours) : 0;
+            remainingQuota = Math.max(0, maxQuota - usedQuota);
           }
 
           if (!contractEligible) {
             quotaHoursUsed = 0;
             verifiedTotal = Math.round(serverTotal * 100) / 100;
             effectiveBillingOption = 'standard';
+          } else {
+            quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
+            const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
+            verifiedTotal = totalBookingHours > 0
+              ? Math.round((chargeableHours / totalBookingHours) * serverTotal * 100) / 100
+              : 0;
+
+            if (quotaHoursUsed > 0 && verifiedTotal === 0) {
+              effectiveBillingOption = 'quota';
+            } else if (quotaHoursUsed > 0 && verifiedTotal > 0) {
+              effectiveBillingOption = 'quota_partial';
+            } else {
+              effectiveBillingOption = 'standard';
+            }
+          }
+        } else if (customer_type === 'shop' || customerId || (customer_type !== 'walkin' && customer_type !== 'builtland')) {
+          const firstItemDate = items[0]?.start_time || new Date().toISOString();
+          let remainingQuota = 0;
+          let contractEligible = true;
+
+          if (customerId) {
+            const quotaCalc = await calculateWorkerCustomerQuota(env, {
+              customerId,
+              customerType: customer_type,
+              serviceDate: firstItemDate
+            });
+            remainingQuota = quotaCalc.remaining_quota;
+            contractEligible = quotaCalc.contract_eligible;
+            if (quotaCalc.contract && !contractId) {
+              contractId = quotaCalc.contract.id;
+            }
+          } else {
+            contractEligible = false;
+          }
+
+          if (!contractEligible) {
+            quotaHoursUsed = 0;
+            verifiedTotal = Math.round(serverTotal * 100) / 100;
+            effectiveBillingOption = 'paid';
           } else {
             quotaHoursUsed = Math.min(totalBookingHours, remainingQuota);
             const chargeableHours = Math.max(0, totalBookingHours - quotaHoursUsed);
@@ -6355,7 +7190,7 @@ export default {
             normalizedDetails.value,
             slipUrl,
             isTaxReq,
-            tax_payer_type === 'individual' ? 'individual' : 'corporate',
+            isTaxReq ? (tax_payer_type === 'individual' ? 'individual' : 'corporate') : null,
             cleanTaxName,
             cleanTaxId,
             cleanBranchType,
@@ -6439,6 +7274,8 @@ export default {
 
           if (item.room_id && normStart && normEnd) {
             const itemEndBuffered = addMinutesToLocalISO(normEnd, bufferMins);
+            const conflictIds = getWorkerConflictingRoomIds(item.room_id);
+            const inPlaceholders = conflictIds.map(() => '?').join(', ');
             let insItemRes;
             try {
               insItemRes = await env.DB.prepare(
@@ -6447,7 +7284,7 @@ export default {
                  WHERE NOT EXISTS (
                    SELECT 1 FROM booking_items bi
                    JOIN bookings b ON bi.booking_id = b.id
-                   WHERE bi.room_id = ?
+                   WHERE bi.room_id IN (${inPlaceholders})
                      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                      AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                      AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -6466,7 +7303,7 @@ export default {
                 item.booking_type || 'hourly',
                 itemGuestCount,
                 itemPin,
-                item.room_id,
+                ...conflictIds,
                 normStart,
                 `+${bufferMins} minutes`,
                 itemEndBuffered
@@ -6478,7 +7315,7 @@ export default {
                  WHERE NOT EXISTS (
                    SELECT 1 FROM booking_items bi
                    JOIN bookings b ON bi.booking_id = b.id
-                   WHERE bi.room_id = ?
+                   WHERE bi.room_id IN (${inPlaceholders})
                      AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                      AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                      AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -6496,7 +7333,7 @@ export default {
                 item.layout || 'standard',
                 item.booking_type || 'hourly',
                 itemPin,
-                item.room_id,
+                ...conflictIds,
                 normStart,
                 `+${bufferMins} minutes`,
                 itemEndBuffered
@@ -6506,7 +7343,7 @@ export default {
             if (insItemRes?.meta?.changes !== 1) {
               const rObj = await env.DB.prepare('SELECT name FROM rooms WHERE id = ?').bind(item.room_id).first();
               const latestConflict = await checkRoomOverlap(env, item.room_id, normStart, normEnd);
-              itemInsertConflict = formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins });
+              itemInsertConflict = formatOverlapErrorMessage(rObj?.name || `ID: ${item.room_id}`, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }, item.room_id);
               break;
             }
           } else {
@@ -7610,6 +8447,7 @@ export default {
         const bookingId = Number(parts[3]);
         const urlObj = new URL(request.url);
         const bookingItemId = urlObj.searchParams.get('booking_item_id') ? Number(urlObj.searchParams.get('booking_item_id')) : null;
+        const current_end_time = urlObj.searchParams.get('current_end_time');
         const durationMinutes = Math.max(15, Math.min(480, Number(urlObj.searchParams.get('duration_minutes')) || 60));
 
         const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
@@ -8027,7 +8865,7 @@ export default {
 
 
       // Cancel booking endpoint (Soft cancel + LINE Notification)
-      
+
       // ----------------------------------------------------
       // TAX INVOICE & ATTACHMENT MANAGEMENT ENDPOINTS (PARITY)
       // ----------------------------------------------------
@@ -8054,21 +8892,34 @@ export default {
 
         let invoices = [];
         try {
-          const invRes = await env.DB.prepare(
-            `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
-                    tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
-                    file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
-             FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`
-          ).bind(bookingId).all();
+          let invRes = null;
+          try {
+            invRes = await env.DB.prepare(
+              `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                      tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                      file_url, file_name, content_type, file_size, status, notes, uploaded_by,
+                      email_status, email_sent_at, email_dry_run, email_message_id, email_recipient, email_error,
+                      created_at, updated_at
+               FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`
+            ).bind(bookingId).all();
+          } catch (_) {
+            invRes = await env.DB.prepare(
+              `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                      tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                      file_url, file_name, content_type, file_size, status, notes, uploaded_by, created_at, updated_at
+               FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`
+            ).bind(bookingId).all();
+          }
           invoices = invRes?.results || [];
         } catch (_) {}
 
         return new Response(JSON.stringify({
           success: true,
           booking_id: bookingId,
+          live_dispatch_enabled: isLiveDispatchEnabled(env),
           tax_data: {
             tax_invoice_required: Number(booking.tax_invoice_required) || 0,
-            tax_payer_type: booking.tax_payer_type || 'corporate',
+            tax_payer_type: booking.tax_payer_type || null,
             tax_name: booking.tax_name || '',
             tax_id: booking.tax_id || '',
             tax_branch_type: booking.tax_branch_type || 'head',
@@ -8188,9 +9039,23 @@ export default {
           ).bind(bookingId, `อัปเดตข้อมูลใบกำกับภาษี: ${isRequired ? cleanTaxName : 'ยกเลิกคำขอ'}`, staffName, nowIso).run();
         } catch (_) {}
 
+        let updatedInvoices = [];
+        try {
+          const invList = await env.DB.prepare(
+            `SELECT id, booking_id, invoice_number, tax_payer_type, tax_name, tax_id,
+                    tax_branch_type, tax_branch_number, tax_address, tax_email, tax_phone,
+                    file_url, file_name, content_type, file_size, status, notes, uploaded_by,
+                    email_status, email_sent_at, email_dry_run, email_message_id, email_recipient, email_error,
+                    created_at, updated_at
+             FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC`
+          ).bind(bookingId).all();
+          updatedInvoices = invList?.results || [];
+        } catch (_) {}
+
         return new Response(JSON.stringify({
           success: true,
           message: 'บันทึกข้อมูลใบกำกับภาษีเรียบร้อยแล้ว',
+          invoices: updatedInvoices,
           tax_data: {
             tax_invoice_required: isRequired,
             tax_payer_type: payerType,
@@ -8346,6 +9211,812 @@ export default {
           message: 'ลบเอกสารใบกำกับภาษีเรียบร้อยแล้ว',
           tax_invoice_status: newStatus
         }), { headers: corsHeaders });
+      }
+
+      // ----------------------------------------------------
+      // TAX INVOICE EMAIL PREVIEW (DRY-RUN / GMAIL SERVICE)
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice/email-preview') && method === 'GET') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const permissions = new Set(String(auth.user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+        if (auth.user?.role !== 'admin' && !permissions.has('pos') && !permissions.has('manage')) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงฟังก์ชันนี้' }), { status: 403, headers: corsHeaders });
+        }
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare(
+          `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+                  tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+                  tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+           FROM bookings WHERE id = ?`
+        ).bind(bookingId).first();
+
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        const urlObj = new URL(request.url);
+        const invoiceId = urlObj.searchParams.get('invoice_id') ? Number(urlObj.searchParams.get('invoice_id')) : null;
+
+        let invoice = null;
+        if (invoiceId) {
+          invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE id = ?').bind(invoiceId).first();
+          if (!invoice) {
+            return new Response(JSON.stringify({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' }), { status: 404, headers: corsHeaders });
+          }
+          if (Number(invoice.booking_id) !== bookingId) {
+            return new Response(JSON.stringify({ error: 'เอกสารใบกำกับภาษีไม่ตรงกับรายการจองนี้' }), { status: 400, headers: corsHeaders });
+          }
+        } else {
+          invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC LIMIT 1').bind(bookingId).first();
+        }
+
+        if (!invoice) {
+          return new Response(JSON.stringify({ error: 'ยังไม่มีเอกสารใบกำกับภาษีสำหรับรายการจองนี้ กรุณาแนบเอกสารก่อนดูตัวอย่าง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const recipientEmail = (booking.tax_email || '').trim();
+        if (!recipientEmail) {
+          return new Response(JSON.stringify({ error: 'ยังไม่ได้ระบุอีเมลผู้รับ กรุณากรอกและบันทึกอีเมลในข้อมูลใบกำกับภาษีก่อนดูตัวอย่าง' }), { status: 400, headers: corsHeaders });
+        }
+        if (!isValidEmail(recipientEmail)) {
+          return new Response(JSON.stringify({ error: 'รูปแบบอีเมลผู้รับไม่ถูกต้อง กรุณาตรวจสอบและบันทึกอีเมลใหม่' }), { status: 400, headers: corsHeaders });
+        }
+
+        if (!invoice.file_url) {
+          return new Response(JSON.stringify({ error: 'ไม่พบลิงก์ไฟล์เอกสารใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+        }
+
+        let pdfSize = invoice.file_size || 0;
+        if (env.BUCKET && invoice.file_url.startsWith('/uploads/')) {
+          const r2Key = invoice.file_url.replace('/uploads/', '');
+          const obj = await env.BUCKET.get(r2Key);
+          if (!obj) {
+            return new Response(JSON.stringify({ error: 'ไม่พบไฟล์เอกสาร PDF บนเซิร์ฟเวอร์' }), { status: 404, headers: corsHeaders });
+          }
+          pdfSize = obj.size;
+          if (pdfSize > 10 * 1024 * 1024) {
+            return new Response(JSON.stringify({ error: 'ขนาดไฟล์เกิน 10MB' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        const senderName = env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+        const senderEmail = env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+        const replyTo = env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
+        const liveDispatchEnabled = isLiveDispatchEnabled(env);
+        const gmailConfigured = isGmailConfigured(env);
+        const appEnv = getEffectiveEnvironment(env);
+        const stagingAllowed = isEmailAllowedInStaging(recipientEmail, env, appEnv);
+
+        const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
+          booking,
+          invoice,
+          recipientEmail,
+          senderEmail,
+          senderName,
+          replyTo
+        });
+
+        return new Response(JSON.stringify({
+          success: true,
+          email_preview: {
+            to: recipientEmail,
+            from: `${senderName} <${senderEmail}>`,
+            reply_to: replyTo,
+            subject,
+            text: textBody,
+            html: htmlBody,
+            file_name: invoice.file_name || 'Tax_Invoice.pdf',
+            file_size: pdfSize,
+            invoice_number: invoice.invoice_number || ('INV-' + bookingId),
+            dry_run: true,
+            live_dispatch_enabled: liveDispatchEnabled,
+            gmail_configured: gmailConfigured,
+            staging_allowed: stagingAllowed,
+            app_env: appEnv
+          }
+        }), { headers: corsHeaders });
+      }
+
+      // ----------------------------------------------------
+      // GMAIL OAUTH SERVER-SIDE CONNECTION TEST (ADMIN ONLY)
+      // ----------------------------------------------------
+      if (pathname === '/api/admin/gmail/test-oauth' && (method === 'GET' || method === 'POST')) {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        if (auth.user?.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'สงวนสิทธิ์เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น' }), { status: 403, headers: corsHeaders });
+        }
+
+        if (!isGmailConfigured(env)) {
+          return new Response(JSON.stringify({
+            success: false,
+            oauth_connected: false,
+            error: 'ยังไม่ได้ตั้งค่า Gmail OAuth2 Secrets (GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) ในระบบ'
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        try {
+          const accessToken = await getGmailAccessTokenWorker({
+            clientId: env.GMAIL_CLIENT_ID,
+            clientSecret: env.GMAIL_CLIENT_SECRET,
+            refreshToken: env.GMAIL_REFRESH_TOKEN
+          });
+
+          if (!accessToken) {
+            throw new Error('Google OAuth2 ไม่ส่งคืน Access Token');
+          }
+
+          return new Response(JSON.stringify({
+            success: true,
+            oauth_connected: true,
+            message: 'เชื่อมต่อและแลกเปลี่ยน Google OAuth2 Token สำเร็จ (ไม่มีการส่งอีเมล)',
+            app_env: getEffectiveEnvironment(env),
+            sender_email: env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL,
+            sender_name: env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME,
+            live_dispatch_enabled: isLiveDispatchEnabled(env)
+          }), { headers: corsHeaders });
+        } catch (err) {
+          const cleanError = String(err?.message || 'OAuth token exchange failed').replace(/([a-zA-Z0-9_\-\.]{25,})/g, '[REDACTED]');
+          return new Response(JSON.stringify({
+            success: false,
+            oauth_connected: false,
+            error: cleanError
+          }), { status: 500, headers: corsHeaders });
+        }
+      }
+
+      // ----------------------------------------------------
+      // GMAIL ADMIN TEST SWITCH (GET / POST)
+      // ----------------------------------------------------
+      if (pathname === '/api/admin/gmail/test-switch') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        if (auth.user?.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'สงวนสิทธิ์เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น' }), { status: 403, headers: corsHeaders });
+        }
+
+        if (method === 'POST') {
+          const body = await request.json().catch(() => ({}));
+          const enabled = Boolean(body?.enabled);
+          if (env.DB) {
+            await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_dispatch_enabled', ?)").bind(enabled ? 'true' : 'false').run().catch(() => {});
+          }
+          return new Response(JSON.stringify({
+            success: true,
+            test_dispatch_enabled: enabled,
+            customer_live_dispatch_enabled: isLiveDispatchEnabled(env)
+          }), { headers: corsHeaders });
+        }
+
+        // GET: Check switch status
+        let testEnabled = isTestDispatchEnabledWorker(env);
+        if (env.DB) {
+          const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gmail_test_dispatch_enabled'").first().catch(() => null);
+          if (row && row.value !== undefined) {
+            testEnabled = String(row.value).trim().toLowerCase() === 'true';
+          }
+        }
+        return new Response(JSON.stringify({
+          success: true,
+          test_dispatch_enabled: testEnabled,
+          customer_live_dispatch_enabled: isLiveDispatchEnabled(env)
+        }), { headers: corsHeaders });
+      }
+
+      // ----------------------------------------------------
+      // GMAIL ADMIN ISOLATED TEST SEND (POST)
+      // ----------------------------------------------------
+      if (pathname === '/api/admin/gmail/test-send' && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+        if (auth.user?.role !== 'admin') {
+          return new Response(JSON.stringify({ error: 'สงวนสิทธิ์เฉพาะผู้ดูแลระบบ (Admin) เท่านั้น' }), { status: 403, headers: corsHeaders });
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const isDryRun = body?.dry_run !== false;
+        const targetEmail = TARGET_TEST_RECIPIENT;
+        const subject = TEST_EMAIL_SUBJECT;
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'admin';
+
+        // Check test switch from DB or env
+        let testSwitchEnabled = isTestDispatchEnabledWorker(env);
+        if (env.DB) {
+          const switchRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gmail_test_dispatch_enabled'").first().catch(() => null);
+          if (switchRow && switchRow.value !== undefined) {
+            testSwitchEnabled = String(switchRow.value).trim().toLowerCase() === 'true';
+          }
+        }
+
+        const senderEmail = env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+        const senderName = env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+        const replyTo = env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
+        const pdfBytes = createTestSamplePdfUint8Array();
+        const nowIso = new Date().toISOString();
+
+        const { textBody, htmlBody } = generateTestEmailContentWorker({
+          recipientEmail: targetEmail,
+          senderEmail,
+          senderName
+        });
+
+        // Helper to record audit log in settings
+        const recordAudit = async (status, extra = {}) => {
+          if (!env.DB) return;
+          try {
+            const logsRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gmail_test_send_audit_logs'").first().catch(() => null);
+            let logs = [];
+            if (logsRow?.value) { try { logs = JSON.parse(logsRow.value); } catch (_) {} }
+            if (!Array.isArray(logs)) logs = [];
+            logs.unshift({
+              id: 'test_audit_' + Date.now(),
+              timestamp: new Date().toISOString(),
+              status,
+              recipient: targetEmail,
+              subject,
+              dispatched_by: staffName,
+              ...extra
+            });
+            if (logs.length > 50) logs = logs.slice(0, 50);
+            await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_audit_logs', ?)").bind(JSON.stringify(logs)).run();
+            await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)").bind(JSON.stringify({
+              status,
+              message_id: extra.message_id || null,
+              error: extra.error || null,
+              updated_at: new Date().toISOString()
+            })).run();
+          } catch (_) {}
+        };
+
+        // 1. Dry Run Mode
+        if (isDryRun) {
+          const simulatedMsgId = 'dry_run_test_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+          await recordAudit('dry_run', { is_dry_run: true, message_id: simulatedMsgId, file_name: 'BWORK_TEST_SAMPLE.pdf', file_size: pdfBytes.length });
+          return new Response(JSON.stringify({
+            success: true,
+            dry_run: true,
+            status: 'dry_run',
+            message: 'จำลองการส่งอีเมลทดสอบเรียบร้อยแล้ว (Dry-run)',
+            data: {
+              recipient: targetEmail,
+              subject,
+              message_id: simulatedMsgId,
+              file_name: 'BWORK_TEST_SAMPLE.pdf',
+              file_size: pdfBytes.length,
+              dispatched_by: staffName,
+              test_dispatch_switch: testSwitchEnabled,
+              customer_dispatch_switch: isLiveDispatchEnabled(env)
+            }
+          }), { headers: corsHeaders });
+        }
+
+        // 2. Live Dispatch Validations
+        if (!testSwitchEnabled) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'ระบบยังไม่ได้เปิดสวิตช์ทดสอบส่งอีเมล (GMAIL_TEST_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)'
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        if (!isGmailConfigured(env)) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'ยังไม่ได้ตั้งค่า Gmail API OAuth2 Credentials ในระบบ กรุณาตรวจสอบการตั้งค่า'
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        // Durable Concurrency Check via settings key gmail_test_send_claim
+        if (env.DB) {
+          const claimRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gmail_test_send_claim'").first().catch(() => null);
+          let claim = null;
+          if (claimRow?.value) { try { claim = JSON.parse(claimRow.value); } catch (_) {} }
+          if (claim && claim.status === 'claiming') {
+            const elapsedSec = (Date.now() - new Date(claim.claimed_at).getTime()) / 1000;
+            if (elapsedSec < 60) {
+              return new Response(JSON.stringify({
+                error: 'กำลังดำเนินการส่งอีเมลทดสอบอยู่ กรุณารอสักครู่ (In-flight)'
+              }), { status: 429, headers: corsHeaders });
+            }
+          }
+          await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_send_claim', ?)").bind(JSON.stringify({
+            status: 'claiming',
+            claimed_at: nowIso,
+            dispatched_by: staffName
+          })).run().catch(() => {});
+        }
+
+        try {
+          const accessToken = await getGmailAccessTokenWorker({
+            clientId: env.GMAIL_CLIENT_ID,
+            clientSecret: env.GMAIL_CLIENT_SECRET,
+            refreshToken: env.GMAIL_REFRESH_TOKEN
+          });
+
+          const mimePayload = buildMimeMessageWorker({
+            from: senderEmail,
+            fromName: senderName,
+            to: targetEmail,
+            replyTo,
+            subject,
+            text: textBody,
+            html: htmlBody,
+            attachmentBytes: pdfBytes,
+            attachmentFileName: 'BWORK_TEST_SAMPLE.pdf'
+          });
+
+          const base64UrlRaw = base64UrlEncode(mimePayload);
+
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 15000);
+
+          let gmailRes;
+          try {
+            gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+              method: 'POST',
+              headers: {
+                'Authorization': 'Bearer ' + accessToken,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ raw: base64UrlRaw }),
+              signal: controller.signal
+            });
+          } catch (netErr) {
+            clearTimeout(timer);
+            await recordAudit('uncertain', { is_dry_run: false, error: netErr.message || 'Timeout/Network error' });
+            return new Response(JSON.stringify({
+              success: false,
+              status: 'uncertain',
+              error: 'คำขอส่งอีเมลไปยัง Gmail API หมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกสถานะเป็น "uncertain" และจะไม่ส่งซ้ำอัตโนมัติ เพื่อความปลอดภัย กรุณาตรวจสอบก่อนทำรายการใหม่'
+            }), { status: 504, headers: corsHeaders });
+          }
+          clearTimeout(timer);
+
+          if (!gmailRes.ok) {
+            const errBody = await gmailRes.text().catch(() => '');
+            const errMsg = `Gmail API ส่งข้อความไม่สำเร็จ (HTTP ${gmailRes.status}): ${errBody}`;
+            await recordAudit('failed', { is_dry_run: false, error: errMsg });
+            return new Response(JSON.stringify({
+              success: false,
+              status: 'failed',
+              error: errMsg
+            }), { status: 500, headers: corsHeaders });
+          }
+
+          const gmailData = await gmailRes.json().catch(() => ({}));
+          const finalMsgId = gmailData.id || ('gmail_test_' + Date.now());
+
+          await recordAudit('gmail_accepted', {
+            is_dry_run: false,
+            message_id: finalMsgId,
+            file_name: 'BWORK_TEST_SAMPLE.pdf',
+            file_size: pdfBytes.length
+          });
+
+          return new Response(JSON.stringify({
+            success: true,
+            dry_run: false,
+            status: 'gmail_accepted',
+            message: 'Gmail API รับคำขอส่งอีเมลทดสอบเรียบร้อยแล้ว (รอคิวส่งของ Gmail)',
+            data: {
+              recipient: targetEmail,
+              subject,
+              message_id: finalMsgId,
+              file_name: 'BWORK_TEST_SAMPLE.pdf',
+              file_size: pdfBytes.length,
+              dispatched_by: staffName,
+              test_dispatch_switch: false,
+              customer_dispatch_switch: false
+            }
+          }), { headers: corsHeaders });
+        } catch (outerErr) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'เกิดข้อผิดพลาดในการประมวลผลคำขอส่งอีเมล: ' + outerErr.message
+          }), { status: 500, headers: corsHeaders });
+        } finally {
+          // Crucial requirement: Reset test switch back to false immediately even if error occurs!
+          if (env.DB) {
+            await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('gmail_test_dispatch_enabled', 'false')").run().catch(() => {});
+          }
+        }
+      }
+
+      // ----------------------------------------------------
+      // TAX INVOICE SEND EMAIL (DRY-RUN DEFAULT & GMAIL DISPATCH)
+      // ----------------------------------------------------
+      if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/tax-invoice/send-email') && method === 'POST') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const permissions = new Set(String(auth.user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+        if (auth.user?.role !== 'admin' && !permissions.has('pos') && !permissions.has('manage')) {
+          return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์เข้าถึงฟังก์ชันนี้' }), { status: 403, headers: corsHeaders });
+        }
+
+        const parts = pathname.split('/');
+        const bookingId = Number(parts[3]);
+        if (!bookingId || isNaN(bookingId)) {
+          return new Response(JSON.stringify({ error: 'รหัสการจองไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+        }
+
+        const booking = await env.DB.prepare(
+          `SELECT id, customer_name, customer_id, receipt_number, total_amount, paid_amount, payment_status,
+                  tax_invoice_required, tax_payer_type, tax_name, tax_id, tax_branch_type, tax_branch_number,
+                  tax_address, tax_email, tax_phone, tax_delivery_method, tax_postal_address, tax_invoice_status
+           FROM bookings WHERE id = ?`
+        ).bind(bookingId).first();
+
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        const body = await request.json().catch(() => ({}));
+        const { invoice_id, recipient_email, dry_run } = body;
+        const isDryRun = dry_run !== false;
+
+        let invoice = null;
+        if (invoice_id) {
+          const parsedInvoiceId = Number(invoice_id);
+          invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE id = ?').bind(parsedInvoiceId).first();
+          if (!invoice) {
+            return new Response(JSON.stringify({ error: 'ไม่พบเอกสารใบกำกับภาษีที่ระบุ' }), { status: 404, headers: corsHeaders });
+          }
+          if (Number(invoice.booking_id) !== bookingId) {
+            return new Response(JSON.stringify({ error: 'ข้อมูลเอกสารใบกำกับภาษีไม่ตรงกับรายการจองนี้' }), { status: 400, headers: corsHeaders });
+          }
+        } else {
+          invoice = await env.DB.prepare('SELECT * FROM tax_invoices WHERE booking_id = ? ORDER BY id DESC LIMIT 1').bind(bookingId).first();
+        }
+
+        if (!invoice) {
+          return new Response(JSON.stringify({ error: 'ไม่พบเอกสารใบกำกับภาษีสำหรับรายการจองนี้' }), { status: 400, headers: corsHeaders });
+        }
+
+        const authoritativeEmail = (booking.tax_email || '').trim();
+        if (!authoritativeEmail) {
+          return new Response(JSON.stringify({ error: 'ยังไม่ได้ระบุอีเมลผู้รับในระบบ กรุณากรอกและบันทึกข้อมูลก่อนส่ง' }), { status: 400, headers: corsHeaders });
+        }
+        if (!isValidEmail(authoritativeEmail)) {
+          return new Response(JSON.stringify({ error: 'รูปแบบอีเมลผู้รับในระบบไม่ถูกต้อง กรุณาแก้ไขและบันทึกข้อมูลใหม่' }), { status: 400, headers: corsHeaders });
+        }
+        if (!recipient_email || recipient_email.trim().toLowerCase() !== authoritativeEmail.toLowerCase()) {
+          return new Response(JSON.stringify({
+            error: `อีเมลผู้รับที่ยืนยัน (${recipient_email || 'ไม่ระบุ'}) ไม่ตรงกับข้อมูลล่าสุดที่บันทึกไว้ในระบบ (${authoritativeEmail}) กรุณาตรวจสอบและยืนยันใหม่`
+          }), { status: 400, headers: corsHeaders });
+        }
+        const targetEmail = authoritativeEmail;
+
+        // Live dispatch validations
+        const appEnv = getEffectiveEnvironment(env);
+        if (!isDryRun) {
+          if (!isLiveDispatchEnabled(env)) {
+            return new Response(JSON.stringify({
+              error: 'ระบบยังไม่ได้เปิดสวิตช์ส่งอีเมลจริง (GMAIL_LIVE_DISPATCH_ENABLED != true) กรุณาใช้โหมดจำลองส่ง (Dry-run)'
+            }), { status: 400, headers: corsHeaders });
+          }
+          if (!isGmailConfigured(env)) {
+            return new Response(JSON.stringify({
+              error: 'ยังไม่ได้ตั้งค่า Gmail API OAuth2 Credentials ในระบบ กรุณาตรวจสอบการตั้งค่า'
+            }), { status: 400, headers: corsHeaders });
+          }
+          if (appEnv !== 'production' && !isEmailAllowedInStaging(targetEmail, env, appEnv)) {
+            return new Response(JSON.stringify({
+              error: `โหมด ${appEnv} อนุญาตให้ส่งอีเมลจริงเฉพาะอีเมลใน Staging Allowlist เท่านั้น (${targetEmail} ไม่อยู่ในรายการที่อนุญาต)`
+            }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        if (!invoice.file_url) {
+          return new Response(JSON.stringify({ error: 'ไม่พบไฟล์เอกสารใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Verify PDF in R2
+        let pdfSize = invoice.file_size || 0;
+        let pdfArrayBuffer = null;
+        if (env.BUCKET && invoice.file_url.startsWith('/uploads/')) {
+          const r2Key = invoice.file_url.replace('/uploads/', '');
+          const obj = await env.BUCKET.get(r2Key);
+          if (!obj) {
+            return new Response(JSON.stringify({ error: 'ไม่พบไฟล์เอกสาร PDF บนเซิร์ฟเวอร์' }), { status: 404, headers: corsHeaders });
+          }
+          pdfSize = obj.size;
+          if (pdfSize > 10 * 1024 * 1024) {
+            return new Response(JSON.stringify({ error: 'ขนาดไฟล์เกิน 10MB' }), { status: 400, headers: corsHeaders });
+          }
+          pdfArrayBuffer = await obj.arrayBuffer();
+          const headerUint8 = new Uint8Array(pdfArrayBuffer.slice(0, 4));
+          if (headerUint8[0] !== 0x25 || headerUint8[1] !== 0x50 || headerUint8[2] !== 0x44 || headerUint8[3] !== 0x46) {
+            return new Response(JSON.stringify({ error: 'เอกสารที่แนบไม่ใช่ไฟล์ PDF สำหรับการส่ง e-Tax Invoice' }), { status: 400, headers: corsHeaders });
+          }
+        }
+
+        // Atomic claim in D1
+        const claimRes = await env.DB.prepare(
+          `UPDATE tax_invoices
+           SET email_status = 'claiming',
+               email_sent_at = CURRENT_TIMESTAMP
+           WHERE id = ?
+             AND (
+               email_status IS NULL
+               OR email_status IN ('unsent', 'failed', 'dry_run')
+               OR (email_status = 'claiming' AND (strftime('%s', 'now') - strftime('%s', email_sent_at)) > 60)
+             )`
+        ).bind(invoice.id).run();
+
+        const claimChanges = claimRes.meta?.changes ?? 0;
+        if (claimChanges === 0) {
+          const cur = await env.DB.prepare('SELECT email_status FROM tax_invoices WHERE id = ?').bind(invoice.id).first();
+          if (cur?.email_status === 'claiming') {
+            return new Response(JSON.stringify({ error: 'กำลังดำเนินการส่งอีเมลสำหรับเอกสารนี้ กรุณารอสักครู่ (In-flight)' }), { status: 429, headers: corsHeaders });
+          }
+          if (cur?.email_status === 'gmail_accepted') {
+            return new Response(JSON.stringify({ error: 'เอกสารนี้ส่งเข้าคิวระบบ Gmail เรียบร้อยแล้ว (gmail_accepted) ไม่สามารถส่งซ้ำได้' }), { status: 409, headers: corsHeaders });
+          }
+          if (cur?.email_status === 'uncertain') {
+            return new Response(JSON.stringify({ error: 'สถานะการส่งก่อนหน้าไม่แน่นอน (uncertain) เพื่อความปลอดภัยป้องกันการส่งซ้ำ ระบบไม่อนุญาตให้ส่งซ้ำโดยไม่ตรวจสอบ กรุณาตรวจสอบบันทึกการส่งหรือติดต่อผู้ดูแลระบบ' }), { status: 409, headers: corsHeaders });
+          }
+          return new Response(JSON.stringify({ error: `ไม่สามารถส่งอีเมลได้ในสถานะปัจจุบัน (${cur?.email_status || 'unknown'})` }), { status: 409, headers: corsHeaders });
+        }
+
+        const staffName = auth.user?.username || auth.user?.name || auth.user?.role || 'staff';
+        const senderName = env.GMAIL_SENDER_NAME || DEFAULT_SENDER_NAME;
+        const senderEmail = env.GMAIL_USER_EMAIL || DEFAULT_SENDER_EMAIL;
+        const replyTo = env.GMAIL_REPLY_TO || DEFAULT_REPLY_TO;
+        const nowIso = new Date().toISOString();
+
+        const { subject, textBody, htmlBody } = generateTaxInvoiceEmailContent({
+          booking,
+          invoice,
+          recipientEmail: targetEmail,
+          senderEmail,
+          senderName,
+          replyTo
+        });
+
+        // 1. Dry Run Dispatch
+        if (isDryRun) {
+          const simulatedMsgId = 'dry_run_msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+          try {
+            await env.DB.prepare(
+              `UPDATE tax_invoices
+               SET email_status = 'dry_run',
+                   email_sent_at = ?,
+                   email_dry_run = 1,
+                   email_message_id = ?,
+                   email_recipient = ?,
+                   email_error = NULL
+               WHERE id = ?`
+            ).bind(nowIso, simulatedMsgId, targetEmail, invoice.id).run();
+
+            await env.DB.prepare(
+              `INSERT INTO tax_invoice_email_logs (
+                booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+                message_id, file_name, file_size, dispatched_by, payload_preview, created_at
+              ) VALUES (?, ?, ?, ?, 'dry_run', 1, ?, ?, ?, ?, ?, ?)`
+            ).bind(
+              bookingId,
+              invoice.id,
+              targetEmail,
+              subject,
+              simulatedMsgId,
+              invoice.file_name || 'Tax_Invoice.pdf',
+              pdfSize,
+              staffName,
+              JSON.stringify({ to: targetEmail, subject, status: 'dry_run' }),
+              nowIso
+            ).run();
+
+            await env.DB.prepare(
+              `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+               VALUES (?, 'send_tax_invoice_email_dry_run', ?, ?, ?)`
+            ).bind(
+              bookingId,
+              ('จำลองส่งอีเมลใบกำกับภาษี (Dry-run) #' + (invoice.invoice_number || invoice.id) + ' ไปยัง ' + targetEmail),
+              staffName,
+              nowIso
+            ).run();
+          } catch (_) {}
+
+          return new Response(JSON.stringify({
+            success: true,
+            dry_run: true,
+            status: 'dry_run',
+            message: 'จำลองการส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (Dry-run)',
+            data: {
+              booking_id: bookingId,
+              invoice_id: invoice.id,
+              invoice_number: invoice.invoice_number,
+              recipient: targetEmail,
+              message_id: simulatedMsgId,
+              file_name: invoice.file_name || 'Tax_Invoice.pdf',
+              file_size: pdfSize,
+              timestamp: nowIso,
+              email_preview: {
+                to: targetEmail,
+                from: `${senderName} <${senderEmail}>`,
+                reply_to: replyTo,
+                subject,
+                text: textBody,
+                html: htmlBody,
+                file_name: invoice.file_name || 'Tax_Invoice.pdf',
+                file_size: pdfSize
+              }
+            }
+          }), { headers: corsHeaders });
+        }
+
+        // 2. Live Gmail API Dispatch
+        try {
+          const accessToken = await getGmailAccessTokenWorker({
+            clientId: env.GMAIL_CLIENT_ID,
+            clientSecret: env.GMAIL_CLIENT_SECRET,
+            refreshToken: env.GMAIL_REFRESH_TOKEN
+          });
+
+          const mimePayload = buildMimeMessageWorker({
+            from: senderEmail,
+            fromName: senderName,
+            to: targetEmail,
+            replyTo,
+            subject,
+            text: textBody,
+            html: htmlBody,
+            attachmentBytes: pdfArrayBuffer || new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+            attachmentFileName: invoice.file_name || `Tax_Invoice_${invoice.invoice_number || bookingId}.pdf`
+          });
+
+          const base64UrlRaw = base64UrlEncode(mimePayload);
+
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 15000);
+
+          let gmailRes;
+          try {
+            gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+              method: 'POST',
+              headers: {
+                'Authorization': 'Bearer ' + accessToken,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ raw: base64UrlRaw }),
+              signal: controller.signal
+            });
+          } catch (netErr) {
+            clearTimeout(timer);
+            // Mark uncertain
+            await env.DB.prepare(
+              `UPDATE tax_invoices
+               SET email_status = 'uncertain',
+                   email_error = ?,
+                   email_sent_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            ).bind(netErr.message || 'Timeout/Network error', invoice.id).run().catch(() => {});
+
+            await env.DB.prepare(
+              `INSERT INTO tax_invoice_email_logs (
+                booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+                file_name, file_size, dispatched_by, payload_preview, created_at
+              ) VALUES (?, ?, ?, ?, 'uncertain', 0, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+            ).bind(
+              bookingId,
+              invoice.id,
+              targetEmail,
+              subject,
+              invoice.file_name || 'Tax_Invoice.pdf',
+              pdfSize,
+              staffName,
+              JSON.stringify({ error: netErr.message, isUncertain: true })
+            ).run().catch(() => {});
+
+            return new Response(JSON.stringify({
+              success: false,
+              status: 'uncertain',
+              error: 'คำขอส่งอีเมลไปยัง Gmail API หมดเวลา (Timeout) หรือเครือข่ายขัดข้อง ระบบบันทึกสถานะเป็น "uncertain" และจะไม่ส่งซ้ำอัตโนมัติ เพื่อความปลอดภัย กรุณาตรวจสอบก่อนทำรายการใหม่'
+            }), { status: 504, headers: corsHeaders });
+          }
+          clearTimeout(timer);
+
+          if (!gmailRes.ok) {
+            const errBody = await gmailRes.text().catch(() => '');
+            const errMsg = `Gmail API ส่งข้อความไม่สำเร็จ (HTTP ${gmailRes.status}): ${errBody}`;
+            await env.DB.prepare(
+              `UPDATE tax_invoices
+               SET email_status = 'failed',
+                   email_error = ?,
+                   email_sent_at = CURRENT_TIMESTAMP
+               WHERE id = ?`
+            ).bind(errMsg, invoice.id).run().catch(() => {});
+
+            return new Response(JSON.stringify({
+              success: false,
+              status: 'failed',
+              error: errMsg
+            }), { status: 500, headers: corsHeaders });
+          }
+
+          const gmailData = await gmailRes.json().catch(() => ({}));
+          const finalMsgId = gmailData.id || ('gmail_' + Date.now());
+
+          await env.DB.prepare(
+            `UPDATE tax_invoices
+             SET email_status = 'gmail_accepted',
+                 email_sent_at = ?,
+                 email_dry_run = 0,
+                 email_message_id = ?,
+                 email_recipient = ?,
+                 email_error = NULL
+             WHERE id = ?`
+          ).bind(nowIso, finalMsgId, targetEmail, invoice.id).run().catch(() => {});
+
+          await env.DB.prepare(
+            `INSERT INTO tax_invoice_email_logs (
+              booking_id, tax_invoice_id, recipient_email, subject, status, is_dry_run,
+              message_id, file_name, file_size, dispatched_by, payload_preview, created_at
+            ) VALUES (?, ?, ?, ?, 'gmail_accepted', 0, ?, ?, ?, ?, ?, ?)`
+          ).bind(
+            bookingId,
+            invoice.id,
+            targetEmail,
+            subject,
+            finalMsgId,
+            invoice.file_name || 'Tax_Invoice.pdf',
+            pdfSize,
+            staffName,
+            JSON.stringify({ to: targetEmail, subject, status: 'gmail_accepted' }),
+            nowIso
+          ).run().catch(() => {});
+
+          await env.DB.prepare(
+            `INSERT INTO booking_history (booking_id, action, details, performed_by, created_at)
+             VALUES (?, 'send_tax_invoice_email_gmail', ?, ?, ?)`
+          ).bind(
+            bookingId,
+            ('ส่งคำขออีเมลใบกำกับภาษีเข้า Gmail API สำเร็จ (Message ID: ' + finalMsgId + ') ไปยัง ' + targetEmail),
+            staffName,
+            nowIso
+          ).run().catch(() => {});
+
+          return new Response(JSON.stringify({
+            success: true,
+            dry_run: false,
+            status: 'gmail_accepted',
+            message: 'Gmail API รับคำขอส่งอีเมลใบกำกับภาษีเรียบร้อยแล้ว (รอคิวส่งของ Gmail)',
+            data: {
+              booking_id: bookingId,
+              invoice_id: invoice.id,
+              invoice_number: invoice.invoice_number,
+              recipient: targetEmail,
+              message_id: finalMsgId,
+              file_name: invoice.file_name || 'Tax_Invoice.pdf',
+              file_size: pdfSize,
+              timestamp: nowIso,
+              email_preview: {
+                to: targetEmail,
+                from: `${senderName} <${senderEmail}>`,
+                reply_to: replyTo,
+                subject,
+                text: textBody,
+                html: htmlBody,
+                file_name: invoice.file_name || 'Tax_Invoice.pdf',
+                file_size: pdfSize
+              }
+            }
+          }), { headers: corsHeaders });
+        } catch (execErr) {
+          return new Response(JSON.stringify({
+            success: false,
+            status: 'failed',
+            error: execErr.message || 'เกิดข้อผิดพลาดในการเรียก Gmail API'
+          }), { status: 500, headers: corsHeaders });
+        }
       }
 
       if (pathname.startsWith('/api/bookings/') && pathname.endsWith('/cancel') && method === 'POST') {
@@ -8547,6 +10218,8 @@ export default {
 
         const bufferMins = await getCleaningBufferMinutes(env);
         const newEndBufferedISO = addMinutesToLocalISO(newEndISO, bufferMins);
+        const conflictIds = getWorkerConflictingRoomIds(targetRoomId);
+        const inPlaceholders = conflictIds.map(() => '?').join(', ');
 
         const updateItemStmt = env.DB.prepare(
           `UPDATE booking_items
@@ -8556,7 +10229,7 @@ export default {
              AND NOT EXISTS (
                SELECT 1 FROM booking_items bi
                JOIN bookings b ON bi.booking_id = b.id
-               WHERE bi.room_id = ?
+               WHERE bi.room_id IN (${inPlaceholders})
                  AND bi.id != ?
                  AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                  AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
@@ -8579,7 +10252,7 @@ export default {
           currentItem.room_id,
           bookingId,
           booking.subtotal_amount,
-          targetRoomId,
+          ...conflictIds,
           currentItem.id,
           newStartISO,
           `+${bufferMins} minutes`,
@@ -8768,9 +10441,13 @@ export default {
 
         const sanitizeRoomImageUrl = (rawUrl) => {
           if (!rawUrl || typeof rawUrl !== 'string') return null;
-          const trimmed = rawUrl.trim();
+          let trimmed = rawUrl.trim();
           if (!trimmed) return null;
           if (/^(https?:|\/\/|javascript:|vbscript:|file:)/i.test(trimmed)) return null;
+          if (trimmed.includes('..') || trimmed.includes(String.fromCharCode(92))) return null;
+          if (!trimmed.startsWith('/') && (trimmed.startsWith('uploads/') || trimmed.startsWith('rooms/'))) {
+            trimmed = '/' + (trimmed.startsWith('rooms/') ? 'uploads/' + trimmed : trimmed);
+          }
           if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed;
           if (/^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(trimmed)) return trimmed;
           return null;
@@ -9011,7 +10688,17 @@ export default {
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
 
         const parts = pathname.split('/');
-        const bookingId = parts[3];
+        const ref = decodeURIComponent(parts[3] || '');
+        if (!ref) return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+
+        const bookingRow = await env.DB.prepare(
+          'SELECT id, customer_name, receipt_number, payment_status, paid_amount FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
+        ).bind(ref, ref, ref).first();
+
+        if (!bookingRow) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+        const bookingId = bookingRow.id;
 
         if (method === 'GET') {
           const booking = await env.DB.prepare('SELECT * FROM bookings WHERE id = ?').bind(bookingId).first();
@@ -9055,10 +10742,65 @@ export default {
           return new Response(JSON.stringify({ success: true, message: 'แก้ไขข้อมูลการจองสำเร็จ' }), { headers: corsHeaders });
         }
 
-        // Hard permanent delete: Delete booking items first, then booking record
+        // Hard permanent delete: explicitly cascade delete all linked child records, freeing slot
         if (method === 'DELETE') {
-          await env.DB.prepare("DELETE FROM booking_items WHERE booking_id = ?").bind(bookingId).run();
-          await env.DB.prepare("DELETE FROM bookings WHERE id = ?").bind(bookingId).run();
+          const user = auth.user;
+          const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+          if (bookingRow.payment_status === 'paid' && !isAdmin) {
+            return new Response(JSON.stringify({ error: 'ไม่อนุญาตให้ลบรายการจองที่ชำระเงินแล้ว กรุณายกเลิกการจอง หรือให้ผู้ดูแลระบบ (Admin) ดำเนินการ' }), { status: 403, headers: corsHeaders });
+          }
+
+          // Check if linked to room hour credits
+          const creditEntry = await env.DB.prepare(
+            'SELECT e.id FROM room_hour_credit_entries e JOIN booking_items i ON i.id = e.booking_item_id WHERE i.booking_id = ? LIMIT 1'
+          ).bind(bookingId).first();
+          const sourceCredit = await env.DB.prepare(
+            'SELECT credit_id FROM room_hour_credits WHERE source_booking_id = ? LIMIT 1'
+          ).bind(bookingId).first();
+          if (creditEntry || sourceCredit) {
+            return new Response(JSON.stringify({ error: 'ไม่สามารถลบรายการจองนี้ได้ เนื่องจากผูกกับเครดิตชั่วโมงห้องประชุม' }), { status: 409, headers: corsHeaders });
+          }
+
+          const tablesRes = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+          const tableNames = new Set((tablesRes?.results || []).map(t => t.name));
+
+          const statements = [];
+          if (tableNames.has('line_guidelines_dispatches')) {
+            statements.push(env.DB.prepare('UPDATE line_guidelines_dispatches SET first_booking_id = NULL WHERE first_booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('support_tickets')) {
+            statements.push(env.DB.prepare('UPDATE support_tickets SET booking_id = NULL WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('line_notification_claims')) {
+            statements.push(env.DB.prepare('DELETE FROM line_notification_claims WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('room_guidelines_acknowledgements')) {
+            statements.push(env.DB.prepare('DELETE FROM room_guidelines_acknowledgements WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('tax_invoice_email_logs')) {
+            statements.push(env.DB.prepare('DELETE FROM tax_invoice_email_logs WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('tax_invoices')) {
+            statements.push(env.DB.prepare('DELETE FROM tax_invoices WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('slip_verifications')) {
+            statements.push(env.DB.prepare('DELETE FROM slip_verifications WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('payment_transactions')) {
+            statements.push(env.DB.prepare('DELETE FROM payment_transactions WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('booking_history')) {
+            statements.push(env.DB.prepare('DELETE FROM booking_history WHERE booking_id = ?').bind(bookingId));
+          }
+          if (tableNames.has('timeline_notes')) {
+            statements.push(env.DB.prepare('DELETE FROM timeline_notes WHERE booking_id = ?').bind(bookingId));
+          }
+          statements.push(
+            env.DB.prepare('DELETE FROM booking_items WHERE booking_id = ?').bind(bookingId),
+            env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId)
+          );
+          await env.DB.batch(statements);
+
           return new Response(JSON.stringify({ success: true, message: 'ลบรายการจองออกจากระบบอย่างถาวรสำเร็จ' }), { headers: corsHeaders });
         }
       }
@@ -9493,6 +11235,7 @@ export default {
         let qr_data = null;
         let bodyAccessToken = null;
         let bodyContact = null;
+        let bodyLineIdToken = null;
 
         const contentType = request.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
@@ -9502,6 +11245,7 @@ export default {
             qr_data = body.qr_data || body.qrData || body.qr;
             bodyAccessToken = body.access_token;
             bodyContact = body.contact;
+            bodyLineIdToken = body.line_id_token;
           } catch (e) {}
         } else if (contentType.includes('multipart/form-data')) {
           try {
@@ -9510,6 +11254,7 @@ export default {
             qr_data = formData.get('qr_data') || formData.get('qrData');
             bodyAccessToken = formData.get('access_token');
             bodyContact = formData.get('contact');
+            bodyLineIdToken = formData.get('line_id_token');
             if (file && typeof file === 'object' && typeof file.arrayBuffer === 'function') {
               const arrayBuffer = await file.arrayBuffer();
               const bytes = new Uint8Array(arrayBuffer);
@@ -9563,6 +11308,20 @@ export default {
         if (!tokenMatches && !contactMatches) {
           return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' }), { status: 403, headers: corsHeaders });
         }
+
+        // Verify Server-Confirmed LINE Recipient if token provided
+        const lineIdTokenHeader = request.headers.get('x-line-id-token') || bodyLineIdToken;
+        if (lineIdTokenHeader) {
+          const channelIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_id'").first();
+          const channelId = channelIdRow?.value?.trim() || env.LINE_CHANNEL_ID || '2011136579';
+          const verified = await verifyWorkerLineIdTokenWithApi(env, lineIdTokenHeader, channelId);
+          if (verified && verified.userId && booking.line_user_id && verified.userId.trim() === booking.line_user_id.trim() && !booking.line_user_id_verified) {
+            try {
+              await env.DB.prepare('UPDATE bookings SET line_user_id_verified = 1 WHERE id = ?').bind(booking.id).run();
+              booking.line_user_id_verified = 1;
+            } catch (_) {}
+          }
+        }
         let windowMins = 15;
         try {
           const pwRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'payment_window_minutes'").first();
@@ -9578,6 +11337,34 @@ export default {
 
         if (booking.payment_status === 'paid') {
           return new Response(JSON.stringify({ success: false, auto_approved: false, error: 'รายการจองนี้ชำระเงินแล้ว ไม่สามารถแนบสลิปซ้ำได้' }), { status: 409, headers: corsHeaders });
+        }
+
+        // Guidelines Acknowledgement Precondition Check
+        const { results: checkItems } = await env.DB.prepare(
+          `SELECT bi.room_id, r.name as room_name
+           FROM booking_items bi
+           LEFT JOIN rooms r ON bi.room_id = r.id
+           WHERE bi.booking_id = ?`
+        ).bind(booking.id).all();
+        const guidelinesPolicy = resolveRoomGuidelines(checkItems && checkItems[0]?.room_id, checkItems && checkItems[0]?.room_name);
+        const enforcementRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'").first();
+        const enforcementSetting = enforcementRow?.value || 'false';
+        const cutoverRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'guidelines_enforcement_cutover_at'").first();
+        const cutoverAt = cutoverRow?.value || GUIDELINES_CUTOVER_ISO;
+        const isEnforced = isGuidelinesEnforcedForBooking({
+          guidelinesPolicy,
+          enforcementSetting,
+          cutoverAt,
+          bookingCreatedAt: booking.created_at
+        });
+
+        if (isEnforced && !booking.guidelines_acknowledged_at) {
+          return new Response(JSON.stringify({
+            success: false,
+            auto_approved: false,
+            error: 'กรุณารับทราบข้อปฏิบัติการใช้ห้องประชุมก่อนส่งหลักฐานการชำระเงิน',
+            code: 'GUIDELINES_NOT_ACKNOWLEDGED'
+          }), { status: 400, headers: corsHeaders });
         }
 
         if (booking.payment_status === 'cancelled' || isExpiredByTime) {
@@ -9706,6 +11493,182 @@ export default {
           transRef: transRef || null,
           bankName: bankName || null,
           message: 'ส่งหลักฐานการชำระเงินเรียบร้อยแล้ว กรุณารอเจ้าหน้าที่ตรวจสอบ'
+        }), { headers: corsHeaders });
+      }
+
+      if (pathname.startsWith('/api/public/bookings/') && pathname.endsWith('/acknowledge-rules') && method === 'POST') {
+        const parts = pathname.split('/');
+        const idParam = parts[4];
+
+        let bookingId = isNaN(Number(idParam)) ? null : Number(idParam);
+        if (!bookingId && typeof idParam === 'string' && idParam.startsWith('BK-')) {
+          const raw = idParam.replace('BK-', '');
+          if (raw.length <= 6 && !isNaN(Number(raw))) {
+            bookingId = parseInt(raw, 10);
+          }
+        }
+
+        const booking = await env.DB.prepare(
+          'SELECT * FROM bookings WHERE id = ? OR receipt_number = ? OR UPPER(receipt_number) = UPPER(?)'
+        ).bind(bookingId || 0, idParam, idParam).first();
+
+        if (!booking) {
+          return new Response(JSON.stringify({ error: 'ไม่พบข้อมูลการจอง' }), { status: 404, headers: corsHeaders });
+        }
+
+        // Authorization check
+        let bodyAccessToken = null;
+        let bodyContact = null;
+        let bodyRuleSet = null;
+        let bodyRuleVersion = null;
+        let bodyLineIdToken = null;
+        const contentType = request.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          try {
+            const body = await request.json();
+            bodyAccessToken = body.access_token;
+            bodyContact = body.contact;
+            bodyRuleSet = body.rule_set;
+            bodyRuleVersion = body.rule_version;
+            bodyLineIdToken = body.line_id_token;
+          } catch (e) {}
+        }
+
+        const suppliedToken = request.headers.get('x-booking-token') || url.searchParams.get('access_token') || bodyAccessToken;
+        const suppliedContact = request.headers.get('x-booking-contact') || url.searchParams.get('contact') || bodyContact;
+        const normalizedContact = String(suppliedContact || '').replace(/\D/g, '');
+
+        const safeEqual = async (left, right) => {
+          if (!left || !right) return false;
+          const encoder = new TextEncoder();
+          const [a, b] = await Promise.all([left, right].map(value =>
+            crypto.subtle.digest('SHA-256', encoder.encode(String(value)))));
+          const bytesA = new Uint8Array(a);
+          const bytesB = new Uint8Array(b);
+          let difference = 0;
+          for (let i = 0; i < bytesA.length; i++) difference |= bytesA[i] ^ bytesB[i];
+          return difference === 0;
+        };
+
+        const tokenMatches = booking.qr_token && await safeEqual(suppliedToken, booking.qr_token);
+        const contactMatches = normalizedContact.length >= 9 &&
+          await safeEqual(normalizedContact, String(booking.contact || '').replace(/\D/g, ''));
+
+        if (!tokenMatches && !contactMatches) {
+          return new Response(JSON.stringify({ error: 'กรุณายืนยันเบอร์โทรศัพท์หรือสิทธิ์เข้าถึงรายการจอง' }), { status: 403, headers: corsHeaders });
+        }
+
+        if (booking.payment_status === 'cancelled') {
+          return new Response(JSON.stringify({ error: 'รายการจองนี้ถูกยกเลิกแล้ว ไม่สามารถดำเนินการต่อได้' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Resolve room details
+        const { results: items } = await env.DB.prepare(
+          `SELECT bi.*, r.name as room_name, r.capacity, r.image_url, r.description
+           FROM booking_items bi
+           LEFT JOIN rooms r ON bi.room_id = r.id
+           WHERE bi.booking_id = ?`
+        ).bind(booking.id).all();
+
+        const firstItem = items && items.length > 0 ? items[0] : null;
+        const guidelinesConfig = resolveRoomGuidelines(firstItem?.room_id, firstItem?.room_name);
+
+        if (!guidelinesConfig.required) {
+          return new Response(JSON.stringify({
+            success: true,
+            required: false,
+            message: 'ห้องนี้ไม่จำเป็นต้องรับทราบข้อปฏิบัติ'
+          }), { headers: corsHeaders });
+        }
+
+        // Strict validation: rule_set & rule_version must be provided and match current room policy
+        if (!bodyRuleSet || !bodyRuleVersion) {
+          return new Response(JSON.stringify({ error: 'กรุณาระบุรหัสชุดข้อปฏิบัติ (rule_set) และเวอร์ชัน (rule_version) ให้ครบถ้วน' }), { status: 400, headers: corsHeaders });
+        }
+        if (bodyRuleSet !== guidelinesConfig.rule_set || bodyRuleVersion !== guidelinesConfig.rule_version) {
+          return new Response(JSON.stringify({ error: 'รหัสชุดข้อปฏิบัติหรือเวอร์ชันไม่ถูกต้องหรือไม่ตรงกับห้องที่จอง' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Record acknowledgement in room_guidelines_acknowledgements
+        try {
+          await env.DB.prepare(`
+            CREATE TABLE IF NOT EXISTS room_guidelines_acknowledgements (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              booking_id INTEGER NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+              room_id INTEGER REFERENCES rooms(id),
+              rule_set TEXT NOT NULL,
+              rule_version TEXT NOT NULL,
+              customer_contact TEXT,
+              line_user_id TEXT,
+              acknowledged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(booking_id, rule_set, rule_version)
+            )
+          `).run();
+        } catch (_) {}
+
+        try {
+          await env.DB.prepare(
+            `INSERT OR IGNORE INTO room_guidelines_acknowledgements
+             (booking_id, room_id, rule_set, rule_version, customer_contact, line_user_id, acknowledged_at)
+             VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+          ).bind(
+            booking.id,
+            firstItem?.room_id || null,
+            guidelinesConfig.rule_set,
+            guidelinesConfig.rule_version,
+            booking.contact || null,
+            booking.line_user_id || null
+          ).run();
+        } catch (e) {
+          console.warn('[Guidelines] D1 acknowledgement row warning:', e?.message || e);
+        }
+
+        // Update booking record
+        await env.DB.prepare(
+          `UPDATE bookings
+           SET guidelines_acknowledged_at = COALESCE(guidelines_acknowledged_at, datetime('now')),
+               guidelines_rule_set = ?,
+               guidelines_rule_version = ?
+           WHERE id = ?`
+        ).bind(guidelinesConfig.rule_set, guidelinesConfig.rule_version, booking.id).run();
+
+        const updatedBooking = await env.DB.prepare(
+          'SELECT guidelines_acknowledged_at FROM bookings WHERE id = ?'
+        ).bind(booking.id).first();
+        const acknowledgedAt = updatedBooking?.guidelines_acknowledged_at || new Date().toISOString();
+
+        // Server-Confirmed LINE Recipient Check if token provided
+        const channelIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_id'").first();
+        const channelId = channelIdRow?.value?.trim() || env.LINE_CHANNEL_ID || '2011136579';
+
+        let verifiedLineUserId = null;
+        const lineIdTokenHeader = request.headers.get('x-line-id-token') || bodyLineIdToken;
+        if (lineIdTokenHeader) {
+          const verified = await verifyWorkerLineIdTokenWithApi(env, lineIdTokenHeader, channelId);
+          if (verified && verified.userId) {
+            verifiedLineUserId = verified.userId;
+          }
+        }
+
+        if (verifiedLineUserId && booking.line_user_id && verifiedLineUserId === booking.line_user_id.trim()) {
+          try {
+            await env.DB.prepare('UPDATE bookings SET line_user_id_verified = 1 WHERE id = ?').bind(booking.id).run();
+            booking.line_user_id_verified = 1;
+          } catch (_) {}
+        }
+
+        return new Response(JSON.stringify({
+          success: true,
+          acknowledged: true,
+          required: true,
+          rule_set: guidelinesConfig.rule_set,
+          rule_version: guidelinesConfig.rule_version,
+          acknowledged_at: acknowledgedAt,
+          line_notification: {
+            status: 'skipped_decoupled_to_confirmation',
+            deduplicated: false,
+            message: 'ข้อปฏิบัติจะถูกแนบไปกับข้อความยืนยันการจองทาง LINE หลังชำระเงินสำเร็จ'
+          }
         }), { headers: corsHeaders });
       }
 
@@ -9900,6 +11863,19 @@ export default {
           return safeItem;
         });
 
+        const guidelinesPolicy = resolveRoomGuidelines(roomInfo?.id, roomInfo?.name);
+        const enforcementRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'guidelines_enforcement_enabled'").first();
+        const enforcementSetting = enforcementRow?.value || 'false';
+        const enforcementEnabled = enforcementSetting === 'true' || enforcementSetting === '1' || enforcementSetting === 1;
+        const cutoverRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'guidelines_enforcement_cutover_at'").first();
+        const cutoverAt = cutoverRow?.value || GUIDELINES_CUTOVER_ISO;
+        const guidelinesEnforced = isGuidelinesEnforcedForBooking({
+          guidelinesPolicy,
+          enforcementSetting: enforcementEnabled,
+          cutoverAt,
+          bookingCreatedAt: booking.created_at
+        });
+
         return new Response(JSON.stringify({
           ...safeBooking,
           has_slip: Boolean(slip_image_url),
@@ -9911,7 +11887,15 @@ export default {
           end_time: items && items.length ? (items[0].end_time?.includes('T') ? items[0].end_time.split('T')[1].substring(0, 5) : items[0].end_time) : null,
           booking_date: items && items.length ? (items[0].start_time?.includes('T') ? items[0].start_time.split('T')[0] : booking.created_at?.split('T')[0]) : null,
           paymentDeadline: new Date(new Date(booking.created_at).getTime() + windowMins * 60 * 1000).toISOString(),
-          payment_window_minutes: windowMins
+          payment_window_minutes: windowMins,
+          guidelines_enforcement_enabled: enforcementEnabled,
+          guidelines_enforcement_cutover_at: cutoverAt,
+          guidelines_enforced: guidelinesEnforced,
+          guidelines_acknowledged: Boolean(booking.guidelines_acknowledged_at),
+          guidelines_acknowledged_at: booking.guidelines_acknowledged_at || null,
+          guidelines_required: Boolean(guidelinesPolicy.required),
+          guidelines_rule_set: booking.guidelines_rule_set || guidelinesPolicy.rule_set,
+          guidelines_rule_version: booking.guidelines_rule_version || guidelinesPolicy.rule_version
         }), { headers: corsHeaders });
       }
 
@@ -9920,8 +11904,8 @@ export default {
         const {
           customer_name, contact, email, department, note, room_id, booking_date,
           start_time, end_time, booking_type, layout, total_amount, line_user_id,
-          tax_invoice_required, tax_name, tax_address, tax_id, tax_phone,
-          tax_delivery_method, tax_postal_address, guest_count, guests
+          tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone,
+          tax_delivery_method, tax_online_subchannel, tax_postal_address, tax_email, guest_count, guests
         } = body;
 
         if (!customer_name || !contact || !room_id || !booking_date || !start_time || !end_time) {
@@ -9956,6 +11940,90 @@ export default {
         const bookingStartUtc = new Date(Date.UTC(by, bm - 1, bd, bsh - 7, bsm));
         if (bookingStartUtc.getTime() < Date.now() - 5 * 60 * 1000) {
           return new Response(JSON.stringify({ error: 'ขออภัย ไม่สามารถจองช่วงเวลาในอดีตได้ กรุณาเลือกช่วงเวลาใหม่' }), { status: 400, headers: corsHeaders });
+        }
+
+        // Validate Tax Invoice Information when requested
+        const isTaxInvoiceRequired = tax_invoice_required === 1 || tax_invoice_required === true || tax_invoice_required === '1' || tax_invoice_required === 'true';
+        let cleanTaxPayerType = null;
+        let cleanTaxName = null;
+        let cleanTaxId = null;
+        let cleanTaxBranchType = null;
+        let cleanTaxBranchNumber = null;
+        let cleanTaxAddress = null;
+        let cleanTaxPhone = null;
+        let cleanTaxDeliveryMethod = null;
+        let cleanTaxPostalAddress = null;
+        let cleanTaxEmail = null;
+
+        if (isTaxInvoiceRequired) {
+          cleanTaxPayerType = String(tax_payer_type || '').toLowerCase().trim();
+          if (cleanTaxPayerType !== 'individual' && cleanTaxPayerType !== 'corporate') {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุประเภทผู้เสียภาษี (บุคคลธรรมดา หรือ นิติบุคคล)' }), { status: 400, headers: corsHeaders });
+          }
+          cleanTaxName = String(tax_name || '').trim();
+          if (!cleanTaxName) {
+            return new Response(JSON.stringify({ error: cleanTaxPayerType === 'individual' ? 'กรุณากรอกชื่อ–นามสกุลสำหรับออกใบกำกับภาษี' : 'กรุณากรอกชื่อนิติบุคคลสำหรับออกใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+          }
+          cleanTaxId = String(tax_id || '').replace(/[-\s]/g, '').trim();
+          if (!cleanTaxId || cleanTaxId.length !== 13 || !/^\d{13}$/.test(cleanTaxId)) {
+            return new Response(JSON.stringify({ error: 'เลขประจำตัวผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' }), { status: 400, headers: corsHeaders });
+          }
+          cleanTaxAddress = String(tax_address || '').trim();
+          if (!cleanTaxAddress) {
+            return new Response(JSON.stringify({ error: cleanTaxPayerType === 'individual' ? 'ที่อยู่สำหรับออกใบกำกับภาษีจำเป็นต้องระบุ' : 'ที่อยู่จดทะเบียนสำหรับออกใบกำกับภาษีจำเป็นต้องระบุ' }), { status: 400, headers: corsHeaders });
+          }
+          cleanTaxPhone = String(tax_phone || contact || '').trim();
+          if (!cleanTaxPhone) {
+            return new Response(JSON.stringify({ error: 'กรุณาระบุเบอร์โทรศัพท์สำหรับใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+          }
+          if (cleanTaxPayerType === 'corporate') {
+            cleanTaxBranchType = (tax_branch_type === 'branch' ? 'branch' : 'head');
+            if (cleanTaxBranchType === 'branch') {
+              cleanTaxBranchNumber = String(tax_branch_number || '').trim();
+              if (!cleanTaxBranchNumber) {
+                return new Response(JSON.stringify({ error: 'กรุณาระบุเลขที่สาขาสำหรับนิติบุคคล' }), { status: 400, headers: corsHeaders });
+              }
+            } else {
+              cleanTaxBranchNumber = null;
+            }
+          } else {
+            cleanTaxBranchType = null;
+            cleanTaxBranchNumber = null;
+          }
+          cleanTaxDeliveryMethod = String(tax_delivery_method || 'online').trim();
+          const cleanSubchannel = tax_online_subchannel ? String(tax_online_subchannel).trim().toLowerCase() : null;
+
+          if (cleanTaxDeliveryMethod === 'postal') {
+            cleanTaxPostalAddress = String(tax_postal_address || '').trim();
+            if (!cleanTaxPostalAddress) {
+              return new Response(JSON.stringify({ error: 'กรุณาระบุที่อยู่สำหรับจัดส่งทางไปรษณีย์' }), { status: 400, headers: corsHeaders });
+            }
+            cleanTaxEmail = null;
+          } else {
+            cleanTaxPostalAddress = null;
+            if (cleanSubchannel === 'email') {
+              cleanTaxEmail = String(tax_email || '').trim();
+              if (!cleanTaxEmail) {
+                return new Response(JSON.stringify({ error: 'กรุณาระบุอีเมลสำหรับรับใบกำกับภาษี' }), { status: 400, headers: corsHeaders });
+              }
+              const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+              if (!emailRegex.test(cleanTaxEmail)) {
+                return new Response(JSON.stringify({ error: 'รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+              }
+            } else if (cleanSubchannel === 'line') {
+              cleanTaxEmail = null;
+            } else {
+              if (tax_email && String(tax_email).trim()) {
+                cleanTaxEmail = String(tax_email).trim();
+                const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                if (!emailRegex.test(cleanTaxEmail)) {
+                  return new Response(JSON.stringify({ error: 'รูปแบบอีเมลสำหรับรับใบกำกับภาษีไม่ถูกต้อง' }), { status: 400, headers: corsHeaders });
+                }
+              } else {
+                cleanTaxEmail = null;
+              }
+            }
+          }
         }
 
         const room = await env.DB.prepare("SELECT * FROM rooms WHERE id = ? AND status = 'active'").bind(room_id).first();
@@ -10006,6 +12074,17 @@ export default {
         const receiptNumber = await generateReceiptNumber(env);
         const pinCode = !roomUsesDoorPin(room || room_id) ? null : (room.pin_code?.trim() || await generateUniquePinCode(env));
 
+        let isLineVerified = 0;
+        const lineIdTokenHeader = request.headers.get('x-line-id-token') || body.line_id_token;
+        if (line_user_id && lineIdTokenHeader) {
+          const channelIdRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'line_channel_id'").first();
+          const channelId = channelIdRow?.value?.trim() || env.LINE_CHANNEL_ID || '2011136579';
+          const verified = await verifyWorkerLineIdTokenWithApi(env, lineIdTokenHeader, channelId);
+          if (verified && verified.userId && verified.userId.trim() === String(line_user_id).trim()) {
+            isLineVerified = 1;
+          }
+        }
+
         const nowIso = new Date().toISOString();
         let insBooking;
         try {
@@ -10014,19 +12093,18 @@ export default {
                customer_name, department, contact,
                subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
                payment_status, payment_method,
-               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
-               tax_invoice_required, tax_name, tax_address, tax_id, tax_phone, tax_delivery_method, tax_postal_address,
+               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id, line_user_id_verified,
+               tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone, tax_delivery_method, tax_postal_address, tax_email,
                guest_count,
                created_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name, department || note || '', contact,
             promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
             receiptNumber, pinCode,
-            email || null, line_user_id || null,
-            tax_invoice_required ? 1 : 0, tax_name || null, tax_address || null, tax_id || null, tax_phone || null,
-            tax_delivery_method || null, tax_postal_address || null,
+            email || null, line_user_id || null, isLineVerified,
+            isTaxInvoiceRequired ? 1 : 0, cleanTaxPayerType, cleanTaxName, cleanTaxAddress, cleanTaxId, cleanTaxBranchType, cleanTaxBranchNumber, cleanTaxPhone, cleanTaxDeliveryMethod, cleanTaxPostalAddress, cleanTaxEmail,
             parsedGuests,
             nowIso
           ).run();
@@ -10037,15 +12115,15 @@ export default {
                customer_name, department, contact,
                subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
                payment_status, payment_method,
-               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id,
+               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id, line_user_id_verified,
                created_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?)`
           ).bind(
             customer_name, department || note || '', contact,
             promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
             receiptNumber, pinCode,
-            email || null, line_user_id || null,
+            email || null, line_user_id || null, isLineVerified,
             nowIso
           ).run();
         }
@@ -10054,6 +12132,8 @@ export default {
         const bufferMins = await getCleaningBufferMinutes(env);
         const fullEndBuffered = addMinutesToLocalISO(fullEnd, bufferMins);
 
+        const conflictIds = getWorkerConflictingRoomIds(room_id);
+        const inPlaceholders = conflictIds.map(() => '?').join(', ');
         let insItemRes;
         try {
           insItemRes = await env.DB.prepare(
@@ -10062,7 +12142,7 @@ export default {
              WHERE NOT EXISTS (
                SELECT 1 FROM booking_items bi
                JOIN bookings b ON bi.booking_id = b.id
-               WHERE bi.room_id = ?
+               WHERE bi.room_id IN (${inPlaceholders})
                  AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                  AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                  AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -10070,7 +12150,7 @@ export default {
              )`
           ).bind(
             bookingId, room_id, subtotal, fullStart, fullEnd, subtotal, bLayout, bType, parsedGuests, pinCode,
-            room_id, fullStart, `+${bufferMins} minutes`, fullEndBuffered
+            ...conflictIds, fullStart, `+${bufferMins} minutes`, fullEndBuffered
           ).run();
         } catch (itemErr) {
           console.warn('Extended item insert failed, falling back to core item schema:', itemErr);
@@ -10080,7 +12160,7 @@ export default {
              WHERE NOT EXISTS (
                SELECT 1 FROM booking_items bi
                JOIN bookings b ON bi.booking_id = b.id
-               WHERE bi.room_id = ?
+               WHERE bi.room_id IN (${inPlaceholders})
                  AND (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
                  AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
                  AND (? < replace(datetime(bi.end_time, ?), ' ', 'T')
@@ -10088,7 +12168,7 @@ export default {
              )`
           ).bind(
             bookingId, room_id, subtotal, fullStart, fullEnd, subtotal,
-            room_id, fullStart, `+${bufferMins} minutes`, fullEndBuffered
+            ...conflictIds, fullStart, `+${bufferMins} minutes`, fullEndBuffered
           ).run();
         }
 
@@ -10096,7 +12176,7 @@ export default {
           await env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId).run();
           const latestConflict = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
           return new Response(JSON.stringify({
-            error: formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins })
+            error: formatOverlapErrorMessage(room.name, latestConflict.hasOverlap ? latestConflict : { hasOverlap: true, isCleaningBuffer: false, bufferMinutes: bufferMins }, room_id)
           }), { status: 409, headers: corsHeaders });
         }
 
@@ -10550,7 +12630,7 @@ export default {
             }), { headers: corsHeaders });
           }
 
-          if (env && (env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
+          if (env && (getEffectiveEnvironment(env) === 'staging' || env.ENVIRONMENT === 'staging' || env.DISABLE_LIVE_LINE === 'true')) {
             return new Response(JSON.stringify({
               success: true,
               connected: true,
@@ -11945,3 +14025,9 @@ async function uploadToOneDriveFromWorker(env, sqlContent, fileName) {
 
 const buildLineConfirmationFlex = buildLineBookingConfirmationFlex;
 const buildLineBookingCancelledFlex = buildLineBookingCancellationFlex;
+
+export {
+  triggerLineBookingConfirmation,
+  sendLineBookingConfirmation,
+  verifyWorkerLineIdTokenWithApi
+};
