@@ -12097,12 +12097,12 @@ export default {
                customer_name, department, contact,
                subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
                payment_status, payment_method,
-               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id, line_user_id_verified,
+               receipt_number, pin_code, booking_source, booking_channel, customer_type, customer_email, checkin_status, line_user_id, line_user_id_verified,
                tax_invoice_required, tax_payer_type, tax_name, tax_address, tax_id, tax_branch_type, tax_branch_number, tax_phone, tax_delivery_method, tax_postal_address, tax_email,
                guest_count,
                created_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', 'line_oa', 'general', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ).bind(
             customer_name, department || note || '', contact,
             promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
@@ -12114,22 +12114,42 @@ export default {
           ).run();
         } catch (dbErr) {
           console.warn('Extended booking insert failed, falling back to core schema:', dbErr);
-          insBooking = await env.DB.prepare(
-            `INSERT INTO bookings (
-               customer_name, department, contact,
-               subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
-               payment_status, payment_method,
-               receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id, line_user_id_verified,
-               created_at
-             )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?)`
-          ).bind(
-            customer_name, department || note || '', contact,
-            promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
-            receiptNumber, pinCode,
-            email || null, line_user_id || null, isLineVerified,
-            nowIso
-          ).run();
+          try {
+            insBooking = await env.DB.prepare(
+              `INSERT INTO bookings (
+                 customer_name, department, contact,
+                 subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
+                 payment_status, payment_method,
+                 receipt_number, pin_code, booking_source, booking_channel, customer_type, customer_email, checkin_status, line_user_id, line_user_id_verified,
+                 created_at
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', 'line_oa', 'general', ?, 'pending', ?, ?, ?)`
+            ).bind(
+              customer_name, department || note || '', contact,
+              promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
+              receiptNumber, pinCode,
+              email || null, line_user_id || null, isLineVerified,
+              nowIso
+            ).run();
+          } catch (fallbackErr) {
+            console.warn('Fallback insert with channel/type failed, trying legacy insert:', fallbackErr);
+            insBooking = await env.DB.prepare(
+              `INSERT INTO bookings (
+                 customer_name, department, contact,
+                 subtotal_amount, discount_type, discount_value, discount_amount, total_amount, paid_amount, balance_amount,
+                 payment_status, payment_method,
+                 receipt_number, pin_code, booking_source, customer_email, checkin_status, line_user_id, line_user_id_verified,
+                 created_at
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', 'transfer', ?, ?, 'online', ?, 'pending', ?, ?, ?)`
+            ).bind(
+              customer_name, department || note || '', contact,
+              promoPricing.subtotal_amount, promoPricing.discount_type, promoPricing.discount_value, promoPricing.discount_amount, promoPricing.total_amount, promoPricing.total_amount,
+              receiptNumber, pinCode,
+              email || null, line_user_id || null, isLineVerified,
+              nowIso
+            ).run();
+          }
         }
 
         const bookingId = insBooking.meta.last_row_id;
