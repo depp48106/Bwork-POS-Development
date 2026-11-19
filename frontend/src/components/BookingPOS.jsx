@@ -4,6 +4,7 @@ import AttachSlipModal from './AttachSlipModal';
 import RoomExtensionModal from './RoomExtensionModal';
 import AuthenticatedSlipImage from './AuthenticatedSlipImage';
 import { openAuthenticatedImageInNewTab } from '../utils/authenticatedFile';
+import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
 import BasecampQuotaModal from './BasecampQuotaModal';
 import './BookingDetailsModal.css';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
@@ -127,6 +128,7 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
   const [cart, setCart] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [hoveredBooking, setHoveredBooking] = useState(null);
+  const [failedRoomImages, setFailedRoomImages] = useState({});
 
   // View Modes: 'matrix' (Unified Timeline Matrix & Rich Room Cards) | 'calendar' (Monthly Calendar Overview)
   const [mainViewMode, setMainViewMode] = useState('matrix');
@@ -2221,13 +2223,34 @@ function BookingPOS({ user, settings, sysAlert, preselectedRoom, clearPreselecte
                               onMouseLeave={e => e.currentTarget.style.backgroundColor = 'var(--bg-card-solid, var(--bg-card))'}
                               title={`${room.name} (${room.capacity} ที่นั่ง) · ${roomPinText} · คลิกเพื่อเปิดฟอร์มจองห้องนี้`}
                             >
-                              {room.image_url ? (
-                                <img src={room.image_url} alt={room.name} style={{ width: '40px', height: '40px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0, border: '1px solid var(--border-color)' }} />
-                              ) : (
-                                <div style={{ width: '40px', height: '40px', borderRadius: '10px', backgroundColor: 'rgba(37,99,235,0.1)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                                  <Building size={20} />
-                                </div>
-                              )}
+                              {(() => {
+                                const rawRoomImage = room.image_url || room.room_image_url;
+                                const hasValidImage = Boolean(rawRoomImage && !failedRoomImages[rawRoomImage]);
+                                return hasValidImage ? (
+                                  <img
+                                    src={getRoomImageUrl(rawRoomImage)}
+                                    alt={room.name}
+                                    onError={(e) => {
+                                      if (!handleRoomImageError(e, rawRoomImage)) {
+                                        setFailedRoomImages(prev => ({ ...prev, [rawRoomImage]: true }));
+                                      }
+                                    }}
+                                    style={{
+                                      width: '40px',
+                                      height: '40px',
+                                      borderRadius: '10px',
+                                      objectFit: 'cover',
+                                      objectPosition: `${room.image_position_x ?? 50}% ${room.image_position_y ?? 50}%`,
+                                      flexShrink: 0,
+                                      border: '1px solid var(--border-color)'
+                                    }}
+                                  />
+                                ) : (
+                                  <div style={{ width: '40px', height: '40px', borderRadius: '10px', backgroundColor: 'rgba(37,99,235,0.1)', color: 'var(--primary-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                                    <Building size={20} />
+                                  </div>
+                                );
+                              })()}
 
                               <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
