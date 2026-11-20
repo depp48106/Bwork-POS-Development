@@ -814,82 +814,311 @@ button:active {
    Interactive Horizontal Time Bar & Guest Filter Enhancements
    ========================================================================= */
 
-/* Search Mode Selector (ตามจำนวนคน vs ระบุห้อง) */
-.customer-search-mode-bar {
+/* =========================================================================
+   Bottom Sheet / Date Selection Modal
+   ========================================================================= */
+.bottom-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(19, 36, 64, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 1000;
   display: flex;
-  background-color: #ffffff;
-  border: 1.5px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 4px;
-  gap: 4px;
-  margin-bottom: 16px;
-  box-shadow: var(--shadow-sm);
+  align-items: flex-end;
+  justify-content: center;
+  animation: fadeInBackdrop 0.2s ease-out;
 }
 
-.customer-search-mode-btn {
+@keyframes fadeInBackdrop {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.bottom-sheet-container {
+  width: 100%;
+  max-width: 520px;
+  background-color: #ffffff;
+  border-radius: 24px 24px 0 0;
+  padding: 16px 20px max(24px, calc(16px + env(safe-area-inset-bottom, 0px))) 20px;
+  box-shadow: 0 -8px 32px rgba(19, 36, 64, 0.25);
+  animation: slideUpSheet 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+@media (min-width: 600px) {
+  .bottom-sheet-overlay {
+    align-items: center;
+    padding: 20px;
+  }
+  .bottom-sheet-container {
+    border-radius: 24px;
+    padding: 24px;
+    box-shadow: 0 16px 40px rgba(19, 36, 64, 0.25);
+    animation: scaleInModal 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+@keyframes slideUpSheet {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@keyframes scaleInModal {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.bottom-sheet-handle {
+  width: 40px;
+  height: 5px;
+  background-color: #cbd5e1;
+  border-radius: 999px;
+  margin: 0 auto 4px auto;
+}
+
+.bottom-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.bottom-sheet-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--navy);
+}
+
+.bottom-sheet-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.bottom-sheet-close-btn:hover {
+  background-color: var(--bg-page);
+  color: var(--navy);
+}
+
+/* Modal Mode Segmented Control */
+.modal-mode-tabs {
+  display: flex;
+  background-color: #f1f5f9;
+  padding: 4px;
+  border-radius: 12px;
+  gap: 4px;
+}
+
+.modal-mode-tab {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 14px;
-  border-radius: 10px;
+  padding: 10px;
+  border-radius: 9px;
   border: none;
   background-color: transparent;
   color: var(--text-muted);
-  font-size: 0.92rem;
+  font-size: 0.88rem;
   font-weight: 700;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
-.customer-search-mode-btn--active {
-  background-color: var(--navy) !important;
-  color: #ffffff !important;
-  box-shadow: 0 2px 8px rgba(19, 36, 64, 0.2);
+.modal-mode-tab--active {
+  background-color: #ffffff !important;
+  color: var(--navy) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-/* Guest input container */
-.customer-guest-card {
-  background-color: #ffffff;
-  border: 1.5px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 14px 16px;
-  margin-bottom: 16px;
-  box-shadow: var(--shadow-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.customer-guest-presets {
+/* Number Counter with Minus and Plus Buttons */
+.counter-box {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  justify-content: center;
+  gap: 14px;
+  margin: 12px 0;
 }
 
-.customer-guest-preset-btn {
-  padding: 5px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background-color: var(--bg-page);
-  color: var(--text-main);
-  font-size: 0.78rem;
-  font-weight: 700;
+.counter-btn {
+  width: 52px;
+  height: 52px;
+  min-width: 48px;
+  min-height: 48px;
+  border-radius: 14px;
+  border: 1.5px solid var(--border);
+  background-color: #ffffff;
+  color: var(--navy);
+  font-size: 1.6rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: all 0.15s ease;
+  user-select: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
 }
 
-.customer-guest-preset-btn:hover {
+.counter-btn:hover:not(:disabled) {
   border-color: var(--primary);
+  background-color: var(--primary-light);
   color: var(--primary);
 }
 
-.customer-guest-preset-btn--active {
-  background-color: var(--primary) !important;
-  color: #ffffff !important;
-  border-color: var(--primary) !important;
+.counter-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background-color: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+.counter-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.counter-input {
+  width: 120px;
+  height: 52px;
+  text-align: center;
+  font-size: 1.4rem;
+  font-weight: 900;
+  color: var(--navy);
+  border: 2px solid var(--border);
+  border-radius: 14px;
+  background-color: #ffffff;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+.counter-input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.15);
+}
+
+/* Active Filter Summary Bar above room results */
+.customer-summary-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background-color: #ffffff;
+  border: 1.5px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 16px;
+  margin-bottom: 18px;
+  box-shadow: var(--shadow-sm);
+}
+
+.customer-summary-filter-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.customer-summary-filter-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background-color: var(--primary-light);
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.customer-summary-filter-text {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--navy);
+  letter-spacing: -0.01em;
+}
+
+.customer-summary-filter-sub {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.customer-summary-filter-change-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1.5px solid var(--primary);
+  background-color: #ffffff;
+  color: var(--primary);
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 3px rgba(15, 118, 110, 0.1);
+}
+
+.customer-summary-filter-change-btn:hover {
+  background-color: var(--primary);
+  color: #ffffff;
+}
+
+/* iOS-style Modern Toggle Switch */
+.switch-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  gap: 12px;
+}
+
+.switch-track {
+  position: relative;
+  width: 50px;
+  height: 28px;
+  background-color: #cbd5e1;
+  border-radius: 999px;
+  transition: background-color 0.22s ease;
+  flex-shrink: 0;
+}
+
+.switch-track--checked {
+  background-color: #0F766E !important;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 24px;
+  height: 24px;
+  background-color: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.switch-thumb--checked {
+  transform: translateX(22px);
 }
 
 /* Interactive Time Bar */

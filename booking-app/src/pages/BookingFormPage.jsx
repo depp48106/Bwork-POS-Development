@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { 
+import {
   User, Users, Phone, Mail, Building, FileText, CheckCircle2,
   ArrowLeft, ChevronRight, ChevronDown, AlertCircle, ShieldCheck, CheckSquare, Square, MessageSquare, Send, Truck, Sparkles
 } from 'lucide-react';
@@ -729,32 +729,34 @@ export default function BookingFormPage() {
               />
             </div>
 
-            {/* TAX INVOICE ACCORDION */}
+            {/* TAX INVOICE SWITCH CARD */}
             <div style={{
               border: '1.5px solid var(--border)',
-              borderRadius: '14px',
-              padding: '14px',
+              borderRadius: '16px',
+              padding: '16px',
               backgroundColor: needTaxInvoice ? '#ffffff' : 'var(--bg-page)',
               boxShadow: needTaxInvoice ? 'var(--shadow-sm)' : 'none',
               transition: 'all 0.2s ease'
             }}>
-              <div 
+              <div
                 id="tax-invoice-accordion-toggle"
                 onClick={() => setNeedTaxInvoice(!needTaxInvoice)}
-                style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', userSelect: 'none' }}
+                className="switch-container"
               >
-                {needTaxInvoice ? (
-                  <CheckSquare size={20} style={{ color: 'var(--primary)', flexShrink: 0 }} />
-                ) : (
-                  <Square size={20} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                )}
                 <div>
-                  <span style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--text-main)' }}>
-                    ต้องการขอใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบ
-                  </span>
-                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--navy)' }}>
+                    ขอใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบ
+                  </div>
+                  <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                     (ออกในนามนิติบุคคล บริษัท หรือบุคคลธรรมดา)
                   </div>
+                </div>
+
+                <div
+                  id="tax-invoice-switch"
+                  className={`switch-track ${needTaxInvoice ? 'switch-track--checked' : ''}`}
+                >
+                  <div className={`switch-thumb ${needTaxInvoice ? 'switch-thumb--checked' : ''}`} />
                 </div>
               </div>
 

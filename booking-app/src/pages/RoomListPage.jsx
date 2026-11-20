@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Users, Wifi, Tv, Wind, CheckCircle2,
-  ArrowLeft, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Calendar, Clock, Sparkles, Building, AlertCircle, Filter, Check, Edit3, X
+  ArrowLeft, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Calendar, Clock, Sparkles, Building, AlertCircle, Check, Edit3, X, Minus, Plus
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
@@ -24,6 +24,10 @@ for (let h = 8; h <= 18; h++) {
   }
 }
 
+const THAI_MONTHS_SHORT = [
+  'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
+  'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'
+];
 const THAI_MONTHS_FULL = [
   'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
   'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'
@@ -50,22 +54,32 @@ const formatToDdMmYyyy = (isoStr) => {
   return `${d}/${m}/${y}`;
 };
 
-const formatThaiDateDesc = (isoStr) => {
-  if (!isoStr) return '';
-  const [y, m, d] = isoStr.split('-').map(Number);
-  const date = new Date(y, m - 1, d);
-  const dayName = THAI_DAYS[date.getDay()];
-  const monthName = THAI_MONTHS_FULL[m - 1];
-  const thaiYear = y + 543;
-  return `วัน${dayName}ที่ ${d} ${monthName} ${thaiYear}`;
-};
-
 const formatThaiMonthYear = (monthKey) => {
   if (!monthKey) return '';
   const [y, m] = monthKey.split('-').map(Number);
   const monthName = THAI_MONTHS_FULL[m - 1];
   const thaiYear = y + 543;
   return `${monthName} ${thaiYear}`;
+};
+
+// e.g. "อังคาร 24 พฤศจิกายน 2569"
+const formatModalHeaderDate = (isoStr) => {
+  if (!isoStr) return '';
+  const [y, m, d] = isoStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  const dayName = THAI_DAYS[date.getDay()];
+  const monthName = THAI_MONTHS_FULL[m - 1];
+  const thaiYear = y + 543;
+  return `${dayName} ${d} ${monthName} ${thaiYear}`;
+};
+
+// e.g. "24 พ.ย. 2569"
+const formatShortThaiDate = (isoStr) => {
+  if (!isoStr) return '';
+  const [y, m, d] = isoStr.split('-').map(Number);
+  const monthShort = THAI_MONTHS_SHORT[m - 1];
+  const thaiYear = y + 543;
+  return `${d} ${monthShort} ${thaiYear}`;
 };
 
 const getBangkokTodayIso = () => {
@@ -103,12 +117,13 @@ export default function RoomListPage() {
     return todayIso;
   }, [query, savedDraft, todayIso]);
 
+  // Confirmed States in effect
   const [dateStr, setDateStr] = useState(initialDate);
   const [currentMonthKey, setCurrentMonthKey] = useState(initialDate.slice(0, 7));
 
-  // Search Mode: 'byGuests' (default) vs 'directRoom'
+  // Confirmed Search Mode: 'byGuests' (default) vs 'directRoom'
   const initialMode = useMemo(() => {
-    if (query.get('roomId') !== null) return 'directRoom';
+    if (query.get('roomId') !== null && query.get('roomId') !== '') return 'directRoom';
     if (query.get('guests')) return 'byGuests';
     if (savedDraft?.guests) return 'byGuests';
     if (savedDraft?.room_id) return 'directRoom';
@@ -117,7 +132,7 @@ export default function RoomListPage() {
 
   const [searchMode, setSearchMode] = useState(initialMode);
 
-  // Guest count for 'byGuests' mode
+  // Confirmed Guest count for 'byGuests' mode
   const initialGuests = useMemo(() => {
     const qGuests = query.get('guests');
     if (qGuests) {
@@ -130,16 +145,28 @@ export default function RoomListPage() {
 
   const [guests, setGuests] = useState(initialGuests);
 
-  // Expanded Room (accordion / time selector)
-  const initialExpandedRoomId = useMemo(() => {
+  // Confirmed Direct Room ID
+  const initialRoomId = useMemo(() => {
     const qRoom = query.get('roomId');
-    if (qRoom) return parseInt(qRoom, 10) || qRoom;
+    if (qRoom !== null && qRoom !== '') return parseInt(qRoom, 10) || qRoom;
     if (savedDraft?.room_id) return savedDraft.room_id;
     return null;
   }, [query, savedDraft]);
 
-  const [expandedRoomId, setExpandedRoomId] = useState(initialExpandedRoomId);
+  const [confirmedRoomId, setConfirmedRoomId] = useState(initialRoomId);
+
+  // Expanded Room (accordion / time selector)
+  const [expandedRoomId, setExpandedRoomId] = useState(initialRoomId);
   const [timelineError, setTimelineError] = useState('');
+
+  // -------------------------------------------------------------
+  // Bottom Sheet Modal States (staged values until "ตกลง" is pressed)
+  // -------------------------------------------------------------
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalDate, setModalDate] = useState(initialDate);
+  const [modalMode, setModalMode] = useState(initialMode);
+  const [modalGuests, setModalGuests] = useState(initialGuests);
+  const [modalRoomId, setModalRoomId] = useState(initialRoomId || '');
 
   // Master Data States
   const [rooms, setRooms] = useState([]);
@@ -204,9 +231,10 @@ export default function RoomListPage() {
       }
     }
     const qRoom = query.get('roomId');
-    if (qRoom !== null) {
+    if (qRoom !== null && qRoom !== '') {
       const parsedId = parseInt(qRoom, 10) || qRoom;
-      setExpandedRoomId(parsedId || null);
+      setConfirmedRoomId(parsedId);
+      setExpandedRoomId(parsedId);
       setSearchMode('directRoom');
     }
     const qGuests = query.get('guests');
@@ -285,24 +313,58 @@ export default function RoomListPage() {
 
   const jumpToToday = () => {
     setCurrentMonthKey(todayIso.slice(0, 7));
-    handleDateSelect(todayIso);
+    handleDateTap(todayIso);
   };
 
-  const handleDateSelect = (newDate) => {
-    if (newDate < todayIso) return;
-    setDateStr(newDate);
-    const newMonth = newDate.slice(0, 7);
+  // When tapping a date on calendar: open bottom sheet modal with staged date
+  const handleDateTap = (tappedDate) => {
+    if (tappedDate < todayIso) return;
+    setModalDate(tappedDate);
+    setModalMode(searchMode);
+    setModalGuests(guests || 4);
+    setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
+    setIsModalOpen(true);
+  };
+
+  // When clicking "เปลี่ยน" button above results: open modal with current confirmed values
+  const handleOpenEditModal = () => {
+    setModalDate(dateStr);
+    setModalMode(searchMode);
+    setModalGuests(guests || 4);
+    setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
+    setIsModalOpen(true);
+  };
+
+  // Close modal without saving changes
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+  };
+
+  // Confirm choices in modal and update the view
+  const handleConfirmModal = () => {
+    setDateStr(modalDate);
+    const newMonth = modalDate.slice(0, 7);
     if (newMonth !== currentMonthKey) {
       setCurrentMonthKey(newMonth);
     }
+    setSearchMode(modalMode);
+
     const params = new URLSearchParams();
-    params.set('date', newDate);
-    if (searchMode === 'byGuests' && guests) {
-      params.set('guests', guests);
-    } else if (expandedRoomId) {
-      params.set('roomId', expandedRoomId);
+    params.set('date', modalDate);
+
+    if (modalMode === 'byGuests') {
+      const gVal = Math.max(1, parseInt(modalGuests, 10) || 1);
+      setGuests(gVal);
+      params.set('guests', gVal);
+      setConfirmedRoomId(null);
+    } else {
+      setConfirmedRoomId(modalRoomId);
+      setExpandedRoomId(modalRoomId);
+      params.set('roomId', modalRoomId);
     }
+
     navigate(`/rooms?${params.toString()}`, { replace: true });
+    setIsModalOpen(false);
   };
 
   // Build Calendar Weeks for Monthly Interactive Grid
@@ -487,7 +549,6 @@ export default function RoomListPage() {
       return { isOccupied: true, reason: 'past', label: 'เวลานี้ผ่านมาแล้ว' };
     }
 
-    // Physical space conflict resolution (Pluto, Jupiter & Co-working etc.)
     const conflictingIds = getConflictingRoomIds(roomId);
     const bufferMins = Number(schedule.cleaning_buffer_minutes || schedule.buffer_minutes) || 30;
 
@@ -544,7 +605,7 @@ export default function RoomListPage() {
     return { isOccupied: false, label: 'ว่างพร้อมจอง' };
   };
 
-  // Helper to check if a specific time interval [startMins, endMins] is completely unblocked
+  // Helper to check if a specific time interval is clear
   const isIntervalClear = useCallback((roomId, startMins, endMins) => {
     if (!schedule || !schedule.rooms) return true;
     if (startMins < 8 * 60 || endMins > 18 * 60 || startMins >= endMins) return false;
@@ -570,25 +631,29 @@ export default function RoomListPage() {
         const bEndBufferedMins = bEndMins + bufferMins;
         const reqEndBufferedMins = endMins + bufferMins;
 
-        // Overlap direct
         if (startMins < bEndMins && endMins > bStartMins) return false;
-        // Buffer after b
         if (bEndMins <= startMins && startMins < bEndBufferedMins && bEndMins < 18 * 60) return false;
-        // Buffer before b
         if (endMins <= bStartMins && reqEndBufferedMins > bStartMins) return false;
       }
     }
     return true;
   }, [schedule, isToday, currentMins]);
 
-  // Smart Room Categorization & Tier Matching for 'byGuests' mode
-  const { recommendedRooms, upgradeRooms, allSortedRooms } = useMemo(() => {
+  // Smart Room Categorization for 'byGuests' mode
+  const { recommendedRooms, upgradeRooms, directSelectedRoom, allSortedRooms } = useMemo(() => {
     const sorted = sortRoomsByStandardOrder(rooms);
+
     if (searchMode === 'directRoom') {
-      return { recommendedRooms: sorted, upgradeRooms: [], allSortedRooms: sorted };
+      const selRoom = confirmedRoomId ? sorted.find(r => String(r.id) === String(confirmedRoomId)) : null;
+      return {
+        recommendedRooms: selRoom ? [selRoom] : sorted,
+        upgradeRooms: [],
+        directSelectedRoom: selRoom,
+        allSortedRooms: sorted
+      };
     }
 
-    const reqGuests = parseInt(guests, 10) || 1;
+    const reqGuests = Math.max(1, parseInt(guests, 10) || 1);
     const recommended = [];
     const upgrade = [];
 
@@ -597,7 +662,6 @@ export default function RoomListPage() {
       const classroomCap = room.has_classroom === 1 ? (room.classroom_capacity || standardCap) : standardCap;
       const maxRoomCap = Math.max(standardCap, classroomCap);
 
-      // Exclude rooms that cannot accommodate the requested guests in any configuration
       if (maxRoomCap < reqGuests) return;
 
       if (reqGuests <= 4) {
@@ -626,52 +690,10 @@ export default function RoomListPage() {
     return {
       recommendedRooms: recommended,
       upgradeRooms: upgrade,
+      directSelectedRoom: null,
       allSortedRooms: sorted
     };
-  }, [rooms, searchMode, guests]);
-
-  // Proceed to Step 2 Form
-  const handleProceedToForm = (room) => {
-    const layout = roomLayouts[room.id] || 'standard';
-    const isClassroom = layout === 'classroom';
-    const sel = getRoomSelection(room);
-
-    const rawImage = isClassroom && room.classroom_image_url ? room.classroom_image_url : room.image_url;
-    const safeImage = (typeof rawImage === 'string' && rawImage.startsWith('data:')) ? '' : rawImage;
-
-    const bookingPayload = {
-      room_id: room.id,
-      room_name: room.name,
-      room_capacity: room.capacity || 4,
-      classroom_capacity: room.classroom_capacity || room.capacity || 4,
-      effective_capacity: sel.effectiveCapacity,
-      image_url: safeImage,
-      date: dateStr,
-      start_time: sel.startTime,
-      end_time: sel.endTime,
-      duration: sel.duration,
-      guests: guests || sel.effectiveCapacity,
-      layout: layout,
-      booking_type: sel.mode,
-      rate_label: sel.rateLabel,
-      hourly_rate: sel.hourlyPrice,
-      daily_rate: sel.dailyPrice,
-      half_day_rate: sel.halfDayPrice,
-      subtotal_amount: sel.subtotalPrice || sel.totalPrice,
-      discount_amount: sel.discountAmount || 0,
-      discount_type: sel.isPromotionApplied ? 'percent' : 'none',
-      discount_value: sel.isPromotionApplied ? (sel.discountValue ?? (promotion?.discount_value || 5)) : 0,
-      total_amount: sel.totalPrice
-    };
-
-    try {
-      sessionStorage.setItem('current_booking_payload', JSON.stringify(bookingPayload));
-    } catch (e) {
-      console.warn('[Storage] sessionStorage current_booking_payload failed:', e);
-    }
-
-    navigate('/form', { state: bookingPayload });
-  };
+  }, [rooms, searchMode, guests, confirmedRoomId]);
 
   // Handle slot tap on horizontal timeline bar
   const handleTimelineSlotTap = (room, slotIndex) => {
@@ -679,7 +701,6 @@ export default function RoomListPage() {
     const slotStartMins = 8 * 60 + slotIndex * 30;
     const slotEndMins = slotStartMins + 30;
 
-    // Check if slot itself is clear
     if (!isIntervalClear(room.id, slotStartMins, slotEndMins)) {
       setTimelineError('ช่วงเวลานี้ไม่ว่าง (ติดจอง หรือ อยู่ในช่วงทำความสะอาด)');
       return;
@@ -687,21 +708,15 @@ export default function RoomListPage() {
 
     const currentSel = roomSelections[room.id] || {};
     const curStart = currentSel.startTime || globalStartTime;
-    const curEnd = currentSel.endTime || globalEndTime;
     const [cSH, cSM] = curStart.split(':').map(Number);
-    const [cEH, cEM] = curEnd.split(':').map(Number);
     const curStartMins = cSH * 60 + cSM;
-    const curEndMins = cEH * 60 + cEM;
 
     const slotStartStr = `${String(Math.floor(slotStartMins / 60)).padStart(2, '0')}:${String(slotStartMins % 60).padStart(2, '0')}`;
     const slotEndStr = `${String(Math.floor(slotEndMins / 60)).padStart(2, '0')}:${String(slotEndMins % 60).padStart(2, '0')}`;
 
-    // If tapping before current start OR if tapping when current start is already set:
     if (slotStartMins < curStartMins || slotStartMins === curStartMins) {
-      // Set new start time
       let newEndMins = slotStartMins + 60;
       if (newEndMins > 18 * 60) newEndMins = 18 * 60;
-      // If 60 min crosses obstacle, check if 30 min is clear
       if (!isIntervalClear(room.id, slotStartMins, newEndMins)) {
         if (isIntervalClear(room.id, slotStartMins, slotStartMins + 30)) {
           newEndMins = slotStartMins + 30;
@@ -716,7 +731,6 @@ export default function RoomListPage() {
         [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: slotStartStr, endTime: newEndStr }
       }));
     } else {
-      // Tapping after curStart -> set end time to this slot's end
       const proposedEndMins = slotEndMins;
       if (!isIntervalClear(room.id, curStartMins, proposedEndMins)) {
         setTimelineError('ไม่สามารถเลือกคร่อมช่วงที่ติดจองหรือทำความสะอาดได้');
@@ -742,7 +756,6 @@ export default function RoomListPage() {
 
     let newEndMins = curEndMins;
 
-    // If curEnd is before newStart OR crosses obstacle: reset end time
     if (curEndMins <= newStartMins || !isIntervalClear(room.id, newStartMins, curEndMins)) {
       newEndMins = Math.min(18 * 60, newStartMins + 60);
       if (!isIntervalClear(room.id, newStartMins, newEndMins)) {
@@ -796,8 +809,6 @@ export default function RoomListPage() {
 
       const isPast = isToday && slotStart < currentMins;
       const isSelected = slotStart >= selStartMins && slotEnd <= selEndMins;
-
-      // Status check on this single 30-min slot
       const occupiedInfo = getRoomOccupiedInfo(room.id, slotStartStr, slotEndStr);
 
       let type = 'available';
@@ -818,7 +829,6 @@ export default function RoomListPage() {
       });
     }
 
-    // Available End Time options that do NOT cross obstacles starting from sel.startTime
     const validEndOptions = [];
     let obstacleFound = false;
     for (let i = 0; i < 20; i++) {
@@ -945,7 +955,7 @@ export default function RoomListPage() {
     const displayImage = getRoomImageUrl(room, isClassroom);
 
     // Layout capacity condition check
-    const reqGuests = parseInt(guests, 10) || 1;
+    const reqGuests = Math.max(1, parseInt(guests, 10) || 1);
     let layoutConditionNotice = '';
     if (searchMode === 'byGuests' && room.has_classroom === 1) {
       if (reqGuests > (room.capacity || 4) && reqGuests <= (room.classroom_capacity || 4)) {
@@ -1557,7 +1567,7 @@ export default function RoomListPage() {
                     disabled={isPast}
                     className={`customer-cal-day ${cell.isToday ? 'customer-cal-day--today' : ''} ${isSelected ? 'customer-cal-day--selected' : ''} ${isPast ? 'customer-cal-day--past' : ''}`}
                     aria-pressed={isSelected}
-                    onClick={() => handleDateSelect(cell.date)}
+                    onClick={() => handleDateTap(cell.date)}
                     title={isPast ? `${cell.dayNumber} (ผ่านมาแล้ว)` : `${cell.dayNumber} (${hasFree ? `ว่าง ${cell.freeRoomsCount} ห้อง` : 'เต็ม'})`}
                   >
                     <span className="customer-cal-day__num">{cell.dayNumber}</span>
@@ -1572,106 +1582,36 @@ export default function RoomListPage() {
         </div>
       </section>
 
-      {/* 2. MODE SELECTOR (ตามจำนวนคน vs ระบุห้อง) */}
-      <div className="customer-search-mode-bar">
-        <button
-          type="button"
-          onClick={() => {
-            setSearchMode('byGuests');
-            navigate(`/rooms?date=${dateStr}&guests=${guests}`, { replace: true });
-          }}
-          className={`customer-search-mode-btn ${searchMode === 'byGuests' ? 'customer-search-mode-btn--active' : ''}`}
-        >
-          <Users size={16} />
-          <span>ตามจำนวนคน</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            setSearchMode('directRoom');
-            navigate(`/rooms?date=${dateStr}${expandedRoomId ? `&roomId=${expandedRoomId}` : ''}`, { replace: true });
-          }}
-          className={`customer-search-mode-btn ${searchMode === 'directRoom' ? 'customer-search-mode-btn--active' : ''}`}
-        >
-          <Building size={16} />
-          <span>ระบุห้อง</span>
-        </button>
-      </div>
-
-      {/* 3. GUEST INPUT CARD (Only shown in 'byGuests' mode) */}
-      {searchMode === 'byGuests' && (
-        <div className="customer-guest-card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <label style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--navy)', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Users size={16} color="var(--primary)" />
-              <span>จำนวนผู้เข้าใช้งาน (Attendees)</span>
-            </label>
-            <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-              พิมพ์ตัวเลขได้โดยตรง
-            </span>
+      {/* 2. SUMMARY FILTER BAR ABOVE ROOM RESULTS */}
+      <div className="customer-summary-filter-bar">
+        <div className="customer-summary-filter-info">
+          <div className="customer-summary-filter-icon">
+            <Calendar size={18} />
           </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <input
-              type="number"
-              min="1"
-              max="100"
-              value={guests}
-              onChange={(e) => {
-                const val = parseInt(e.target.value, 10);
-                const cleanVal = isNaN(val) ? '' : val;
-                setGuests(cleanVal);
-                if (cleanVal) {
-                  navigate(`/rooms?date=${dateStr}&guests=${cleanVal}`, { replace: true });
-                }
-              }}
-              placeholder="ระบุจำนวนคน เช่น 4, 10, 40"
-              className="form-input"
-              style={{ height: '46px', fontSize: '1rem', fontWeight: 800, maxWidth: '180px' }}
-            />
-            <span style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--navy)' }}>ท่าน</span>
-          </div>
-
-          {/* Quick preset pills */}
-          <div className="customer-guest-presets">
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>ตัวเลือกเร็ว:</span>
-            {[1, 4, 8, 10, 12, 40].map(p => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => {
-                  setGuests(p);
-                  navigate(`/rooms?date=${dateStr}&guests=${p}`, { replace: true });
-                }}
-                className={`customer-guest-preset-btn ${guests === p ? 'customer-guest-preset-btn--active' : ''}`}
-              >
-                {p} ท่าน
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 4. ROOMS SECTION TITLE */}
-      <div style={{ marginBottom: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
           <div>
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--navy)', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Building size={20} color="var(--primary)" />
-              <span>ห้องประชุมสำหรับ {formatThaiDateDesc(dateStr)}</span>
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
-              คลิก “ดูเวลาว่าง” เพื่อเลือกรอบเวลาและตรวจสอบราคา
-            </p>
+            <div className="customer-summary-filter-text">
+              {searchMode === 'byGuests'
+                ? `${formatShortThaiDate(dateStr)} · ${guests} คน`
+                : `${formatShortThaiDate(dateStr)} · ห้อง ${directSelectedRoom?.name || 'ที่เลือก'}`}
+            </div>
+            <div className="customer-summary-filter-sub">
+              {searchMode === 'byGuests' ? 'ค้นหาตามจำนวนคน' : 'ค้นหาแบบระบุห้อง'}
+            </div>
           </div>
-          <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--primary)', backgroundColor: 'var(--primary-light)', padding: '4px 10px', borderRadius: '999px' }}>
-            {searchMode === 'byGuests' ? `พบ ${recommendedRooms.length + upgradeRooms.length} ห้อง` : `พบ ${allSortedRooms.length} ห้อง`}
-          </span>
         </div>
+
+        <button
+          type="button"
+          onClick={handleOpenEditModal}
+          className="customer-summary-filter-change-btn"
+          id="btn-open-change-filter"
+        >
+          <Edit3 size={14} />
+          <span>เปลี่ยน</span>
+        </button>
       </div>
 
-      {/* 5. ROOM CARDS LIST */}
+      {/* 3. ROOM CARDS LIST */}
       {loading ? (
         <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--text-muted)' }}>
           <div className="spinner" style={{ margin: '0 auto 12px auto' }} />
@@ -1714,9 +1654,172 @@ export default function RoomListPage() {
           )}
         </div>
       ) : (
-        /* MODE: DIRECT ROOM / ALL ROOMS */
+        /* MODE: DIRECT ROOM (SHOWS ONLY THE SELECTED ROOM) */
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {allSortedRooms.map(r => renderRoomCard(r, false))}
+          {directSelectedRoom ? (
+            renderRoomCard(directSelectedRoom, false)
+          ) : (
+            allSortedRooms.map(r => renderRoomCard(r, false))
+          )}
+        </div>
+      )}
+
+      {/* 4. BOTTOM SHEET MODAL (SLIDES UP FROM BOTTOM ON MOBILE) */}
+      {isModalOpen && (
+        <div
+          className="bottom-sheet-overlay"
+          onClick={handleCloseModal}
+          id="modal-backdrop-overlay"
+        >
+          <div
+            className="bottom-sheet-container"
+            onClick={(e) => e.stopPropagation()}
+            id="modal-sheet-content"
+          >
+            {/* Handle Bar on Mobile */}
+            <div className="bottom-sheet-handle" />
+
+            {/* Modal Header: Date in clear Thai format */}
+            <div className="bottom-sheet-header">
+              <div>
+                <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase' }}>
+                  กำหนดตัวเลือกการจอง
+                </div>
+                <h3 className="bottom-sheet-title" id="modal-date-title">
+                  {formatModalHeaderDate(modalDate)}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseModal}
+                className="bottom-sheet-close-btn"
+                aria-label="ปิดหน้าต่าง"
+                id="btn-close-modal"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Segmented Mode Control (ตามจำนวนคน vs ระบุห้อง) */}
+            <div className="modal-mode-tabs">
+              <button
+                type="button"
+                onClick={() => setModalMode('byGuests')}
+                className={`modal-mode-tab ${modalMode === 'byGuests' ? 'modal-mode-tab--active' : ''}`}
+                id="tab-mode-by-guests"
+              >
+                <Users size={16} />
+                <span>ตามจำนวนคน</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalMode('directRoom')}
+                className={`modal-mode-tab ${modalMode === 'directRoom' ? 'modal-mode-tab--active' : ''}`}
+                id="tab-mode-direct-room"
+              >
+                <Building size={16} />
+                <span>ระบุห้อง</span>
+              </button>
+            </div>
+
+            {/* Modal Body: Mode 'byGuests' */}
+            {modalMode === 'byGuests' ? (
+              <div>
+                <label style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--navy)', marginBottom: '8px', display: 'block', textAlign: 'center' }}>
+                  จำนวนผู้เข้าใช้งาน (Attendees)
+                </label>
+
+                {/* Counter Control: [-] [ Input ] [+] */}
+                <div className="counter-box">
+                  <button
+                    type="button"
+                    disabled={!modalGuests || modalGuests <= 1}
+                    onClick={() => setModalGuests(g => Math.max(1, (parseInt(g, 10) || 1) - 1))}
+                    className="counter-btn"
+                    id="btn-guest-decrement"
+                    aria-label="ลดจำนวนคน"
+                  >
+                    <Minus size={20} />
+                  </button>
+
+                  <div className="counter-input-wrap">
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={modalGuests}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        if (isNaN(val)) {
+                          setModalGuests('');
+                        } else {
+                          setModalGuests(Math.max(1, val));
+                        }
+                      }}
+                      className="counter-input"
+                      id="input-modal-guests"
+                    />
+                    <span style={{ position: 'absolute', right: '-44px', fontSize: '0.95rem', fontWeight: 800, color: 'var(--navy)' }}>
+                      ท่าน
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setModalGuests(g => (parseInt(g, 10) || 0) + 1)}
+                    className="counter-btn"
+                    id="btn-guest-increment"
+                    aria-label="เพิ่มจำนวนคน"
+                  >
+                    <Plus size={20} />
+                  </button>
+                </div>
+
+                <div style={{ textAlign: 'center', fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                  ระบบจะค้นหาห้องที่พอดีและห้องขนาดใหญ่ขึ้นสำหรับ {modalGuests || 1} ท่าน
+                </div>
+              </div>
+            ) : (
+              /* Modal Body: Mode 'directRoom' */
+              <div>
+                <label style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--navy)', marginBottom: '8px', display: 'block' }}>
+                  เลือกห้องประชุมที่ต้องการ:
+                </label>
+
+                <select
+                  value={modalRoomId}
+                  onChange={(e) => setModalRoomId(e.target.value)}
+                  className="form-input"
+                  id="select-modal-room"
+                  style={{ height: '48px', fontSize: '0.92rem', fontWeight: 700, borderRadius: '12px' }}
+                >
+                  <option value="">-- กรุณาเลือกห้องประชุม --</option>
+                  {allSortedRooms.map(r => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} (รองรับ {r.capacity} ท่าน{r.has_classroom === 1 && r.classroom_capacity ? ` / โต๊ะเรียน ${r.classroom_capacity} ท่าน` : ''})
+                    </option>
+                  ))}
+                </select>
+
+                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                  ระบบจะแสดงเฉพาะห้องที่คุณเลือก พร้อมสถานะและช่วงเวลาว่างของวันนั้น
+                </div>
+              </div>
+            )}
+
+            {/* Confirm "ตกลง" Button */}
+            <button
+              type="button"
+              disabled={modalMode === 'byGuests' ? (!modalGuests || modalGuests < 1) : !modalRoomId}
+              onClick={handleConfirmModal}
+              className="btn-primary"
+              id="btn-confirm-modal"
+              style={{ width: '100%', height: '50px', fontSize: '1rem', marginTop: '4px' }}
+            >
+              <span>ตกลง</span>
+              <Check size={18} />
+            </button>
+          </div>
         </div>
       )}
     </div>
