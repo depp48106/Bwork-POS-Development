@@ -153,7 +153,7 @@ function CustomerApp() {
             />
             <div>
               <div style={{ fontSize: '1.05rem', fontWeight: 900, letterSpacing: '0.3px', color: '#ffffff', lineHeight: 1.2 }}>
-                จองห้องประชุมสำหรับลูกค้า
+                จองสำหรับลูกค้า
               </div>
               <div className="header-subtitle" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#a7f3d0', letterSpacing: '0.3px' }}>
                 B-WORK · จองออนไลน์ผ่าน LINE

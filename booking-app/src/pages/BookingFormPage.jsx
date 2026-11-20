@@ -427,13 +427,28 @@ export default function BookingFormPage() {
 
   if (!bookingData) return null;
 
+  const handleBackToRooms = () => {
+    if (bookingData) {
+      try {
+        sessionStorage.setItem('current_booking_payload', JSON.stringify(bookingData));
+      } catch (_) {}
+      const params = new URLSearchParams();
+      if (bookingData.date) params.set('date', bookingData.date);
+      if (bookingData.guests) params.set('guests', bookingData.guests);
+      if (bookingData.room_id) params.set('roomId', bookingData.room_id);
+      navigate(`/rooms?${params.toString()}`, { state: bookingData });
+    } else {
+      navigate(-1);
+    }
+  };
+
   return (
     <div className="main-content">
       <StepProgress currentStep={2} />
 
       <button
         type="button"
-        onClick={() => navigate(-1)}
+        onClick={handleBackToRooms}
         className="btn-back"
         id="btn-back-to-rooms"
       >
