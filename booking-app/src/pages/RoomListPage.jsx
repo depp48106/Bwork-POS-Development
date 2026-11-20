@@ -695,6 +695,49 @@ export default function RoomListPage() {
     };
   }, [rooms, searchMode, guests, confirmedRoomId]);
 
+  // Proceed to Step 2 Form
+  const handleProceedToForm = (room) => {
+    const layout = roomLayouts[room.id] || 'standard';
+    const isClassroom = layout === 'classroom';
+    const sel = getRoomSelection(room);
+
+    const rawImage = isClassroom && room.classroom_image_url ? room.classroom_image_url : room.image_url;
+    const safeImage = (typeof rawImage === 'string' && rawImage.startsWith('data:')) ? '' : rawImage;
+
+    const bookingPayload = {
+      room_id: room.id,
+      room_name: room.name,
+      room_capacity: room.capacity || 4,
+      classroom_capacity: room.classroom_capacity || room.capacity || 4,
+      effective_capacity: sel.effectiveCapacity,
+      image_url: safeImage,
+      date: dateStr,
+      start_time: sel.startTime,
+      end_time: sel.endTime,
+      duration: sel.duration,
+      guests: guests || sel.effectiveCapacity,
+      layout: layout,
+      booking_type: sel.mode,
+      rate_label: sel.rateLabel,
+      hourly_rate: sel.hourlyPrice,
+      daily_rate: sel.dailyPrice,
+      half_day_rate: sel.halfDayPrice,
+      subtotal_amount: sel.subtotalPrice || sel.totalPrice,
+      discount_amount: sel.discountAmount || 0,
+      discount_type: sel.isPromotionApplied ? 'percent' : 'none',
+      discount_value: sel.isPromotionApplied ? (sel.discountValue ?? (promotion?.discount_value || 5)) : 0,
+      total_amount: sel.totalPrice
+    };
+
+    try {
+      sessionStorage.setItem('current_booking_payload', JSON.stringify(bookingPayload));
+    } catch (e) {
+      console.warn('[Storage] sessionStorage current_booking_payload failed:', e);
+    }
+
+    navigate('/form', { state: bookingPayload });
+  };
+
   // Handle slot tap on horizontal timeline bar
   const handleTimelineSlotTap = (room, slotIndex) => {
     setTimelineError('');
@@ -1759,7 +1802,7 @@ export default function RoomListPage() {
                       className="counter-input"
                       id="input-modal-guests"
                     />
-                    <span style={{ position: 'absolute', right: '-44px', fontSize: '0.95rem', fontWeight: 800, color: 'var(--navy)' }}>
+                    <span style={{ position: 'absolute', right: '12px', fontSize: '0.9rem', fontWeight: 800, color: 'var(--navy)', pointerEvents: 'none' }}>
                       ท่าน
                     </span>
                   </div>

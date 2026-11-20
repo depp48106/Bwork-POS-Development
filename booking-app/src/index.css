@@ -999,6 +999,7 @@ button:active {
   width: 120px;
   height: 52px;
   text-align: center;
+  padding-right: 28px;
   font-size: 1.4rem;
   font-weight: 900;
   color: var(--navy);
