@@ -152,11 +152,11 @@ function CustomerApp() {
               }}
             />
             <div>
-              <div style={{ fontSize: '1.15rem', fontWeight: 900, letterSpacing: '0.5px', color: '#ffffff', lineHeight: 1.1 }}>
-                B-WORK
+              <div style={{ fontSize: '1.05rem', fontWeight: 900, letterSpacing: '0.3px', color: '#ffffff', lineHeight: 1.2 }}>
+                จองห้องประชุมสำหรับลูกค้า
               </div>
-              <div className="header-subtitle" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#93c5fd', letterSpacing: '0.3px' }}>
-                ระบบจองห้องประชุมออนไลน์
+              <div className="header-subtitle" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#a7f3d0', letterSpacing: '0.3px' }}>
+                B-WORK · จองออนไลน์ผ่าน LINE
               </div>
             </div>
           </Link>
@@ -296,7 +296,7 @@ function CustomerApp() {
       {/* MAIN CONTENT ROUTES */}
       <main style={{ flex: 1 }}>
         <Routes>
-          <Route path="/" element={<HomePage />} />
+          <Route path="/" element={<RoomListPage />} />
           <Route path="/rooms" element={<RoomListPage />} />
           <Route path="/form" element={<BookingFormPage />} />
           <Route path="/booking" element={<BookingFormPage />} />

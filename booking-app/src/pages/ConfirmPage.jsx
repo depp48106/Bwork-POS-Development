@@ -723,7 +723,7 @@ export default function ConfirmPage() {
 
   return (
     <div className="main-content">
-      <StepProgress currentStep={4} />
+      <StepProgress currentStep={3} />
 
       {/* TOAST ALERT */}
       {toastMessage && (

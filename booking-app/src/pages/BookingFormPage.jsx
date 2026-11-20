@@ -429,7 +429,17 @@ export default function BookingFormPage() {
 
   return (
     <div className="main-content">
-      <StepProgress currentStep={3} />
+      <StepProgress currentStep={2} />
+
+      <button
+        type="button"
+        onClick={() => navigate(-1)}
+        className="btn-back"
+        id="btn-back-to-rooms"
+      >
+        <ArrowLeft size={16} />
+        <span>กลับไปเลือกห้องและเวลา</span>
+      </button>
 
       <div className="booking-form-grid">
         {/* LEFT COLUMN: STICKY BOOKING SUMMARY CARD */}

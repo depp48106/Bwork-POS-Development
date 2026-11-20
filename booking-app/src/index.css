@@ -1,10 +1,11 @@
 :root {
-  --primary: #2563eb;
-  --primary-hover: #1d4ed8;
-  --primary-light: rgba(37, 99, 235, 0.08);
-  --primary-glow: rgba(37, 99, 235, 0.25);
-  --navy: #0f172a;
-  --navy-light: #1e293b;
+  --primary: #0F766E;
+  --primary-hover: #115E59;
+  --primary-light: rgba(15, 118, 110, 0.08);
+  --primary-glow: rgba(15, 118, 110, 0.25);
+  --navy: #132440;
+  --navy-light: #1e3a66;
+  --navy-bg: #f8fafc;
   --bg-page: #f8fafc;
   --bg-card: #ffffff;
   --border: #e2e8f0;
@@ -22,9 +23,9 @@
   --radius-md: 14px;
   --radius-lg: 20px;
   --radius-xl: 26px;
-  --shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 6px 20px rgba(15, 23, 42, 0.06);
-  --shadow-lg: 0 12px 35px rgba(15, 23, 42, 0.1);
+  --shadow-sm: 0 2px 6px rgba(19, 36, 64, 0.04);
+  --shadow-md: 0 6px 20px rgba(19, 36, 64, 0.07);
+  --shadow-lg: 0 12px 35px rgba(19, 36, 64, 0.12);
 }
 
 * {
@@ -89,15 +90,16 @@ a {
 
 /* App Header */
 .app-header {
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #1e3a8a 100%);
+  background: linear-gradient(135deg, #132440 0%, #1e3a66 100%);
   color: #ffffff;
   padding: max(12px, env(safe-area-inset-top, 12px)) 0 12px 0;
-  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 4px 20px rgba(19, 36, 64, 0.22);
   position: sticky;
   top: 0;
   z-index: 100;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .header-inner {
@@ -177,34 +179,58 @@ a {
   height: 52px;
   min-height: 48px;
   padding: 0 20px;
-  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  background: linear-gradient(135deg, #0F766E 0%, #0d655e 100%);
   color: #ffffff;
-  font-family: 'Prompt', sans-serif;
+  font-family: 'Prompt', -apple-system, sans-serif;
   font-size: 1rem;
   font-weight: 700;
   border: none;
   border-radius: var(--radius-md);
-  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 6px 16px rgba(15, 118, 110, 0.35);
   cursor: pointer;
   transition: all 0.2s ease;
   user-select: none;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
-  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.45);
+  background: linear-gradient(135deg, #115E59 0%, #044e4a 100%);
+  box-shadow: 0 8px 20px rgba(15, 118, 110, 0.45);
   transform: translateY(-1px);
 }
 
 .btn-primary:active:not(:disabled) {
   transform: translateY(0);
-  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.3);
+  box-shadow: 0 4px 10px rgba(15, 118, 110, 0.3);
 }
 
 .btn-primary:disabled {
   opacity: 0.6;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+/* Back Button */
+.btn-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background-color: #ffffff;
+  color: var(--navy);
+  border: 1px solid var(--border);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 16px;
+}
+
+.btn-back:hover {
+  background-color: var(--bg-page);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 /* Secondary Buttons */
@@ -466,4 +492,320 @@ button {
 button:active {
   transform: scale(0.97);
   transition: transform 0.1s ease;
+}
+
+/* =========================================================================
+   Customer Monthly Calendar & Room Cards Styles
+   Theme: White & Navy (#132440), Primary Action & Active Date: Teal (#0F766E)
+   ========================================================================= */
+
+.customer-cal-card {
+  background-color: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 22px;
+}
+
+.customer-cal-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background-color: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 1px 3px rgba(19, 36, 64, 0.04);
+}
+
+.customer-cal-nav__title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.customer-cal-nav__title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--navy);
+  letter-spacing: -0.01em;
+}
+
+.customer-cal-nav__controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.customer-cal-nav__btn {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background-color: #ffffff;
+  color: var(--navy);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.customer-cal-nav__btn:hover {
+  border-color: var(--primary);
+  background-color: var(--primary-light);
+  color: var(--primary);
+}
+
+.customer-cal-nav__today-pill {
+  font-size: 0.76rem;
+  font-weight: 700;
+  background-color: var(--primary-light);
+  color: var(--primary);
+  border: 1px solid rgba(15, 118, 110, 0.25);
+  border-radius: 999px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.customer-cal-nav__today-pill:hover {
+  background-color: var(--primary);
+  color: #ffffff;
+}
+
+.customer-cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-bottom: 6px;
+  text-align: center;
+}
+
+.customer-cal-weekday {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+
+.customer-cal-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.customer-cal-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 5px;
+}
+
+.customer-cal-day {
+  min-height: 52px;
+  border: 1.5px solid var(--border);
+  background-color: #ffffff;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 2px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  position: relative;
+}
+
+.customer-cal-day:hover:not(:disabled) {
+  border-color: var(--primary);
+  background-color: var(--primary-light);
+}
+
+.customer-cal-day--empty {
+  border-color: transparent !important;
+  background-color: transparent !important;
+  cursor: default !important;
+  pointer-events: none;
+}
+
+.customer-cal-day--today {
+  border: 2px solid var(--navy) !important;
+  font-weight: 800;
+}
+
+.customer-cal-day--selected {
+  background: linear-gradient(135deg, #0F766E 0%, #0d655e 100%) !important;
+  color: #ffffff !important;
+  border-color: #0F766E !important;
+  box-shadow: 0 4px 12px rgba(15, 118, 110, 0.35) !important;
+}
+
+.customer-cal-day__num {
+  font-size: 0.92rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.customer-cal-day--selected .customer-cal-day__num {
+  color: #ffffff !important;
+}
+
+.customer-cal-day__badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1;
+  margin-top: 3px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.customer-cal-day__badge--free {
+  color: #059669;
+  background-color: #ecfdf5;
+}
+
+.customer-cal-day--selected .customer-cal-day__badge--free {
+  color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.25);
+}
+
+.customer-cal-day__badge--full {
+  color: #dc2626;
+  background-color: #fef2f2;
+}
+
+.customer-cal-day--selected .customer-cal-day__badge--full {
+  color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.25);
+}
+
+.customer-cal-day--past {
+  opacity: 0.55;
+  background-color: #f8fafc;
+  cursor: not-allowed !important;
+}
+
+.customer-cal-day__badge--past {
+  color: #94a3b8;
+  background-color: #e2e8f0;
+}
+
+/* Category filter tabs */
+.customer-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 16px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.customer-filter-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 0.84rem;
+  font-weight: 700;
+  border: 1.5px solid var(--border);
+  background-color: #ffffff;
+  color: var(--text-main);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.customer-filter-tab:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.customer-filter-tab--active {
+  background-color: var(--navy) !important;
+  color: #ffffff !important;
+  border-color: var(--navy) !important;
+  box-shadow: 0 3px 10px rgba(19, 36, 64, 0.2);
+}
+
+/* Room Timeline Bar */
+.timeline-bar-wrapper {
+  background-color: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  margin-top: 10px;
+}
+
+.timeline-bar-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.timeline-bar-track {
+  display: grid;
+  grid-template-columns: repeat(20, 1fr);
+  height: 22px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  background-color: #f1f5f9;
+}
+
+.timeline-segment {
+  height: 100%;
+  border-right: 1px solid rgba(255, 255, 255, 0.35);
+  transition: background-color 0.15s ease;
+}
+
+.timeline-segment--available {
+  background-color: #10b981;
+}
+
+.timeline-segment--selected {
+  background-color: #0F766E !important;
+}
+
+.timeline-segment--booked {
+  background-color: #ef4444;
+}
+
+.timeline-segment--cleaning {
+  background-color: #f59e0b;
+}
+
+.timeline-segment--past {
+  background-color: #94a3b8;
+}
+
+.timeline-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.timeline-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 4px;
 }

@@ -3,10 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { Check } from 'lucide-react';
 
 const STEPS = [
-  { step: 1, label: 'วัน/เวลา', path: '/' },
-  { step: 2, label: 'เลือกห้อง', path: '/rooms' },
-  { step: 3, label: 'ข้อมูลผู้จอง', path: '/form' },
-  { step: 4, label: 'ชำระเงิน', path: '/confirm' }
+  { step: 1, label: 'เลือกห้องและเวลา', path: '/' },
+  { step: 2, label: 'ข้อมูลผู้จอง', path: '/form' },
+  { step: 3, label: 'ชำระเงิน', path: '/confirm' }
 ];
 
 export default function StepProgress({ currentStep }) {
@@ -87,8 +86,8 @@ export default function StepProgress({ currentStep }) {
                   fontSize: '0.9rem',
                   backgroundColor: isActive ? 'var(--primary)' : isCompleted ? '#10b981' : '#ffffff',
                   color: (isActive || isCompleted) ? '#ffffff' : '#94a3b8',
-                  border: isActive ? '3px solid #bfdbfe' : isCompleted ? '2px solid #10b981' : '2px solid #cbd5e1',
-                  boxShadow: isActive ? '0 0 12px rgba(37, 99, 235, 0.4)' : 'none',
+                  border: isActive ? '3px solid #99f6e4' : isCompleted ? '2px solid #10b981' : '2px solid #cbd5e1',
+                  boxShadow: isActive ? '0 0 12px rgba(15, 118, 110, 0.4)' : 'none',
                   transition: 'all 0.25s ease'
                 }}
               >
