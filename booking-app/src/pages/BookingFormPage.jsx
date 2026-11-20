@@ -30,8 +30,6 @@ export default function BookingFormPage() {
   // Tax Invoice State
   const [needTaxInvoice, setNeedTaxInvoice] = useState(false);
   const [taxPayerType, setTaxPayerType] = useState(''); // '' | 'individual' | 'corporate' (no default value)
-  const [taxBranchType, setTaxBranchType] = useState('head'); // 'head' | 'branch'
-  const [taxBranchNumber, setTaxBranchNumber] = useState('');
   const [taxName, setTaxName] = useState('');
   const [taxAddress, setTaxAddress] = useState('');
   const [taxId, setTaxId] = useState('');
@@ -118,8 +116,6 @@ export default function BookingFormPage() {
 
             if (draft.needTaxInvoice !== undefined) setNeedTaxInvoice(draft.needTaxInvoice);
             if (draft.taxPayerType) setTaxPayerType(draft.taxPayerType);
-            if (draft.taxBranchType) setTaxBranchType(draft.taxBranchType);
-            if (draft.taxBranchNumber) setTaxBranchNumber(draft.taxBranchNumber);
             if (draft.taxName) setTaxName(draft.taxName);
             if (draft.taxAddress) setTaxAddress(draft.taxAddress);
             if (draft.taxId) setTaxId(draft.taxId);
@@ -156,8 +152,6 @@ export default function BookingFormPage() {
           attendees,
           needTaxInvoice,
           taxPayerType,
-          taxBranchType,
-          taxBranchNumber,
           taxName,
           taxAddress,
           taxId,
@@ -174,7 +168,7 @@ export default function BookingFormPage() {
   }, [
     lineUserId, bookingData?.room_id,
     name, contact, email, company, notes, attendees,
-    needTaxInvoice, taxPayerType, taxBranchType, taxBranchNumber,
+    needTaxInvoice, taxPayerType,
     taxName, taxAddress, taxId, taxPhone, taxDeliveryMethod, taxOnlineSubChannel, taxEmail, taxPostalAddress
   ]);
 
@@ -252,10 +246,6 @@ export default function BookingFormPage() {
         setError('กรุณาระบุเลขประจำตัวผู้เสียภาษี 13 หลัก');
         return;
       }
-      if (taxPayerType === 'corporate' && taxBranchType === 'branch' && !taxBranchNumber.trim()) {
-        setError('กรุณาระบุเลขที่สาขา');
-        return;
-      }
       if (!taxAddress.trim()) {
         setError(taxPayerType === 'individual' ? 'กรุณาระบุที่อยู่สำหรับออกใบกำกับภาษี' : 'กรุณาระบุที่อยู่จดทะเบียน');
         return;
@@ -323,8 +313,6 @@ export default function BookingFormPage() {
         tax_payer_type: needTaxInvoice ? taxPayerType : null,
         tax_name: needTaxInvoice ? taxName.trim() : null,
         tax_id: needTaxInvoice ? taxId.replace(/[-\s]/g, '').trim() : null,
-        tax_branch_type: needTaxInvoice && taxPayerType === 'corporate' ? taxBranchType : null,
-        tax_branch_number: needTaxInvoice && taxPayerType === 'corporate' && taxBranchType === 'branch' ? taxBranchNumber.trim() : null,
         tax_address: needTaxInvoice ? taxAddress.trim() : null,
         tax_phone: needTaxInvoice ? (taxPhone.trim() || contact.trim()) : null,
         tax_delivery_method: needTaxInvoice ? taxDeliveryMethod : null,
@@ -870,79 +858,6 @@ export default function BookingFormPage() {
                       style={{ height: '44px', letterSpacing: '0.5px' }}
                     />
                   </div>
-
-                  {/* 3. Corporate Branch Options (สำนักงานใหญ่ / สาขา) */}
-                  {taxPayerType === 'corporate' && (
-                    <div style={{
-                      backgroundColor: 'rgba(37, 99, 235, 0.03)',
-                      border: '1px solid var(--border)',
-                      borderRadius: '12px',
-                      padding: '12px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '8px'
-                    }}>
-                      <label className="form-label" style={{ fontSize: '0.8rem', margin: 0, fontWeight: 750 }}>
-                        สำนักงานใหญ่ / สาขา <span style={{ color: 'var(--danger)' }}>*</span>
-                      </label>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
-                        <button
-                          type="button"
-                          id="btn-tax-branch-head"
-                          onClick={() => setTaxBranchType('head')}
-                          style={{
-                            padding: '9px 10px',
-                            minHeight: '42px',
-                            borderRadius: '9px',
-                            border: taxBranchType === 'head' ? '1.5px solid var(--primary)' : '1px solid var(--border)',
-                            backgroundColor: taxBranchType === 'head' ? 'rgba(37,99,235,0.09)' : '#ffffff',
-                            color: taxBranchType === 'head' ? 'var(--primary)' : 'var(--text-main)',
-                            fontWeight: taxBranchType === 'head' ? 800 : 600,
-                            fontSize: '0.82rem',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          สำนักงานใหญ่
-                        </button>
-                        <button
-                          type="button"
-                          id="btn-tax-branch-sub"
-                          onClick={() => setTaxBranchType('branch')}
-                          style={{
-                            padding: '9px 10px',
-                            minHeight: '42px',
-                            borderRadius: '9px',
-                            border: taxBranchType === 'branch' ? '1.5px solid var(--primary)' : '1px solid var(--border)',
-                            backgroundColor: taxBranchType === 'branch' ? 'rgba(37,99,235,0.09)' : '#ffffff',
-                            color: taxBranchType === 'branch' ? 'var(--primary)' : 'var(--text-main)',
-                            fontWeight: taxBranchType === 'branch' ? 800 : 600,
-                            fontSize: '0.82rem',
-                            cursor: 'pointer'
-                          }}
-                        >
-                          สาขา
-                        </button>
-                      </div>
-
-                      {taxBranchType === 'branch' && (
-                        <div style={{ marginTop: '4px' }}>
-                          <label className="form-label" style={{ fontSize: '0.76rem', marginBottom: '4px' }}>
-                            เลขที่สาขา <span style={{ color: 'var(--danger)' }}>*</span>
-                          </label>
-                          <input
-                            type="text"
-                            id="input-tax-branch-number"
-                            required={needTaxInvoice && taxPayerType === 'corporate' && taxBranchType === 'branch'}
-                            placeholder="ระบุเลขที่สาขา เช่น 00001 หรือ 01"
-                            value={taxBranchNumber}
-                            onChange={e => setTaxBranchNumber(e.target.value)}
-                            className="form-input"
-                            style={{ height: '42px' }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
 
                   {/* 4. Address (บุคคลธรรมดา: ที่อยู่สำหรับออกใบกำกับภาษี / นิติบุคคล: ที่อยู่จดทะเบียน) */}
                   <div>
