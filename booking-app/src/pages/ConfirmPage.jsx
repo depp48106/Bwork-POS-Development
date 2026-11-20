@@ -80,6 +80,7 @@ export default function ConfirmPage() {
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [uploadResultData, setUploadResultData] = useState(null);
   const [toastMessage, setToastMessage] = useState('');
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
   const [paymentWindowMinutes, setPaymentWindowMinutes] = useState(() => {
     try {
@@ -513,8 +514,12 @@ export default function ConfirmPage() {
   const handleCopyAccount = () => {
     const cleanNum = (paymentSettings.account_number || '3291384290').replace(/-/g, '');
     navigator.clipboard.writeText(cleanNum);
+    setCopied(true);
     setToastMessage('คัดลอกเลขบัญชีเรียบร้อยแล้ว!');
-    setTimeout(() => setToastMessage(''), 3000);
+    setTimeout(() => {
+      setCopied(false);
+      setToastMessage('');
+    }, 3000);
   };
 
   // Scan Mini QR Code & Compress Slip Image
