@@ -846,8 +846,15 @@ button:active {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-height: 90vh;
+  max-height: 90dvh;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.form-input--error {
+  border-color: var(--danger) !important;
+  background-color: rgba(239, 68, 68, 0.04);
 }
 
 @media (min-width: 600px) {

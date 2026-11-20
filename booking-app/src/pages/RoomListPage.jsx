@@ -132,16 +132,26 @@ export default function RoomListPage() {
 
   const [searchMode, setSearchMode] = useState(initialMode);
 
-  // Confirmed Guest count for 'byGuests' mode
+  // Determine if there is an explicit query param or navigation state selection
+  const hasUrlOrDraftSelection = useMemo(() => {
+    return Boolean(query.get('date') || query.get('roomId') || location.state?.room_id || location.state?.date);
+  }, [query, location.state]);
+
+  const [hasConfirmedDate, setHasConfirmedDate] = useState(hasUrlOrDraftSelection);
+
+  // Confirmed Guest count for 'byGuests' mode - NO default 10 or 4!
   const initialGuests = useMemo(() => {
     const qGuests = query.get('guests');
     if (qGuests) {
       const parsed = parseInt(qGuests, 10);
       if (!isNaN(parsed) && parsed > 0) return parsed;
     }
-    if (savedDraft?.guests) return parseInt(savedDraft.guests, 10) || 4;
-    return 4;
-  }, [query, savedDraft]);
+    if (location.state?.guests) {
+      const parsed = parseInt(location.state.guests, 10);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    return '';
+  }, [query, location.state]);
 
   const [guests, setGuests] = useState(initialGuests);
 
@@ -320,8 +330,8 @@ export default function RoomListPage() {
   const handleDateTap = (tappedDate) => {
     if (tappedDate < todayIso) return;
     setModalDate(tappedDate);
-    setModalMode(searchMode);
-    setModalGuests(guests || 4);
+    setModalMode(searchMode || 'byGuests');
+    setModalGuests(guests ? guests : '');
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
     setIsModalOpen(true);
   };
@@ -329,8 +339,8 @@ export default function RoomListPage() {
   // When clicking "เปลี่ยน" button above results: open modal with current confirmed values
   const handleOpenEditModal = () => {
     setModalDate(dateStr);
-    setModalMode(searchMode);
-    setModalGuests(guests || 4);
+    setModalMode(searchMode || 'byGuests');
+    setModalGuests(guests ? guests : '');
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
     setIsModalOpen(true);
   };
@@ -342,6 +352,7 @@ export default function RoomListPage() {
 
   // Confirm choices in modal and update the view
   const handleConfirmModal = () => {
+    setHasConfirmedDate(true);
     setDateStr(modalDate);
     const newMonth = modalDate.slice(0, 7);
     if (newMonth !== currentMonthKey) {
@@ -360,6 +371,7 @@ export default function RoomListPage() {
     } else {
       setConfirmedRoomId(modalRoomId);
       setExpandedRoomId(modalRoomId);
+      setGuests('');
       params.set('roomId', modalRoomId);
     }
 
@@ -486,13 +498,13 @@ export default function RoomListPage() {
       effEnd = halfDaySlot === '08-12' ? '12:00' : '17:00';
       duration = 4;
       totalPrice = halfDayPrice;
-      rateLabel = `อัตราเหมาครึ่งวัน ${halfDaySlot === '08-12' ? '(รอบเช้า 08:00 - 12:00 น.)' : '(รอบบ่าย 13:00 - 17:00 น.)'}`;
+      rateLabel = `ครึ่งวัน (${effStart}–${effEnd} น.)`;
     } else if (mode === 'daily') {
       effStart = dailySlot === '08-17' ? '08:00' : '09:00';
       effEnd = dailySlot === '08-17' ? '17:00' : '18:00';
       duration = 9;
       totalPrice = dailyPrice;
-      rateLabel = `อัตราเหมาทั้งวัน (${effStart} - ${effEnd} น.)`;
+      rateLabel = `ทั้งวัน (${effStart}–${effEnd} น.)`;
     }
 
     const promoPricing = calculateOnlineBookingPricing({
@@ -1246,7 +1258,7 @@ export default function RoomListPage() {
                           textAlign: 'center'
                         }}
                       >
-                        รายชั่วโมง (฿{sel.hourlyPrice.toLocaleString()}/ชม.)
+                        รายชั่วโมง
                       </button>
                     )}
 
@@ -1273,7 +1285,7 @@ export default function RoomListPage() {
                           textAlign: 'center'
                         }}
                       >
-                        เหมาครึ่งวัน (฿{Number(sel.halfDayPrice).toLocaleString()})
+                        ครึ่งวัน
                       </button>
                     )}
 
@@ -1300,7 +1312,7 @@ export default function RoomListPage() {
                           textAlign: 'center'
                         }}
                       >
-                        เหมาทั้งวัน (฿{Number(sel.dailyPrice).toLocaleString()})
+                        ทั้งวัน
                       </button>
                     )}
                   </div>
@@ -1328,7 +1340,7 @@ export default function RoomListPage() {
               {sel.mode === 'halfday' && (
                 <div>
                   <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--navy)', marginBottom: '8px' }}>
-                    เลือกรอบเวลาเหมาครึ่งวัน:
+                    เลือกรอบเวลาครึ่งวัน:
                   </div>
                   <div className="package-slots-grid">
                     <button
@@ -1341,7 +1353,7 @@ export default function RoomListPage() {
                       className={`package-slot-card ${sel.halfDaySlot === '08-12' ? 'package-slot-card--active' : ''}`}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 800, color: 'var(--navy)', fontSize: '0.88rem' }}>รอบเช้า</span>
+                        <span style={{ fontWeight: 800, color: 'var(--navy)', fontSize: '0.9rem' }}>08:00–12:00 น.</span>
                         <span style={{
                           fontSize: '0.72rem',
                           fontWeight: 700,
@@ -1353,11 +1365,9 @@ export default function RoomListPage() {
                           {halfDay0812Occupied ? 'ติดจอง' : 'ว่าง'}
                         </span>
                       </div>
-                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <Clock size={13} /> 08:00 - 12:00 น. (4 ชม.)
-                      </div>
-                      <div style={{ fontSize: '0.95rem', fontWeight: 900, color: 'var(--primary)', marginTop: '4px' }}>
-                        ฿{Number(sel.halfDayPrice).toLocaleString()}
+                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                        <Clock size={13} />
+                        <span>4 ชม. · ฿{Number(sel.halfDayPrice).toLocaleString()}</span>
                       </div>
                     </button>
 
@@ -1371,7 +1381,7 @@ export default function RoomListPage() {
                       className={`package-slot-card ${sel.halfDaySlot === '13-17' ? 'package-slot-card--active' : ''}`}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 800, color: 'var(--navy)', fontSize: '0.88rem' }}>รอบบ่าย</span>
+                        <span style={{ fontWeight: 800, color: 'var(--navy)', fontSize: '0.9rem' }}>13:00–17:00 น.</span>
                         <span style={{
                           fontSize: '0.72rem',
                           fontWeight: 700,
@@ -1383,11 +1393,9 @@ export default function RoomListPage() {
                           {halfDay1317Occupied ? 'ติดจอง' : 'ว่าง'}
                         </span>
                       </div>
-                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <Clock size={13} /> 13:00 - 17:00 น. (4 ชม.)
-                      </div>
-                      <div style={{ fontSize: '0.95rem', fontWeight: 900, color: 'var(--primary)', marginTop: '4px' }}>
-                        ฿{Number(sel.halfDayPrice).toLocaleString()}
+                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                        <Clock size={13} />
+                        <span>4 ชม. · ฿{Number(sel.halfDayPrice).toLocaleString()}</span>
                       </div>
                     </button>
                   </div>
@@ -1398,7 +1406,7 @@ export default function RoomListPage() {
               {sel.mode === 'daily' && (
                 <div>
                   <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--navy)', marginBottom: '8px' }}>
-                    เลือกรอบเวลาเหมาทั้งวัน:
+                    เลือกรอบเวลาทั้งวัน:
                   </div>
                   <div className="package-slots-grid">
                     <button
@@ -1411,7 +1419,7 @@ export default function RoomListPage() {
                       className={`package-slot-card ${sel.dailySlot === '08-17' ? 'package-slot-card--active' : ''}`}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 800, color: 'var(--navy)', fontSize: '0.88rem' }}>ช่วงเช้าถึงเย็น</span>
+                        <span style={{ fontWeight: 800, color: 'var(--navy)', fontSize: '0.9rem' }}>08:00–17:00 น.</span>
                         <span style={{
                           fontSize: '0.72rem',
                           fontWeight: 700,
@@ -1423,11 +1431,9 @@ export default function RoomListPage() {
                           {daily0817Occupied ? 'ติดจอง' : 'ว่าง'}
                         </span>
                       </div>
-                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <Clock size={13} /> 08:00 - 17:00 น. (9 ชม.)
-                      </div>
-                      <div style={{ fontSize: '0.95rem', fontWeight: 900, color: 'var(--primary)', marginTop: '4px' }}>
-                        ฿{Number(sel.dailyPrice).toLocaleString()}
+                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                        <Clock size={13} />
+                        <span>9 ชม. · ฿{Number(sel.dailyPrice).toLocaleString()}</span>
                       </div>
                     </button>
 
@@ -1441,7 +1447,7 @@ export default function RoomListPage() {
                       className={`package-slot-card ${sel.dailySlot === '09-18' ? 'package-slot-card--active' : ''}`}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 800, color: 'var(--navy)', fontSize: '0.88rem' }}>ช่วงสายถึงหัวค่ำ</span>
+                        <span style={{ fontWeight: 800, color: 'var(--navy)', fontSize: '0.9rem' }}>09:00–18:00 น.</span>
                         <span style={{
                           fontSize: '0.72rem',
                           fontWeight: 700,
@@ -1453,11 +1459,9 @@ export default function RoomListPage() {
                           {daily0918Occupied ? 'ติดจอง' : 'ว่าง'}
                         </span>
                       </div>
-                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <Clock size={13} /> 09:00 - 18:00 น. (9 ชม.)
-                      </div>
-                      <div style={{ fontSize: '0.95rem', fontWeight: 900, color: 'var(--primary)', marginTop: '4px' }}>
-                        ฿{Number(sel.dailyPrice).toLocaleString()}
+                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                        <Clock size={13} />
+                        <span>9 ชม. · ฿{Number(sel.dailyPrice).toLocaleString()}</span>
                       </div>
                     </button>
                   </div>
@@ -1625,6 +1629,43 @@ export default function RoomListPage() {
         </div>
       </section>
 
+      {/* 2. PROMPT CARD OR ROOM RESULTS */}
+      {!hasConfirmedDate ? (
+        <div
+          className="booking-card"
+          id="card-select-date-prompt"
+          style={{
+            textAlign: 'center',
+            padding: '36px 20px',
+            margin: '16px auto',
+            maxWidth: '520px',
+            borderRadius: '16px',
+            border: '1.5px dashed var(--border)',
+            backgroundColor: '#ffffff'
+          }}
+        >
+          <div style={{
+            width: '52px',
+            height: '52px',
+            borderRadius: '50%',
+            backgroundColor: 'var(--primary-light)',
+            color: 'var(--primary)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            marginBottom: '12px'
+          }}>
+            <Calendar size={26} />
+          </div>
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--navy)', marginBottom: '6px' }}>
+            เลือกวันที่เพื่อดูห้องว่าง
+          </h3>
+          <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+            แตะเลือกวันที่บนปฏิทินด้านบน เพื่อค้นหาตามจำนวนคนหรือเลือกห้องที่ต้องการ
+          </p>
+        </div>
+      ) : (
+        <>
       {/* 2. SUMMARY FILTER BAR ABOVE ROOM RESULTS */}
       <div className="customer-summary-filter-bar">
         <div className="customer-summary-filter-info">
@@ -1707,6 +1748,9 @@ export default function RoomListPage() {
         </div>
       )}
 
+        </>
+      )}
+
       {/* 4. BOTTOM SHEET MODAL (SLIDES UP FROM BOTTOM ON MOBILE) */}
       {isModalOpen && (
         <div
@@ -1776,8 +1820,11 @@ export default function RoomListPage() {
                 <div className="counter-box">
                   <button
                     type="button"
-                    disabled={!modalGuests || modalGuests <= 1}
-                    onClick={() => setModalGuests(g => Math.max(1, (parseInt(g, 10) || 1) - 1))}
+                    disabled={!modalGuests || parseInt(modalGuests, 10) <= 1}
+                    onClick={() => setModalGuests(g => {
+                      const val = parseInt(g, 10);
+                      return isNaN(val) || val <= 1 ? '' : val - 1;
+                    })}
                     className="counter-btn"
                     id="btn-guest-decrement"
                     aria-label="ลดจำนวนคน"
@@ -1791,6 +1838,7 @@ export default function RoomListPage() {
                       min="1"
                       step="1"
                       value={modalGuests}
+                      placeholder="1"
                       onChange={(e) => {
                         const val = parseInt(e.target.value, 10);
                         if (isNaN(val)) {
@@ -1809,7 +1857,10 @@ export default function RoomListPage() {
 
                   <button
                     type="button"
-                    onClick={() => setModalGuests(g => (parseInt(g, 10) || 0) + 1)}
+                    onClick={() => setModalGuests(g => {
+                      const val = parseInt(g, 10);
+                      return isNaN(val) || val <= 0 ? 1 : val + 1;
+                    })}
                     className="counter-btn"
                     id="btn-guest-increment"
                     aria-label="เพิ่มจำนวนคน"
@@ -1853,7 +1904,7 @@ export default function RoomListPage() {
             {/* Confirm "ตกลง" Button */}
             <button
               type="button"
-              disabled={modalMode === 'byGuests' ? (!modalGuests || modalGuests < 1) : !modalRoomId}
+              disabled={modalMode === 'byGuests' ? (!modalGuests || parseInt(modalGuests, 10) < 1) : !modalRoomId}
               onClick={handleConfirmModal}
               className="btn-primary"
               id="btn-confirm-modal"

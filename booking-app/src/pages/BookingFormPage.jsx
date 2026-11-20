@@ -41,6 +41,7 @@ export default function BookingFormPage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
 
   // Load payload and LIFF profile from location.state or sessionStorage / localStorage
   useEffect(() => {
@@ -114,7 +115,8 @@ export default function BookingFormPage() {
             if (draft.notes) setNotes(draft.notes);
             if (draft.attendees) setAttendees(draft.attendees);
 
-            if (draft.needTaxInvoice !== undefined) setNeedTaxInvoice(draft.needTaxInvoice);
+            // Strictly enforce Tax Invoice switch starts OFF for new sessions
+            setNeedTaxInvoice(false);
             if (draft.taxPayerType) setTaxPayerType(draft.taxPayerType);
             if (draft.taxName) setTaxName(draft.taxName);
             if (draft.taxAddress) setTaxAddress(draft.taxAddress);
@@ -203,24 +205,27 @@ export default function BookingFormPage() {
     if (loading || isSubmittingRef.current) return;
     setError('');
 
+    const errors = {};
     if (!name.trim()) {
-      setError('กรุณาระบุชื่อ-นามสกุล ผู้จอง');
-      return;
+      errors.name = 'กรุณาระบุชื่อ-นามสกุล ผู้จอง';
     }
     if (!contact.trim()) {
-      setError('กรุณาระบุเบอร์โทรศัพท์สำหรับติดต่อและรับรหัสผ่าน');
-      return;
+      errors.contact = 'กรุณาระบุเบอร์โทรศัพท์สำหรับติดต่อและรับรหัสผ่าน';
     }
 
     const parsedAttendees = parseInt(attendees, 10);
     if (!attendees || isNaN(parsedAttendees) || parsedAttendees < 1) {
-      setError('กรุณาระบุจำนวนผู้เข้าใช้ห้องอย่างน้อย 1 ท่าน');
+      errors.attendees = 'กรุณาระบุจำนวนผู้เข้าใช้ห้องอย่างน้อย 1 ท่าน';
+    } else if (parsedAttendees > effectiveCapacity) {
+      errors.attendees = `จำนวนผู้เข้าใช้งาน (${parsedAttendees} ท่าน) เกินความจุของห้องที่เลือก (รองรับสูงสุด ${effectiveCapacity} ท่านสำหรับรูปแบบโต๊ะนี้)`;
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setError(Object.values(errors)[0]);
       return;
     }
-    if (parsedAttendees > effectiveCapacity) {
-      setError(`จำนวนผู้เข้าใช้งาน (${parsedAttendees} ท่าน) เกินความจุของห้องที่เลือก (รองรับสูงสุด ${effectiveCapacity} ท่าน)`);
-      return;
-    }
+    setFieldErrors({});
 
     if (needTaxInvoice) {
       if (taxPayerType !== 'individual' && taxPayerType !== 'corporate') {
@@ -623,9 +628,19 @@ export default function BookingFormPage() {
                   required
                   placeholder="เช่น คุณสมชาย ใจดี"
                   value={name}
-                  onChange={e => setName(e.target.value)}
-                  className="form-input"
+                  onChange={e => {
+                    setName(e.target.value);
+                    if (fieldErrors.name) setFieldErrors(prev => ({ ...prev, name: '' }));
+                    setError('');
+                  }}
+                  className={`form-input ${fieldErrors.name ? 'form-input--error' : ''}`}
                 />
+                {fieldErrors.name && (
+                  <div style={{ color: 'var(--danger)', fontSize: '0.78rem', fontWeight: 600, marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <AlertCircle size={13} />
+                    <span>{fieldErrors.name}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -642,9 +657,17 @@ export default function BookingFormPage() {
                 onChange={e => {
                   setContact(e.target.value);
                   if (!taxPhone) setTaxPhone(e.target.value);
+                  if (fieldErrors.contact) setFieldErrors(prev => ({ ...prev, contact: '' }));
+                  setError('');
                 }}
-                className="form-input"
+                className={`form-input ${fieldErrors.contact ? 'form-input--error' : ''}`}
               />
+              {fieldErrors.contact && (
+                <div style={{ color: 'var(--danger)', fontSize: '0.78rem', fontWeight: 600, marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <AlertCircle size={13} />
+                  <span>{fieldErrors.contact}</span>
+                </div>
+              )}
             </div>
 
             {/* Attendees Count */}
@@ -669,15 +692,26 @@ export default function BookingFormPage() {
                   placeholder={`ระบุจำนวนผู้เข้าใช้ห้อง (1 - ${effectiveCapacity} ท่าน)`}
                   value={attendees}
                   onChange={e => {
-                    setAttendees(e.target.value);
+                    const val = e.target.value;
+                    setAttendees(val);
                     setError('');
+                    const p = parseInt(val, 10);
+                    if (p > effectiveCapacity) {
+                      setFieldErrors(prev => ({
+                        ...prev,
+                        attendees: `จำนวนผู้เข้าใช้งานเกินความจุของห้องที่เลือก (สูงสุด ${effectiveCapacity} ท่านสำหรับรูปแบบโต๊ะนี้)`
+                      }));
+                    } else {
+                      setFieldErrors(prev => ({ ...prev, attendees: '' }));
+                    }
                   }}
-                  className="form-input"
+                  className={`form-input ${fieldErrors.attendees ? 'form-input--error' : ''}`}
                   style={{
                     paddingLeft: '44px',
                     paddingRight: '60px',
                     fontWeight: 700
                   }}
+                  id="input-attendees"
                 />
                 <span style={{
                   position: 'absolute',
@@ -690,6 +724,12 @@ export default function BookingFormPage() {
                   ท่าน
                 </span>
               </div>
+              {fieldErrors.attendees && (
+                <div style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600, marginTop: '5px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <AlertCircle size={14} />
+                  <span>{fieldErrors.attendees}</span>
+                </div>
+              )}
             </div>
 
             {/* Email & Company (2 columns on desktop, 1 on mobile) */}

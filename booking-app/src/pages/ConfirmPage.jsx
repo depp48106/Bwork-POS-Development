@@ -1045,53 +1045,40 @@ export default function ConfirmPage() {
         </div>
       ) : (
         /* PAYMENT & SLIP UPLOAD VIEW */
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* TOP SUCCESS BANNER */}
+        <div style={{ maxWidth: '520px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '16px', width: '100%' }}>
+          {/* 1. TOP BOOKING CONTEXT SUMMARY */}
           <div style={{
             backgroundColor: '#ffffff',
-            border: '1.5px solid #10b981',
-            borderRadius: 'var(--radius-lg)',
-            padding: '16px 20px',
+            border: '1.5px solid var(--border)',
+            borderRadius: '16px',
+            padding: '14px 18px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             flexWrap: 'wrap',
-            gap: '12px',
-            boxShadow: '0 4px 14px rgba(16, 185, 129, 0.15)'
+            gap: '12px'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: '1 1 200px' }}>
-              <CheckCircle2 size={24} style={{ color: '#10b981', flexShrink: 0 }} />
-              <div style={{ wordBreak: 'break-word' }}>
-                <div style={{ fontWeight: 800, fontSize: '1rem', color: 'var(--text-main)' }}>
-                  บันทึกการจองสำเร็จ! รหัสการจอง: <span style={{ color: 'var(--primary)', letterSpacing: '0.5px' }}>{displayBookingCode}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{ width: '38px', height: '38px', borderRadius: '50%', backgroundColor: 'var(--primary-light)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <CheckCircle2 size={22} />
+              </div>
+              <div>
+                <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--navy)' }}>
+                  บันทึกการจองสำเร็จ! <span style={{ color: 'var(--primary)' }}>รหัส: {displayBookingCode}</span>
                 </div>
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                   {booking?.room_name} · {booking?.date ? booking.date.split('-').reverse().join('/') : '-'} ({booking?.start_time} - {booking?.end_time} น.)
                 </div>
               </div>
             </div>
-
-            <div style={{ textAlign: 'right', flexShrink: 0 }}>
-              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                {isDeposit ? 'ยอดคงเหลือที่ต้องชำระ' : 'ยอดชำระทั้งสิ้น'}
-              </div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--primary)' }}>
-                ฿{Number(payableAmt).toLocaleString()}
-              </div>
-              {isDeposit && (
-                <div style={{ fontSize: '0.72rem', color: '#16a34a', marginTop: '2px' }}>
-                  (ชำระมัดจำแล้ว ฿{Number(booking.paid_amount || 0).toLocaleString()})
-                </div>
-              )}
-            </div>
           </div>
 
-          {/* REJECTED ALERT OR 15-MINUTE COUNTDOWN TIMER BOX */}
+          {/* REJECTED ALERT OR EXPIRED STATE */}
           {isRejected && isExpired ? (
             <div style={{
               backgroundColor: 'rgba(239, 68, 68, 0.08)',
               border: '1.5px solid #ef4444',
-              borderRadius: '14px',
+              borderRadius: '16px',
               padding: '16px 20px',
               textAlign: 'center',
               display: 'flex',
@@ -1144,7 +1131,7 @@ export default function ConfirmPage() {
             <div style={{
               backgroundColor: 'rgba(239, 68, 68, 0.08)',
               border: '1.5px solid #ef4444',
-              borderRadius: '14px',
+              borderRadius: '16px',
               padding: '16px 20px',
               textAlign: 'center',
               display: 'flex',
@@ -1183,123 +1170,112 @@ export default function ConfirmPage() {
               </div>
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <>
+              {/* 2. HERO PAYABLE AMOUNT & COUNTDOWN (ยอดชำระเด่นที่สุด ตามด้วยเวลาที่เหลือ) */}
+              <div style={{
+                backgroundColor: '#ffffff',
+                border: '1.5px solid var(--border)',
+                borderRadius: '20px',
+                padding: '24px 20px',
+                textAlign: 'center',
+                boxShadow: '0 4px 16px rgba(15, 118, 110, 0.08)'
+              }}>
+                <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  {isDeposit ? 'ยอดคงเหลือที่ต้องชำระ' : 'ยอดชำระสุทธิ'}
+                </div>
+                <div style={{ fontSize: '2.4rem', fontWeight: 900, color: 'var(--primary)', lineHeight: 1.15, margin: '6px 0' }}>
+                  ฿{Number(payableAmt).toLocaleString()}
+                </div>
+                {isDeposit && (
+                  <div style={{ fontSize: '0.78rem', color: '#16a34a', fontWeight: 600, marginBottom: '6px' }}>
+                    (ชำระมัดจำแล้ว ฿{Number(booking.paid_amount || 0).toLocaleString()} / ยอดรวม ฿{Number(totalAmt).toLocaleString()})
+                  </div>
+                )}
+
+                {/* COUNTDOWN TIMER BADGE */}
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '6px 16px',
+                  borderRadius: '999px',
+                  backgroundColor: timeLeftSeconds < 5 * 60 ? '#fee2e2' : 'var(--primary-light)',
+                  color: timeLeftSeconds < 5 * 60 ? '#dc2626' : 'var(--primary)',
+                  fontSize: '0.88rem',
+                  fontWeight: 800,
+                  marginTop: '8px'
+                }}>
+                  <Clock size={16} />
+                  <span>กำหนดเวลาชำระเงิน:</span>
+                  <span style={{ fontFamily: 'monospace', fontSize: '1.05rem', letterSpacing: '0.5px' }}>
+                    {`${Math.floor(timeLeftSeconds / 60).toString().padStart(2, '0')}:${(timeLeftSeconds % 60).toString().padStart(2, '0')}`} นาที
+                  </span>
+                </div>
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+                  กรุณาชำระเงินและแนบสลิปก่อนหมดเวลา
+                </div>
+              </div>
+
+              {/* REJECTION REASON BANNER (IF ACTIVE BUT RESUBMITTING) */}
               {isRejected && (
                 <div style={{
                   backgroundColor: 'rgba(245, 158, 11, 0.08)',
                   border: '1.5px solid #f59e0b',
                   borderRadius: '14px',
-                  padding: '16px 20px',
+                  padding: '14px 18px',
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '8px'
+                  gap: '6px'
                 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <AlertCircle size={24} style={{ color: '#d97706', flexShrink: 0 }} />
-                    <div>
-                      <div style={{ display: 'inline-block', backgroundColor: 'rgba(245, 158, 11, 0.2)', color: '#b45309', padding: '2px 8px', borderRadius: '6px', fontSize: '0.78rem', fontWeight: 800, marginBottom: '4px' }}>
-                        สลิปถูกปฏิเสธ — รอหลักฐานใหม่
-                      </div>
-                      <div style={{ fontWeight: 900, fontSize: '1.05rem', color: '#b45309' }}>
-                        สลิปการโอนเงินไม่ผ่านการตรวจสอบ กรุณาแนบสลิปใหม่
-                      </div>
-                      {booking?.rejection_reason && (
-                        <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#92400e', marginTop: '3px' }}>
-                          เหตุผล: {booking.rejection_reason}
-                        </div>
-                      )}
-                    </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <AlertCircle size={20} style={{ color: '#d97706', flexShrink: 0 }} />
+                    <span style={{ fontSize: '0.84rem', fontWeight: 800, color: '#b45309' }}>
+                      สลิปเดิมไม่ผ่านการอนุมัติ: {booking?.rejection_reason || 'ข้อมูลไม่ตรง'}
+                    </span>
                   </div>
-                  <div style={{ fontSize: '0.82rem', color: '#78350f', marginTop: '2px' }}>
-                    การจองของท่านยังคงอยู่ กรุณาอัปโหลดสลิปที่ถูกต้องภายในเวลาที่กำหนด (ระบบไม่ขยายเวลาชำระเงิน)
+                  <div style={{ fontSize: '0.78rem', color: '#78350f', paddingLeft: '28px' }}>
+                    กรุณาแนบรูปภาพสลิปที่ถูกต้องเพื่อดำเนินการต่อ
                   </div>
                 </div>
               )}
 
-              <div style={{
-                backgroundColor: timeLeftSeconds < 5 * 60 ? 'rgba(239, 68, 68, 0.08)' : 'rgba(37, 99, 235, 0.08)',
-                border: `1.5px solid ${timeLeftSeconds < 5 * 60 ? '#ef4444' : 'rgba(37, 99, 235, 0.3)'}`,
-                borderRadius: '14px',
-                padding: '12px 18px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                flexWrap: 'wrap',
-                gap: '10px'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <Clock size={20} color={timeLeftSeconds < 5 * 60 ? '#ef4444' : 'var(--primary)'} />
-                  <div style={{ fontSize: '0.84rem', color: 'var(--text-main)' }}>
-                    <strong>{timeLeftSeconds < 5 * 60 ? 'ใกล้หมดเวลาชำระเงิน:' : 'กำหนดเวลาชำระเงิน:'}</strong> กรุณาชำระและแนบสลิปก่อนหมดเวลา
-                  </div>
-                </div>
-
-                <div style={{
-                  fontFamily: 'monospace',
-                  fontSize: '1.25rem',
-                  fontWeight: 900,
-                  color: timeLeftSeconds < 5 * 60 ? '#dc2626' : 'var(--primary)',
-                  backgroundColor: '#ffffff',
-                  padding: '4px 12px',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border)',
-                  letterSpacing: '1px'
-                }}>
-                  {`${Math.floor(timeLeftSeconds / 60).toString().padStart(2, '0')}:${(timeLeftSeconds % 60).toString().padStart(2, '0')}`}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* PAYMENT DETAILS CARD & SLIP UPLOAD CARD (Active or Rejected Only) */}
-          {!isExpired && (
-            <>
-              {/* ROOM GUIDELINES GATE / ACKNOWLEDGEMENT CARD */}
+              {/* ROOM GUIDELINES ACKNOWLEDGEMENT CARD (IF ENFORCED) */}
               {roomGuidelines && isEnforced && !guidelinesAcknowledged && (
                 <div
                   id="guidelines-gate-card"
                   style={{
                     width: '100%',
-                    maxWidth: '360px',
-                    margin: '0 auto 16px',
                     padding: '18px 16px',
                     backgroundColor: '#ffffff',
-                    border: '2px solid #bfdbfe',
-                    borderRadius: '20px',
-                    boxShadow: '0 4px 16px rgba(37, 99, 235, 0.08)',
+                    border: '1.5px solid #bfdbfe',
+                    borderRadius: '18px',
                     boxSizing: 'border-box'
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-                    <ShieldCheck size={20} color="#2563eb" style={{ flexShrink: 0 }} />
-                    <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: '#1e3a8a' }}>
+                    <ShieldCheck size={20} color="var(--primary)" style={{ flexShrink: 0 }} />
+                    <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: 'var(--navy)' }}>
                       {roomGuidelines.title}
                     </h3>
                   </div>
 
-                  {/* Concise summary bullets (ข้อปฏิบัติย่อ) */}
-                  <div
-                    style={{
-                      backgroundColor: '#f8fafc',
-                      border: '1px solid #e2e8f0',
-                      borderRadius: '12px',
-                      padding: '12px 14px',
-                      marginBottom: '12px',
-                      fontSize: '0.84rem',
-                      lineHeight: 1.5,
-                      color: '#334155'
-                    }}
-                  >
+                  <div style={{
+                    backgroundColor: '#f8fafc',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '12px',
+                    padding: '12px 14px',
+                    marginBottom: '12px',
+                    fontSize: '0.84rem',
+                    lineHeight: 1.5,
+                    color: '#334155'
+                  }}>
                     <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                       {(roomGuidelines.summary_points || []).map((point, idx) => (
-                        <li key={idx} style={{ paddingLeft: '2px' }}>
-                          {point}
-                        </li>
+                        <li key={idx} style={{ paddingLeft: '2px' }}>{point}</li>
                       ))}
                     </ul>
                   </div>
 
-                  {/* Read full guidelines flyer modal trigger */}
                   <button
                     type="button"
                     id="btn-view-full-guidelines"
@@ -1310,183 +1286,43 @@ export default function ConfirmPage() {
                     style={{
                       width: '100%',
                       padding: '10px 14px',
-                      backgroundColor: '#eff6ff',
-                      color: '#1d4ed8',
-                      border: '1px solid #bfdbfe',
-                      borderRadius: '12px',
-                      fontSize: '0.86rem',
+                      backgroundColor: 'var(--primary-light)',
+                      color: 'var(--primary)',
+                      border: '1px solid rgba(15, 118, 110, 0.25)',
+                      borderRadius: '10px',
+                      fontSize: '0.84rem',
                       fontWeight: 700,
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       gap: '6px',
                       cursor: 'pointer',
-                      transition: 'all 0.15s ease'
+                      marginBottom: '12px'
                     }}
                   >
                     <BookOpen size={16} />
                     <span>อ่านข้อปฏิบัติฉบับเต็ม</span>
                   </button>
 
-                  {/* Mandatory acknowledgement checkbox */}
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '10px',
-                      marginTop: '12px',
-                      cursor: 'pointer',
-                      padding: '10px 12px',
-                      backgroundColor: guidelinesCheckboxTicked ? '#f0fdf4' : '#f8fafc',
-                      border: guidelinesCheckboxTicked ? '1.5px solid #86efac' : '1px solid #cbd5e1',
-                      borderRadius: '12px',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', userSelect: 'none' }}>
                     <input
                       type="checkbox"
                       id="checkbox-acknowledge-guidelines"
-                      checked={guidelinesCheckboxTicked}
-                      onChange={e => setGuidelinesCheckboxTicked(e.target.checked)}
-                      style={{
-                        width: '18px',
-                        height: '18px',
-                        marginTop: '2px',
-                        cursor: 'pointer',
-                        accentColor: '#2563eb',
-                        flexShrink: 0
-                      }}
+                      checked={guidelinesAcknowledged}
+                      onChange={(e) => setGuidelinesAcknowledged(e.target.checked)}
+                      style={{ marginTop: '3px', width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                     />
-                    <span style={{ fontSize: '0.84rem', fontWeight: 700, color: '#1e293b', lineHeight: 1.4 }}>
-                      ฉันได้อ่านและรับทราบข้อปฏิบัติของห้องที่จองแล้ว
+                    <span style={{ fontSize: '0.82rem', color: '#1e293b', fontWeight: 600, lineHeight: 1.4 }}>
+                      ข้าพเจ้ารับทราบและยินดีปฏิบัติตามข้อกำหนดการใช้งานห้องประชุม
                     </span>
                   </label>
-
-                  {/* Confirm acknowledgement button */}
-                  <button
-                    type="button"
-                    id="btn-confirm-acknowledge-guidelines"
-                    disabled={!guidelinesCheckboxTicked || isAcknowledgingGuidelines}
-                    onClick={handleAcknowledgeRules}
-                    style={{
-                      width: '100%',
-                      marginTop: '12px',
-                      padding: '13px 16px',
-                      backgroundColor: guidelinesCheckboxTicked ? '#2563eb' : '#cbd5e1',
-                      color: '#ffffff',
-                      border: 'none',
-                      borderRadius: '12px',
-                      fontSize: '0.94rem',
-                      fontWeight: 800,
-                      cursor: guidelinesCheckboxTicked && !isAcknowledgingGuidelines ? 'pointer' : 'not-allowed',
-                      boxShadow: guidelinesCheckboxTicked ? '0 4px 12px rgba(37, 99, 235, 0.25)' : 'none',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    {isAcknowledgingGuidelines ? 'กำลังยืนยัน...' : 'ยืนยันรับทราบเพื่อชำระเงิน'}
-                  </button>
-
-                  {/* Error feedback if API fails */}
-                  {guidelinesAcknowledgeError && (
-                    <div
-                      style={{
-                        marginTop: '10px',
-                        padding: '8px 12px',
-                        backgroundColor: '#fef2f2',
-                        border: '1px solid #fecaca',
-                        borderRadius: '8px',
-                        color: '#dc2626',
-                        fontSize: '0.82rem',
-                        fontWeight: 600,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px'
-                      }}
-                    >
-                      <AlertCircle size={15} style={{ flexShrink: 0 }} />
-                      <span>{guidelinesAcknowledgeError}</span>
-                    </div>
-                  )}
                 </div>
               )}
 
-              {/* POST-ACKNOWLEDGEMENT SUCCESS BADGE & RE-VIEW BUTTON */}
-              {roomGuidelines && guidelinesAcknowledged && (
-                <div
-                  id="guidelines-acknowledged-badge"
-                  style={{
-                    maxWidth: '360px',
-                    width: '100%',
-                    margin: '0 auto 14px',
-                    padding: '10px 14px',
-                    backgroundColor: '#f0fdf4',
-                    border: '1.5px solid #86efac',
-                    borderRadius: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    boxSizing: 'border-box'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#16a34a', fontWeight: 800, fontSize: '0.86rem' }}>
-                    <CheckCircle2 size={16} />
-                    <span>รับทราบข้อปฏิบัติเรียบร้อยแล้ว</span>
-                  </div>
-                  <button
-                    type="button"
-                    id="btn-re-view-guidelines"
-                    onClick={() => {
-                      setGuidelinesZoom(1);
-                      setShowGuidelinesModal(true);
-                    }}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: '#2563eb',
-                      fontSize: '0.82rem',
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      textDecoration: 'underline',
-                      padding: '2px 4px'
-                    }}
-                  >
-                    ดูข้อปฏิบัติอีกครั้ง
-                  </button>
-                </div>
-              )}
-
-              {roomGuidelines && !isEnforced && !guidelinesAcknowledged && (
-                <div style={{ marginBottom: '16px', textAlign: 'center' }}>
-                  <button
-                    type="button"
-                    onClick={() => { setGuidelinesZoom(1); setShowGuidelinesModal(true); }}
-                    style={{
-                      width: '100%',
-                      padding: '10px 14px',
-                      background: '#f0f9ff',
-                      border: '1px solid #bae6fd',
-                      borderRadius: '10px',
-                      color: '#0284c7',
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '8px'
-                    }}
-                  >
-                    <BookOpen size={16} />
-                    <span>ดูข้อปฏิบัติการใช้ห้อง</span>
-                  </button>
-                </div>
-              )}
-
-              {/* GATED QR CARD: Hidden until guidelines acknowledged (if required) */}
+              {/* 3. QR PROMPTPAY SECTION */}
               {isGuidelinesGated ? (
                 <div
                   id="gated-qr-placeholder"
-                  className="booking-card"
                   style={{
                     padding: '28px 18px',
                     display: 'flex',
@@ -1494,18 +1330,16 @@ export default function ConfirmPage() {
                     alignItems: 'center',
                     justifyContent: 'center',
                     textAlign: 'center',
-                    backgroundColor: '#f8fafc',
-                    border: '2px dashed #cbd5e1',
+                    backgroundColor: '#ffffff',
+                    border: '1.5px dashed var(--border)',
                     borderRadius: '20px',
-                    maxWidth: '360px',
-                    margin: '0 auto',
                     boxSizing: 'border-box'
                   }}
                 >
                   <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '12px' }}>
                     <QrCode size={24} color="#64748b" />
                   </div>
-                  <div style={{ fontSize: '0.94rem', fontWeight: 800, color: '#334155', marginBottom: '6px' }}>
+                  <div style={{ fontSize: '0.94rem', fontWeight: 800, color: 'var(--navy)', marginBottom: '6px' }}>
                     QR Code สำหรับชำระเงินถูกล็อกไว้
                   </div>
                   <div style={{ fontSize: '0.82rem', color: '#64748b', lineHeight: 1.5, maxWidth: '280px' }}>
@@ -1513,237 +1347,240 @@ export default function ConfirmPage() {
                   </div>
                 </div>
               ) : (
-                <>
-                  <div className="booking-card" style={{ padding: '24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              backgroundColor: '#ffffff',
-              border: '2px solid #e2e8f0',
-              borderRadius: '20px',
-              padding: '20px 14px',
-              boxShadow: 'var(--shadow-sm)',
-              maxWidth: '360px',
-              width: '100%',
-              boxSizing: 'border-box'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.86rem', fontWeight: 900, color: '#1e3a8a', marginBottom: '14px', letterSpacing: '0.5px' }}>
-                <QrCode size={18} />
-                <span>สแกนจ่ายผ่าน QR Code (B-WORK)</span>
-              </div>
-
-              {/* Official QR Code Standee Image */}
-              <div style={{
-                backgroundColor: '#ffffff',
-                padding: '8px',
-                borderRadius: '16px',
-                border: '1.5px solid #cbd5e1',
-                boxShadow: '0 4px 14px rgba(0,0,0,0.08)',
-                maxWidth: '290px',
-                width: '100%',
-                display: 'flex',
-                justifyContent: 'center',
-                overflow: 'hidden'
-              }}>
-                <img
-                  src={qrImageSrc}
-                  alt="B WORK Payment QR Code"
-                  style={{ width: '100%', height: 'auto', display: 'block', borderRadius: '8px', objectFit: 'contain' }}
-                />
-              </div>
-
-              {/* Amount to pay */}
-              <div style={{ marginTop: '16px', textAlign: 'center' }}>
-                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                  {isDeposit ? 'ยอดเงินคงเหลือที่ต้องชำระ' : 'ยอดเงินที่ต้องชำระ'}
-                </div>
-                <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'var(--primary)', lineHeight: 1.2 }}>
-                  ฿{Number(payableAmt).toLocaleString()}
-                </div>
-                {isDeposit && (
-                  <div style={{ fontSize: '0.74rem', color: '#16a34a', marginTop: '2px', fontWeight: 600 }}>
-                    (ชำระมัดจำแล้ว ฿{Number(booking.paid_amount || 0).toLocaleString()} / ยอดรวม ฿{Number(totalAmt).toLocaleString()})
+                <div style={{
+                  backgroundColor: '#ffffff',
+                  border: '1.5px solid var(--border)',
+                  borderRadius: '20px',
+                  padding: '20px 16px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.92rem', fontWeight: 800, color: 'var(--navy)', marginBottom: '14px' }}>
+                    <QrCode size={18} color="var(--primary)" />
+                    <span>สแกนจ่ายผ่าน QR Code (B-WORK)</span>
                   </div>
-                )}
-                <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '4px' }}>
-                  รองรับ PromptPay ทุกธนาคาร / บัตรเครดิต (VISA, Mastercard)
-                </div>
-              </div>
 
-              {/* Download QR Button */}
-              <a
-                href={qrImageSrc}
-                download="BWORK_Payment_QR.png"
-                target="_blank"
-                rel="noreferrer"
-                style={{
-                  marginTop: '12px',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontSize: '0.78rem',
-                  fontWeight: 700,
-                  color: 'var(--primary)',
-                  backgroundColor: 'rgba(37, 99, 235, 0.08)',
-                  padding: '6px 14px',
-                  borderRadius: '10px',
-                  textDecoration: 'none',
-                  border: '1px solid rgba(37, 99, 235, 0.2)'
-                }}
-              >
-                <Download size={14} />
-                <span>บันทึกรูป QR Code ลงเครื่อง</span>
-              </a>
+                  {/* Official QR Code Standee Image (With Intact Margins) */}
+                  <div style={{
+                    backgroundColor: '#ffffff',
+                    padding: '6px',
+                    borderRadius: '14px',
+                    border: '1px solid var(--border)',
+                    maxWidth: '300px',
+                    width: '100%',
+                    display: 'flex',
+                    justifyContent: 'center'
+                  }}>
+                    <img
+                      src={qrImageSrc}
+                      alt="B WORK Payment QR Code"
+                      style={{ width: '100%', height: 'auto', display: 'block', borderRadius: '8px', objectFit: 'contain' }}
+                    />
+                  </div>
 
-              {/* Bank Transfer Alternative Box */}
-              <div style={{
-                marginTop: '18px',
-                width: '100%',
-                backgroundColor: '#f8fafc',
-                border: '1px solid #e2e8f0',
-                borderRadius: '12px',
-                padding: '12px 14px',
-                fontSize: '0.78rem'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
-                  <CreditCard size={14} />
-                  <span>หรือโอนผ่านบัญชีธนาคาร</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#475569' }}>
-                  <span>{paymentSettings.bank_name || 'ธ.กรุงศรีอยุธยา'}</span>
-                  <button
-                    type="button"
-                    onClick={handleCopyAccount}
+                  {/* Download QR Button */}
+                  <a
+                    href={qrImageSrc}
+                    download="BWORK_Payment_QR.png"
+                    target="_blank"
+                    rel="noreferrer"
                     style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--primary)',
-                      fontWeight: 700,
-                      cursor: 'pointer',
+                      marginTop: '12px',
                       display: 'inline-flex',
                       alignItems: 'center',
-                      gap: '3px',
-                      padding: 0,
-                      fontSize: '0.76rem'
+                      gap: '6px',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      color: 'var(--primary)',
+                      backgroundColor: 'var(--primary-light)',
+                      padding: '8px 16px',
+                      borderRadius: '10px',
+                      textDecoration: 'none',
+                      border: '1px solid rgba(15, 118, 110, 0.2)'
                     }}
                   >
-                    <Copy size={12} />
-                    <span>คัดลอกเลขบัญชี</span>
-                  </button>
-                </div>
-                <div style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '0.92rem', color: '#0f172a', margin: '2px 0' }}>
-                  {paymentSettings.account_number || '329-1-38429-0'}
-                </div>
-                <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
-                  ชื่อบัญชี: {paymentSettings.account_name || 'บริษัท บิลท์ ฮาร์ท จำกัด'}
-                </div>
-              </div>
+                    <Download size={15} />
+                    <span>บันทึกรูป QR Code ลงเครื่อง</span>
+                  </a>
 
-            </div>
-          </div>
-
-          {/* SLIP UPLOAD CARD */}
-          <div className="booking-card">
-            <div style={{ marginBottom: '14px' }}>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
-                แนบสลิปหลักฐานการโอนเงิน
-              </h3>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>
-                เมื่อโอนเงินเรียบร้อยแล้ว กรุณาอัปโหลดรูปภาพสลิปเพื่อยืนยันรายการ
-              </p>
-            </div>
-
-            <form onSubmit={handleUploadSlip} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {/* Dropzone / Upload area */}
-              <label style={{
-                border: '2px dashed var(--border-card)',
-                borderRadius: '16px',
-                padding: '24px 16px',
-                textAlign: 'center',
-                cursor: 'pointer',
-                backgroundColor: 'var(--bg-page)',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: '10px',
-                transition: 'all 0.2s ease'
-              }}>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleFileChange}
-                  style={{ display: 'none' }}
-                />
-
-                {slipPreview ? (
-                  <div>
-                    <img
-                      src={slipPreview}
-                      alt="Slip Preview"
-                      style={{ maxHeight: '200px', borderRadius: '10px', boxShadow: 'var(--shadow-md)', marginBottom: '8px' }}
-                    />
-                    <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--primary)' }}>
-                      แตะเพื่อเปลี่ยนรูปภาพสลิป
+                  {/* Alternative Bank Transfer Box */}
+                  <div style={{
+                    marginTop: '16px',
+                    width: '100%',
+                    backgroundColor: 'var(--bg-page)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '12px',
+                    padding: '12px 14px',
+                    fontSize: '0.8rem'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 800, color: 'var(--navy)', marginBottom: '6px' }}>
+                      <CreditCard size={15} color="var(--primary)" />
+                      <span>หรือโอนผ่านบัญชีธนาคาร</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)' }}>
+                      <span>{paymentSettings.bank_name || 'ธ.กรุงศรีอยุธยา'}</span>
+                      <button
+                        type="button"
+                        onClick={handleCopyAccount}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--primary)',
+                          fontWeight: 700,
+                          fontSize: '0.74rem',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                      >
+                        {copied ? <Check size={12} /> : <Copy size={12} />}
+                        <span>{copied ? 'คัดลอกแล้ว' : 'คัดลอกเลขบัญชี'}</span>
+                      </button>
+                    </div>
+                    <div style={{ fontFamily: 'monospace', fontWeight: 900, fontSize: '1rem', color: 'var(--navy)', margin: '4px 0' }}>
+                      {paymentSettings.account_number || '329-1-38429-0'}
+                    </div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                      ชื่อบัญชี: {paymentSettings.account_name || 'บริษัท บิลท์ ฮาร์ท จำกัด'}
                     </div>
                   </div>
-                ) : (
-                  <>
-                    <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: 'var(--primary-light)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Upload size={24} />
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: '0.92rem', color: 'var(--text-main)' }}>
-                        แตะที่นี่เพื่อเลือกรูปภาพหลักฐานการชำระเงิน
-                      </div>
-                      <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        รองรับไฟล์ JPG, PNG, WEBP (ภาพถ่ายหรือภาพบันทึกหน้าจอ)
-                      </div>
-                    </div>
-                  </>
-                )}
-              </label>
-
-              {/* Error Alert */}
-              {error && (
-                <div style={{
-                  padding: '10px 14px',
-                  borderRadius: '12px',
-                  backgroundColor: 'var(--danger-light)',
-                  border: '1px solid rgba(239, 68, 68, 0.3)',
-                  color: 'var(--danger)',
-                  fontSize: '0.84rem',
-                  fontWeight: 700,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}>
-                  <AlertCircle size={16} />
-                  <span>{error}</span>
                 </div>
               )}
 
-              {/* Upload Button */}
-              <button
-                type="submit"
-                disabled={uploading || !slipFile}
-                className="btn-primary"
-                style={{
-                  backgroundColor: !slipFile ? '#cbd5e1' : undefined
-                }}
-              >
-                <Upload size={18} />
-                <span>{uploading ? 'กำลังส่งหลักฐานการชำระเงิน...' : 'ส่งหลักฐานยืนยันการชำระเงิน'}</span>
-              </button>
-            </form>
-          </div>
-                </>
-              )}
+              {/* 4. SLIP UPLOAD & SUBMIT BUTTON (PLACED RIGHT TOGETHER) */}
+              <div style={{
+                backgroundColor: '#ffffff',
+                border: '1.5px solid var(--border)',
+                borderRadius: '20px',
+                padding: '20px'
+              }}>
+                <div style={{ marginBottom: '14px' }}>
+                  <h3 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--navy)', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Upload size={18} color="var(--primary)" />
+                    <span>แนบสลิปหลักฐานการโอนเงิน</span>
+                  </h3>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '4px 0 0 0' }}>
+                    เมื่อชำระเงินเรียบร้อยแล้ว กรุณาแนบรูปภาพสลิปเพื่อยืนยันรายการ
+                  </p>
+                </div>
+
+                <form onSubmit={handleUploadSlip} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {/* Dropzone label */}
+                  <label style={{
+                    border: '2px dashed var(--border)',
+                    borderRadius: '14px',
+                    padding: slipPreview ? '14px' : '22px 16px',
+                    textAlign: 'center',
+                    cursor: 'pointer',
+                    backgroundColor: 'var(--bg-page)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '8px',
+                    transition: 'all 0.15s ease'
+                  }}>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleFileChange}
+                      style={{ display: 'none' }}
+                      id="input-slip-file"
+                    />
+
+                    {slipPreview ? (
+                      <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                        <img
+                          src={slipPreview}
+                          alt="Slip Preview"
+                          style={{ maxHeight: '180px', maxWidth: '100%', borderRadius: '10px', boxShadow: 'var(--shadow-sm)', objectFit: 'contain' }}
+                        />
+                        <div style={{ marginTop: '8px', fontSize: '0.84rem', fontWeight: 800, color: 'var(--navy)' }}>
+                          {slipFile?.name || 'สลิปโอนเงิน'}
+                        </div>
+                        {slipFile?.size && (
+                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                            ({Math.round(slipFile.size / 1024)} KB)
+                          </div>
+                        )}
+                        <div style={{ marginTop: '6px', fontSize: '0.78rem', fontWeight: 700, color: 'var(--primary)' }}>
+                          แตะเพื่อเปลี่ยนรูปภาพสลิป
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ width: '44px', height: '44px', borderRadius: '50%', backgroundColor: 'var(--primary-light)', color: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Upload size={22} />
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: '0.9rem', color: 'var(--navy)' }}>
+                            แตะที่นี่เพื่อเลือกรูปสลิป
+                          </div>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                            รองรับรูปถ่ายหรือแคปหน้าจอ (JPG, PNG, WEBP)
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </label>
+
+                  {/* Error Alert */}
+                  {error && (
+                    <div style={{
+                      padding: '10px 14px',
+                      borderRadius: '10px',
+                      backgroundColor: 'var(--danger-light)',
+                      border: '1px solid rgba(239, 68, 68, 0.2)',
+                      color: 'var(--danger)',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}>
+                      <AlertCircle size={16} />
+                      <span>{error}</span>
+                    </div>
+                  )}
+
+                  {/* SUBMIT BUTTON ATTACHED RIGHT BELOW */}
+                  <button
+                    type="submit"
+                    disabled={!slipFile || uploading || qrScanning}
+                    className="btn-primary"
+                    id="btn-submit-slip"
+                    style={{
+                      width: '100%',
+                      height: '50px',
+                      fontSize: '1rem',
+                      fontWeight: 800,
+                      backgroundColor: (!slipFile || uploading || qrScanning) ? '#cbd5e1' : undefined
+                    }}
+                  >
+                    {uploading ? (
+                      <>
+                        <div className="spinner" style={{ width: '20px', height: '20px', borderWidth: '2.5px' }} />
+                        <span>กำลังส่งสลิปและตรวจสอบ...</span>
+                      </>
+                    ) : qrScanning ? (
+                      <>
+                        <div className="spinner" style={{ width: '20px', height: '20px', borderWidth: '2.5px' }} />
+                        <span>กำลังอ่านสลิป...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 size={20} />
+                        <span>ยืนยันการชำระเงิน</span>
+                      </>
+                    )}
+                  </button>
+                </form>
+              </div>
             </>
           )}
         </div>
       )}
-
       {/* ROOM GUIDELINES MODAL (In-web popup, scrollable, zoomable, closeable on mobile) */}
       {showGuidelinesModal && roomGuidelines && (
         <div
