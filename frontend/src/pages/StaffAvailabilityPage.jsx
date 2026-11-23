@@ -224,11 +224,32 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
   const [selectedEventDetail, setSelectedEventDetail] = useState(null);
 
   // Form states (kept across conflict/refresh)
+  const [departmentsList, setDepartmentsList] = useState(BUILTLAND_DEPARTMENTS);
   const [customerName, setCustomerName] = useState('');
   const [department, setDepartment] = useState(BUILTLAND_DEPARTMENTS[0]);
   const [selectedIntervalIndex, setSelectedIntervalIndex] = useState(0);
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
+
+  // Fetch centralized active departments
+  useEffect(() => {
+    const fetchDepartments = async () => {
+      try {
+        const res = await fetch('/api/departments');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.departments) && data.departments.length > 0) {
+            const names = data.departments.map(d => d.name);
+            setDepartmentsList(names);
+            setDepartment(prev => (names.includes(prev) ? prev : names[0]));
+          }
+        }
+      } catch (e) {
+        console.warn('Could not fetch dynamic departments:', e);
+      }
+    };
+    fetchDepartments();
+  }, []);
 
   // Booking result & UI feedback states
   const [submitting, setSubmitting] = useState(false);
@@ -1722,7 +1743,7 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                       onChange={(e) => setDepartment(e.target.value)}
                       required
                     >
-                      {BUILTLAND_DEPARTMENTS.map(dept => (
+                      {departmentsList.map(dept => (
                         <option key={dept} value={dept}>{dept}</option>
                       ))}
                     </select>

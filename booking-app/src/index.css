@@ -695,6 +695,12 @@ button:active {
   background-color: #e2e8f0;
 }
 
+.customer-cal-day__badge--loading {
+  color: #94a3b8;
+  background-color: #f1f5f9;
+  letter-spacing: 1px;
+}
+
 /* Category filter tabs */
 .customer-filter-bar {
   display: flex;
@@ -1158,11 +1164,11 @@ button:active {
 }
 
 .interactive-time-segment--available {
-  background-color: #10b981;
+  background-color: #A7F3D0;
 }
 
 .interactive-time-segment--available:hover {
-  background-color: #059669;
+  background-color: #6ee7b7;
 }
 
 .interactive-time-segment--selected {
@@ -1171,17 +1177,17 @@ button:active {
 }
 
 .interactive-time-segment--booked {
-  background-color: #ef4444;
+  background-color: #94A3B8;
   cursor: not-allowed;
 }
 
 .interactive-time-segment--cleaning {
-  background-color: #f59e0b;
+  background-color: #FED7AA;
   cursor: not-allowed;
 }
 
 .interactive-time-segment--past {
-  background-color: #cbd5e1;
+  background-color: #CBD5E1;
   cursor: not-allowed;
 }
 

@@ -12516,6 +12516,109 @@ export default {
         }), { headers: corsHeaders });
       }
 
+      // Internal Departments: Public & Staff Availability endpoint (Active only)
+      if ((pathname === '/api/public/departments' || pathname === '/api/departments') && method === 'GET') {
+        const DEFAULT_INTERNAL_DEPARTMENTS = [
+          { id: 'dept-1', name: 'ฝ่ายการเงินและบัญชี', active: true },
+          { id: 'dept-2', name: 'ฝ่ายขายและการตลาด', active: true },
+          { id: 'dept-3', name: 'ฝ่ายทรัพยากรบุคคลและธุรการ (HR)', active: true },
+          { id: 'dept-4', name: 'ฝ่ายเทคโนโลยีสารสนเทศ (IT)', active: true },
+          { id: 'dept-5', name: 'ฝ่ายบริหารโครงการและก่อสร้าง', active: true },
+          { id: 'dept-6', name: 'สำนักกรรมการผู้จัดการ / ผู้บริหาร', active: true }
+        ];
+        let depts = DEFAULT_INTERNAL_DEPARTMENTS;
+        try {
+          const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'internal_departments'").first();
+          if (row && row.value) {
+            const parsed = JSON.parse(row.value);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              depts = parsed;
+            }
+          }
+        } catch (_) {}
+        const activeDepts = depts.filter(d => d.active !== false);
+        return new Response(JSON.stringify({
+          success: true,
+          departments: activeDepts,
+          department_names: activeDepts.map(d => d.name)
+        }), { headers: corsHeaders });
+      }
+
+      // Internal Departments: Admin/Settings Management (All departments, both active and inactive)
+      if (pathname === '/api/settings/departments') {
+        const auth = await authenticateUser(request, env);
+        if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
+
+        const DEFAULT_INTERNAL_DEPARTMENTS = [
+          { id: 'dept-1', name: 'ฝ่ายการเงินและบัญชี', active: true },
+          { id: 'dept-2', name: 'ฝ่ายขายและการตลาด', active: true },
+          { id: 'dept-3', name: 'ฝ่ายทรัพยากรบุคคลและธุรการ (HR)', active: true },
+          { id: 'dept-4', name: 'ฝ่ายเทคโนโลยีสารสนเทศ (IT)', active: true },
+          { id: 'dept-5', name: 'ฝ่ายบริหารโครงการและก่อสร้าง', active: true },
+          { id: 'dept-6', name: 'สำนักกรรมการผู้จัดการ / ผู้บริหาร', active: true }
+        ];
+
+        if (method === 'GET') {
+          let depts = DEFAULT_INTERNAL_DEPARTMENTS;
+          try {
+            const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'internal_departments'").first();
+            if (row && row.value) {
+              const parsed = JSON.parse(row.value);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                depts = parsed;
+              }
+            }
+          } catch (_) {}
+          return new Response(JSON.stringify({
+            success: true,
+            departments: depts
+          }), { headers: corsHeaders });
+        }
+
+        if (method === 'POST') {
+          const user = auth.user;
+          const isAdmin = user && (user.role === 'admin' || user.username === 'admin');
+          const perms = new Set((user?.permissions || '').split(',').map(p => p.trim()).filter(Boolean));
+          const canManage = isAdmin || perms.has('admin-management') || perms.has('admin-system') || perms.has('admin-general');
+          if (!canManage) {
+            return new Response(JSON.stringify({ error: 'ไม่มีสิทธิ์จัดการรายชื่อฝ่ายภายในบริษัท' }), { status: 403, headers: corsHeaders });
+          }
+
+          const body = await request.json().catch(() => ({}));
+          const list = body.departments;
+          if (!Array.isArray(list)) {
+            return new Response(JSON.stringify({ error: 'รูปแบบข้อมูลไม่ถูกต้อง (ต้องเป็นรายการ array)' }), { status: 400, headers: corsHeaders });
+          }
+
+          const cleanList = [];
+          const seenNames = new Set();
+          for (let i = 0; i < list.length; i++) {
+            const item = list[i];
+            const name = String(item.name || '').trim();
+            if (!name) continue;
+            if (seenNames.has(name)) {
+              return new Response(JSON.stringify({ error: `ชื่อฝ่าย "${name}" ซ้ำกัน กรุณาแก้ไขไม่ให้ซ้ำกัน` }), { status: 400, headers: corsHeaders });
+            }
+            seenNames.add(name);
+            cleanList.push({
+              id: item.id || `dept-${Date.now()}-${i}`,
+              name,
+              active: item.active !== false
+            });
+          }
+
+          const jsonVal = JSON.stringify(cleanList);
+          await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('internal_departments', ?) ON CONFLICT(key) DO UPDATE SET value = ?")
+            .bind(jsonVal, jsonVal).run();
+
+          return new Response(JSON.stringify({
+            success: true,
+            message: 'บันทึกรายชื่อฝ่ายภายในบริษัทเรียบร้อยแล้ว',
+            departments: cleanList
+          }), { headers: corsHeaders });
+        }
+      }
+
       if (pathname === '/api/settings') {
         const auth = await authenticateUser(request, env);
         if (auth.error) return new Response(JSON.stringify({ error: auth.error }), { status: auth.status, headers: corsHeaders });
@@ -12539,7 +12642,7 @@ export default {
                 'company_name', 'company_address', 'company_tax_id', 'logo_image',
                 'receipt_header', 'receipt_footer', 'room_alert_minutes', 'cleaning_buffer_minutes',
                 'promptpay_id', 'payment_bank_name', 'payment_bank_account', 'payment_bank_account_name',
-                'payment_window_minutes', 'wifi_ssid'
+                'payment_window_minutes', 'wifi_ssid', 'internal_departments'
               ].includes(k))
             );
           }
@@ -12556,13 +12659,13 @@ export default {
             )) {
               continue;
             }
-            let valToSave = v;
+            let valToSave = typeof v === 'object' ? JSON.stringify(v) : String(v);
             if (k === 'payment_window_minutes') {
               const parsed = parseInt(v, 10);
               valToSave = (isNaN(parsed) || parsed < 1) ? '15' : String(parsed);
             }
             await env.DB.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?")
-              .bind(k, String(valToSave), String(valToSave)).run();
+              .bind(k, valToSave, valToSave).run();
           }
           return new Response(JSON.stringify({ success: true, message: 'บันทึกการตั้งค่าสำเร็จ' }), { headers: corsHeaders });
         }

@@ -41,6 +41,7 @@ export default function BookingFormPage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [isConflict, setIsConflict] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
 
   // Load payload and LIFF profile from location.state or sessionStorage / localStorage
@@ -420,6 +421,35 @@ export default function BookingFormPage() {
         });
         return;
       } else {
+        if (res.status === 409 || (data.error && (data.error.includes('ติดจอง') || data.error.includes('ไม่ว่าง') || data.error.includes('ทำความสะอาด')))) {
+          setIsConflict(true);
+          // Auto-save form draft so customer never loses their inputs on conflict
+          try {
+            const activeUserId = lineUserId || 'guest';
+            const activeRoomId = bookingData?.room_id || 'any';
+            const draftToSave = {
+              _owner_id: activeUserId,
+              name: name.trim(),
+              contact: contact.trim(),
+              email: email.trim(),
+              company: company.trim(),
+              notes: notes.trim(),
+              attendees,
+              needTaxInvoice,
+              taxPayerType,
+              taxName,
+              taxAddress,
+              taxId,
+              taxPhone,
+              taxDeliveryMethod,
+              taxOnlineSubChannel,
+              taxEmail,
+              taxPostalAddress
+            };
+            sessionStorage.setItem(`bwork_draft_${activeUserId}_${activeRoomId}`, JSON.stringify(draftToSave));
+            sessionStorage.setItem('bwork_booking_form_draft', JSON.stringify(draftToSave));
+          } catch (_) {}
+        }
         setError(data.error || 'ไม่สามารถทำรายการจองได้ กรุณาลองใหม่อีกครั้ง');
       }
     } catch (err) {
@@ -1206,8 +1236,50 @@ export default function BookingFormPage() {
               )}
             </div>
 
+            {/* CONFLICT / OVERLAP NOTIFICATION WITH RE-SELECT TIME BUTTON */}
+            {isConflict && (
+              <div style={{
+                padding: '14px',
+                borderRadius: '14px',
+                backgroundColor: '#fffbeb',
+                border: '1.5px solid #fde68a',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#b45309', fontWeight: 800, fontSize: '0.92rem' }}>
+                  <AlertCircle size={18} />
+                  <span>ช่วงเวลานี้มีผู้ทำรายการจองไปก่อนแล้ว</span>
+                </div>
+                <p style={{ margin: 0, fontSize: '0.82rem', color: '#92400e', lineHeight: 1.4 }}>
+                  ข้อมูลที่คุณกรอกไว้ถูกบันทึกเรียบร้อยแล้ว แตะปุ่มด้านล่างเพื่อกลับไปเลือกช่วงเวลาอื่นโดยไม่ต้องกรอกข้อมูลใหม่
+                </p>
+                <button
+                  type="button"
+                  onClick={handleBackToRooms}
+                  style={{
+                    padding: '10px 16px',
+                    borderRadius: '10px',
+                    backgroundColor: '#0F766E',
+                    color: '#ffffff',
+                    border: 'none',
+                    fontWeight: 800,
+                    fontSize: '0.88rem',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  <span>เลือกช่วงเวลาใหม่</span>
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            )}
+
             {/* ERROR ALERT */}
-            {error && (
+            {error && !isConflict && (
               <div style={{
                 padding: '10px 14px',
                 borderRadius: '12px',

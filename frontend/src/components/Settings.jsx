@@ -133,8 +133,105 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
     }
   };
 
+  // Internal Departments state & handlers
+  const DEFAULT_DEPT_LIST = [
+    { id: 'dept-1', name: 'ฝ่ายการเงินและบัญชี', active: true },
+    { id: 'dept-2', name: 'ฝ่ายขายและการตลาด', active: true },
+    { id: 'dept-3', name: 'ฝ่ายทรัพยากรบุคคลและธุรการ (HR)', active: true },
+    { id: 'dept-4', name: 'ฝ่ายเทคโนโลยีสารสนเทศ (IT)', active: true },
+    { id: 'dept-5', name: 'ฝ่ายบริหารโครงการและก่อสร้าง', active: true },
+    { id: 'dept-6', name: 'สำนักกรรมการผู้จัดการ / ผู้บริหาร', active: true }
+  ];
+  const [departments, setDepartments] = useState(DEFAULT_DEPT_LIST);
+  const [newDeptName, setNewDeptName] = useState('');
+  const [editingDeptId, setEditingDeptId] = useState(null);
+  const [editingDeptName, setEditingDeptName] = useState('');
+  const [deptSaving, setDeptSaving] = useState(false);
+
+  const fetchDepartments = async () => {
+    try {
+      const token = localStorage.getItem('token') || '';
+      const res = await fetch('/api/settings/departments', {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.departments) && data.departments.length > 0) {
+          setDepartments(data.departments);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to fetch departments in settings:', e);
+    }
+  };
+
+  const saveDepartmentsToBackend = async (newList) => {
+    setDeptSaving(true);
+    try {
+      const token = localStorage.getItem('token') || '';
+      const res = await fetch('/api/settings/departments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ departments: newList })
+      });
+      if (res.ok) {
+        setDepartments(newList);
+        if (sysAlert) await sysAlert('บันทึกการเปลี่ยนแปลงรายชื่อฝ่ายเรียบร้อยแล้ว');
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        if (sysAlert) await sysAlert(errData.error || 'บันทึกรายชื่อฝ่ายล้มเหลว');
+      }
+    } catch (err) {
+      if (sysAlert) await sysAlert('เกิดข้อผิดพลาดในการเชื่อมต่อ');
+    } finally {
+      setDeptSaving(false);
+    }
+  };
+
+  const handleAddDepartment = async (e) => {
+    e.preventDefault();
+    const name = newDeptName.trim();
+    if (!name) return;
+    if (departments.some(d => d.name.toLowerCase() === name.toLowerCase())) {
+      if (sysAlert) await sysAlert(`มีฝ่าย "${name}" อยู่ในรายการแล้ว`);
+      return;
+    }
+    const updated = [
+      ...departments,
+      { id: `dept-${Date.now()}`, name, active: true }
+    ];
+    setNewDeptName('');
+    await saveDepartmentsToBackend(updated);
+  };
+
+  const handleToggleDepartment = async (id) => {
+    const updated = departments.map(d =>
+      d.id === id ? { ...d, active: !d.active } : d
+    );
+    await saveDepartmentsToBackend(updated);
+  };
+
+  const handleSaveRenameDepartment = async (id) => {
+    const name = editingDeptName.trim();
+    if (!name) return;
+    if (departments.some(d => d.id !== id && d.name.toLowerCase() === name.toLowerCase())) {
+      if (sysAlert) await sysAlert(`มีฝ่าย "${name}" อยู่ในรายการแล้ว`);
+      return;
+    }
+    const updated = departments.map(d =>
+      d.id === id ? { ...d, name } : d
+    );
+    setEditingDeptId(null);
+    setEditingDeptName('');
+    await saveDepartmentsToBackend(updated);
+  };
+
   useEffect(() => {
     fetchConfigs();
+    fetchDepartments();
     if (viewMode === 'users') {
       fetchUsers();
       fetchRoles();
@@ -569,7 +666,8 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
         
         {/* VIEW: SYSTEM SETTINGS */}
         {viewMode === 'system' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: '28px', alignItems: 'start' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: '28px', alignItems: 'start' }}>
             {/* Left side: The Settings Form (Liquidglass theme) */}
             <div style={{
               background: 'var(--glass-bg)',
@@ -911,7 +1009,184 @@ function SettingsPanel({ viewMode, currentUser, onUserUpdate, onSettingsUpdate, 
               </div>
             </div>
           </div>
-        )}
+
+          {/* DEDICATED DEPARTMENT MANAGEMENT CARD */}
+          <div style={{
+            background: 'var(--glass-bg)',
+            border: '1px solid var(--glass-border)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            boxShadow: 'var(--glass-shadow)',
+            borderRadius: '24px',
+            padding: '28px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '20px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+              <div>
+                <h2 style={{ fontSize: '1.2rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--primary-color)' }}>
+                  <Building2 size={22} />
+                  จัดการรายชื่อฝ่ายภายในบริษัท (Internal Departments)
+                </h2>
+                <p style={{ margin: '4px 0 0 0', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                  รายชื่อฝ่ายที่เปิดใช้งานจะแสดงในตัวเลือกการจองห้องประชุมสำหรับพนักงาน (/staff-booking)
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={fetchDepartments}
+                className="btn btn-secondary"
+                style={{ height: '36px', padding: '0 14px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <RefreshCw size={14} />
+                รีเฟรชรายชื่อ
+              </button>
+            </div>
+
+            {/* Form: Add New Department */}
+            <form onSubmit={handleAddDepartment} style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                className="form-control"
+                placeholder="ระบุชื่อฝ่ายใหม่ เช่น ฝ่ายจัดซื้อและพัสดุ"
+                value={newDeptName}
+                onChange={e => setNewDeptName(e.target.value)}
+                style={{ flex: '1 1 260px', height: '42px', padding: '10px 14px', borderRadius: '12px', fontSize: '0.875rem' }}
+              />
+              <button
+                type="submit"
+                disabled={deptSaving || !newDeptName.trim()}
+                className="btn btn-primary"
+                id="btn-add-department"
+                style={{
+                  height: '42px',
+                  padding: '0 18px',
+                  borderRadius: '12px',
+                  fontSize: '0.875rem',
+                  fontWeight: 800,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  cursor: !newDeptName.trim() ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <Plus size={16} />
+                <span>เพิ่มฝ่าย</span>
+              </button>
+            </form>
+
+            {/* Department List */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }} id="departments-list-container">
+              {departments.map((dept, index) => {
+                const isEditing = editingDeptId === dept.id;
+                return (
+                  <div
+                    key={dept.id || index}
+                    id={`dept-row-${dept.id}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '12px 16px',
+                      borderRadius: '14px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                      border: '1px solid var(--border-color)',
+                      gap: '12px',
+                      flexWrap: 'wrap'
+                    }}
+                  >
+                    {isEditing ? (
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flex: '1 1 300px' }}>
+                        <input
+                          type="text"
+                          className="form-control"
+                          value={editingDeptName}
+                          onChange={e => setEditingDeptName(e.target.value)}
+                          style={{ height: '36px', padding: '6px 12px', borderRadius: '8px', fontSize: '0.875rem', flex: 1 }}
+                          autoFocus
+                        />
+                        <button
+                          type="button"
+                          disabled={deptSaving || !editingDeptName.trim()}
+                          onClick={() => handleSaveRenameDepartment(dept.id)}
+                          className="btn btn-primary"
+                          style={{ height: '36px', padding: '0 12px', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 800 }}
+                        >
+                          บันทึก
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setEditingDeptId(null); setEditingDeptName(''); }}
+                          className="btn btn-secondary"
+                          style={{ height: '36px', padding: '0 12px', borderRadius: '8px', fontSize: '0.8rem' }}
+                        >
+                          ยกเลิก
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{
+                          fontSize: '0.92rem',
+                          fontWeight: 700,
+                          color: dept.active ? 'var(--text-main)' : 'var(--text-muted)',
+                          textDecoration: dept.active ? 'none' : 'line-through'
+                        }}>
+                          {dept.name}
+                        </span>
+                        <span style={{
+                          fontSize: '0.72rem',
+                          fontWeight: 800,
+                          padding: '2px 8px',
+                          borderRadius: '999px',
+                          backgroundColor: dept.active ? 'rgba(16, 185, 129, 0.14)' : 'rgba(148, 163, 184, 0.16)',
+                          color: dept.active ? '#10b981' : '#94a3b8'
+                        }}>
+                          {dept.active ? 'เปิดใช้งาน' : 'ปิดใช้งาน'}
+                        </span>
+                      </div>
+                    )}
+
+                    {!isEditing && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button
+                          type="button"
+                          onClick={() => { setEditingDeptId(dept.id); setEditingDeptName(dept.name); }}
+                          className="btn btn-secondary"
+                          style={{ height: '34px', padding: '0 10px', borderRadius: '8px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                          title="แก้ไขชื่อฝ่าย"
+                        >
+                          <Edit2 size={13} />
+                          <span>แก้ไขชื่อ</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleDepartment(dept.id)}
+                          disabled={deptSaving}
+                          style={{
+                            height: '34px',
+                            padding: '0 12px',
+                            borderRadius: '8px',
+                            fontSize: '0.78rem',
+                            fontWeight: 700,
+                            border: 'none',
+                            cursor: 'pointer',
+                            backgroundColor: dept.active ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+                            color: dept.active ? '#ef4444' : '#10b981',
+                            transition: 'all 0.15s ease'
+                          }}
+                        >
+                          {dept.active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
         {/* VIEW: USER MANAGEMENT */}
         {viewMode === 'users' && (
