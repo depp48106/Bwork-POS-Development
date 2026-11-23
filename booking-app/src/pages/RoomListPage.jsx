@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Users, Wifi, Tv, Wind, CheckCircle2,
@@ -169,6 +169,7 @@ export default function RoomListPage() {
   const [expandedRoomId, setExpandedRoomId] = useState(initialRoomId);
   const [timelineError, setTimelineError] = useState('');
   const [timelineTapStep, setTimelineTapStep] = useState({});
+  const draggingRef = useRef(null);
 
   // -------------------------------------------------------------
   // Bottom Sheet Modal States (staged values until "ตกลง" is pressed)
@@ -948,6 +949,118 @@ export default function RoomListPage() {
     setTimelineTapStep(prev => ({ ...prev, [room.id]: 'end' }));
   };
 
+  // Handle dragging start / end arrows
+  const handleArrowPointerDown = (type, room, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch (err) {}
+
+    const container = e.currentTarget.parentElement;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+
+    draggingRef.current = {
+      type,
+      roomId: room.id,
+      room,
+      rect,
+      pointerId: e.pointerId
+    };
+  };
+
+  const handleArrowPointerMove = (e) => {
+    if (!draggingRef.current || draggingRef.current.pointerId !== e.pointerId) return;
+    const { type, room, rect } = draggingRef.current;
+    const width = rect.width;
+    if (width <= 0) return;
+
+    const currentX = e.clientX - rect.left;
+    let pct = currentX / width;
+    if (pct < 0) pct = 0;
+    if (pct > 1) pct = 1;
+
+    // 08:00 (480 mins) to 18:00 (1080 mins) = 600 minutes total
+    const clickedMinute = 480 + pct * 600;
+    let targetMins = Math.round(clickedMinute / 30) * 30;
+
+    const currentSel = roomSelections[room.id] || {};
+    const curStart = currentSel.startTime || globalStartTime;
+    const curEnd = currentSel.endTime || globalEndTime;
+    const [cSH, cSM] = curStart.split(':').map(Number);
+    const [cEH, cEM] = curEnd.split(':').map(Number);
+    const curStartMins = cSH * 60 + cSM;
+    const curEndMins = cEH * 60 + cEM;
+
+    if (type === 'start') {
+      // Must not exceed curEndMins - 30
+      if (targetMins > curEndMins - 30) targetMins = curEndMins - 30;
+      // Must not be in the past
+      const minTodayMins = isToday ? Math.max(480, Math.ceil(currentMins / 30) * 30) : 480;
+      if (targetMins < minTodayMins) targetMins = minTodayMins;
+
+      // When dragging left (earlier), stop if hitting booked or cleaning
+      if (targetMins < curStartMins) {
+        let maxAllowedLeft = curStartMins;
+        for (let m = curStartMins - 30; m >= targetMins; m -= 30) {
+          if (isIntervalClear(room.id, m, curEndMins)) {
+            maxAllowedLeft = m;
+          } else {
+            break;
+          }
+        }
+        targetMins = maxAllowedLeft;
+      }
+
+      if (targetMins >= curEndMins) return;
+
+      const newStartStr = `${String(Math.floor(targetMins / 60)).padStart(2, '0')}:${String(targetMins % 60).padStart(2, '0')}`;
+      if (newStartStr !== curStart) {
+        setRoomSelections(prev => ({
+          ...prev,
+          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStartStr }
+        }));
+      }
+    } else {
+      // Dragging End Handle
+      if (targetMins < curStartMins + 30) targetMins = curStartMins + 30;
+      if (targetMins > 18 * 60) targetMins = 18 * 60;
+
+      // When dragging right (later), stop if hitting booked or cleaning
+      if (targetMins > curEndMins) {
+        let maxAllowedRight = curEndMins;
+        for (let m = curEndMins + 30; m <= targetMins; m += 30) {
+          if (isIntervalClear(room.id, curStartMins, m)) {
+            maxAllowedRight = m;
+          } else {
+            break;
+          }
+        }
+        targetMins = maxAllowedRight;
+      }
+
+      if (targetMins <= curStartMins) return;
+
+      const newEndStr = `${String(Math.floor(targetMins / 60)).padStart(2, '0')}:${String(targetMins % 60).padStart(2, '0')}`;
+      if (newEndStr !== curEnd) {
+        setRoomSelections(prev => ({
+          ...prev,
+          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', endTime: newEndStr }
+        }));
+      }
+    }
+  };
+
+  const handleArrowPointerUp = (e) => {
+    if (draggingRef.current && draggingRef.current.pointerId === e.pointerId) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch (err) {}
+      draggingRef.current = null;
+    }
+  };
+
   // Handle End Time Change via Dropdown
   const handleEndTimeDropdownChange = (room, newEnd) => {
     setTimelineError('');
@@ -1005,6 +1118,8 @@ export default function RoomListPage() {
 
       slots.push({
         index: i,
+        startMins: slotStart,
+        endMins: slotEnd,
         startStr: slotStartStr,
         endStr: slotEndStr,
         bgColor,
@@ -1049,8 +1164,8 @@ export default function RoomListPage() {
 
     return (
       <div className="timeline-bar-wrapper">
-        {/* Time Labels with Ticks Above the Bar */}
-        <div style={{ position: 'relative', height: '32px', margin: '0 18px 2px 18px' }}>
+        {/* Time Labels Above the Bar (Clean, NO tick marks) */}
+        <div style={{ position: 'relative', height: '18px', margin: '0 18px 4px 18px' }}>
           {timeMarkers.map(m => (
             <div
               key={m.time}
@@ -1059,43 +1174,100 @@ export default function RoomListPage() {
                 left: `${m.pct}%`,
                 transform: 'translateX(-50%)',
                 textAlign: 'center',
-                color: '#334155',
+                color: '#1E293B',
                 fontSize: '0.82rem',
                 fontWeight: 700,
-                lineHeight: 1.1,
+                lineHeight: 1,
                 whiteSpace: 'nowrap',
                 userSelect: 'none'
               }}
             >
-              <div>{m.time}</div>
-              <div style={{ color: '#94A3B8', fontSize: '0.68rem', marginTop: '2px' }}>|</div>
+              {m.time}
             </div>
           ))}
         </div>
 
-        {/* Single Continuous Rounded Bar with Tap Interaction */}
+        {/* Capsule Tube Container with Draggable Arrow Handles */}
         <div
-          onClick={(e) => handleTimelineBarClick(room, e)}
           style={{
             position: 'relative',
-            height: '32px',
-            margin: '0 18px',
-            cursor: 'pointer',
-            touchAction: 'manipulation',
+            height: '28px',
+            margin: '14px 18px 0 18px',
+            touchAction: 'pan-y',
             userSelect: 'none'
           }}
-          title="แตะเพื่อเลือกเวลาเริ่ม และแตะอีกครั้งเพื่อเลือกเวลาสิ้นสุด"
         >
-          {/* Background Track with Rounded Ends */}
+          {/* Left Arrow Handle (Start Time) */}
           <div
+            onPointerDown={(e) => handleArrowPointerDown('start', room, e)}
+            onPointerMove={handleArrowPointerMove}
+            onPointerUp={handleArrowPointerUp}
+            onPointerCancel={handleArrowPointerUp}
+            style={{
+              position: 'absolute',
+              left: `${selStartPct}%`,
+              bottom: '100%',
+              transform: 'translate(-80%, 0)',
+              width: '40px',
+              height: '32px',
+              display: 'flex',
+              alignItems: 'flex-end',
+              justifyContent: 'flex-end',
+              paddingRight: '6px',
+              paddingBottom: '2px',
+              cursor: 'ew-resize',
+              touchAction: 'none',
+              zIndex: 10
+            }}
+            title="ลากเพื่อปรับเวลาเริ่ม"
+          >
+            <svg width="10" height="7" viewBox="0 0 10 7" fill="none" style={{ pointerEvents: 'none' }}>
+              <polygon points="0,0 10,0 5,7" fill="#0F766E" />
+            </svg>
+          </div>
+
+          {/* Right Arrow Handle (End Time) */}
+          <div
+            onPointerDown={(e) => handleArrowPointerDown('end', room, e)}
+            onPointerMove={handleArrowPointerMove}
+            onPointerUp={handleArrowPointerUp}
+            onPointerCancel={handleArrowPointerUp}
+            style={{
+              position: 'absolute',
+              left: `${selEndPct}%`,
+              bottom: '100%',
+              transform: 'translate(-20%, 0)',
+              width: '40px',
+              height: '32px',
+              display: 'flex',
+              alignItems: 'flex-end',
+              justifyContent: 'flex-start',
+              paddingLeft: '6px',
+              paddingBottom: '2px',
+              cursor: 'ew-resize',
+              touchAction: 'none',
+              zIndex: 10
+            }}
+            title="ลากเพื่อปรับเวลาสิ้นสุด"
+          >
+            <svg width="10" height="7" viewBox="0 0 10 7" fill="none" style={{ pointerEvents: 'none' }}>
+              <polygon points="0,0 10,0 5,7" fill="#0F766E" />
+            </svg>
+          </div>
+
+          {/* Background Capsule Tube Track */}
+          <div
+            onClick={(e) => handleTimelineBarClick(room, e)}
             style={{
               position: 'absolute',
               inset: 0,
               display: 'flex',
               borderRadius: '9999px',
               overflow: 'hidden',
-              backgroundColor: '#A7F3D0'
+              backgroundColor: '#A7F3D0',
+              cursor: 'pointer'
             }}
+            title="แตะเพื่อเลือกเวลา"
           >
             {slots.map(s => (
               <div
@@ -1110,7 +1282,7 @@ export default function RoomListPage() {
             ))}
           </div>
 
-          {/* Selected Range Overlay: Continuous Dark Teal Pill with Circular Handles */}
+          {/* Selected Range Overlay Capsule */}
           {selEndPct > selStartPct && (
             <div
               style={{
@@ -1125,43 +1297,54 @@ export default function RoomListPage() {
                 zIndex: 2,
                 boxShadow: '0 2px 6px rgba(15, 118, 110, 0.35)'
               }}
-            >
-              {/* Start Handle Circle */}
-              <div
-                style={{
-                  position: 'absolute',
-                  left: selStartPct <= 1 ? '5px' : '0',
-                  top: '50%',
-                  transform: selStartPct <= 1 ? 'translateY(-50%)' : 'translate(-50%, -50%)',
-                  width: '10px',
-                  height: '10px',
-                  borderRadius: '50%',
-                  backgroundColor: '#ffffff',
-                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.3)',
-                  zIndex: 3
-                }}
-              />
-              {/* End Handle Circle */}
-              <div
-                style={{
-                  position: 'absolute',
-                  right: selEndPct >= 99 ? '5px' : '0',
-                  top: '50%',
-                  transform: selEndPct >= 99 ? 'translateY(-50%)' : 'translate(50%, -50%)',
-                  width: '10px',
-                  height: '10px',
-                  borderRadius: '50%',
-                  backgroundColor: '#ffffff',
-                  boxShadow: '0 1px 3px rgba(0, 0, 0, 0.3)',
-                  zIndex: 3
-                }}
-              />
-            </div>
+            />
           )}
+
+          {/* Centerline 30-min Subtle Dots Layer */}
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              pointerEvents: 'none',
+              zIndex: 3
+            }}
+          >
+            {slots.map(s => {
+              const isSelected = s.startMins >= selStartMins && s.endMins <= selEndMins;
+              return (
+                <div
+                  key={s.index}
+                  style={{
+                    flex: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                >
+                  <div
+                    style={{
+                      width: '3.5px',
+                      height: '3.5px',
+                      borderRadius: '50%',
+                      backgroundColor: isSelected
+                        ? 'rgba(255, 255, 255, 0.75)'
+                        : s.type === 'booked'
+                        ? 'rgba(100, 116, 139, 0.4)'
+                        : s.type === 'cleaning'
+                        ? 'rgba(180, 83, 9, 0.4)'
+                        : 'rgba(15, 118, 110, 0.3)'
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Legend Row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px', margin: '14px 10px 0 10px', fontSize: '0.86rem', color: '#0F172A', fontWeight: 600 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '20px', margin: '14px 18px 0 18px', fontSize: '0.86rem', color: '#0F172A', fontWeight: 600 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
             <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#A7F3D0' }} />
             ว่าง
@@ -1177,20 +1360,20 @@ export default function RoomListPage() {
         </div>
 
         {/* Short Instruction */}
-        <div style={{ fontSize: '0.86rem', color: '#64748B', fontWeight: 600, margin: '8px 10px 0 10px' }}>
-          แตะเวลาเริ่ม แล้วแตะเวลาสิ้นสุด
+        <div style={{ fontSize: '0.86rem', color: '#64748B', fontWeight: 600, margin: '8px 18px 0 18px' }}>
+          แตะบนแถบ หรือเลื่อนลูกศรเพื่อปรับเวลา
         </div>
 
         {/* Error / Conflict Alert */}
         {timelineError && (
-          <div style={{ margin: '10px 10px 0 10px', padding: '6px 10px', borderRadius: '8px', backgroundColor: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', fontSize: '0.78rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div style={{ margin: '10px 18px 0 18px', padding: '6px 10px', borderRadius: '8px', backgroundColor: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', fontSize: '0.78rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
             <AlertCircle size={15} />
             <span>{timelineError}</span>
           </div>
         )}
 
         {/* Dropdowns: “เวลาเริ่ม” and “เวลาสิ้นสุด” */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', margin: '16px 10px 0 10px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', margin: '16px 18px 0 18px' }}>
           {/* Start Time Dropdown */}
           <div>
             <label style={{ display: 'block', fontSize: '0.95rem', fontWeight: 800, color: '#0F172A', marginBottom: '6px' }}>
