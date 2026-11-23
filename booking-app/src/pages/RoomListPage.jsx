@@ -1050,7 +1050,7 @@ export default function RoomListPage() {
     return (
       <div className="timeline-bar-wrapper">
         {/* Time Labels with Ticks Above the Bar */}
-        <div style={{ position: 'relative', height: '32px', margin: '0 10px 2px 10px' }}>
+        <div style={{ position: 'relative', height: '32px', margin: '0 18px 2px 18px' }}>
           {timeMarkers.map(m => (
             <div
               key={m.time}
@@ -1063,6 +1063,7 @@ export default function RoomListPage() {
                 fontSize: '0.82rem',
                 fontWeight: 700,
                 lineHeight: 1.1,
+                whiteSpace: 'nowrap',
                 userSelect: 'none'
               }}
             >
@@ -1078,7 +1079,7 @@ export default function RoomListPage() {
           style={{
             position: 'relative',
             height: '32px',
-            margin: '0 10px',
+            margin: '0 18px',
             cursor: 'pointer',
             touchAction: 'manipulation',
             userSelect: 'none'
