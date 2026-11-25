@@ -102,12 +102,18 @@ export default function RoomListPage() {
     if (location.state && location.state.room_id) {
       return location.state;
     }
+    const hasExplicitParams = Boolean(
+      query.get('date') || query.get('roomId') || query.get('guests') || query.get('mode')
+    );
+    if (hasExplicitParams) {
+      return null;
+    }
     try {
       const raw = sessionStorage.getItem('current_booking_payload');
       if (raw) return JSON.parse(raw);
     } catch (_) {}
     return null;
-  }, [location.state]);
+  }, [location.state, location.search]);
 
   // Determine initial date (query param > saved draft > today)
   const initialDate = useMemo(() => {
@@ -123,23 +129,31 @@ export default function RoomListPage() {
 
   // Confirmed Search Mode: 'byGuests' (default) vs 'directRoom'
   const initialMode = useMemo(() => {
+    const qMode = query.get('mode');
+    if (qMode === 'byGuests' || qMode === 'directRoom') return qMode;
+    if (location.state?.search_mode === 'byGuests' || location.state?.search_mode === 'directRoom') {
+      return location.state.search_mode;
+    }
     if (query.get('roomId') !== null && query.get('roomId') !== '') return 'directRoom';
     if (query.get('guests')) return 'byGuests';
+    if (savedDraft?.search_mode === 'byGuests' || savedDraft?.search_mode === 'directRoom') {
+      return savedDraft.search_mode;
+    }
     if (savedDraft?.guests) return 'byGuests';
     if (savedDraft?.room_id) return 'directRoom';
     return 'byGuests';
-  }, [query, savedDraft]);
+  }, [query, location.state, savedDraft]);
 
   const [searchMode, setSearchMode] = useState(initialMode);
 
   // Determine if there is an explicit query param or navigation state selection
   const hasUrlOrDraftSelection = useMemo(() => {
-    return Boolean(query.get('date') || query.get('roomId') || location.state?.room_id || location.state?.date);
+    return Boolean(query.get('date') || query.get('roomId') || query.get('guests') || location.state?.room_id || location.state?.date);
   }, [query, location.state]);
 
   const [hasConfirmedDate, setHasConfirmedDate] = useState(hasUrlOrDraftSelection);
 
-  // Confirmed Guest count for 'byGuests' mode - NO default 10 or 4!
+  // Confirmed Guest count - NO default 10 or 4!
   const initialGuests = useMemo(() => {
     const qGuests = query.get('guests');
     if (qGuests) {
@@ -150,8 +164,12 @@ export default function RoomListPage() {
       const parsed = parseInt(location.state.guests, 10);
       if (!isNaN(parsed) && parsed > 0) return parsed;
     }
+    if (savedDraft?.guests) {
+      const parsed = parseInt(savedDraft.guests, 10);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
     return '';
-  }, [query, location.state]);
+  }, [query, location.state, savedDraft]);
 
   const [guests, setGuests] = useState(initialGuests);
 
@@ -159,14 +177,17 @@ export default function RoomListPage() {
   const initialRoomId = useMemo(() => {
     const qRoom = query.get('roomId');
     if (qRoom !== null && qRoom !== '') return parseInt(qRoom, 10) || qRoom;
+    if (location.state?.room_id) return location.state.room_id;
     if (savedDraft?.room_id) return savedDraft.room_id;
     return null;
-  }, [query, savedDraft]);
+  }, [query, location.state, savedDraft]);
 
   const [confirmedRoomId, setConfirmedRoomId] = useState(initialRoomId);
 
   // Expanded Room (accordion / time selector)
   const [expandedRoomId, setExpandedRoomId] = useState(initialRoomId);
+  const [directGuestError, setDirectGuestError] = useState('');
+  const [modalError, setModalError] = useState('');
   const [timelineError, setTimelineError] = useState('');
   const [timelineTapStep, setTimelineTapStep] = useState({});
   const draggingRef = useRef(null);
@@ -188,20 +209,35 @@ export default function RoomListPage() {
   const [loading, setLoading] = useState(true);
 
   // Per-Room Selections State: { [roomId]: { mode, startTime, endTime, halfDaySlot, dailySlot } }
+  const initialDraftSelection = useMemo(() => {
+    if (!savedDraft?.room_id) return null;
+    const bType = savedDraft.booking_type || 'hourly';
+    return {
+      mode: bType,
+      startTime: savedDraft.start_time || '09:00',
+      endTime: savedDraft.end_time || '11:00',
+      halfDaySlot: savedDraft.start_time === '13:00' ? '13-17' : '08-12',
+      dailySlot: savedDraft.start_time === '09:00' ? '09-18' : '08-17'
+    };
+  }, [savedDraft]);
+
   const [roomSelections, setRoomSelections] = useState(() => {
-    if (savedDraft?.room_id) {
+    if (savedDraft?.room_id && initialDraftSelection) {
       return {
-        [savedDraft.room_id]: {
-          mode: savedDraft.booking_type || 'hourly',
-          startTime: savedDraft.start_time || '09:00',
-          endTime: savedDraft.end_time || '11:00',
-          halfDaySlot: '08-12',
-          dailySlot: '08-17'
-        }
+        [savedDraft.room_id]: initialDraftSelection
       };
     }
     return {};
   });
+
+  // Last explicitly selected time/package across rooms, preserved when switching rooms if supported & available
+  const [lastTimeSelection, setLastTimeSelection] = useState(initialDraftSelection);
+
+  useEffect(() => {
+    if (expandedRoomId && roomSelections[expandedRoomId]) {
+      setLastTimeSelection(roomSelections[expandedRoomId]);
+    }
+  }, [expandedRoomId, roomSelections]);
 
   // Per-Room Layout State: { [roomId]: 'standard' | 'classroom' }
   const [roomLayouts, setRoomLayouts] = useState(() => {
@@ -242,22 +278,47 @@ export default function RoomListPage() {
         setCurrentMonthKey(qDate.slice(0, 7));
       }
     }
+
+    const qMode = query.get('mode');
     const qRoom = query.get('roomId');
+    const qGuests = query.get('guests');
+
+    if (qMode === 'byGuests' || qMode === 'directRoom') {
+      setSearchMode(qMode);
+    } else if (location.state?.search_mode === 'byGuests' || location.state?.search_mode === 'directRoom') {
+      setSearchMode(location.state.search_mode);
+    } else if (qRoom !== null && qRoom !== '') {
+      setSearchMode('directRoom');
+    } else if (qGuests) {
+      setSearchMode('byGuests');
+    }
+
     if (qRoom !== null && qRoom !== '') {
       const parsedId = parseInt(qRoom, 10) || qRoom;
       setConfirmedRoomId(parsedId);
       setExpandedRoomId(parsedId);
-      setSearchMode('directRoom');
     }
-    const qGuests = query.get('guests');
+
     if (qGuests) {
       const val = parseInt(qGuests, 10);
       if (!isNaN(val) && val > 0) {
         setGuests(val);
-        setSearchMode('byGuests');
       }
     }
-  }, [location.search]);
+
+    if (location.state?.openEditModal) {
+      setModalDate(qDate && qDate >= todayIso ? qDate : dateStr);
+      const nextMode = (qMode === 'byGuests' || qMode === 'directRoom')
+        ? qMode
+        : (location.state.search_mode || searchMode || 'byGuests');
+      setModalMode(nextMode);
+      const gFromState = qGuests || location.state.guests || guests;
+      setModalGuests(gFromState ? (parseInt(gFromState, 10) || '') : '');
+      const rFromState = qRoom || location.state.room_id || confirmedRoomId || '';
+      setModalRoomId(rFromState);
+      setIsModalOpen(true);
+    }
+  }, [location.search, location.state]);
 
   const [monthLoading, setMonthLoading] = useState(false);
   const [monthError, setMonthError] = useState(false);
@@ -367,6 +428,7 @@ export default function RoomListPage() {
     setModalMode(searchMode || 'byGuests');
     setModalGuests(guests ? guests : '');
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
+    setModalError('');
     setIsModalOpen(true);
   };
 
@@ -376,16 +438,42 @@ export default function RoomListPage() {
     setModalMode(searchMode || 'byGuests');
     setModalGuests(guests ? guests : '');
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
+    setModalError('');
     setIsModalOpen(true);
   };
 
   // Close modal without saving changes
   const handleCloseModal = () => {
+    setModalError('');
     setIsModalOpen(false);
   };
 
   // Confirm choices in modal and update the view
   const handleConfirmModal = () => {
+    setModalError('');
+    const gVal = parseInt(modalGuests, 10);
+    if (!modalGuests || isNaN(gVal) || gVal < 1) {
+      setModalError('กรุณาระบุจำนวนผู้เข้าใช้งานอย่างน้อย 1 ท่าน');
+      return;
+    }
+
+    if (modalMode === 'directRoom') {
+      if (!modalRoomId) {
+        setModalError('กรุณาเลือกห้องประชุมที่ต้องการ');
+        return;
+      }
+      const selRoom = rooms.find(r => String(r.id) === String(modalRoomId));
+      if (selRoom) {
+        const stdCap = selRoom.capacity || 4;
+        const clsCap = selRoom.has_classroom === 1 ? (selRoom.classroom_capacity || stdCap) : stdCap;
+        const maxRoomCap = Math.max(stdCap, clsCap);
+        if (gVal > maxRoomCap) {
+          setModalError(`ห้อง ${selRoom.name} รองรับสูงสุด ${maxRoomCap} ท่าน`);
+          return;
+        }
+      }
+    }
+
     setHasConfirmedDate(true);
     setDateStr(modalDate);
     const newMonth = modalDate.slice(0, 7);
@@ -393,20 +481,21 @@ export default function RoomListPage() {
       setCurrentMonthKey(newMonth);
     }
     setSearchMode(modalMode);
+    setGuests(gVal);
+    setDirectGuestError('');
 
     const params = new URLSearchParams();
+    params.set('mode', modalMode);
     params.set('date', modalDate);
+    params.set('guests', gVal);
 
     if (modalMode === 'byGuests') {
-      const gVal = Math.max(1, parseInt(modalGuests, 10) || 1);
-      setGuests(gVal);
-      params.set('guests', gVal);
       setConfirmedRoomId(null);
     } else {
-      setConfirmedRoomId(modalRoomId);
-      setExpandedRoomId(modalRoomId);
-      setGuests('');
-      params.set('roomId', modalRoomId);
+      const parsedRoomId = parseInt(modalRoomId, 10) || modalRoomId;
+      setConfirmedRoomId(parsedRoomId);
+      setExpandedRoomId(parsedRoomId);
+      params.set('roomId', parsedRoomId);
     }
 
     navigate(`/rooms?${params.toString()}`, { replace: true });
@@ -504,7 +593,31 @@ export default function RoomListPage() {
 
     const defaultMode = hasHourly ? 'hourly' : (hasHalfDay ? 'halfday' : 'daily');
 
-    const current = roomSelections[room.id] || {};
+    let current = roomSelections[room.id];
+    if (!current && lastTimeSelection) {
+      const candidateMode = lastTimeSelection.mode;
+      const modeSupported =
+        (candidateMode === 'hourly' && hasHourly) ||
+        (candidateMode === 'halfday' && hasHalfDay) ||
+        (candidateMode === 'daily' && hasDaily);
+      if (modeSupported) {
+        let candStart = lastTimeSelection.startTime || globalStartTime;
+        let candEnd = lastTimeSelection.endTime || globalEndTime;
+        if (candidateMode === 'halfday') {
+          const slot = lastTimeSelection.halfDaySlot || '08-12';
+          candStart = slot === '08-12' ? '08:00' : '13:00';
+          candEnd = slot === '08-12' ? '12:00' : '17:00';
+        } else if (candidateMode === 'daily') {
+          const slot = lastTimeSelection.dailySlot || '08-17';
+          candStart = slot === '08-17' ? '08:00' : '09:00';
+          candEnd = slot === '08-17' ? '17:00' : '18:00';
+        }
+        if (!getRoomOccupiedInfo(room.id, candStart, candEnd).isOccupied) {
+          current = lastTimeSelection;
+        }
+      }
+    }
+    current = current || {};
     const mode = current.mode && (
       (current.mode === 'hourly' && hasHourly) ||
       (current.mode === 'halfday' && hasHalfDay) ||
@@ -764,6 +877,18 @@ export default function RoomListPage() {
     const isClassroom = layout === 'classroom';
     const sel = getRoomSelection(room);
 
+    const parsedGuests = parseInt(guests, 10);
+    if (!guests || isNaN(parsedGuests) || parsedGuests < 1) {
+      setDirectGuestError('กรุณาระบุจำนวนผู้เข้าใช้งานอย่างน้อย 1 ท่านก่อนกรอกข้อมูลผู้จอง');
+      return;
+    }
+    if (parsedGuests > sel.effectiveCapacity) {
+      setDirectGuestError(`จำนวนผู้เข้าใช้งาน (${parsedGuests} ท่าน) เกินความจุของห้อง (${sel.effectiveCapacity} ท่านสำหรับรูปแบบโต๊ะนี้)`);
+      return;
+    }
+    setDirectGuestError('');
+    setConfirmedRoomId(room.id);
+
     const rawImage = isClassroom && room.classroom_image_url ? room.classroom_image_url : room.image_url;
     const safeImage = (typeof rawImage === 'string' && rawImage.startsWith('data:')) ? '' : rawImage;
 
@@ -778,7 +903,8 @@ export default function RoomListPage() {
       start_time: sel.startTime,
       end_time: sel.endTime,
       duration: sel.duration,
-      guests: guests || sel.effectiveCapacity,
+      guests: parsedGuests,
+      search_mode: searchMode,
       layout: layout,
       booking_type: sel.mode,
       rate_label: sel.rateLabel,
@@ -1997,6 +2123,98 @@ export default function RoomListPage() {
                 </div>
               )}
 
+              {/* Direct Room Mode: Require actual guest count once before entering form */}
+              {searchMode === 'directRoom' && (
+                <div style={{
+                  marginTop: '12px',
+                  padding: '12px',
+                  borderRadius: '12px',
+                  backgroundColor: '#f8fafc',
+                  border: directGuestError ? '1.5px solid var(--danger)' : '1px solid var(--border)'
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '4px' }}>
+                    <label style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--navy)', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Users size={15} color="var(--primary)" />
+                      <span>จำนวนผู้เข้าใช้งาน <span style={{ color: 'var(--danger)' }}>*</span></span>
+                    </label>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      รองรับสูงสุด {sel.effectiveCapacity} ท่าน
+                    </span>
+                  </div>
+                  <div className="counter-box" style={{ margin: '6px 0 4px 0' }}>
+                    <button
+                      type="button"
+                      disabled={!guests || parseInt(guests, 10) <= 1}
+                      onPointerDown={(e) => e.preventDefault()}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setDirectGuestError('');
+                        setGuests(g => {
+                          const val = parseInt(g, 10);
+                          return isNaN(val) || val <= 1 ? 1 : val - 1;
+                        });
+                      }}
+                      className="counter-btn"
+                      id={`btn-direct-guest-decrement-${room.id}`}
+                      aria-label="ลดจำนวนคน"
+                    >
+                      <Minus size={18} />
+                    </button>
+                    <div className="counter-input-wrap">
+                      <input
+                        type="number"
+                        min="1"
+                        max={sel.effectiveCapacity}
+                        step="1"
+                        value={guests}
+                        placeholder="ระบุจำนวนคน"
+                        onChange={(e) => {
+                          setDirectGuestError('');
+                          const val = parseInt(e.target.value, 10);
+                          if (isNaN(val)) {
+                            setGuests('');
+                          } else {
+                            setGuests(Math.max(1, val));
+                          }
+                        }}
+                        className="counter-input"
+                        style={{ paddingRight: guests ? '36px' : '12px' }}
+                        id={`input-direct-guests-${room.id}`}
+                      />
+                      {guests !== '' && (
+                        <span style={{ position: 'absolute', right: '12px', fontSize: '0.85rem', fontWeight: 800, color: 'var(--navy)', pointerEvents: 'none' }}>
+                          ท่าน
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={parseInt(guests, 10) >= sel.effectiveCapacity}
+                      onPointerDown={(e) => e.preventDefault()}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setDirectGuestError('');
+                        setGuests(g => {
+                          const val = parseInt(g, 10);
+                          if (isNaN(val) || val < 1) return 1;
+                          return Math.min(sel.effectiveCapacity, val + 1);
+                        });
+                      }}
+                      className="counter-btn"
+                      id={`btn-direct-guest-increment-${room.id}`}
+                      aria-label="เพิ่มจำนวนคน"
+                    >
+                      <Plus size={18} />
+                    </button>
+                  </div>
+                  {directGuestError && (
+                    <div style={{ color: 'var(--danger)', fontSize: '0.76rem', fontWeight: 700, marginTop: '6px', textAlign: 'center' }}>
+                      {directGuestError}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Summary Bar directly above full-width button */}
               <div style={{
                 marginTop: '10px',
@@ -2165,12 +2383,14 @@ export default function RoomListPage() {
                     className={`customer-cal-day ${cell.isToday ? 'customer-cal-day--today' : ''} ${isSelected ? 'customer-cal-day--selected' : ''} ${isPast ? 'customer-cal-day--past' : ''}`}
                     aria-pressed={isSelected}
                     onClick={() => handleDateTap(cell.date)}
-                    title={isPast ? `${cell.dayNumber} (ผ่านมาแล้ว)` : `${cell.dayNumber} (${!isReady ? 'กำลังโหลด...' : hasFree ? `ว่าง ${cell.freeRoomsCount} ห้อง` : 'เต็ม'})`}
+                    title={isPast ? `${cell.dayNumber}` : `${cell.dayNumber} (${!isReady ? 'กำลังโหลด...' : hasFree ? `ว่าง ${cell.freeRoomsCount} ห้อง` : 'เต็ม'})`}
                   >
                     <span className="customer-cal-day__num">{cell.dayNumber}</span>
-                    <span className={`customer-cal-day__badge ${isPast ? 'customer-cal-day__badge--past' : !isReady ? 'customer-cal-day__badge--loading' : hasFree ? 'customer-cal-day__badge--free' : 'customer-cal-day__badge--full'}`}>
-                      {isPast ? 'ผ่านแล้ว' : !isReady ? '···' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
-                    </span>
+                    {!isPast && (
+                      <span className={`customer-cal-day__badge ${!isReady ? 'customer-cal-day__badge--loading' : hasFree ? 'customer-cal-day__badge--free' : 'customer-cal-day__badge--full'}`}>
+                        {!isReady ? '···' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -2226,7 +2446,7 @@ export default function RoomListPage() {
             <div className="customer-summary-filter-text">
               {searchMode === 'byGuests'
                 ? `${formatShortThaiDate(dateStr)} · ${guests} คน`
-                : `${formatShortThaiDate(dateStr)} · ห้อง ${directSelectedRoom?.name || 'ที่เลือก'}`}
+                : `${formatShortThaiDate(dateStr)} · ห้อง ${directSelectedRoom?.name || 'ที่เลือก'}${guests ? ` · ${guests} คน` : ''}`}
             </div>
             <div className="customer-summary-filter-sub">
               {searchMode === 'byGuests' ? 'ค้นหาตามจำนวนคน' : 'ค้นหาแบบระบุห้อง'}
@@ -2359,72 +2579,8 @@ export default function RoomListPage() {
               </button>
             </div>
 
-            {/* Modal Body: Mode 'byGuests' */}
-            {modalMode === 'byGuests' ? (
-              <div>
-                <label style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--navy)', marginBottom: '8px', display: 'block', textAlign: 'center' }}>
-                  จำนวนผู้เข้าใช้งาน (Attendees)
-                </label>
-
-                {/* Counter Control: [-] [ Input ] [+] */}
-                <div className="counter-box">
-                  <button
-                    type="button"
-                    disabled={!modalGuests || parseInt(modalGuests, 10) <= 1}
-                    onClick={() => setModalGuests(g => {
-                      const val = parseInt(g, 10);
-                      return isNaN(val) || val <= 1 ? '' : val - 1;
-                    })}
-                    className="counter-btn"
-                    id="btn-guest-decrement"
-                    aria-label="ลดจำนวนคน"
-                  >
-                    <Minus size={20} />
-                  </button>
-
-                  <div className="counter-input-wrap">
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={modalGuests}
-                      placeholder="1"
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value, 10);
-                        if (isNaN(val)) {
-                          setModalGuests('');
-                        } else {
-                          setModalGuests(Math.max(1, val));
-                        }
-                      }}
-                      className="counter-input"
-                      id="input-modal-guests"
-                    />
-                    <span style={{ position: 'absolute', right: '12px', fontSize: '0.9rem', fontWeight: 800, color: 'var(--navy)', pointerEvents: 'none' }}>
-                      ท่าน
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setModalGuests(g => {
-                      const val = parseInt(g, 10);
-                      return isNaN(val) || val <= 0 ? 1 : val + 1;
-                    })}
-                    className="counter-btn"
-                    id="btn-guest-increment"
-                    aria-label="เพิ่มจำนวนคน"
-                  >
-                    <Plus size={20} />
-                  </button>
-                </div>
-
-                <div style={{ textAlign: 'center', fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-                  ระบบจะค้นหาห้องที่พอดีและห้องขนาดใหญ่ขึ้นสำหรับ {modalGuests || 1} ท่าน
-                </div>
-              </div>
-            ) : (
-              /* Modal Body: Mode 'directRoom' */
+            {/* Modal Body: Mode 'directRoom' room selector + shared guest stepper */}
+            {modalMode === 'directRoom' && (
               <div>
                 <label style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--navy)', marginBottom: '8px', display: 'block' }}>
                   เลือกห้องประชุมที่ต้องการ:
@@ -2432,7 +2588,10 @@ export default function RoomListPage() {
 
                 <select
                   value={modalRoomId}
-                  onChange={(e) => setModalRoomId(e.target.value)}
+                  onChange={(e) => {
+                    setModalError('');
+                    setModalRoomId(e.target.value);
+                  }}
                   className="form-input"
                   id="select-modal-room"
                   style={{ height: '48px', fontSize: '0.92rem', fontWeight: 700, borderRadius: '12px' }}
@@ -2444,17 +2603,107 @@ export default function RoomListPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+            )}
 
-                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-                  ระบบจะแสดงเฉพาะห้องที่คุณเลือก พร้อมสถานะและช่วงเวลาว่างของวันนั้น
+            <div>
+              <label style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--navy)', marginBottom: '8px', display: 'block', textAlign: 'center' }}>
+                จำนวนผู้เข้าใช้งาน (Attendees)
+              </label>
+
+              {/* Counter Control: [-] [ Input ] [+] */}
+              <div className="counter-box">
+                <button
+                  type="button"
+                  disabled={!modalGuests || parseInt(modalGuests, 10) <= 1}
+                  onPointerDown={(e) => e.preventDefault()}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setModalError('');
+                    setModalGuests(g => {
+                      const val = parseInt(g, 10);
+                      return isNaN(val) || val <= 1 ? 1 : val - 1;
+                    });
+                  }}
+                  className="counter-btn"
+                  id="btn-guest-decrement"
+                  aria-label="ลดจำนวนคน"
+                >
+                  <Minus size={20} />
+                </button>
+
+                <div className="counter-input-wrap">
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={modalGuests}
+                    placeholder="ระบุจำนวนคน"
+                    onChange={(e) => {
+                      setModalError('');
+                      const val = parseInt(e.target.value, 10);
+                      if (isNaN(val)) {
+                        setModalGuests('');
+                      } else {
+                        setModalGuests(Math.max(1, val));
+                      }
+                    }}
+                    className="counter-input"
+                    style={{ paddingRight: modalGuests !== '' ? '38px' : '12px' }}
+                    id="input-modal-guests"
+                  />
+                  {modalGuests !== '' && (
+                    <span style={{ position: 'absolute', right: '12px', fontSize: '0.9rem', fontWeight: 800, color: 'var(--navy)', pointerEvents: 'none' }}>
+                      ท่าน
+                    </span>
+                  )}
                 </div>
+
+                <button
+                  type="button"
+                  onPointerDown={(e) => e.preventDefault()}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setModalError('');
+                    setModalGuests(g => {
+                      const val = parseInt(g, 10);
+                      return isNaN(val) || val < 1 ? 1 : val + 1;
+                    });
+                  }}
+                  className="counter-btn"
+                  id="btn-guest-increment"
+                  aria-label="เพิ่มจำนวนคน"
+                >
+                  <Plus size={20} />
+                </button>
+              </div>
+
+              <div style={{ textAlign: 'center', fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                {modalMode === 'byGuests'
+                  ? (modalGuests ? `ระบบจะค้นหาห้องที่พอดีและห้องขนาดใหญ่ขึ้นสำหรับ ${modalGuests} ท่าน` : 'ระบุจำนวนคนเพื่อค้นหาห้องที่เหมาะสม')
+                  : 'ระบบจะแสดงเฉพาะห้องที่เลือก พร้อมตรวจสอบความจุตามจำนวนผู้เข้าร่วม'}
+              </div>
+            </div>
+
+            {modalError && (
+              <div style={{
+                padding: '10px 12px',
+                borderRadius: '10px',
+                backgroundColor: '#fef2f2',
+                border: '1px solid #fecaca',
+                color: '#dc2626',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                textAlign: 'center'
+              }}>
+                {modalError}
               </div>
             )}
 
             {/* Confirm "ตกลง" Button */}
             <button
               type="button"
-              disabled={modalMode === 'byGuests' ? (!modalGuests || parseInt(modalGuests, 10) < 1) : !modalRoomId}
+              disabled={!modalGuests || parseInt(modalGuests, 10) < 1 || (modalMode === 'directRoom' && !modalRoomId)}
               onClick={handleConfirmModal}
               className="btn-primary"
               id="btn-confirm-modal"

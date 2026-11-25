@@ -472,6 +472,9 @@ a {
 }
 
 @media (max-width: 380px) {
+  .header-brand-title {
+    font-size: 0.86rem !important;
+  }
   .header-subtitle {
     display: none !important;
   }
@@ -685,14 +688,19 @@ button:active {
 }
 
 .customer-cal-day--past {
-  opacity: 0.55;
-  background-color: #f8fafc;
+  opacity: 0.72;
+  background-color: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+  color: #94a3b8 !important;
   cursor: not-allowed !important;
 }
 
+.customer-cal-day--past .customer-cal-day__num {
+  color: #94a3b8 !important;
+}
+
 .customer-cal-day__badge--past {
-  color: #94a3b8;
-  background-color: #e2e8f0;
+  display: none;
 }
 
 .customer-cal-day__badge--loading {
@@ -1009,18 +1017,24 @@ button:active {
 }
 
 .counter-input {
-  width: 120px;
+  width: 170px;
   height: 52px;
   text-align: center;
-  padding-right: 28px;
-  font-size: 1.4rem;
-  font-weight: 900;
+  padding: 0 14px;
+  font-size: 1.2rem;
+  font-weight: 800;
   color: var(--navy);
   border: 2px solid var(--border);
   border-radius: 14px;
   background-color: #ffffff;
   outline: none;
   transition: all 0.15s ease;
+}
+
+.counter-input::placeholder {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
 }
 
 .counter-input:focus {

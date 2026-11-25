@@ -81,6 +81,7 @@ export default function ConfirmPage() {
   const [uploadResultData, setUploadResultData] = useState(null);
   const [toastMessage, setToastMessage] = useState('');
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState('');
   const [error, setError] = useState('');
   const [paymentWindowMinutes, setPaymentWindowMinutes] = useState(() => {
     try {
@@ -510,16 +511,62 @@ export default function ConfirmPage() {
       .catch(() => {});
   }, [bookingId]);
 
-  // Copy Account Number with Toast Feedback
-  const handleCopyAccount = () => {
-    const cleanNum = (paymentSettings.account_number || '3291384290').replace(/-/g, '');
-    navigator.clipboard.writeText(cleanNum);
-    setCopied(true);
-    setToastMessage('คัดลอกเลขบัญชีเรียบร้อยแล้ว!');
-    setTimeout(() => {
-      setCopied(false);
-      setToastMessage('');
-    }, 3000);
+  const displayedAccountNumber = (paymentSettings.account_number || '329-1-38429-0').trim();
+
+  // Copy Account Number with Async Clipboard Verification & Fallback
+  const handleCopyAccount = async () => {
+    setCopyError('');
+    setCopied(false);
+    const cleanNum = displayedAccountNumber.replace(/-/g, '');
+    let success = false;
+
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(cleanNum);
+        success = true;
+      }
+    } catch (_) {
+      success = false;
+    }
+
+    if (!success && typeof document !== 'undefined') {
+      let textarea = null;
+      try {
+        textarea = document.createElement('textarea');
+        textarea.value = cleanNum;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.top = '-9999px';
+        textarea.style.left = '-9999px';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, cleanNum.length);
+        success = document.execCommand('copy');
+      } catch (_) {
+        success = false;
+      } finally {
+        if (textarea && textarea.parentNode) {
+          textarea.parentNode.removeChild(textarea);
+        }
+      }
+    }
+
+    if (success) {
+      setCopied(true);
+      setToastMessage('คัดลอกเลขบัญชีเรียบร้อยแล้ว!');
+      setTimeout(() => {
+        setCopied(false);
+        setToastMessage('');
+      }, 3000);
+    } else {
+      setCopyError('ไม่สามารถคัดลอกอัตโนมัติได้ กรุณาแตะค้างที่เลขบัญชีเพื่อคัดลอกด้วยตนเอง');
+      setToastMessage('ไม่สามารถคัดลอกอัตโนมัติได้ กรุณาคัดลอกเลขบัญชีด้วยตนเอง');
+      setTimeout(() => {
+        setToastMessage('');
+      }, 3500);
+    }
   };
 
   // Scan Mini QR Code & Compress Slip Image
@@ -1423,30 +1470,54 @@ export default function ConfirmPage() {
                       <CreditCard size={15} color="var(--primary)" />
                       <span>หรือโอนผ่านบัญชีธนาคาร</span>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: 'var(--text-muted)' }}>
-                      <span>{paymentSettings.bank_name || 'ธ.กรุงศรีอยุธยา'}</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', color: 'var(--text-muted)' }}>
+                      <span style={{ fontWeight: 600 }}>{paymentSettings.bank_name || 'ธ.กรุงศรีอยุธยา'}</span>
                       <button
                         type="button"
+                        id="btn-copy-bank-account"
                         onClick={handleCopyAccount}
                         style={{
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--primary)',
-                          fontWeight: 700,
-                          fontSize: '0.74rem',
+                          background: copied ? '#ecfdf5' : '#ffffff',
+                          border: copied ? '1px solid #10b981' : '1px solid rgba(15, 118, 110, 0.35)',
+                          borderRadius: '8px',
+                          padding: '5px 10px',
+                          minHeight: '32px',
+                          color: copied ? '#047857' : 'var(--primary)',
+                          fontWeight: 800,
+                          fontSize: '0.76rem',
                           cursor: 'pointer',
-                          display: 'flex',
+                          display: 'inline-flex',
                           alignItems: 'center',
-                          gap: '4px'
+                          gap: '4px',
+                          flexShrink: 0,
+                          whiteSpace: 'nowrap'
                         }}
                       >
-                        {copied ? <Check size={12} /> : <Copy size={12} />}
+                        {copied ? <Check size={13} /> : <Copy size={13} />}
                         <span>{copied ? 'คัดลอกแล้ว' : 'คัดลอกเลขบัญชี'}</span>
                       </button>
                     </div>
-                    <div style={{ fontFamily: 'monospace', fontWeight: 900, fontSize: '1rem', color: 'var(--navy)', margin: '4px 0' }}>
-                      {paymentSettings.account_number || '329-1-38429-0'}
+                    <div
+                      id="bank-account-number-display"
+                      style={{
+                        fontFamily: 'monospace',
+                        fontWeight: 900,
+                        fontSize: '1.08rem',
+                        color: 'var(--navy)',
+                        margin: '6px 0 4px 0',
+                        userSelect: 'all',
+                        WebkitUserSelect: 'all',
+                        cursor: 'text',
+                        letterSpacing: '0.5px'
+                      }}
+                    >
+                      {displayedAccountNumber}
                     </div>
+                    {copyError && (
+                      <div id="bank-account-copy-error" style={{ fontSize: '0.74rem', color: 'var(--danger)', fontWeight: 700, marginBottom: '4px' }}>
+                        {copyError}
+                      </div>
+                    )}
                     <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
                       ชื่อบัญชี: {paymentSettings.account_name || 'บริษัท บิลท์ ฮาร์ท จำกัด'}
                     </div>

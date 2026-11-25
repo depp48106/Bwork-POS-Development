@@ -150,7 +150,7 @@ export default function HomePage() {
       }
 
       // Guest count is NOT required in Step 1 for Mode A
-      navigate(`/rooms?date=${dateStr}&roomId=${selectedRoomId}`);
+      navigate(`/rooms?mode=directRoom&date=${dateStr}&roomId=${selectedRoomId}`);
     } else {
       // MODE B: Search by Attendees (existing flow)
       if (!dateStr) {
@@ -171,7 +171,7 @@ export default function HomePage() {
       }
 
       // Navigate to Room List with Date & Guests
-      navigate(`/rooms?date=${dateStr}&guests=${guests}`);
+      navigate(`/rooms?mode=byGuests&date=${dateStr}&guests=${guests}`);
     }
   };
 

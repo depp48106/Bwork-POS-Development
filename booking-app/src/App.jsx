@@ -138,22 +138,34 @@ function CustomerApp() {
       {/* HEADER */}
       <header className="app-header">
         <div className="header-inner">
-          <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none' }}>
-            <img 
-              src="/BWORK-LOGO.png" 
-              alt="B-WORK" 
-              style={{ 
-                height: '38px', 
-                objectFit: 'contain',
-                filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))'
-              }} 
-              onError={(e) => {
-                e.target.style.display = 'none';
-              }}
-            />
-            <div>
-              <div style={{ fontSize: '1.05rem', fontWeight: 900, letterSpacing: '0.3px', color: '#ffffff', lineHeight: 1.2 }}>
-                จองสำหรับลูกค้า
+          <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none', minWidth: 0 }}>
+            <div style={{
+              backgroundColor: '#ffffff',
+              borderRadius: '10px',
+              padding: '4px 8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              boxShadow: '0 2px 6px rgba(0,0,0,0.16)'
+            }}>
+              <img
+                src="/BWORK-LOGO.png"
+                alt="B-WORK"
+                style={{
+                  height: '28px',
+                  width: 'auto',
+                  display: 'block',
+                  objectFit: 'contain'
+                }}
+                onError={(e) => {
+                  e.target.parentElement.style.display = 'none';
+                }}
+              />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div className="header-brand-title" style={{ fontSize: '1rem', fontWeight: 900, letterSpacing: '0.2px', color: '#ffffff', lineHeight: 1.25 }}>
+                จองห้องประชุม Bwork Tower
               </div>
               <div className="header-subtitle" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#a7f3d0', letterSpacing: '0.3px' }}>
                 B-WORK · จองออนไลน์ผ่าน LINE

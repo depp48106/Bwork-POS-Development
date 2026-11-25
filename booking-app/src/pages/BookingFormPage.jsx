@@ -89,7 +89,7 @@ export default function BookingFormPage() {
       }
     } catch (e) {}
 
-    // Restore scoped form draft (bound to user and room item, prevent cross-account leak)
+    // Restore scoped form draft (bound to user and room item, never overwriting latest bookingData.guests)
     try {
       if (typeof window !== 'undefined') {
         const activeUserId = savedLineId || 'guest';
@@ -114,7 +114,6 @@ export default function BookingFormPage() {
             if (draft.email) setEmail(draft.email);
             if (draft.company) setCompany(draft.company);
             if (draft.notes) setNotes(draft.notes);
-            if (draft.attendees) setAttendees(draft.attendees);
 
             // Strictly enforce Tax Invoice switch starts OFF for new sessions
             setNeedTaxInvoice(false);
@@ -462,20 +461,26 @@ export default function BookingFormPage() {
 
   if (!bookingData) return null;
 
-  const handleBackToRooms = () => {
+  const handleBackToRooms = (openEditModal = false) => {
     if (bookingData) {
       try {
         sessionStorage.setItem('current_booking_payload', JSON.stringify(bookingData));
       } catch (_) {}
       const params = new URLSearchParams();
+      if (bookingData.search_mode) params.set('mode', bookingData.search_mode);
       if (bookingData.date) params.set('date', bookingData.date);
       if (bookingData.guests) params.set('guests', bookingData.guests);
       if (bookingData.room_id) params.set('roomId', bookingData.room_id);
-      navigate(`/rooms?${params.toString()}`, { state: bookingData });
+      navigate(`/rooms?${params.toString()}`, {
+        state: openEditModal ? { ...bookingData, openEditModal: true } : bookingData
+      });
     } else {
       navigate(-1);
     }
   };
+
+  const parsedAttendeesCount = parseInt(attendees, 10);
+  const isOverCapacity = !isNaN(parsedAttendeesCount) && parsedAttendeesCount > effectiveCapacity;
 
   return (
     <div className="main-content">
@@ -483,7 +488,7 @@ export default function BookingFormPage() {
 
       <button
         type="button"
-        onClick={handleBackToRooms}
+        onClick={() => handleBackToRooms(false)}
         className="btn-back"
         id="btn-back-to-rooms"
       >
@@ -492,7 +497,7 @@ export default function BookingFormPage() {
       </button>
 
       <div className="booking-form-grid">
-        {/* LEFT COLUMN: STICKY BOOKING SUMMARY CARD */}
+        {/* LEFT COLUMN (TOP ON MOBILE): STICKY BOOKING SUMMARY CARD */}
         <div className="booking-card booking-summary-card" style={{ position: 'sticky', top: '80px' }}>
           <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--primary)', textTransform: 'uppercase', marginBottom: '8px' }}>
             สรุปรายการจอง
@@ -504,42 +509,59 @@ export default function BookingFormPage() {
             </div>
           )}
 
-          <h3 style={{ fontSize: '1.2rem', fontWeight: 900, color: 'var(--text-main)', margin: '0 0 6px 0' }}>
+          {/* Prominent Room Name */}
+          <h3 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--navy)', margin: '0 0 8px 0', lineHeight: 1.3 }}>
             {bookingData.room_name}
           </h3>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.84rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: '12px', marginTop: '8px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>วันที่:</span>
+          {/* Ordered Summary: Date -> Time -> Table Layout -> Attendees */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.86rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border)', paddingTop: '12px', marginTop: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+              <span>วัน:</span>
               <strong style={{ color: 'var(--text-main)' }}>
                 {bookingData.date ? bookingData.date.split('-').reverse().join('/') : '-'}
               </strong>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>ช่วงเวลา:</span>
-              <strong style={{ color: 'var(--text-main)' }}>{bookingData.start_time} - {bookingData.end_time} น.</strong>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>ระยะเวลา:</span>
-              <strong style={{ color: 'var(--primary)' }}>
-                {bookingData.duration} ชั่วโมง {bookingData.booking_type === 'hourly' && bookingData.duration % 1 !== 0 ? `(คิดราคา ${Math.ceil(bookingData.duration)} ชม.)` : ''} ({bookingData.rate_label || 'รายชั่วโมง'})
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+              <span>เวลา:</span>
+              <strong style={{ color: 'var(--text-main)', textAlign: 'right' }}>
+                {bookingData.start_time} - {bookingData.end_time} น. ({bookingData.duration} ชม.)
               </strong>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>จำนวนผู้เข้าใช้:</span>
-              <strong style={{ color: attendees ? 'var(--text-main)' : 'var(--warning)' }}>
-                {attendees ? `${attendees} ท่าน` : 'ยังไม่ได้ระบุ'}
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+              <span>รูปแบบโต๊ะ:</span>
+              <strong style={{ color: 'var(--text-main)', textTransform: 'capitalize' }}>
+                {bookingData.layout === 'classroom' ? 'Classroom (โต๊ะเรียน)' : 'Standard (ประชุม)'} (สูงสุด {effectiveCapacity} คน)
               </strong>
             </div>
-            {bookingData.layout && (
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>รูปแบบจัดโต๊ะ:</span>
-                <strong style={{ color: 'var(--text-main)', textTransform: 'capitalize' }}>{bookingData.layout}</strong>
-              </div>
-            )}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+              <span>จำนวนคน:</span>
+              <strong style={{ color: isOverCapacity ? 'var(--danger)' : (attendees ? 'var(--text-main)' : 'var(--warning)') }}>
+                {attendees ? `${attendees} คน` : 'ยังไม่ได้ระบุ'}
+              </strong>
+            </div>
           </div>
 
-          {/* Total Amount Box / Price Breakdown */}
+          {isOverCapacity && (
+            <div style={{
+              marginTop: '10px',
+              padding: '8px 10px',
+              borderRadius: '8px',
+              backgroundColor: 'rgba(239, 68, 68, 0.08)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: 'var(--danger)',
+              fontSize: '0.78rem',
+              fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <AlertCircle size={14} style={{ flexShrink: 0 }} />
+              <span>จำนวนผู้เข้าร่วม ({parsedAttendeesCount} คน) เกินความจุของรูปแบบโต๊ะนี้ (สูงสุด {effectiveCapacity} คน)</span>
+            </div>
+          )}
+
+          {/* Separated Net Total Box at the Bottom of Card */}
           <div style={{
             marginTop: '16px',
             padding: '14px',
@@ -700,66 +722,38 @@ export default function BookingFormPage() {
               )}
             </div>
 
-            {/* Attendees Count */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Users size={16} style={{ color: 'var(--primary)' }} />
-                  <span>จำนวนผู้เข้าใช้งาน (Attendees)</span>
-                  <span style={{ color: 'var(--danger)' }}>*</span>
-                </label>
-                <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                  ห้องนี้รองรับสูงสุด {effectiveCapacity} ท่าน
-                </span>
+            {/* Attendees Read-Only Badge + Edit Button (no duplicate input) */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '10px',
+              padding: '12px 14px',
+              borderRadius: '12px',
+              backgroundColor: isOverCapacity ? 'rgba(239, 68, 68, 0.06)' : '#f8fafc',
+              border: isOverCapacity ? '1.5px solid var(--danger)' : '1px solid var(--border)'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem', fontWeight: 700, color: 'var(--navy)' }}>
+                <Users size={17} style={{ color: isOverCapacity ? 'var(--danger)' : 'var(--primary)' }} />
+                <span>ผู้เข้าร่วม {attendees || 0} คน</span>
               </div>
-              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                <Users size={18} style={{ position: 'absolute', left: '14px', color: 'var(--text-muted)', pointerEvents: 'none' }} />
-                <input
-                  type="number"
-                  min="1"
-                  max={effectiveCapacity}
-                  required
-                  placeholder={`ระบุจำนวนผู้เข้าใช้ห้อง (1 - ${effectiveCapacity} ท่าน)`}
-                  value={attendees}
-                  onChange={e => {
-                    const val = e.target.value;
-                    setAttendees(val);
-                    setError('');
-                    const p = parseInt(val, 10);
-                    if (p > effectiveCapacity) {
-                      setFieldErrors(prev => ({
-                        ...prev,
-                        attendees: `จำนวนผู้เข้าใช้งานเกินความจุของห้องที่เลือก (สูงสุด ${effectiveCapacity} ท่านสำหรับรูปแบบโต๊ะนี้)`
-                      }));
-                    } else {
-                      setFieldErrors(prev => ({ ...prev, attendees: '' }));
-                    }
-                  }}
-                  className={`form-input ${fieldErrors.attendees ? 'form-input--error' : ''}`}
-                  style={{
-                    paddingLeft: '44px',
-                    paddingRight: '60px',
-                    fontWeight: 700
-                  }}
-                  id="input-attendees"
-                />
-                <span style={{
-                  position: 'absolute',
-                  right: '16px',
-                  fontSize: '0.85rem',
+              <button
+                type="button"
+                id="btn-edit-attendees"
+                onClick={() => handleBackToRooms(true)}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid var(--primary)',
+                  backgroundColor: '#ffffff',
+                  color: 'var(--primary)',
+                  fontSize: '0.8rem',
                   fontWeight: 700,
-                  color: 'var(--text-muted)',
-                  pointerEvents: 'none'
-                }}>
-                  ท่าน
-                </span>
-              </div>
-              {fieldErrors.attendees && (
-                <div style={{ color: 'var(--danger)', fontSize: '0.8rem', fontWeight: 600, marginTop: '5px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <AlertCircle size={14} />
-                  <span>{fieldErrors.attendees}</span>
-                </div>
-              )}
+                  cursor: 'pointer'
+                }}
+              >
+                แก้ไข
+              </button>
             </div>
 
             {/* Email & Company (2 columns on desktop, 1 on mobile) */}
@@ -818,7 +812,7 @@ export default function BookingFormPage() {
                     ขอใบกำกับภาษี / ใบเสร็จรับเงินเต็มรูปแบบ
                   </div>
                   <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                    (ออกในนามนิติบุคคล บริษัท หรือบุคคลธรรมดา)
+                    ออกในนามบุคคลธรรมดาหรือนิติบุคคล
                   </div>
                 </div>
 
@@ -1029,6 +1023,7 @@ export default function BookingFormPage() {
                         className="form-input custom-select-input"
                         style={{
                           height: '46px',
+                          fontFamily: "'Prompt', sans-serif",
                           fontWeight: 700,
                           cursor: 'pointer',
                           paddingRight: '36px',
@@ -1037,8 +1032,8 @@ export default function BookingFormPage() {
                           MozAppearance: 'none'
                         }}
                       >
-                        <option value="online">จัดส่งออนไลน์ (LINE หรืออีเมล)</option>
-                        <option value="postal">จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)</option>
+                        <option value="online" style={{ fontFamily: "'Prompt', sans-serif" }}>จัดส่งออนไลน์ (LINE หรืออีเมล)</option>
+                        <option value="postal" style={{ fontFamily: "'Prompt', sans-serif" }}>จัดส่งทางจดหมาย (ไปรษณีย์ / เอกสารตัวจริง)</option>
                       </select>
                       <ChevronDown size={15} style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
                     </div>
