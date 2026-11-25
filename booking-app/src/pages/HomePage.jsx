@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Calendar, Users, ChevronRight, AlertCircle, Building, ChevronDown, RefreshCw } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
+import { getBangkokNow } from '../utils/bangkokTime';
 
 const THAI_MONTHS = [
   'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.',
@@ -51,20 +52,18 @@ export default function HomePage() {
   const query = new URLSearchParams(location.search);
   const dateInputRef = useRef(null);
 
-  const today = new Date();
-  const todayIso = formatToIso(today);
-  const currentMins = today.getHours() * 60 + today.getMinutes();
+  const bkkNow = getBangkokNow();
+  const todayIso = bkkNow.dateIso;
+  const currentMins = bkkNow.minutes;
 
-  // If past 17:00 today, default to tomorrow
+  // If past 17:00 Bangkok time today, default to tomorrow
   const getInitialDate = () => {
     if (query.get('date')) {
       const qDate = query.get('date');
       if (qDate >= todayIso) return qDate;
     }
     if (currentMins >= 17 * 60) {
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      return formatToIso(tomorrow);
+      return bkkNow.tomorrowIso;
     }
     return todayIso;
   };
@@ -123,6 +122,7 @@ export default function HomePage() {
   const handleSearch = (e) => {
     e.preventDefault();
     setErrorMessage('');
+    const liveBkk = getBangkokNow();
 
     if (searchMode === 'directRoom') {
       // MODE A: Direct Room Selection (Date First, Room Second)
@@ -130,11 +130,11 @@ export default function HomePage() {
         setErrorMessage('กรุณาเลือกวันที่ต้องการใช้งาน');
         return;
       }
-      if (dateStr < todayIso) {
+      if (dateStr < liveBkk.dateIso) {
         setErrorMessage('ไม่สามารถเลือกวันที่ย้อนหลังได้ กรุณาเลือกวันที่ปัจจุบันหรือล่วงหน้า');
         return;
       }
-      if (dateStr === todayIso && currentMins >= 17 * 60 + 30) {
+      if (dateStr === liveBkk.dateIso && liveBkk.minutes >= 17 * 60 + 30) {
         setErrorMessage('วันนี้หมดรอบเวลาให้บริการแล้ว กรุณาเลือกวันพรุ่งนี้เป็นต้นไป');
         return;
       }
@@ -157,11 +157,11 @@ export default function HomePage() {
         setErrorMessage('กรุณาเลือกวันที่ต้องการใช้งาน');
         return;
       }
-      if (dateStr < todayIso) {
+      if (dateStr < liveBkk.dateIso) {
         setErrorMessage('ไม่สามารถเลือกวันที่ย้อนหลังได้ กรุณาเลือกวันที่ปัจจุบันหรือล่วงหน้า');
         return;
       }
-      if (dateStr === todayIso && currentMins >= 17 * 60 + 30) {
+      if (dateStr === liveBkk.dateIso && liveBkk.minutes >= 17 * 60 + 30) {
         setErrorMessage('วันนี้หมดรอบเวลาให้บริการแล้ว กรุณาเลือกวันพรุ่งนี้เป็นต้นไป');
         return;
       }

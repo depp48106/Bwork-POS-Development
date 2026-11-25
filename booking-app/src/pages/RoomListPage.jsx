@@ -8,6 +8,7 @@ import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { calculateOnlineBookingPricing } from '../utils/onlinePromotionHelper';
 import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
+import { getBangkokNow, getMinStartMinutesToday, isStartTimePastBangkok } from '../utils/bangkokTime';
 import {
   getAvailabilityMonth,
   getRoomAvailabilityForDay,
@@ -82,20 +83,16 @@ const formatShortThaiDate = (isoStr) => {
   return `${d} ${monthShort} ${thaiYear}`;
 };
 
-const getBangkokTodayIso = () => {
-  const now = new Date();
-  const bkk = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-  return bkk.toISOString().slice(0, 10);
-};
+const getBangkokTodayIso = () => getBangkokNow().dateIso;
 
 export default function RoomListPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const query = new URLSearchParams(location.search);
 
-  const todayIso = useMemo(() => getBangkokTodayIso(), []);
-  const today = new Date();
-  const currentMins = today.getHours() * 60 + today.getMinutes();
+  const [bangkokNow, setBangkokNow] = useState(() => getBangkokNow());
+  const todayIso = bangkokNow.dateIso;
+  const currentMins = bangkokNow.minutes;
 
   // Try to restore previous draft from sessionStorage or navigation state
   const savedDraft = useMemo(() => {
@@ -249,7 +246,7 @@ export default function RoomListPage() {
 
   const isToday = dateStr === todayIso;
 
-  // Real-time time protection: For today, filter out past slots
+  // Real-time time protection: For today (Asia/Bangkok), filter out past/started slots
   const availableStartOptions = useMemo(() => {
     if (!isToday) {
       return TIME_OPTIONS.filter(t => t < '18:00');
@@ -257,7 +254,7 @@ export default function RoomListPage() {
     return TIME_OPTIONS.filter(t => {
       if (t >= '18:00') return false;
       const [h, m] = t.split(':').map(Number);
-      return (h * 60 + m) >= currentMins;
+      return (h * 60 + m) > currentMins;
     });
   }, [isToday, currentMins]);
 
@@ -268,6 +265,11 @@ export default function RoomListPage() {
 
   const [globalStartTime, setGlobalStartTime] = useState(defaultStart);
   const [globalEndTime, setGlobalEndTime] = useState(defaultEnd);
+
+  useEffect(() => {
+    setGlobalStartTime(defaultStart);
+    setGlobalEndTime(defaultEnd);
+  }, [dateStr, defaultStart, defaultEnd]);
 
   // Sync state if query parameters change externally
   useEffect(() => {
@@ -396,16 +398,22 @@ export default function RoomListPage() {
     fetchDailySchedule(true);
   }, [fetchDailySchedule]);
 
-  // Auto-refresh: visibilitychange, focus, and polling (every 30s when visible)
+  // Auto-refresh: live Bangkok clock (15s), visibilitychange, focus, and polling (30s when visible)
   useEffect(() => {
+    const syncLiveClock = () => {
+      setBangkokNow(getBangkokNow());
+    };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
+        syncLiveClock();
         fetchMonthlyAvailability();
         fetchDailySchedule(false);
       }
     };
+    const clockInterval = setInterval(syncLiveClock, 15000);
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
+        syncLiveClock();
         fetchMonthlyAvailability();
         fetchDailySchedule(false);
       }
@@ -415,6 +423,7 @@ export default function RoomListPage() {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
+      clearInterval(clockInterval);
       clearInterval(interval);
       window.removeEventListener('focus', handleVisibilityChange);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -720,9 +729,9 @@ export default function RoomListPage() {
       return { isOccupied: true, reason: 'outside_hours', label: 'อยู่นอกเวลาทำการ (08:00 - 18:00 น.)' };
     }
 
-    // Past time check for today
-    if (isToday && reqStartMins < currentMins) {
-      return { isOccupied: true, reason: 'past', label: 'เวลานี้ผ่านมาแล้ว' };
+    // Past time check for today (Asia/Bangkok)
+    if (isToday && reqStartMins <= currentMins) {
+      return { isOccupied: true, reason: 'past', label: 'เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่' };
     }
 
     const conflictingIds = getConflictingRoomIds(roomId);
@@ -785,7 +794,7 @@ export default function RoomListPage() {
   const isIntervalClear = useCallback((roomId, startMins, endMins) => {
     if (!schedule || !schedule.rooms) return true;
     if (startMins < 8 * 60 || endMins > 18 * 60 || startMins >= endMins) return false;
-    if (isToday && startMins < currentMins) return false;
+    if (isToday && startMins <= currentMins) return false;
 
     const conflictingIds = getConflictingRoomIds(roomId);
     const bufferMins = Number(schedule.cleaning_buffer_minutes || schedule.buffer_minutes) || 30;
@@ -877,6 +886,12 @@ export default function RoomListPage() {
     const isClassroom = layout === 'classroom';
     const sel = getRoomSelection(room);
 
+    setBangkokNow(getBangkokNow());
+    if (isStartTimePastBangkok(dateStr, sel.startTime)) {
+      setTimelineError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
+      return;
+    }
+
     const parsedGuests = parseInt(guests, 10);
     if (!guests || isNaN(parsedGuests) || parsedGuests < 1) {
       setDirectGuestError('กรุณาระบุจำนวนผู้เข้าใช้งานอย่างน้อย 1 ท่านก่อนกรอกข้อมูลผู้จอง');
@@ -957,8 +972,8 @@ export default function RoomListPage() {
       let targetStartMins = Math.floor(clickedMinute / 30) * 30;
       if (targetStartMins >= 18 * 60) targetStartMins = 17 * 60 + 30;
 
-      if (isToday && targetStartMins < currentMins) {
-        setTimelineError('ไม่สามารถเลือกเวลาในอดีตได้');
+      if (isToday && targetStartMins <= currentMins) {
+        setTimelineError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
         return;
       }
 
@@ -994,8 +1009,8 @@ export default function RoomListPage() {
         let newStartMins = Math.floor(clickedMinute / 30) * 30;
         if (newStartMins >= 18 * 60) newStartMins = 17 * 60 + 30;
 
-        if (isToday && newStartMins < currentMins) {
-          setTimelineError('ไม่สามารถเลือกเวลาในอดีตได้');
+        if (isToday && newStartMins <= currentMins) {
+          setTimelineError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
           return;
         }
 
@@ -1122,8 +1137,8 @@ export default function RoomListPage() {
     if (type === 'start') {
       // Must not exceed curEndMins - 30
       if (targetMins > curEndMins - 30) targetMins = curEndMins - 30;
-      // Must not be in the past
-      const minTodayMins = isToday ? Math.max(480, Math.ceil(currentMins / 30) * 30) : 480;
+      // Must not be in the past (Asia/Bangkok)
+      const minTodayMins = isToday ? getMinStartMinutesToday(currentMins) : 480;
       if (targetMins < minTodayMins) targetMins = minTodayMins;
 
       // When dragging left (earlier), stop if hitting booked or cleaning
@@ -1223,7 +1238,7 @@ export default function RoomListPage() {
       const slotStartStr = `${String(Math.floor(slotStart / 60)).padStart(2, '0')}:${String(slotStart % 60).padStart(2, '0')}`;
       const slotEndStr = `${String(Math.floor(slotEnd / 60)).padStart(2, '0')}:${String(slotEnd % 60).padStart(2, '0')}`;
 
-      const isPast = isToday && slotStart < currentMins;
+      const isPast = isToday && slotStart <= currentMins;
       const occupiedInfo = getRoomOccupiedInfo(room.id, slotStartStr, slotEndStr);
 
       let bgColor = '#A7F3D0'; // ว่าง (เขียวอ่อน)
@@ -1231,14 +1246,14 @@ export default function RoomListPage() {
 
       if (isPast) {
         type = 'past';
-        bgColor = '#E2E8F0';
+        bgColor = '#E2E8F0'; // เลยเวลา (เทาอ่อน)
       } else if (occupiedInfo.isOccupied) {
         if (occupiedInfo.reason === 'cleaning') {
           type = 'cleaning';
           bgColor = '#FED7AA'; // ทำความสะอาด (ส้มอ่อน)
         } else {
           type = 'booked';
-          bgColor = '#CBD5E1'; // ติดจอง (เทา)
+          bgColor = '#94A3B8'; // ติดจอง (เทาเข้ม)
         }
       }
 
@@ -1261,7 +1276,7 @@ export default function RoomListPage() {
     for (let i = 0; i < 20; i++) {
       const slotStart = 8 * 60 + i * 30;
       if (slotStart >= 18 * 60) break;
-      if (isToday && slotStart < currentMins) continue;
+      if (isToday && slotStart <= currentMins) continue;
       if (isIntervalClear(room.id, slotStart, slotStart + 30)) {
         const startStr = `${String(Math.floor(slotStart / 60)).padStart(2, '0')}:${String(slotStart % 60).padStart(2, '0')}`;
         validStartOptions.push(startStr);
@@ -1470,16 +1485,20 @@ export default function RoomListPage() {
         </div>
 
         {/* Legend Row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px', margin: '14px 18px 0 18px', fontSize: '0.86rem', color: '#0F172A', fontWeight: 600 }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '14px', margin: '14px 18px 0 18px', fontSize: '0.82rem', color: '#0F172A', fontWeight: 600 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#A7F3D0' }} />
             ว่าง
           </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#CBD5E1' }} />
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#E2E8F0', border: '1px solid #CBD5E1' }} />
+            เลยเวลา
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#94A3B8' }} />
             ติดจอง
           </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#FED7AA' }} />
             ทำความสะอาด
           </span>
@@ -1602,12 +1621,16 @@ export default function RoomListPage() {
     }
 
     // Half-day slot availability checks
-    const halfDay0812Occupied = getRoomOccupiedInfo(room.id, '08:00', '12:00').isOccupied;
-    const halfDay1317Occupied = getRoomOccupiedInfo(room.id, '13:00', '17:00').isOccupied;
+    const halfDay0812Info = getRoomOccupiedInfo(room.id, '08:00', '12:00');
+    const halfDay0812Occupied = halfDay0812Info.isOccupied;
+    const halfDay1317Info = getRoomOccupiedInfo(room.id, '13:00', '17:00');
+    const halfDay1317Occupied = halfDay1317Info.isOccupied;
 
     // Daily slot availability checks
-    const daily0817Occupied = getRoomOccupiedInfo(room.id, '08:00', '17:00').isOccupied;
-    const daily0918Occupied = getRoomOccupiedInfo(room.id, '09:00', '18:00').isOccupied;
+    const daily0817Info = getRoomOccupiedInfo(room.id, '08:00', '17:00');
+    const daily0817Occupied = daily0817Info.isOccupied;
+    const daily0918Info = getRoomOccupiedInfo(room.id, '09:00', '18:00');
+    const daily0918Occupied = daily0918Info.isOccupied;
 
     return (
       <div
@@ -1954,7 +1977,7 @@ export default function RoomListPage() {
                     <div>
                       {halfDay0812Occupied ? (
                         <span style={{ padding: '6px 14px', borderRadius: '8px', backgroundColor: '#E2E8F0', color: '#64748B', fontSize: '0.85rem', fontWeight: 700 }}>
-                          ติดจอง
+                          {halfDay0812Info.reason === 'past' ? 'เลยเวลา' : 'ติดจอง'}
                         </span>
                       ) : sel.halfDaySlot === '08-12' ? (
                         <span style={{ fontSize: '1.2rem', fontWeight: 900, color: '#0F766E', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -2003,7 +2026,7 @@ export default function RoomListPage() {
                     <div>
                       {halfDay1317Occupied ? (
                         <span style={{ padding: '6px 14px', borderRadius: '8px', backgroundColor: '#E2E8F0', color: '#64748B', fontSize: '0.85rem', fontWeight: 700 }}>
-                          ติดจอง
+                          {halfDay1317Info.reason === 'past' ? 'เลยเวลา' : 'ติดจอง'}
                         </span>
                       ) : sel.halfDaySlot === '13-17' ? (
                         <span style={{ fontSize: '1.2rem', fontWeight: 900, color: '#0F766E', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -2057,7 +2080,7 @@ export default function RoomListPage() {
                     <div>
                       {daily0817Occupied ? (
                         <span style={{ padding: '6px 14px', borderRadius: '8px', backgroundColor: '#E2E8F0', color: '#64748B', fontSize: '0.85rem', fontWeight: 700 }}>
-                          ติดจอง
+                          {daily0817Info.reason === 'past' ? 'เลยเวลา' : 'ติดจอง'}
                         </span>
                       ) : sel.dailySlot === '08-17' ? (
                         <span style={{ fontSize: '1.2rem', fontWeight: 900, color: '#0F766E', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -2106,7 +2129,7 @@ export default function RoomListPage() {
                     <div>
                       {daily0918Occupied ? (
                         <span style={{ padding: '6px 14px', borderRadius: '8px', backgroundColor: '#E2E8F0', color: '#64748B', fontSize: '0.85rem', fontWeight: 700 }}>
-                          ติดจอง
+                          {daily0918Info.reason === 'past' ? 'เลยเวลา' : 'ติดจอง'}
                         </span>
                       ) : sel.dailySlot === '09-18' ? (
                         <span style={{ fontSize: '1.2rem', fontWeight: 900, color: '#0F766E', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -2239,6 +2262,25 @@ export default function RoomListPage() {
                 </div>
               </div>
 
+              {isOccupied && reason === 'past' && (
+                <div style={{
+                  marginTop: '8px',
+                  padding: '8px 10px',
+                  borderRadius: '8px',
+                  backgroundColor: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  color: '#dc2626',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}>
+                  <AlertCircle size={14} style={{ flexShrink: 0 }} />
+                  <span>เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่</span>
+                </div>
+              )}
+
               {/* Full-width Action Button */}
               <button
                 type="button"
@@ -2264,7 +2306,7 @@ export default function RoomListPage() {
                   boxShadow: isOccupied ? 'none' : '0 4px 14px rgba(15, 118, 110, 0.3)'
                 }}
               >
-                <span>{isOccupied ? 'ช่วงเวลานี้ไม่ว่าง' : 'กรอกข้อมูลผู้จอง'}</span>
+                <span>{isOccupied ? (reason === 'past' ? 'เลยเวลาเริ่มแล้ว' : 'ช่วงเวลานี้ไม่ว่าง') : 'กรอกข้อมูลผู้จอง'}</span>
               </button>
             </div>
           )}

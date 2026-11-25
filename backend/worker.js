@@ -11938,12 +11938,17 @@ export default {
           return new Response(JSON.stringify({ error: 'เวลาสิ้นสุดต้องไม่เกินเวลาปิดทำการ (18:00 น.)' }), { status: 400, headers: corsHeaders });
         }
 
-        // Validate past time for today's booking
+        // Validate past date & strict real-time Asia/Bangkok start time (no 5-minute grace period)
+        const bkkNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+        const bkkTodayStr = `${bkkNow.getUTCFullYear()}-${String(bkkNow.getUTCMonth() + 1).padStart(2, '0')}-${String(bkkNow.getUTCDate()).padStart(2, '0')}`;
+        if (booking_date < bkkTodayStr) {
+          return new Response(JSON.stringify({ error: 'ไม่สามารถจองวันที่ผ่านมาแล้วได้' }), { status: 400, headers: corsHeaders });
+        }
         const [by, bm, bd] = booking_date.split('-').map(Number);
-        const [bsh, bsm] = start_time.split(':').map(Number);
+        const [bsh, bsm] = sHHMM.split(':').map(Number);
         const bookingStartUtc = new Date(Date.UTC(by, bm - 1, bd, bsh - 7, bsm));
-        if (bookingStartUtc.getTime() < Date.now() - 5 * 60 * 1000) {
-          return new Response(JSON.stringify({ error: 'ขออภัย ไม่สามารถจองช่วงเวลาในอดีตได้ กรุณาเลือกช่วงเวลาใหม่' }), { status: 400, headers: corsHeaders });
+        if (bookingStartUtc.getTime() <= Date.now()) {
+          return new Response(JSON.stringify({ error: 'เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่', code: 'ERR_PAST_START_TIME' }), { status: 400, headers: corsHeaders });
         }
 
         // Validate Tax Invoice Information when requested

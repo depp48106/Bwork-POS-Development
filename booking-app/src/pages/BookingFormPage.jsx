@@ -7,6 +7,7 @@ import {
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
+import { isStartTimePastBangkok } from '../utils/bangkokTime';
 
 export default function BookingFormPage() {
   const navigate = useNavigate();
@@ -42,6 +43,7 @@ export default function BookingFormPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [isConflict, setIsConflict] = useState(false);
+  const [isTimeExpired, setIsTimeExpired] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
 
   // Load payload and LIFF profile from location.state or sessionStorage / localStorage
@@ -195,6 +197,29 @@ export default function BookingFormPage() {
     }
   };
 
+  // Monitor live Asia/Bangkok clock while page is open or when returning to tab
+  useEffect(() => {
+    if (!bookingData?.date || !bookingData?.start_time) return;
+    const checkExpiry = () => {
+      if (isStartTimePastBangkok(bookingData.date, bookingData.start_time)) {
+        setIsTimeExpired(true);
+        setError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
+      }
+    };
+    checkExpiry();
+    const interval = setInterval(checkExpiry, 15000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') checkExpiry();
+    };
+    window.addEventListener('focus', checkExpiry);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', checkExpiry);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [bookingData?.date, bookingData?.start_time]);
+
   const effectiveCapacity = bookingData?.effective_capacity
     || (bookingData?.layout === 'classroom' && bookingData?.classroom_capacity ? bookingData.classroom_capacity : bookingData?.room_capacity)
     || (bookingData?.room && bookingData.room.capacity)
@@ -204,6 +229,12 @@ export default function BookingFormPage() {
     e.preventDefault();
     if (loading || isSubmittingRef.current) return;
     setError('');
+
+    if (bookingData && isStartTimePastBangkok(bookingData.date, bookingData.start_time)) {
+      setIsTimeExpired(true);
+      setError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
+      return;
+    }
 
     const errors = {};
     if (!name.trim()) {
@@ -420,9 +451,13 @@ export default function BookingFormPage() {
         });
         return;
       } else {
-        if (res.status === 409 || (data.error && (data.error.includes('ติดจอง') || data.error.includes('ไม่ว่าง') || data.error.includes('ทำความสะอาด')))) {
-          setIsConflict(true);
-          // Auto-save form draft so customer never loses their inputs on conflict
+        const isPastErr = data.code === 'ERR_PAST_START_TIME' || (data.error && (data.error.includes('เลยเวลาเริ่มแล้ว') || data.error.includes('ในอดีต')));
+        if (isPastErr) {
+          setIsTimeExpired(true);
+        }
+        if (res.status === 409 || isPastErr || (data.error && (data.error.includes('ติดจอง') || data.error.includes('ไม่ว่าง') || data.error.includes('ทำความสะอาด')))) {
+          if (res.status === 409) setIsConflict(true);
+          // Auto-save form draft so customer never loses their inputs on conflict or expired time
           try {
             const activeUserId = lineUserId || 'guest';
             const activeRoomId = bookingData?.room_id || 'any';
@@ -1231,27 +1266,27 @@ export default function BookingFormPage() {
               )}
             </div>
 
-            {/* CONFLICT / OVERLAP NOTIFICATION WITH RE-SELECT TIME BUTTON */}
-            {isConflict && (
+            {/* CONFLICT / EXPIRED TIME NOTIFICATION WITH RE-SELECT TIME BUTTON */}
+            {(isConflict || isTimeExpired) && (
               <div style={{
                 padding: '14px',
                 borderRadius: '14px',
-                backgroundColor: '#fffbeb',
-                border: '1.5px solid #fde68a',
+                backgroundColor: isTimeExpired ? '#fef2f2' : '#fffbeb',
+                border: isTimeExpired ? '1.5px solid #fecaca' : '1.5px solid #fde68a',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '8px'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#b45309', fontWeight: 800, fontSize: '0.92rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: isTimeExpired ? '#dc2626' : '#b45309', fontWeight: 800, fontSize: '0.92rem' }}>
                   <AlertCircle size={18} />
-                  <span>ช่วงเวลานี้มีผู้ทำรายการจองไปก่อนแล้ว</span>
+                  <span>{isTimeExpired ? 'เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่' : 'ช่วงเวลานี้มีผู้ทำรายการจองไปก่อนแล้ว'}</span>
                 </div>
-                <p style={{ margin: 0, fontSize: '0.82rem', color: '#92400e', lineHeight: 1.4 }}>
+                <p style={{ margin: 0, fontSize: '0.82rem', color: isTimeExpired ? '#991b1b' : '#92400e', lineHeight: 1.4 }}>
                   ข้อมูลที่คุณกรอกไว้ถูกบันทึกเรียบร้อยแล้ว แตะปุ่มด้านล่างเพื่อกลับไปเลือกช่วงเวลาอื่นโดยไม่ต้องกรอกข้อมูลใหม่
                 </p>
                 <button
                   type="button"
-                  onClick={handleBackToRooms}
+                  onClick={() => handleBackToRooms(false)}
                   style={{
                     padding: '10px 16px',
                     borderRadius: '10px',

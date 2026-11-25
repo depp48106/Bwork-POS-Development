@@ -8956,18 +8956,17 @@ app.post('/api/public/bookings', async (req, res) => {
     return res.status(400).json({ error: 'เวลาสิ้นสุดต้องไม่เกินเวลาปิดทำการ (18:00 น.)' });
   }
 
-  // Validate not past date or past time based on real clock
-  const now = new Date();
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  if (booking_date < todayStr) {
+  // Validate past date & strict real-time Asia/Bangkok start time (no 5-minute grace period)
+  const bkkNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const bkkTodayStr = `${bkkNow.getUTCFullYear()}-${String(bkkNow.getUTCMonth() + 1).padStart(2, '0')}-${String(bkkNow.getUTCDate()).padStart(2, '0')}`;
+  if (booking_date < bkkTodayStr) {
     return res.status(400).json({ error: 'ไม่สามารถจองวันที่ผ่านมาแล้วได้' });
   }
-  if (booking_date === todayStr) {
-    const currentMins = now.getHours() * 60 + now.getMinutes();
-    const [sH, sM] = start_time.split(':').map(Number);
-    if ((sH * 60 + sM) < currentMins) {
-      return res.status(400).json({ error: 'ไม่สามารถจองเวลาย้อนหลังได้ กรุณาเลือกเวลาปัจจุบันเป็นต้นไป' });
-    }
+  const [by, bm, bd] = booking_date.split('-').map(Number);
+  const [bsh, bsm] = sHHMM.split(':').map(Number);
+  const bookingStartUtc = new Date(Date.UTC(by, bm - 1, bd, bsh - 7, bsm));
+  if (bookingStartUtc.getTime() <= Date.now()) {
+    return res.status(400).json({ error: 'เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่', code: 'ERR_PAST_START_TIME' });
   }
 
   // Validate Tax Invoice Information when requested
