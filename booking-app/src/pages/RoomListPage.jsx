@@ -8,7 +8,7 @@ import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { calculateOnlineBookingPricing } from '../utils/onlinePromotionHelper';
 import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
-import { getBangkokNow, getMinStartMinutesToday, isStartTimePastBangkok } from '../utils/bangkokTime';
+import { getBangkokNow, getMinStartMinutesToday, isStartTimePastBangkok, isOnlineBookingOpen } from '../utils/bangkokTime';
 import {
   getAvailabilityMonth,
   getRoomAvailabilityForDay,
@@ -91,8 +91,29 @@ export default function RoomListPage() {
   const query = new URLSearchParams(location.search);
 
   const [bangkokNow, setBangkokNow] = useState(() => getBangkokNow());
+  const [onlineBookingStatus, setOnlineBookingStatus] = useState(() => isOnlineBookingOpen());
   const todayIso = bangkokNow.dateIso;
   const currentMins = bangkokNow.minutes;
+
+  // Real-time Asia/Bangkok time & booking hours monitor (15s interval + focus/visibility)
+  useEffect(() => {
+    const updateTimeAndStatus = () => {
+      const now = getBangkokNow();
+      setBangkokNow(now);
+      setOnlineBookingStatus(isOnlineBookingOpen());
+    };
+    const interval = setInterval(updateTimeAndStatus, 15000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') updateTimeAndStatus();
+    };
+    window.addEventListener('focus', updateTimeAndStatus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', updateTimeAndStatus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
 
   // Try to restore previous draft from sessionStorage or navigation state
   const savedDraft = useMemo(() => {
@@ -112,13 +133,16 @@ export default function RoomListPage() {
     return null;
   }, [location.state, location.search]);
 
-  // Determine initial date (query param > saved draft > today)
+  // Determine initial date (query param > saved draft > today / tomorrow if today expired)
   const initialDate = useMemo(() => {
     const qDate = query.get('date');
     if (qDate && qDate >= todayIso) return qDate;
     if (savedDraft?.date && savedDraft.date >= todayIso) return savedDraft.date;
+    if (currentMins >= 17 * 60 + 30) {
+      return bangkokNow.tomorrowIso;
+    }
     return todayIso;
-  }, [query, savedDraft, todayIso]);
+  }, [query, savedDraft, todayIso, currentMins, bangkokNow.tomorrowIso]);
 
   // Confirmed States in effect
   const [dateStr, setDateStr] = useState(initialDate);
@@ -334,8 +358,13 @@ export default function RoomListPage() {
   };
 
   const jumpToToday = () => {
-    setCurrentMonthKey(todayIso.slice(0, 7));
-    handleDateTap(todayIso);
+    const liveBkk = getBangkokNow();
+    setCurrentMonthKey(liveBkk.dateIso.slice(0, 7));
+    if (liveBkk.minutes < 17 * 60 + 30) {
+      handleDateTap(liveBkk.dateIso);
+    } else {
+      handleDateTap(liveBkk.tomorrowIso);
+    }
   };
 
   // Fetch monthly availability intervals for current calendar month
@@ -432,7 +461,9 @@ export default function RoomListPage() {
 
   // When tapping a date on calendar: open bottom sheet modal with staged date
   const handleDateTap = (tappedDate) => {
-    if (tappedDate < todayIso) return;
+    const liveBkk = getBangkokNow();
+    if (tappedDate < liveBkk.dateIso) return;
+    if (tappedDate === liveBkk.dateIso && liveBkk.minutes >= 17 * 60 + 30) return;
     setModalDate(tappedDate);
     setModalMode(searchMode || 'byGuests');
     setModalGuests(guests ? guests : '');
@@ -523,6 +554,9 @@ export default function RoomListPage() {
     }
 
     const isMonthDataReady = !!(availabilityData && availabilityData.month === currentMonthKey && Array.isArray(availabilityData.rooms));
+    const liveBkk = getBangkokNow();
+    const isTodayExpired = liveBkk.minutes >= (17 * 60 + 30); // 17:30 or later -> all start rounds for today are over
+    const minStartMinsToday = getMinStartMinutesToday(liveBkk.minutes);
 
     for (let d = 1; d <= days; d++) {
       const dayDateStr = `${currentMonthKey}-${String(d).padStart(2, '0')}`;
@@ -539,9 +573,26 @@ export default function RoomListPage() {
             return (item.start || '').slice(0, 10) === dayDateStr;
           });
           const ranges = getRoomAvailabilityForDay(dayDateStr, dayBookings, buffer);
-          const hasFree = ranges?.status !== 'full' && (Array.isArray(ranges?.ranges) && ranges.ranges.length > 0);
-          if (hasFree) {
-            freeCount++;
+          if (ranges?.status !== 'full' && Array.isArray(ranges?.ranges)) {
+            if (isDayToday) {
+              if (!isTodayExpired) {
+                const hasValidFutureSlot = ranges.ranges.some(r => {
+                  const [sh, sm] = (r.start || '08:00').split(':').map(Number);
+                  const [eh, em] = (r.end || '18:00').split(':').map(Number);
+                  const sMin = sh * 60 + sm;
+                  const eMin = eh * 60 + em;
+                  const effStart = Math.max(sMin, minStartMinsToday);
+                  return (eMin - effStart) >= 30;
+                });
+                if (hasValidFutureSlot) {
+                  freeCount++;
+                }
+              }
+            } else {
+              if (ranges.ranges.length > 0) {
+                freeCount++;
+              }
+            }
           }
         }
       }
@@ -551,6 +602,7 @@ export default function RoomListPage() {
         date: dayDateStr,
         isPast,
         isToday: isDayToday,
+        isTodayExpired: isDayToday && isTodayExpired,
         freeRoomsCount: freeCount,
         isMonthDataReady
       });
@@ -882,6 +934,12 @@ export default function RoomListPage() {
 
   // Proceed to Step 2 Form
   const handleProceedToForm = (room) => {
+    const onlineStatus = isOnlineBookingOpen();
+    if (!onlineStatus.isOpen) {
+      setTimelineError('ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.');
+      return;
+    }
+
     const layout = roomLayouts[room.id] || 'standard';
     const isClassroom = layout === 'classroom';
     const sel = getRoomSelection(room);
@@ -2262,7 +2320,24 @@ export default function RoomListPage() {
                 </div>
               </div>
 
-              {isOccupied && reason === 'past' && (
+              {!onlineBookingStatus.isOpen ? (
+                <div style={{
+                  marginTop: '8px',
+                  padding: '8px 12px',
+                  borderRadius: '10px',
+                  backgroundColor: '#fffbeb',
+                  border: '1.5px solid #fde68a',
+                  color: '#b45309',
+                  fontSize: '0.82rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}>
+                  <AlertCircle size={16} style={{ flexShrink: 0, color: '#d97706' }} />
+                  <span>ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.</span>
+                </div>
+              ) : isOccupied && reason === 'past' ? (
                 <div style={{
                   marginTop: '8px',
                   padding: '8px 10px',
@@ -2279,34 +2354,40 @@ export default function RoomListPage() {
                   <AlertCircle size={14} style={{ flexShrink: 0 }} />
                   <span>เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่</span>
                 </div>
-              )}
+              ) : null}
 
               {/* Full-width Action Button */}
               <button
                 type="button"
-                disabled={isOccupied}
+                disabled={isOccupied || !onlineBookingStatus.isOpen}
                 onClick={() => handleProceedToForm(room)}
                 className="btn-primary"
                 id={`btn-book-room-${room.id}`}
                 style={{
                   width: '100%',
                   height: '50px',
-                  fontSize: '1rem',
+                  fontSize: '0.92rem',
                   fontWeight: 800,
                   borderRadius: '12px',
-                  backgroundColor: isOccupied ? '#cbd5e1' : '#0F766E',
-                  color: '#ffffff',
+                  backgroundColor: (isOccupied || !onlineBookingStatus.isOpen) ? '#cbd5e1' : '#0F766E',
+                  color: (isOccupied || !onlineBookingStatus.isOpen) ? '#475569' : '#ffffff',
                   border: 'none',
-                  cursor: isOccupied ? 'not-allowed' : 'pointer',
+                  cursor: (isOccupied || !onlineBookingStatus.isOpen) ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '6px',
                   marginTop: '4px',
-                  boxShadow: isOccupied ? 'none' : '0 4px 14px rgba(15, 118, 110, 0.3)'
+                  boxShadow: (isOccupied || !onlineBookingStatus.isOpen) ? 'none' : '0 4px 14px rgba(15, 118, 110, 0.3)'
                 }}
               >
-                <span>{isOccupied ? (reason === 'past' ? 'เลยเวลาเริ่มแล้ว' : 'ช่วงเวลานี้ไม่ว่าง') : 'กรอกข้อมูลผู้จอง'}</span>
+                <span>
+                  {!onlineBookingStatus.isOpen
+                    ? 'ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.'
+                    : isOccupied
+                    ? (reason === 'past' ? 'เลยเวลาเริ่มแล้ว' : 'ช่วงเวลานี้ไม่ว่าง')
+                    : 'กรอกข้อมูลผู้จอง'}
+                </span>
               </button>
             </div>
           )}
@@ -2319,6 +2400,121 @@ export default function RoomListPage() {
     <div className="main-content">
       {/* 3-STEP WIZARD PROGRESS BAR */}
       <StepProgress currentStep={1} />
+
+      {/* ONLINE BOOKING & ROOM USAGE HOURS BANNER */}
+      <div className="customer-hours-banner" style={{
+        marginBottom: '16px',
+        padding: '16px 18px',
+        borderRadius: '16px',
+        backgroundColor: '#ffffff',
+        border: '1.5px solid var(--border)',
+        boxShadow: 'var(--shadow-sm)'
+      }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+          gap: '12px',
+          alignItems: 'stretch'
+        }}>
+          {/* Block 1: Online Booking Hours */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '12px',
+            padding: '12px 14px',
+            borderRadius: '12px',
+            backgroundColor: onlineBookingStatus.isOpen ? '#f0fdfa' : '#f8fafc',
+            border: `1.5px solid ${onlineBookingStatus.isOpen ? '#99f6e4' : '#e2e8f0'}`
+          }}>
+            <div style={{
+              width: '36px',
+              height: '36px',
+              borderRadius: '10px',
+              backgroundColor: onlineBookingStatus.isOpen ? '#0F766E' : '#64748B',
+              color: '#ffffff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}>
+              <Clock size={20} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--navy)' }}>เวลารับจองออนไลน์</span>
+                <span style={{
+                  fontSize: '0.70rem',
+                  fontWeight: 800,
+                  padding: '2px 8px',
+                  borderRadius: '999px',
+                  backgroundColor: onlineBookingStatus.isOpen ? '#dcfce7' : '#fee2e2',
+                  color: onlineBookingStatus.isOpen ? '#15803d' : '#b91c1c'
+                }}>
+                  {onlineBookingStatus.isOpen ? '● เปิดรับจองอยู่' : '● ปิดรับจองชั่วคราว'}
+                </span>
+              </div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 900, color: '#0F766E', marginTop: '2px' }}>
+                07:00–20:00 น. <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-muted)' }}>ทุกวัน</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Block 2: Meeting Room Usage Hours */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '12px',
+            padding: '12px 14px',
+            borderRadius: '12px',
+            backgroundColor: '#f8fafc',
+            border: '1.5px solid #e2e8f0'
+          }}>
+            <div style={{
+              width: '36px',
+              height: '36px',
+              borderRadius: '10px',
+              backgroundColor: '#132440',
+              color: '#ffffff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}>
+              <Building size={20} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--navy)' }}>
+                เวลาเข้าใช้ห้องประชุม
+              </div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 900, color: '#132440', marginTop: '2px' }}>
+                08:00–18:00 น.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Info footer notes */}
+        <div style={{
+          marginTop: '10px',
+          paddingTop: '10px',
+          borderTop: '1px solid #f1f5f9',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '6px',
+          fontSize: '0.78rem',
+          color: 'var(--text-muted)'
+        }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+            <CheckCircle2 size={14} color="#0F766E" />
+            <span>ดูวันและเวลาว่างล่วงหน้าได้ตลอดเวลา (24 ชั่วโมง)</span>
+          </span>
+          <span style={{ fontWeight: 700, color: '#475569' }}>
+            เวลาทั้งหมดเป็นเวลาไทย (Asia/Bangkok)
+          </span>
+        </div>
+      </div>
 
       {/* 1. INTERACTIVE MONTHLY CALENDAR CARD (NAVY & TEAL) */}
       <section className="customer-cal-card" aria-label="ปฏิทินเลือกวันจองห้องประชุม">
@@ -2416,19 +2612,31 @@ export default function RoomListPage() {
                 const isReady = cell.isMonthDataReady;
                 const hasFree = cell.freeRoomsCount > 0;
                 const isPast = cell.isPast;
+                const isTodayExpired = cell.isTodayExpired;
+                const isDisabled = isPast || isTodayExpired;
 
                 return (
                   <button
                     type="button"
                     key={cell.date}
-                    disabled={isPast}
-                    className={`customer-cal-day ${cell.isToday ? 'customer-cal-day--today' : ''} ${isSelected ? 'customer-cal-day--selected' : ''} ${isPast ? 'customer-cal-day--past' : ''}`}
+                    disabled={isDisabled}
+                    className={`customer-cal-day ${cell.isToday ? 'customer-cal-day--today' : ''} ${isSelected ? 'customer-cal-day--selected' : ''} ${isPast ? 'customer-cal-day--past' : ''} ${isTodayExpired ? 'customer-cal-day--today-expired' : ''}`}
                     aria-pressed={isSelected}
                     onClick={() => handleDateTap(cell.date)}
-                    title={isPast ? `${cell.dayNumber}` : `${cell.dayNumber} (${!isReady ? 'กำลังโหลด...' : hasFree ? `ว่าง ${cell.freeRoomsCount} ห้อง` : 'เต็ม'})`}
+                    title={
+                      isPast
+                        ? `${cell.dayNumber} (ผ่านมาแล้ว)`
+                        : isTodayExpired
+                        ? `${cell.dayNumber} (หมดรอบวันนี้)`
+                        : `${cell.dayNumber} (${!isReady ? 'กำลังโหลด...' : hasFree ? `ว่าง ${cell.freeRoomsCount} ห้อง` : 'เต็ม'})`
+                    }
                   >
                     <span className="customer-cal-day__num">{cell.dayNumber}</span>
-                    {!isPast && (
+                    {isPast ? (
+                      <span className="customer-cal-day__diagonal-label">ผ่านมาแล้ว</span>
+                    ) : isTodayExpired ? (
+                      <span className="customer-cal-day__badge customer-cal-day__badge--expired">หมดรอบวันนี้</span>
+                    ) : (
                       <span className={`customer-cal-day__badge ${!isReady ? 'customer-cal-day__badge--loading' : hasFree ? 'customer-cal-day__badge--free' : 'customer-cal-day__badge--full'}`}>
                         {!isReady ? '···' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
                       </span>

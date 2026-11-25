@@ -7,7 +7,7 @@ import {
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
-import { isStartTimePastBangkok } from '../utils/bangkokTime';
+import { isStartTimePastBangkok, isOnlineBookingOpen } from '../utils/bangkokTime';
 
 export default function BookingFormPage() {
   const navigate = useNavigate();
@@ -44,6 +44,7 @@ export default function BookingFormPage() {
   const [error, setError] = useState('');
   const [isConflict, setIsConflict] = useState(false);
   const [isTimeExpired, setIsTimeExpired] = useState(false);
+  const [isBookingClosed, setIsBookingClosed] = useState(!isOnlineBookingOpen().isOpen);
   const [fieldErrors, setFieldErrors] = useState({});
 
   // Load payload and LIFF profile from location.state or sessionStorage / localStorage
@@ -197,25 +198,33 @@ export default function BookingFormPage() {
     }
   };
 
-  // Monitor live Asia/Bangkok clock while page is open or when returning to tab
+  // Monitor live Asia/Bangkok clock and online booking hours while page is open or when returning to tab
   useEffect(() => {
-    if (!bookingData?.date || !bookingData?.start_time) return;
-    const checkExpiry = () => {
-      if (isStartTimePastBangkok(bookingData.date, bookingData.start_time)) {
-        setIsTimeExpired(true);
-        setError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
+    const checkExpiryAndHours = () => {
+      if (bookingData?.date && bookingData?.start_time) {
+        if (isStartTimePastBangkok(bookingData.date, bookingData.start_time)) {
+          setIsTimeExpired(true);
+          setError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
+        }
+      }
+      const bookingStatus = isOnlineBookingOpen();
+      if (!bookingStatus.isOpen) {
+        setIsBookingClosed(true);
+        setError('ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.');
+      } else {
+        setIsBookingClosed(false);
       }
     };
-    checkExpiry();
-    const interval = setInterval(checkExpiry, 15000);
+    checkExpiryAndHours();
+    const interval = setInterval(checkExpiryAndHours, 15000);
     const onVisible = () => {
-      if (document.visibilityState === 'visible') checkExpiry();
+      if (document.visibilityState === 'visible') checkExpiryAndHours();
     };
-    window.addEventListener('focus', checkExpiry);
+    window.addEventListener('focus', checkExpiryAndHours);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       clearInterval(interval);
-      window.removeEventListener('focus', checkExpiry);
+      window.removeEventListener('focus', checkExpiryAndHours);
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [bookingData?.date, bookingData?.start_time]);
@@ -229,6 +238,13 @@ export default function BookingFormPage() {
     e.preventDefault();
     if (loading || isSubmittingRef.current) return;
     setError('');
+
+    const bookingStatus = isOnlineBookingOpen();
+    if (!bookingStatus.isOpen) {
+      setIsBookingClosed(true);
+      setError('ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.');
+      return;
+    }
 
     if (bookingData && isStartTimePastBangkok(bookingData.date, bookingData.start_time)) {
       setIsTimeExpired(true);
@@ -452,12 +468,16 @@ export default function BookingFormPage() {
         return;
       } else {
         const isPastErr = data.code === 'ERR_PAST_START_TIME' || (data.error && (data.error.includes('เลยเวลาเริ่มแล้ว') || data.error.includes('ในอดีต')));
+        const isClosedErr = data.code === 'ERR_ONLINE_BOOKING_CLOSED' || (data.error && data.error.includes('ปิดรับจองออนไลน์'));
         if (isPastErr) {
           setIsTimeExpired(true);
         }
-        if (res.status === 409 || isPastErr || (data.error && (data.error.includes('ติดจอง') || data.error.includes('ไม่ว่าง') || data.error.includes('ทำความสะอาด')))) {
+        if (isClosedErr) {
+          setIsBookingClosed(true);
+        }
+        if (res.status === 409 || isPastErr || isClosedErr || (data.error && (data.error.includes('ติดจอง') || data.error.includes('ไม่ว่าง') || data.error.includes('ทำความสะอาด')))) {
           if (res.status === 409) setIsConflict(true);
-          // Auto-save form draft so customer never loses their inputs on conflict or expired time
+          // Auto-save form draft so customer never loses their inputs on conflict, closed hours, or expired time
           try {
             const activeUserId = lineUserId || 'guest';
             const activeRoomId = bookingData?.room_id || 'any';
@@ -1308,8 +1328,28 @@ export default function BookingFormPage() {
               </div>
             )}
 
+            {/* ONLINE BOOKING CLOSED NOTIFICATION */}
+            {isBookingClosed && (
+              <div style={{
+                padding: '12px 14px',
+                borderRadius: '12px',
+                backgroundColor: '#fffbeb',
+                border: '1.5px solid #fde68a',
+                color: '#b45309',
+                fontSize: '0.84rem',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                marginBottom: '8px'
+              }}>
+                <AlertCircle size={18} style={{ color: '#d97706', flexShrink: 0 }} />
+                <span>ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น. ข้อมูลที่คุณกรอกไว้จะไม่สูญหาย</span>
+              </div>
+            )}
+
             {/* ERROR ALERT */}
-            {error && !isConflict && (
+            {error && !isConflict && !isBookingClosed && (
               <div style={{
                 padding: '10px 14px',
                 borderRadius: '12px',
@@ -1330,12 +1370,23 @@ export default function BookingFormPage() {
             {/* SUBMIT BUTTON */}
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || isBookingClosed}
               className="btn-primary"
-              style={{ marginTop: '8px' }}
+              style={{
+                marginTop: '8px',
+                backgroundColor: isBookingClosed ? '#cbd5e1' : undefined,
+                color: isBookingClosed ? '#64748B' : undefined,
+                cursor: isBookingClosed ? 'not-allowed' : undefined
+              }}
             >
-              <span>{loading ? 'กำลังบันทึกข้อมูล...' : 'ถัดไป: ไปยังหน้าชำระเงิน (Next to Payment)'}</span>
-              {!loading && <ChevronRight size={20} />}
+              <span>
+                {isBookingClosed
+                  ? 'ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.'
+                  : loading
+                  ? 'กำลังบันทึกข้อมูล...'
+                  : 'ถัดไป: ไปยังหน้าชำระเงิน (Next to Payment)'}
+              </span>
+              {!loading && !isBookingClosed && <ChevronRight size={20} />}
             </button>
           </form>
         </div>

@@ -11938,8 +11938,18 @@ export default {
           return new Response(JSON.stringify({ error: 'เวลาสิ้นสุดต้องไม่เกินเวลาปิดทำการ (18:00 น.)' }), { status: 400, headers: corsHeaders });
         }
 
-        // Validate past date & strict real-time Asia/Bangkok start time (no 5-minute grace period)
+        // Validate online booking window (07:00–20:00 Asia/Bangkok server time)
         const bkkNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
+        const bkkHours = bkkNow.getUTCHours();
+        const bkkMins = bkkHours * 60 + bkkNow.getUTCMinutes();
+        if (bkkMins < 7 * 60 || bkkMins >= 20 * 60) {
+          return new Response(JSON.stringify({
+            error: 'ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.',
+            code: 'ERR_ONLINE_BOOKING_CLOSED'
+          }), { status: 400, headers: corsHeaders });
+        }
+
+        // Validate past date & strict real-time Asia/Bangkok start time (no 5-minute grace period)
         const bkkTodayStr = `${bkkNow.getUTCFullYear()}-${String(bkkNow.getUTCMonth() + 1).padStart(2, '0')}-${String(bkkNow.getUTCDate()).padStart(2, '0')}`;
         if (booking_date < bkkTodayStr) {
           return new Response(JSON.stringify({ error: 'ไม่สามารถจองวันที่ผ่านมาแล้วได้' }), { status: 400, headers: corsHeaders });

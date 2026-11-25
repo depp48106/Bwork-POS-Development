@@ -622,6 +622,7 @@ button:active {
   transition: all 0.15s ease;
   user-select: none;
   position: relative;
+  overflow: hidden;
 }
 
 .customer-cal-day:hover:not(:disabled) {
@@ -697,6 +698,42 @@ button:active {
 
 .customer-cal-day--past .customer-cal-day__num {
   color: #94a3b8 !important;
+}
+
+.customer-cal-day__diagonal-label {
+  position: absolute;
+  bottom: 2px;
+  right: 1px;
+  font-size: 0.52rem;
+  font-weight: 700;
+  color: #94a3b8;
+  transform: rotate(-18deg);
+  transform-origin: bottom right;
+  pointer-events: none;
+  line-height: 1;
+  white-space: nowrap;
+  letter-spacing: -0.2px;
+}
+
+.customer-cal-day--today-expired {
+  opacity: 0.72;
+  background-color: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+  color: #94a3b8 !important;
+  cursor: not-allowed !important;
+}
+
+.customer-cal-day--today-expired .customer-cal-day__num {
+  color: #94a3b8 !important;
+}
+
+.customer-cal-day__badge--expired {
+  color: #64748b;
+  background-color: #e2e8f0;
+  font-size: 0.54rem;
+  font-weight: 700;
+  padding: 2px 3px;
+  white-space: nowrap;
 }
 
 .customer-cal-day__badge--past {
