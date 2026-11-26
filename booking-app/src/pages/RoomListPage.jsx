@@ -213,6 +213,7 @@ export default function RoomListPage() {
 
   // Active room displayed in single-room master-detail view
   const [activeRoomId, setActiveRoomId] = useState(initialRoomId);
+  const [isCalendarExpanded, setIsCalendarExpanded] = useState(() => !hasUrlOrDraftSelection);
   const [isMobileRoomListOpen, setIsMobileRoomListOpen] = useState(false);
   const [roomSwitchNotice, setRoomSwitchNotice] = useState('');
   const [hasUserPickedTime, setHasUserPickedTime] = useState(Boolean(savedDraft?.start_time));
@@ -494,40 +495,36 @@ export default function RoomListPage() {
     setIsModalOpen(false);
   };
 
-  // Confirm choices in modal and update the view (by date + guests or directRoom; no old time filter)
+  // Confirm choices in modal and update the view (by date + guests or directRoom; collapses calendar on confirm)
   const handleConfirmModal = () => {
     setModalError('');
-    const gVal = parseInt(modalGuests, 10);
-    if (!modalGuests || isNaN(gVal) || gVal < 1) {
-      setModalError('กรุณาระบุจำนวนผู้เข้าใช้งานอย่างน้อย 1 ท่าน');
-      return;
-    }
+    let confirmedGuests = '';
 
-    if (modalMode === 'directRoom') {
+    if (modalMode === 'byGuests') {
+      const gVal = parseInt(modalGuests, 10);
+      if (!modalGuests || isNaN(gVal) || gVal < 1) {
+        setModalError('กรุณาระบุจำนวนผู้เข้าใช้งานอย่างน้อย 1 ท่าน');
+        return;
+      }
+      confirmedGuests = gVal;
+    } else {
+      // directRoom: never inherit old guest count from byGuests mode; entered for first time on /form
       if (!modalRoomId) {
         setModalError('กรุณาเลือกห้องประชุมที่ต้องการ');
         return;
       }
-      const selRoom = rooms.find(r => String(r.id) === String(modalRoomId));
-      if (selRoom) {
-        const stdCap = selRoom.capacity || 4;
-        const clsCap = selRoom.has_classroom === 1 ? (selRoom.classroom_capacity || stdCap) : stdCap;
-        const maxRoomCap = Math.max(stdCap, clsCap);
-        if (gVal > maxRoomCap) {
-          setModalError(`ห้อง ${selRoom.name} รองรับสูงสุด ${maxRoomCap} ท่าน`);
-          return;
-        }
-      }
+      confirmedGuests = '';
     }
 
     setHasConfirmedDate(true);
+    setIsCalendarExpanded(false);
     setDateStr(modalDate);
     const newMonth = modalDate.slice(0, 7);
     if (newMonth !== currentMonthKey) {
       setCurrentMonthKey(newMonth);
     }
     setSearchMode(modalMode);
-    setGuests(gVal);
+    setGuests(confirmedGuests);
     setDirectGuestError('');
     setRoomSwitchNotice('');
     setIsMobileRoomListOpen(false);
@@ -537,9 +534,9 @@ export default function RoomListPage() {
     const params = new URLSearchParams();
     params.set('mode', modalMode);
     params.set('date', modalDate);
-    params.set('guests', gVal);
 
     if (modalMode === 'byGuests') {
+      params.set('guests', confirmedGuests);
       setConfirmedRoomId(null);
       setActiveRoomId(null);
     } else {
@@ -1099,14 +1096,18 @@ export default function RoomListPage() {
       return;
     }
 
-    const parsedGuests = parseInt(guests, 10);
-    if (!guests || isNaN(parsedGuests) || parsedGuests < 1) {
-      setDirectGuestError('กรุณาระบุจำนวนผู้เข้าใช้งานอย่างน้อย 1 ท่านก่อนกรอกข้อมูลผู้จอง');
-      return;
-    }
-    if (parsedGuests > sel.effectiveCapacity) {
-      setDirectGuestError(`จำนวนผู้เข้าใช้งาน (${parsedGuests} ท่าน) เกินความจุของห้อง (${sel.effectiveCapacity} ท่านสำหรับรูปแบบโต๊ะนี้)`);
-      return;
+    let payloadGuests = '';
+    if (searchMode === 'byGuests') {
+      const parsedGuests = parseInt(guests, 10);
+      if (!guests || isNaN(parsedGuests) || parsedGuests < 1) {
+        setDirectGuestError('กรุณาระบุจำนวนผู้เข้าใช้งานอย่างน้อย 1 ท่านก่อนกรอกข้อมูลผู้จอง');
+        return;
+      }
+      if (parsedGuests > sel.effectiveCapacity) {
+        setDirectGuestError(`จำนวนผู้เข้าใช้งาน (${parsedGuests} ท่าน) เกินความจุของห้อง (${sel.effectiveCapacity} ท่านสำหรับรูปแบบโต๊ะนี้)`);
+        return;
+      }
+      payloadGuests = parsedGuests;
     }
     setDirectGuestError('');
     setConfirmedRoomId(room.id);
@@ -1125,7 +1126,7 @@ export default function RoomListPage() {
       start_time: sel.startTime,
       end_time: sel.endTime,
       duration: sel.duration,
-      guests: parsedGuests,
+      guests: payloadGuests,
       search_mode: searchMode,
       layout: layout,
       booking_type: sel.mode,
@@ -3196,7 +3197,8 @@ export default function RoomListPage() {
       {/* 3-STEP WIZARD PROGRESS BAR */}
       <StepProgress currentStep={1} />
 
-      {/* 1. INTERACTIVE MONTHLY CALENDAR CARD (NAVY & TEAL) */}
+      {/* 1. INTERACTIVE MONTHLY CALENDAR CARD (COLLAPSES AFTER CONFIRM) */}
+      {(isCalendarExpanded || !hasConfirmedDate) && (
       <section ref={calendarSectionRef} className="customer-cal-card" aria-label="ปฏิทินเลือกวันจองห้องประชุม">
         {/* Month Navigation Bar */}
         <div className="customer-cal-nav">
@@ -3328,6 +3330,7 @@ export default function RoomListPage() {
           ))}
         </div>
       </section>
+      )}
 
       {/* 2. PROMPT CARD OR ROOM RESULTS */}
       {!hasConfirmedDate ? (
@@ -3367,7 +3370,7 @@ export default function RoomListPage() {
       ) : (
         <>
       {/* 2. SUMMARY FILTER BAR ABOVE ROOM RESULTS */}
-      <div className="customer-summary-filter-bar">
+      <div className="customer-summary-filter-bar" id="summary-date-bar">
         <div className="customer-summary-filter-info">
           <div className="customer-summary-filter-icon">
             <Calendar size={18} />
@@ -3376,7 +3379,7 @@ export default function RoomListPage() {
             <div className="customer-summary-filter-text">
               {searchMode === 'byGuests'
                 ? `${formatShortThaiDate(dateStr)} · ${guests} คน`
-                : `${formatShortThaiDate(dateStr)} · ห้อง ${activeRoom?.name || directSelectedRoom?.name || 'ที่เลือก'}${guests ? ` · ${guests} คน` : ''}`}
+                : `${formatShortThaiDate(dateStr)} · ห้อง ${activeRoom?.name || directSelectedRoom?.name || 'ที่เลือก'}`}
             </div>
             <div className="customer-summary-filter-sub">
               {searchMode === 'byGuests' ? 'ค้นหาตามจำนวนคน' : 'ค้นหาแบบระบุห้อง'}
@@ -3384,15 +3387,26 @@ export default function RoomListPage() {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={handleOpenEditModal}
-          className="customer-summary-filter-change-btn"
-          id="btn-open-change-filter"
-        >
-          <Edit3 size={14} />
-          <span>เปลี่ยน</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={() => setIsCalendarExpanded(prev => !prev)}
+            className="customer-summary-filter-change-btn"
+            id="btn-expand-calendar"
+          >
+            <Calendar size={14} />
+            <span>{isCalendarExpanded ? 'ซ่อนปฏิทิน' : 'เปลี่ยนวัน'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenEditModal}
+            className="customer-summary-filter-change-btn"
+            id="btn-open-change-filter"
+          >
+            <Edit3 size={14} />
+            <span>เปลี่ยน</span>
+          </button>
+        </div>
       </div>
 
       {/* 3. SINGLE-ROOM MASTER-DETAIL VIEW */}
@@ -3437,9 +3451,12 @@ export default function RoomListPage() {
             type="button"
             id="btn-change-date-empty"
             onClick={() => {
-              if (calendarSectionRef.current) {
-                calendarSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }
+              setIsCalendarExpanded(true);
+              setTimeout(() => {
+                if (calendarSectionRef.current) {
+                  calendarSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+              }, 50);
             }}
             className="btn-primary"
             style={{
@@ -3547,6 +3564,7 @@ export default function RoomListPage() {
               </div>
             )}
 
+            {modalMode === 'byGuests' && (
             <div>
               <label style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--navy)', marginBottom: '8px', display: 'block', textAlign: 'center' }}>
                 จำนวนผู้เข้าใช้งาน (Attendees)
@@ -3620,11 +3638,10 @@ export default function RoomListPage() {
               </div>
 
               <div style={{ textAlign: 'center', fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-                {modalMode === 'byGuests'
-                  ? (modalGuests ? `ระบบจะค้นหาห้องที่ว่างและรองรับได้สำหรับ ${modalGuests} ท่าน` : 'ระบุจำนวนคนเพื่อค้นหาห้องที่เหมาะสม')
-                  : 'ระบบจะแสดงเฉพาะห้องที่เลือก พร้อมตรวจสอบความจุตามจำนวนผู้เข้าร่วม'}
+                {modalGuests ? `ระบบจะค้นหาห้องที่ว่างและรองรับได้สำหรับ ${modalGuests} ท่าน` : 'ระบุจำนวนคนเพื่อค้นหาห้องที่เหมาะสม'}
               </div>
             </div>
+            )}
 
             {modalError && (
               <div style={{
@@ -3644,7 +3661,7 @@ export default function RoomListPage() {
             {/* Confirm "ตกลง" Button */}
             <button
               type="button"
-              disabled={!modalGuests || parseInt(modalGuests, 10) < 1 || (modalMode === 'directRoom' && !modalRoomId)}
+              disabled={modalMode === 'byGuests' ? (!modalGuests || parseInt(modalGuests, 10) < 1) : !modalRoomId}
               onClick={handleConfirmModal}
               className="btn-primary"
               id="btn-confirm-modal"

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   User, Users, Phone, Mail, Building, FileText, CheckCircle2,
-  ArrowLeft, ChevronRight, ChevronDown, AlertCircle, ShieldCheck, CheckSquare, Square, MessageSquare, Send, Truck, Sparkles
+  ArrowLeft, ChevronRight, ChevronDown, AlertCircle, ShieldCheck, CheckSquare, Square, MessageSquare, Send, Truck, Sparkles, Minus, Plus
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
@@ -13,6 +13,7 @@ export default function BookingFormPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const isSubmittingRef = useRef(false);
+  const skipAutosaveRef = useRef(false);
   const [bookingData, setBookingData] = useState(null);
 
   // Customer Form State
@@ -22,6 +23,7 @@ export default function BookingFormPage() {
   const [company, setCompany] = useState('');
   const [notes, setNotes] = useState('');
   const [attendees, setAttendees] = useState('');
+  const [isEditingAttendees, setIsEditingAttendees] = useState(false);
 
   // LINE Profile State
   const [lineUserId, setLineUserId] = useState('');
@@ -52,11 +54,10 @@ export default function BookingFormPage() {
     let savedLineId = '';
 
     // 1. Prefer React Router in-memory state (immune to storage quota or restrictions)
+    let activePayload = null;
     if (location.state && location.state.room_id) {
+      activePayload = location.state;
       setBookingData(location.state);
-      if (location.state.guests) {
-        setAttendees(String(location.state.guests));
-      }
     } else {
       try {
         const raw = typeof window !== 'undefined' ? sessionStorage.getItem('current_booking_payload') : null;
@@ -65,14 +66,21 @@ export default function BookingFormPage() {
         console.warn('[Storage] Could not read current_booking_payload:', e);
       }
       if (parsed) {
+        activePayload = parsed;
         setBookingData(parsed);
-        if (parsed.guests) {
-          setAttendees(String(parsed.guests));
-        }
       } else {
         navigate('/');
         return;
       }
+    }
+
+    // In directRoom mode, attendees starts blank for first-time entry unless explicitly passed
+    if (activePayload.search_mode === 'directRoom' && !activePayload.guests) {
+      setAttendees('');
+    } else if (activePayload.guests) {
+      setAttendees(String(activePayload.guests));
+    } else {
+      setAttendees('');
     }
 
     // Check LINE LIFF Profile
@@ -98,13 +106,22 @@ export default function BookingFormPage() {
         const activeRoomId = (location.state && location.state.room_id) ? location.state.room_id : (parsed ? parsed.room_id : 'any');
         const scopedKey = `bwork_draft_${activeUserId}_${activeRoomId}`;
 
-        let draftRaw = sessionStorage.getItem(scopedKey);
-        if (!draftRaw) {
-          draftRaw = sessionStorage.getItem('bwork_booking_form_draft');
+        const scopedRaw = sessionStorage.getItem(scopedKey);
+        const globalRaw = sessionStorage.getItem('bwork_booking_form_draft');
+        let draft = null;
+        try {
+          const scopedParsed = scopedRaw ? JSON.parse(scopedRaw) : null;
+          const globalParsed = globalRaw ? JSON.parse(globalRaw) : null;
+          if (scopedParsed && globalParsed) {
+            draft = (globalParsed._saved_at || 0) >= (scopedParsed._saved_at || 0) ? globalParsed : scopedParsed;
+          } else {
+            draft = globalParsed || scopedParsed;
+          }
+        } catch (_) {
+          draft = null;
         }
 
-        if (draftRaw) {
-          const draft = JSON.parse(draftRaw);
+        if (draft) {
           // STRICT SECURITY GATE: If draft belongs to a different LINE user, NEVER restore!
           if (draft._owner_id && draft._owner_id !== activeUserId && activeUserId !== 'guest') {
             console.warn('[Security] Draft belongs to a different user, discarding.');
@@ -117,8 +134,9 @@ export default function BookingFormPage() {
             if (draft.company) setCompany(draft.company);
             if (draft.notes) setNotes(draft.notes);
 
-            // Strictly enforce Tax Invoice switch starts OFF for new sessions
-            setNeedTaxInvoice(false);
+            // Preserve Tax Invoice switch when returning from an explicit room/capacity redirect,
+            // otherwise enforce Tax Invoice switch starts OFF for new sessions.
+            setNeedTaxInvoice(Boolean(draft._preserve_tax_toggle && draft.needTaxInvoice));
             if (draft.taxPayerType) setTaxPayerType(draft.taxPayerType);
             if (draft.taxName) setTaxName(draft.taxName);
             if (draft.taxAddress) setTaxAddress(draft.taxAddress);
@@ -138,6 +156,7 @@ export default function BookingFormPage() {
 
   // Auto-save form draft scoped to user and room item (no tokens or slip files stored)
   useEffect(() => {
+    if (skipAutosaveRef.current) return;
     try {
       if (typeof window !== 'undefined') {
         const activeUserId = lineUserId || (sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id')) || 'guest';
@@ -498,7 +517,43 @@ export default function BookingFormPage() {
 
   if (!bookingData) return null;
 
+  const saveFormDraftForNavigation = (preserveTaxToggle = true) => {
+    try {
+      if (typeof window !== 'undefined') {
+        skipAutosaveRef.current = true;
+        const activeUserId = lineUserId || (sessionStorage.getItem('line_user_id') || localStorage.getItem('line_user_id')) || 'guest';
+        const activeRoomId = bookingData?.room_id || bookingData?.room?.id || 'any';
+        const scopedKey = `bwork_draft_${activeUserId}_${activeRoomId}`;
+        const draftToSave = {
+          _owner_id: activeUserId,
+          _room_id: activeRoomId,
+          _saved_at: Date.now(),
+          _preserve_tax_toggle: preserveTaxToggle,
+          name,
+          contact,
+          email,
+          company,
+          notes,
+          attendees,
+          needTaxInvoice,
+          taxPayerType,
+          taxName,
+          taxAddress,
+          taxId,
+          taxPhone,
+          taxDeliveryMethod,
+          taxOnlineSubChannel,
+          taxEmail,
+          taxPostalAddress
+        };
+        sessionStorage.setItem(scopedKey, JSON.stringify(draftToSave));
+        sessionStorage.setItem('bwork_booking_form_draft', JSON.stringify(draftToSave));
+      }
+    } catch (_) {}
+  };
+
   const handleBackToRooms = (openEditModal = false) => {
+    saveFormDraftForNavigation(true);
     if (bookingData) {
       try {
         sessionStorage.setItem('current_booking_payload', JSON.stringify(bookingData));
@@ -506,7 +561,9 @@ export default function BookingFormPage() {
       const params = new URLSearchParams();
       if (bookingData.search_mode) params.set('mode', bookingData.search_mode);
       if (bookingData.date) params.set('date', bookingData.date);
-      if (bookingData.guests) params.set('guests', bookingData.guests);
+      if (bookingData.search_mode !== 'directRoom' && (attendees || bookingData.guests)) {
+        params.set('guests', String(attendees || bookingData.guests));
+      }
       if (bookingData.room_id) params.set('roomId', bookingData.room_id);
       navigate(`/rooms?${params.toString()}`, {
         state: openEditModal ? { ...bookingData, openEditModal: true } : bookingData
@@ -516,8 +573,25 @@ export default function BookingFormPage() {
     }
   };
 
+  const handleChooseLargerRoom = (targetGuests) => {
+    saveFormDraftForNavigation(true);
+    const params = new URLSearchParams();
+    params.set('mode', 'byGuests');
+    if (bookingData?.date) params.set('date', bookingData.date);
+    if (targetGuests) params.set('guests', String(targetGuests));
+    navigate(`/rooms?${params.toString()}`, {
+      state: {
+        date: bookingData?.date,
+        guests: targetGuests,
+        search_mode: 'byGuests',
+        fromCapacityRedirect: true
+      }
+    });
+  };
+
   const parsedAttendeesCount = parseInt(attendees, 10);
   const isOverCapacity = !isNaN(parsedAttendeesCount) && parsedAttendeesCount > effectiveCapacity;
+  const isDirectRoomFlow = bookingData.search_mode === 'directRoom';
 
   return (
     <div className="main-content">
@@ -770,39 +844,238 @@ export default function BookingFormPage() {
               )}
             </div>
 
-            {/* Attendees Read-Only Badge + Edit Button (no duplicate input) */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '10px',
-              padding: '12px 14px',
-              borderRadius: '12px',
-              backgroundColor: isOverCapacity ? 'rgba(239, 68, 68, 0.06)' : '#f8fafc',
-              border: isOverCapacity ? '1.5px solid var(--danger)' : '1px solid var(--border)'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem', fontWeight: 700, color: 'var(--navy)' }}>
-                <Users size={17} style={{ color: isOverCapacity ? 'var(--danger)' : 'var(--primary)' }} />
-                <span>ผู้เข้าร่วม {attendees || 0} คน</span>
+            {/* Attendees Section:
+                - directRoom: first-time empty numeric input on /form
+                - byGuests: read-only summary with inline numeric editor (never navigates away unless over capacity) */}
+            {isDirectRoomFlow ? (
+              <div id="direct-room-attendees-section">
+                <label htmlFor="customer-attendees" className="form-label">
+                  จำนวนผู้เข้าร่วม (1–{effectiveCapacity} คน) <span style={{ color: 'var(--danger)' }}>*</span>
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    id="customer-attendees"
+                    name="customer_attendees"
+                    aria-label="จำนวนผู้เข้าร่วม"
+                    required
+                    placeholder={`ระบุจำนวนผู้เข้าร่วม (1–${effectiveCapacity} คน)`}
+                    value={attendees}
+                    onChange={e => {
+                      const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 3);
+                      setAttendees(digitsOnly);
+                      if (fieldErrors.attendees) setFieldErrors(prev => ({ ...prev, attendees: '' }));
+                      setError('');
+                    }}
+                    className={`form-input ${(fieldErrors.attendees || isOverCapacity) ? 'form-input--error' : ''}`}
+                    style={{ flex: 1 }}
+                  />
+                </div>
+                {fieldErrors.attendees && !isOverCapacity && (
+                  <div style={{ color: 'var(--danger)', fontSize: '0.78rem', fontWeight: 600, marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <AlertCircle size={13} />
+                    <span>{fieldErrors.attendees}</span>
+                  </div>
+                )}
               </div>
-              <button
-                type="button"
-                id="btn-edit-attendees"
-                onClick={() => handleBackToRooms(true)}
+            ) : (
+              <div
+                id="by-guests-attendees-section"
                 style={{
-                  padding: '6px 12px',
-                  borderRadius: '8px',
-                  border: '1px solid var(--primary)',
-                  backgroundColor: '#ffffff',
-                  color: 'var(--primary)',
-                  fontSize: '0.8rem',
-                  fontWeight: 700,
-                  cursor: 'pointer'
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px',
+                  padding: '12px 14px',
+                  borderRadius: '12px',
+                  backgroundColor: isOverCapacity ? 'rgba(239, 68, 68, 0.06)' : '#f8fafc',
+                  border: isOverCapacity ? '1.5px solid var(--danger)' : '1px solid var(--border)'
                 }}
               >
-                แก้ไข
-              </button>
-            </div>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '10px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem', fontWeight: 700, color: 'var(--navy)' }}>
+                    <Users size={17} style={{ color: isOverCapacity ? 'var(--danger)' : 'var(--primary)' }} />
+                    <span id="attendees-summary-text">ผู้เข้าร่วม {attendees || 0} คน</span>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-edit-attendees"
+                    onClick={() => setIsEditingAttendees(prev => !prev)}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--primary)',
+                      backgroundColor: isEditingAttendees ? 'var(--primary)' : '#ffffff',
+                      color: isEditingAttendees ? '#ffffff' : 'var(--primary)',
+                      fontSize: '0.8rem',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {isEditingAttendees ? 'เสร็จสิ้น' : 'แก้ไข'}
+                  </button>
+                </div>
+
+                {isEditingAttendees && (
+                  <div
+                    id="inline-attendees-editor"
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      paddingTop: '10px',
+                      borderTop: '1px dashed var(--border)'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                      <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                        ปรับจำนวนผู้เข้าร่วม (รองรับสูงสุด {effectiveCapacity} คน)
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <button
+                        type="button"
+                        id="btn-form-attendees-dec"
+                        aria-label="ลดจำนวนผู้เข้าร่วม"
+                        onClick={() => {
+                          setAttendees(prev => {
+                            const cur = parseInt(prev, 10) || 1;
+                            return String(Math.max(1, cur - 1));
+                          });
+                          if (fieldErrors.attendees) setFieldErrors(prev => ({ ...prev, attendees: '' }));
+                          setError('');
+                        }}
+                        disabled={(parseInt(attendees, 10) || 1) <= 1}
+                        style={{
+                          width: '38px',
+                          height: '38px',
+                          borderRadius: '10px',
+                          border: '1.5px solid var(--border)',
+                          backgroundColor: '#ffffff',
+                          color: 'var(--navy)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: (parseInt(attendees, 10) || 1) <= 1 ? 'not-allowed' : 'pointer',
+                          opacity: (parseInt(attendees, 10) || 1) <= 1 ? 0.45 : 1
+                        }}
+                      >
+                        <Minus size={16} />
+                      </button>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        id="input-form-attendees"
+                        aria-label="แก้ไขจำนวนผู้เข้าร่วม"
+                        value={attendees}
+                        onChange={e => {
+                          const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 3);
+                          setAttendees(digitsOnly);
+                          if (fieldErrors.attendees) setFieldErrors(prev => ({ ...prev, attendees: '' }));
+                          setError('');
+                        }}
+                        className={`form-input ${(fieldErrors.attendees || isOverCapacity) ? 'form-input--error' : ''}`}
+                        style={{
+                          width: '84px',
+                          height: '38px',
+                          textAlign: 'center',
+                          fontWeight: 800,
+                          fontSize: '0.96rem',
+                          padding: '0 8px'
+                        }}
+                      />
+                      <button
+                        type="button"
+                        id="btn-form-attendees-inc"
+                        aria-label="เพิ่มจำนวนผู้เข้าร่วม"
+                        onClick={() => {
+                          setAttendees(prev => {
+                            const cur = parseInt(prev, 10) || 0;
+                            return String(Math.min(200, cur + 1));
+                          });
+                          if (fieldErrors.attendees) setFieldErrors(prev => ({ ...prev, attendees: '' }));
+                          setError('');
+                        }}
+                        style={{
+                          width: '38px',
+                          height: '38px',
+                          borderRadius: '10px',
+                          border: '1.5px solid var(--border)',
+                          backgroundColor: '#ffffff',
+                          color: 'var(--navy)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <Plus size={16} />
+                      </button>
+                      <span style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--text-muted)' }}>คน</span>
+                    </div>
+                  </div>
+                )}
+
+                {fieldErrors.attendees && !isOverCapacity && (
+                  <div style={{ color: 'var(--danger)', fontSize: '0.78rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <AlertCircle size={13} />
+                    <span>{fieldErrors.attendees}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Over-capacity inline alert + button to choose a larger room while preserving customer & tax draft */}
+            {isOverCapacity && (
+              <div
+                id="over-capacity-alert"
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: '12px',
+                  backgroundColor: '#fef2f2',
+                  border: '1.5px solid #fecaca',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', color: '#dc2626', fontSize: '0.82rem', fontWeight: 700, lineHeight: 1.45 }}>
+                  <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+                  <span>
+                    จำนวนผู้เข้าร่วม {parsedAttendeesCount} คน เกินความจุของห้องนี้ (รองรับสูงสุด {effectiveCapacity} คน) กรุณาลดจำนวนคนหรือกลับไปเลือกห้องที่รองรับจำนวนผู้เข้าร่วมใหม่
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  id="btn-back-choose-larger-room"
+                  onClick={() => handleChooseLargerRoom(parsedAttendeesCount)}
+                  style={{
+                    padding: '9px 14px',
+                    borderRadius: '10px',
+                    backgroundColor: '#dc2626',
+                    color: '#ffffff',
+                    border: 'none',
+                    fontSize: '0.82rem',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  <span>กลับไปเลือกห้องที่รองรับ {parsedAttendeesCount} คน</span>
+                  <ChevronRight size={15} />
+                </button>
+              </div>
+            )}
 
             {/* Email & Company (2 columns on desktop, 1 on mobile) */}
             <div className="form-grid-2col">
