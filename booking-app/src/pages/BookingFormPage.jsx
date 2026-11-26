@@ -74,9 +74,15 @@ export default function BookingFormPage() {
       }
     }
 
-    // In directRoom mode, attendees starts blank for first-time entry unless explicitly passed
-    if (activePayload.search_mode === 'directRoom' && !activePayload.guests) {
-      setAttendees('');
+    // In directRoom mode, always lock attendees to the selected room's layout capacity
+    if (activePayload.search_mode === 'directRoom') {
+      const lockedCap = activePayload.effective_capacity
+        || (activePayload.layout === 'classroom' && activePayload.classroom_capacity
+          ? activePayload.classroom_capacity
+          : activePayload.room_capacity)
+        || (activePayload.room && activePayload.room.capacity)
+        || 4;
+      setAttendees(String(lockedCap));
     } else if (activePayload.guests) {
       setAttendees(String(activePayload.guests));
     } else {
@@ -265,10 +271,11 @@ export default function BookingFormPage() {
       errors.contact = 'กรุณากรอกเบอร์โทรศัพท์ให้ครบ 10 หลัก';
     }
 
-    const parsedAttendees = parseInt(attendees, 10);
-    if (!attendees || isNaN(parsedAttendees) || parsedAttendees < 1) {
+    const isDirect = bookingData?.search_mode === 'directRoom';
+    const parsedAttendees = isDirect ? Number(effectiveCapacity) : parseInt(attendees, 10);
+    if (!isDirect && (!attendees || isNaN(parsedAttendees) || parsedAttendees < 1)) {
       errors.attendees = 'กรุณาระบุจำนวนผู้เข้าใช้ห้องอย่างน้อย 1 ท่าน';
-    } else if (parsedAttendees > effectiveCapacity) {
+    } else if (!isDirect && parsedAttendees > effectiveCapacity) {
       errors.attendees = `จำนวนผู้เข้าใช้งาน (${parsedAttendees} ท่าน) เกินความจุของห้องที่เลือก (รองรับสูงสุด ${effectiveCapacity} ท่านสำหรับรูปแบบโต๊ะนี้)`;
     }
 
@@ -484,6 +491,9 @@ export default function BookingFormPage() {
             const activeRoomId = bookingData?.room_id || 'any';
             const draftToSave = {
               _owner_id: activeUserId,
+              _room_id: activeRoomId,
+              _saved_at: Date.now(),
+              _preserve_tax_toggle: true,
               name: name.trim(),
               contact: contact.trim(),
               email: email.trim(),
@@ -590,8 +600,8 @@ export default function BookingFormPage() {
   };
 
   const parsedAttendeesCount = parseInt(attendees, 10);
-  const isOverCapacity = !isNaN(parsedAttendeesCount) && parsedAttendeesCount > effectiveCapacity;
   const isDirectRoomFlow = bookingData.search_mode === 'directRoom';
+  const isOverCapacity = !isDirectRoomFlow && !isNaN(parsedAttendeesCount) && parsedAttendeesCount > effectiveCapacity;
 
   return (
     <div className="main-content">
@@ -647,8 +657,8 @@ export default function BookingFormPage() {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
               <span>จำนวนคน:</span>
-              <strong style={{ color: isOverCapacity ? 'var(--danger)' : (attendees ? 'var(--text-main)' : 'var(--warning)') }}>
-                {attendees ? `${attendees} คน` : 'ยังไม่ได้ระบุ'}
+              <strong style={{ color: (!isDirectRoomFlow && isOverCapacity) ? 'var(--danger)' : ((isDirectRoomFlow || attendees) ? 'var(--text-main)' : 'var(--warning)') }}>
+                {isDirectRoomFlow ? `${effectiveCapacity} คน` : (attendees ? `${attendees} คน` : 'ยังไม่ได้ระบุ')}
               </strong>
             </div>
           </div>
@@ -845,40 +855,26 @@ export default function BookingFormPage() {
             </div>
 
             {/* Attendees Section:
-                - directRoom: first-time empty numeric input on /form
+                - directRoom: read-only capacity locked to room + selected layout (no input, no edit button)
                 - byGuests: read-only summary with inline numeric editor (never navigates away unless over capacity) */}
             {isDirectRoomFlow ? (
-              <div id="direct-room-attendees-section">
-                <label htmlFor="customer-attendees" className="form-label">
-                  จำนวนผู้เข้าร่วม (1–{effectiveCapacity} คน) <span style={{ color: 'var(--danger)' }}>*</span>
-                </label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    id="customer-attendees"
-                    name="customer_attendees"
-                    aria-label="จำนวนผู้เข้าร่วม"
-                    required
-                    placeholder={`ระบุจำนวนผู้เข้าร่วม (1–${effectiveCapacity} คน)`}
-                    value={attendees}
-                    onChange={e => {
-                      const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 3);
-                      setAttendees(digitsOnly);
-                      if (fieldErrors.attendees) setFieldErrors(prev => ({ ...prev, attendees: '' }));
-                      setError('');
-                    }}
-                    className={`form-input ${(fieldErrors.attendees || isOverCapacity) ? 'form-input--error' : ''}`}
-                    style={{ flex: 1 }}
-                  />
+              <div
+                id="direct-room-attendees-section"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '10px',
+                  padding: '12px 14px',
+                  borderRadius: '12px',
+                  backgroundColor: '#f8fafc',
+                  border: '1px solid var(--border)'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.9rem', fontWeight: 700, color: 'var(--navy)' }}>
+                  <Users size={17} style={{ color: 'var(--primary)' }} />
+                  <span id="attendees-summary-text">ผู้เข้าร่วม {effectiveCapacity} คน</span>
                 </div>
-                {fieldErrors.attendees && !isOverCapacity && (
-                  <div style={{ color: 'var(--danger)', fontSize: '0.78rem', fontWeight: 600, marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <AlertCircle size={13} />
-                    <span>{fieldErrors.attendees}</span>
-                  </div>
-                )}
               </div>
             ) : (
               <div
@@ -1571,7 +1567,7 @@ export default function BookingFormPage() {
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: isTimeExpired ? '#dc2626' : '#b45309', fontWeight: 800, fontSize: '0.92rem' }}>
                   <AlertCircle size={18} />
-                  <span>{isTimeExpired ? 'เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่' : 'ช่วงเวลานี้มีผู้ทำรายการจองไปก่อนแล้ว'}</span>
+                  <span>{isTimeExpired ? 'เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่' : 'ช่วงเวลาเพิ่งถูกจอง กรุณาเลือกช่วงเวลาใหม่'}</span>
                 </div>
                 <p style={{ margin: 0, fontSize: '0.82rem', color: isTimeExpired ? '#991b1b' : '#92400e', lineHeight: 1.4 }}>
                   ข้อมูลที่คุณกรอกไว้ถูกบันทึกเรียบร้อยแล้ว แตะปุ่มด้านล่างเพื่อกลับไปเลือกช่วงเวลาอื่นโดยไม่ต้องกรอกข้อมูลใหม่

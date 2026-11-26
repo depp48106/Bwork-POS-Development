@@ -379,7 +379,7 @@ export default function RoomListPage() {
     setMonthLoading(true);
     setMonthError(false);
     try {
-      const res = await fetch(`${API_BASE}/api/public/rooms/availability-month?month=${currentMonthKey}`);
+      const res = await fetch(`${API_BASE}/api/public/rooms/availability-month?month=${currentMonthKey}`, { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
         if (data && data.month === currentMonthKey) {
@@ -406,9 +406,9 @@ export default function RoomListPage() {
     if (showLoading) setLoading(true);
     try {
       const [roomsRes, scheduleRes, promoRes] = await Promise.all([
-        fetch(`${API_BASE}/api/public/rooms`),
-        fetch(`${API_BASE}/api/public/rooms/schedule?date=${dateStr}`),
-        fetch(`${API_BASE}/api/public/promotion`).catch(() => null)
+        fetch(`${API_BASE}/api/public/rooms`, { cache: 'no-store' }),
+        fetch(`${API_BASE}/api/public/rooms/schedule?date=${dateStr}`, { cache: 'no-store' }),
+        fetch(`${API_BASE}/api/public/promotion`, { cache: 'no-store' }).catch(() => null)
       ]);
 
       if (roomsRes.ok) {
@@ -622,7 +622,7 @@ export default function RoomListPage() {
       weeks.push(cells.slice(i, i + 7));
     }
     return weeks;
-  }, [currentMonthKey, todayIso, availabilityData]);
+  }, [currentMonthKey, todayIso, availabilityData, bangkokNow.minutes]);
 
   // Robust time string extractor (Public, zero PII)
   const extractHHMM = (timeStr) => {
@@ -833,7 +833,13 @@ export default function RoomListPage() {
       if (!roomObj || !roomObj.bookings) continue;
 
       for (const b of roomObj.bookings) {
-        if (b.status === 'cancelled' || b.payment_status === 'cancelled') continue;
+        if (
+          b.status === 'cancelled' ||
+          b.payment_status === 'cancelled' ||
+          b.payment_status === 'failed' ||
+          b.payment_status === 'rejected' ||
+          b.checkin_status === 'cancelled'
+        ) continue;
 
         const bStartHHMM = extractHHMM(b.start_time);
         const bEndHHMM = extractHHMM(b.end_time);
@@ -895,7 +901,13 @@ export default function RoomListPage() {
       if (!roomObj || !roomObj.bookings) continue;
 
       for (const b of roomObj.bookings) {
-        if (b.status === 'cancelled' || b.payment_status === 'cancelled') continue;
+        if (
+          b.status === 'cancelled' ||
+          b.payment_status === 'cancelled' ||
+          b.payment_status === 'failed' ||
+          b.payment_status === 'rejected' ||
+          b.checkin_status === 'cancelled'
+        ) continue;
         const bStartHHMM = extractHHMM(b.start_time);
         const bEndHHMM = extractHHMM(b.end_time);
         if (!bStartHHMM || !bEndHHMM) continue;
@@ -1096,6 +1108,17 @@ export default function RoomListPage() {
       return;
     }
 
+    if (sel.isTimeCleared || !sel.startTime || !sel.endTime) {
+      setTimelineError('กรุณาเลือกช่วงเวลาที่ต้องการจอง');
+      return;
+    }
+
+    const occupiedCheck = getRoomOccupiedInfo(room.id, sel.startTime, sel.endTime);
+    if (occupiedCheck.isOccupied) {
+      setTimelineError(occupiedCheck.label || 'ช่วงเวลานี้ไม่ว่าง กรุณาเลือกเวลาใหม่');
+      return;
+    }
+
     let payloadGuests = '';
     if (searchMode === 'byGuests') {
       const parsedGuests = parseInt(guests, 10);
@@ -1108,6 +1131,9 @@ export default function RoomListPage() {
         return;
       }
       payloadGuests = parsedGuests;
+    } else {
+      // directRoom mode locks attendee count to selected room's layout capacity
+      payloadGuests = sel.effectiveCapacity;
     }
     setDirectGuestError('');
     setConfirmedRoomId(room.id);
@@ -3315,7 +3341,12 @@ export default function RoomListPage() {
                   >
                     <span className="customer-cal-day__num">{cell.dayNumber}</span>
                     {isPast ? (
-                      <span className="customer-cal-day__past-x" aria-hidden="true" />
+                      <span className="customer-cal-day__past-x" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none">
+                          <line x1="5" y1="5" x2="19" y2="19" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                          <line x1="19" y1="5" x2="5" y2="19" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                        </svg>
+                      </span>
                     ) : isTodayExpired ? (
                       <span className="customer-cal-day__badge customer-cal-day__badge--expired">หมดรอบวันนี้</span>
                     ) : (

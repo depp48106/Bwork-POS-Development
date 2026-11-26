@@ -5262,10 +5262,11 @@ export default {
         const { results: rooms } = await env.DB.prepare("SELECT * FROM rooms WHERE status = 'active' ORDER BY name ASC").all();
 
         let query = `
-          SELECT bi.*, b.customer_name, b.payment_status
+          SELECT bi.id, bi.booking_id, bi.room_id, bi.start_time, bi.end_time, bi.checkin_status, b.payment_status
           FROM booking_items bi
           JOIN bookings b ON bi.booking_id = b.id
-          WHERE b.payment_status != 'cancelled'
+          WHERE (b.payment_status IS NULL OR b.payment_status NOT IN ('cancelled', 'failed', 'rejected'))
+            AND (bi.checkin_status IS NULL OR bi.checkin_status != 'cancelled')
         `;
         const params = [];
         if (date) {
@@ -5293,7 +5294,9 @@ export default {
         });
 
         const bufferMins = await getCleaningBufferMinutes(env);
-        return new Response(JSON.stringify({ date, cleaning_buffer_minutes: bufferMins, buffer_minutes: bufferMins, rooms: scheduleMap }), { headers: corsHeaders });
+        return new Response(JSON.stringify({ date, cleaning_buffer_minutes: bufferMins, buffer_minutes: bufferMins, rooms: scheduleMap }), {
+          headers: { ...corsHeaders, 'Cache-Control': 'no-store' }
+        });
       }
 
       if (pathname === '/api/bookings/check-overlap') {
