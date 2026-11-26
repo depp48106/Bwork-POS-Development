@@ -699,11 +699,12 @@ button:active {
 
 .customer-cal-day--past .customer-cal-day__num {
   position: relative;
-  z-index: 1;
-  color: #64748b !important;
+  z-index: 3;
+  color: #475569 !important;
+  font-weight: 700;
   align-self: flex-start;
   margin-bottom: auto;
-  font-size: 0.78rem;
+  font-size: 0.84rem;
   line-height: 1;
 }
 
@@ -714,18 +715,18 @@ button:active {
   width: 145%;
   text-align: center;
   padding: 2px 0;
+  font-family: inherit;
   font-size: 0.56rem;
-  font-weight: 800;
-  color: #475569;
-  background-color: rgba(203, 213, 225, 0.78);
-  border-top: 1px solid rgba(148, 163, 184, 0.45);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.45);
+  font-weight: 400;
+  color: #64748b;
+  background-color: rgba(226, 232, 240, 0.72);
+  border: none;
   transform: translate(-50%, -50%) rotate(-32deg);
   transform-origin: center;
   pointer-events: none;
   line-height: 1.1;
   white-space: nowrap;
-  letter-spacing: -0.2px;
+  letter-spacing: -0.1px;
   z-index: 2;
 }
 

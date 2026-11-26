@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 
-const STAGING_PAGES = 'https://e9215de5.bwork-booking-staging.pages.dev';
+const STAGING_PAGES = 'https://c974735b.bwork-booking-staging.pages.dev';
 const STAGING_API = 'https://bwork-pos-api-staging.ohnatza74185-ky.workers.dev';
 const ARTIFACT_DIR = 'C:/Users/ADMIN/.gemini/antigravity/brain/93b1ef54-72e7-446f-a6a3-437743441774';
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
@@ -277,6 +277,40 @@ async function run() {
 
     await client.captureScreenshot('staging_live_confirm_verified.png');
     console.log('  [OK] Live Staging /confirm acceptance verified successfully!');
+
+    // Step 3.5: Verify Live Staging Krungsri Preview (?preview=krungsri)
+    const previewUrl = `${STAGING_PAGES}/confirm?preview=krungsri`;
+    console.log(`\nStep 3.5: Verifying Live Staging Krungsri Preview at ${previewUrl}...`);
+    await client.send('Page.navigate', { url: previewUrl });
+    await new Promise(r => setTimeout(r, 2000));
+
+    const previewInfo = await client.eval(`(async () => {
+      let copiedText = null;
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (txt) => { copiedText = txt; } }
+      });
+      const banner = document.getElementById('staging-krungsri-preview-banner')?.innerText?.trim() || '';
+      const logo = document.getElementById('bank-logo-krungsri');
+      const bankName = document.getElementById('bank-name-display')?.innerText?.trim() || '';
+      const accNum = document.getElementById('bank-account-number-display')?.innerText?.trim() || '';
+      const copyBtn = document.getElementById('btn-copy-bank-account');
+      if (copyBtn) copyBtn.click();
+      await new Promise(r => setTimeout(r, 250));
+      return {
+        hasBanner: banner.includes('ตัวอย่างสำหรับตรวจหน้าตา'),
+        hasLogo: Boolean(logo),
+        bankName,
+        accNum,
+        copiedText,
+        btnTextAfter: copyBtn?.innerText?.trim() || '',
+        hasBranch: document.body.innerText.includes('สาขา')
+      };
+    })()`);
+    console.log('  [CHECK] Live Staging Krungsri Preview:', JSON.stringify(previewInfo));
+    assertCondition(previewInfo.hasBanner && previewInfo.hasLogo && previewInfo.bankName === 'ธนาคารกรุงศรีอยุธยา' && previewInfo.accNum === '329-1-38429-0' && previewInfo.copiedText === '3291384290' && previewInfo.btnTextAfter.includes('คัดลอกแล้ว') && !previewInfo.hasBranch, 'Live Staging Krungsri Preview check failed');
+    await client.captureScreenshot('staging_live_krungsri_preview.png');
+    console.log('  [OK] Live Staging Krungsri Preview verified successfully!');
 
   } finally {
     client.close();

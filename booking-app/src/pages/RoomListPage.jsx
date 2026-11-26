@@ -211,6 +211,19 @@ export default function RoomListPage() {
   const [timelineTapStep, setTimelineTapStep] = useState({});
   const draggingRef = useRef(null);
 
+  // Optional time range filter for 'byGuests' mode (e.g. start=10:00&end=12:00)
+  const initialFilterStart = useMemo(() => {
+    const qStart = query.get('start');
+    return qStart && /^\d{2}:\d{2}$/.test(qStart) ? qStart : '';
+  }, [query]);
+  const initialFilterEnd = useMemo(() => {
+    const qEnd = query.get('end');
+    return qEnd && /^\d{2}:\d{2}$/.test(qEnd) ? qEnd : '';
+  }, [query]);
+
+  const [filterStartTime, setFilterStartTime] = useState(initialFilterStart);
+  const [filterEndTime, setFilterEndTime] = useState(initialFilterEnd);
+
   // -------------------------------------------------------------
   // Bottom Sheet Modal States (staged values until "ตกลง" is pressed)
   // -------------------------------------------------------------
@@ -219,6 +232,8 @@ export default function RoomListPage() {
   const [modalMode, setModalMode] = useState(initialMode);
   const [modalGuests, setModalGuests] = useState(initialGuests);
   const [modalRoomId, setModalRoomId] = useState(initialRoomId || '');
+  const [modalStartTime, setModalStartTime] = useState(initialFilterStart);
+  const [modalEndTime, setModalEndTime] = useState(initialFilterEnd);
 
   // Master Data States
   const [rooms, setRooms] = useState([]);
@@ -466,6 +481,8 @@ export default function RoomListPage() {
     setModalMode(searchMode || 'byGuests');
     setModalGuests(guests ? guests : '');
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
+    setModalStartTime(filterStartTime);
+    setModalEndTime(filterEndTime);
     setModalError('');
     setIsModalOpen(true);
   };
@@ -476,6 +493,8 @@ export default function RoomListPage() {
     setModalMode(searchMode || 'byGuests');
     setModalGuests(guests ? guests : '');
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
+    setModalStartTime(filterStartTime);
+    setModalEndTime(filterEndTime);
     setModalError('');
     setIsModalOpen(true);
   };
@@ -493,6 +512,27 @@ export default function RoomListPage() {
     if (!modalGuests || isNaN(gVal) || gVal < 1) {
       setModalError('กรุณาระบุจำนวนผู้เข้าใช้งานอย่างน้อย 1 ท่าน');
       return;
+    }
+
+    if (modalMode === 'byGuests') {
+      if ((modalStartTime && !modalEndTime) || (!modalStartTime && modalEndTime)) {
+        setModalError('กรุณาเลือกทั้งเวลาเริ่มและเวลาสิ้นสุด หรือเลือก "ทุกช่วงเวลา"');
+        return;
+      }
+      if (modalStartTime && modalEndTime) {
+        if (modalEndTime <= modalStartTime) {
+          setModalError('เวลาสิ้นสุดต้องมากกว่าเวลาเริ่ม');
+          return;
+        }
+        if (modalStartTime < '08:00' || modalEndTime > '18:00') {
+          setModalError('กรุณาเลือกช่วงเวลาภายใน 08:00–18:00 น.');
+          return;
+        }
+        if (isStartTimePastBangkok(modalDate, modalStartTime)) {
+          setModalError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
+          return;
+        }
+      }
     }
 
     if (modalMode === 'directRoom') {
@@ -529,10 +569,33 @@ export default function RoomListPage() {
 
     if (modalMode === 'byGuests') {
       setConfirmedRoomId(null);
+      setFilterStartTime(modalStartTime);
+      setFilterEndTime(modalEndTime);
+      if (modalStartTime && modalEndTime) {
+        params.set('start', modalStartTime);
+        params.set('end', modalEndTime);
+        setGlobalStartTime(modalStartTime);
+        setGlobalEndTime(modalEndTime);
+        // Sync per-room selections to searched time window
+        setRoomSelections(prev => {
+          const updated = { ...prev };
+          rooms.forEach(r => {
+            updated[r.id] = {
+              ...(updated[r.id] || {}),
+              mode: 'hourly',
+              startTime: modalStartTime,
+              endTime: modalEndTime
+            };
+          });
+          return updated;
+        });
+      }
     } else {
       const parsedRoomId = parseInt(modalRoomId, 10) || modalRoomId;
       setConfirmedRoomId(parsedRoomId);
       setExpandedRoomId(parsedRoomId);
+      setFilterStartTime('');
+      setFilterEndTime('');
       params.set('roomId', parsedRoomId);
     }
 
@@ -874,7 +937,18 @@ export default function RoomListPage() {
     return true;
   }, [schedule, isToday, currentMins]);
 
-  // Smart Room Categorization for 'byGuests' mode
+  // Helper: check if a room has at least one bookable 30-min slot remaining on the selected date
+  const hasAnyBookableSlotInDay = useCallback((roomId) => {
+    for (let slotStart = 8 * 60; slotStart < 18 * 60; slotStart += 30) {
+      if (isToday && slotStart <= currentMins) continue;
+      if (isIntervalClear(roomId, slotStart, slotStart + 30)) {
+        return true;
+      }
+    }
+    return false;
+  }, [isToday, currentMins, isIntervalClear]);
+
+  // Smart Room Categorization for 'byGuests' mode (filtered by capacity + real-time availability)
   const { recommendedRooms, upgradeRooms, directSelectedRoom, allSortedRooms } = useMemo(() => {
     const sorted = sortRoomsByStandardOrder(rooms);
 
@@ -889,6 +963,16 @@ export default function RoomListPage() {
     }
 
     const reqGuests = Math.max(1, parseInt(guests, 10) || 1);
+    const hasTimeFilter = Boolean(filterStartTime && filterEndTime && filterEndTime > filterStartTime);
+    let fStartMins = null;
+    let fEndMins = null;
+    if (hasTimeFilter) {
+      const [sH, sM] = filterStartTime.split(':').map(Number);
+      const [eH, eM] = filterEndTime.split(':').map(Number);
+      fStartMins = sH * 60 + (sM || 0);
+      fEndMins = eH * 60 + (eM || 0);
+    }
+
     const recommended = [];
     const upgrade = [];
 
@@ -898,6 +982,15 @@ export default function RoomListPage() {
       const maxRoomCap = Math.max(standardCap, classroomCap);
 
       if (maxRoomCap < reqGuests) return;
+
+      // Filter by availability according to selected date / time window
+      if (schedule) {
+        if (hasTimeFilter) {
+          if (!isIntervalClear(room.id, fStartMins, fEndMins)) return;
+        } else {
+          if (!hasAnyBookableSlotInDay(room.id)) return;
+        }
+      }
 
       if (reqGuests <= 4) {
         if (maxRoomCap <= 4) {
@@ -928,7 +1021,7 @@ export default function RoomListPage() {
       directSelectedRoom: null,
       allSortedRooms: sorted
     };
-  }, [rooms, searchMode, guests, confirmedRoomId]);
+  }, [rooms, searchMode, guests, confirmedRoomId, schedule, filterStartTime, filterEndTime, isIntervalClear, hasAnyBookableSlotInDay]);
 
   // Proceed to Step 2 Form
   const handleProceedToForm = (room) => {
@@ -1294,14 +1387,14 @@ export default function RoomListPage() {
 
       if (isPast) {
         type = 'past';
-        bgColor = '#64748B'; // ผ่านเวลาเริ่มแล้ว (เทาทึบ แยกจากติดจอง #94A3B8)
+        bgColor = '#64748B'; // ผ่านเวลาเริ่มแล้ว (เทาทึบ)
       } else if (occupiedInfo.isOccupied) {
         if (occupiedInfo.reason === 'cleaning') {
           type = 'cleaning';
-          bgColor = '#FED7AA'; // ทำความสะอาด (ส้มอ่อน)
+          bgColor = '#FEF08A'; // ทำความสะอาด (เหลืองอ่อน)
         } else {
           type = 'booked';
-          bgColor = '#94A3B8'; // ติดจอง (เทาเข้ม)
+          bgColor = '#FDBA74'; // ติดจอง (ส้มอ่อน แยกชัดจากเทาทึบ)
         }
       }
 
@@ -1491,6 +1584,60 @@ export default function RoomListPage() {
             />
           )}
 
+          {/* Invisible Expanded Left Edge Drag Hit-Target (adjusts Start Time) */}
+          {selEndPct > selStartPct && (
+            <div
+              data-testid={`timeline-edge-start-${room.id}`}
+              className="timeline-edge-handle timeline-edge-handle--start"
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => handleArrowPointerDown('start', room, e)}
+              onPointerMove={handleArrowPointerMove}
+              onPointerUp={handleArrowPointerUp}
+              onPointerCancel={handleArrowPointerUp}
+              style={{
+                position: 'absolute',
+                left: `${selStartPct}%`,
+                top: '50%',
+                transform: 'translate(-50%, -50%)',
+                width: '32px',
+                height: '44px',
+                backgroundColor: 'transparent',
+                cursor: 'ew-resize',
+                touchAction: 'none',
+                zIndex: 9
+              }}
+              title="ลากขอบซ้ายเพื่อปรับเวลาเริ่ม"
+              aria-label="ลากขอบซ้ายเพื่อปรับเวลาเริ่ม"
+            />
+          )}
+
+          {/* Invisible Expanded Right Edge Drag Hit-Target (adjusts End Time) */}
+          {selEndPct > selStartPct && (
+            <div
+              data-testid={`timeline-edge-end-${room.id}`}
+              className="timeline-edge-handle timeline-edge-handle--end"
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => handleArrowPointerDown('end', room, e)}
+              onPointerMove={handleArrowPointerMove}
+              onPointerUp={handleArrowPointerUp}
+              onPointerCancel={handleArrowPointerUp}
+              style={{
+                position: 'absolute',
+                left: `${selEndPct}%`,
+                top: '50%',
+                transform: 'translate(-50%, -50%)',
+                width: '32px',
+                height: '44px',
+                backgroundColor: 'transparent',
+                cursor: 'ew-resize',
+                touchAction: 'none',
+                zIndex: 9
+              }}
+              title="ลากขอบขวาเพื่อปรับเวลาสิ้นสุด"
+              aria-label="ลากขอบขวาเพื่อปรับเวลาสิ้นสุด"
+            />
+          )}
+
           {/* Centerline 30-min Subtle Dots Layer */}
           <div
             style={{
@@ -1543,11 +1690,11 @@ export default function RoomListPage() {
             ว่าง
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#94A3B8' }} />
+            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#FDBA74' }} />
             ติดจอง
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#FED7AA' }} />
+            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#FEF08A', border: '1px solid #FDE047' }} />
             ทำความสะอาด
           </span>
         </div>
@@ -2551,11 +2698,13 @@ export default function RoomListPage() {
           <div>
             <div className="customer-summary-filter-text">
               {searchMode === 'byGuests'
-                ? `${formatShortThaiDate(dateStr)} · ${guests} คน`
+                ? `${formatShortThaiDate(dateStr)} · ${guests} คน${filterStartTime && filterEndTime ? ` · ${filterStartTime}–${filterEndTime} น.` : ''}`
                 : `${formatShortThaiDate(dateStr)} · ห้อง ${directSelectedRoom?.name || 'ที่เลือก'}${guests ? ` · ${guests} คน` : ''}`}
             </div>
             <div className="customer-summary-filter-sub">
-              {searchMode === 'byGuests' ? 'ค้นหาตามจำนวนคน' : 'ค้นหาแบบระบุห้อง'}
+              {searchMode === 'byGuests'
+                ? (filterStartTime && filterEndTime ? 'ค้นหาตามจำนวนคนและช่วงเวลา' : 'ค้นหาตามจำนวนคน (ทุกช่วงเวลาที่ว่าง)')
+                : 'ค้นหาแบบระบุห้อง'}
             </div>
           </div>
         </div>
@@ -2578,6 +2727,62 @@ export default function RoomListPage() {
           <div>กำลังโหลดข้อมูลห้องประชุมและเวลาว่าง…</div>
         </div>
       ) : searchMode === 'byGuests' ? (
+        recommendedRooms.length === 0 && upgradeRooms.length === 0 ? (
+          /* EMPTY STATE: NO ROOMS AVAILABLE IN SELECTED TIME WINDOW */
+          <div
+            id="empty-rooms-for-time-window"
+            style={{
+              padding: '32px 20px',
+              backgroundColor: '#ffffff',
+              borderRadius: '16px',
+              border: '1.5px solid var(--border)',
+              textAlign: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: '12px',
+              boxShadow: 'var(--shadow-sm)'
+            }}
+          >
+            <div style={{
+              width: '48px',
+              height: '48px',
+              borderRadius: '50%',
+              backgroundColor: '#f1f5f9',
+              color: '#64748b',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              <Clock size={24} />
+            </div>
+            <div style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--navy)' }}>
+              ไม่มีห้องว่างในช่วงเวลานี้
+            </div>
+            <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-muted)', maxWidth: '300px', lineHeight: 1.5 }}>
+              {filterStartTime && filterEndTime
+                ? `ช่วง ${filterStartTime}–${filterEndTime} น. สำหรับ ${guests} ท่าน ไม่มีห้องที่ว่างตลอดช่วงเวลาที่เลือก`
+                : `วันที่เลือกไม่มีห้องที่ว่างสำหรับ ${guests} ท่าน`}
+            </p>
+            <button
+              type="button"
+              id="btn-change-search-time"
+              onClick={handleOpenEditModal}
+              className="btn-primary"
+              style={{
+                width: 'auto',
+                minWidth: '160px',
+                padding: '10px 22px',
+                height: '44px',
+                fontSize: '0.9rem',
+                fontWeight: 800,
+                borderRadius: '12px'
+              }}
+            >
+              เปลี่ยนเวลา
+            </button>
+          </div>
+        ) : (
         /* MODE: BY GUESTS (GROUP 1: ห้องที่เหมาะกับจำนวนคน, GROUP 2: ห้องใหญ่ขึ้น) */
         <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
           {/* GROUP 1: ห้องที่เหมาะกับจำนวนคน */}
@@ -2613,6 +2818,7 @@ export default function RoomListPage() {
             </div>
           )}
         </div>
+        )
       ) : (
         /* MODE: DIRECT ROOM (SHOWS ONLY THE SELECTED ROOM) */
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -2786,10 +2992,116 @@ export default function RoomListPage() {
 
               <div style={{ textAlign: 'center', fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '8px' }}>
                 {modalMode === 'byGuests'
-                  ? (modalGuests ? `ระบบจะค้นหาห้องที่พอดีและห้องขนาดใหญ่ขึ้นสำหรับ ${modalGuests} ท่าน` : 'ระบุจำนวนคนเพื่อค้นหาห้องที่เหมาะสม')
+                  ? (modalGuests ? `ระบบจะค้นหาห้องที่ว่างและรองรับได้สำหรับ ${modalGuests} ท่าน` : 'ระบุจำนวนคนเพื่อค้นหาห้องที่เหมาะสม')
                   : 'ระบบจะแสดงเฉพาะห้องที่เลือก พร้อมตรวจสอบความจุตามจำนวนผู้เข้าร่วม'}
               </div>
             </div>
+
+            {/* Optional Time Window Filter for 'byGuests' mode */}
+            {modalMode === 'byGuests' && (() => {
+              const modalIsToday = modalDate === todayIso;
+              const modalStartOpts = TIME_OPTIONS.filter(t => {
+                if (t >= '18:00') return false;
+                if (modalIsToday) {
+                  const [h, m] = t.split(':').map(Number);
+                  if (h * 60 + m <= currentMins) return false;
+                }
+                return true;
+              });
+              const modalEndOpts = TIME_OPTIONS.filter(t => {
+                if (t <= '08:00' || t > '18:00') return false;
+                if (modalStartTime && t <= modalStartTime) return false;
+                return true;
+              });
+              return (
+                <div style={{
+                  padding: '12px 14px',
+                  borderRadius: '12px',
+                  backgroundColor: '#f8fafc',
+                  border: '1px solid var(--border)'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--navy)' }}>
+                      ช่วงเวลาที่ต้องการ (ไม่บังคับ)
+                    </label>
+                    {(modalStartTime || modalEndTime) && (
+                      <button
+                        type="button"
+                        id="btn-clear-modal-time"
+                        onClick={() => {
+                          setModalStartTime('');
+                          setModalEndTime('');
+                          setModalError('');
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--primary)',
+                          fontSize: '0.76rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          padding: 0
+                        }}
+                      >
+                        ดูทุกช่วงเวลา
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    <div>
+                      <label htmlFor="select-modal-start-time" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                        เวลาเริ่ม
+                      </label>
+                      <select
+                        id="select-modal-start-time"
+                        value={modalStartTime}
+                        onChange={(e) => {
+                          const nextStart = e.target.value;
+                          setModalError('');
+                          setModalStartTime(nextStart);
+                          if (!nextStart) {
+                            setModalEndTime('');
+                          } else if (!modalEndTime || modalEndTime <= nextStart) {
+                            const [h, m] = nextStart.split(':').map(Number);
+                            const autoEndMins = Math.min(18 * 60, h * 60 + m + 60);
+                            const autoEnd = `${String(Math.floor(autoEndMins / 60)).padStart(2, '0')}:${String(autoEndMins % 60).padStart(2, '0')}`;
+                            setModalEndTime(autoEnd);
+                          }
+                        }}
+                        className="form-input"
+                        style={{ height: '42px', fontSize: '0.86rem', fontWeight: 700, borderRadius: '10px' }}
+                      >
+                        <option value="">ทุกช่วงเวลา</option>
+                        {modalStartOpts.map(t => (
+                          <option key={t} value={t}>{t} น.</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="select-modal-end-time" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                        เวลาสิ้นสุด
+                      </label>
+                      <select
+                        id="select-modal-end-time"
+                        value={modalEndTime}
+                        disabled={!modalStartTime}
+                        onChange={(e) => {
+                          setModalError('');
+                          setModalEndTime(e.target.value);
+                        }}
+                        className="form-input"
+                        style={{ height: '42px', fontSize: '0.86rem', fontWeight: 700, borderRadius: '10px' }}
+                      >
+                        <option value="">{modalStartTime ? '-- เลือกเวลาสิ้นสุด --' : 'ทุกช่วงเวลา'}</option>
+                        {modalEndOpts.map(t => (
+                          <option key={t} value={t}>{t} น.</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {modalError && (
               <div style={{

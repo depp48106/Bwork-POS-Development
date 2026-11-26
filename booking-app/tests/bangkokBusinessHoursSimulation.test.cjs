@@ -135,23 +135,30 @@ test('Case 3: Timeline Bar, Header & Calendar UI Rules', async (t) => {
     assert.ok(!roomListPageSrc.includes('เวลาทั้งหมดเป็นเวลาไทย'));
   });
 
-  await t.test('3.2: Timeline legend has no "เลยเวลา" and past slot uses distinct solid grey #64748B', () => {
+  await t.test('3.2: Timeline legend has no "เลยเวลา", booked is light orange #FDBA74, past is solid grey #64748B, edge handles exist', () => {
     assert.match(roomListPageSrc, /bgColor\s*=\s*'#64748B'/);
+    assert.match(roomListPageSrc, /bgColor\s*=\s*'#FDBA74'/);
+    assert.match(roomListPageSrc, /timeline-edge-start-/);
+    assert.match(roomListPageSrc, /timeline-edge-end-/);
     assert.ok(!roomListPageSrc.includes('backgroundColor: \'#E2E8F0\', border: \'1px solid #CBD5E1\''));
   });
 
-  await t.test('3.3: Header removes "B-WORK · จองออนไลน์ผ่าน LINE" and calendar diagonal ribbon crosses center', () => {
+  await t.test('3.3: Header removes "B-WORK · จองออนไลน์ผ่าน LINE", calendar ribbon is soft grey without dark border', () => {
     assert.ok(!appSrc.includes('จองออนไลน์ผ่าน LINE'));
     assert.match(indexCssSrc, /rotate\(-32deg\)/);
-    assert.match(indexCssSrc, /translate\(-50%, -50%\)/);
+    assert.match(indexCssSrc, /font-weight:\s*400;/);
+    assert.match(indexCssSrc, /border:\s*none;/);
     assert.match(roomListPageSrc, /ผ่านมาแล้ว/);
     assert.match(roomListPageSrc, /หมดรอบวันนี้/);
+    assert.match(roomListPageSrc, /ไม่มีห้องว่างในช่วงเวลานี้/);
+    assert.match(roomListPageSrc, /เปลี่ยนเวลา/);
   });
 });
 
-test('Case 4: Payment Page Bank Logo, No Hardcoded Account, Copy Digits', async (t) => {
-  await t.test('4.1: ConfirmPage does not hardcode real account number 329-1-38429-0 or 0125554000401', () => {
-    assert.ok(!confirmPageSrc.includes('329-1-38429-0'), 'Must not embed real account number as default');
+test('Case 4: Payment Page Bank Logo, No Hardcoded Default Account, Staging Preview & Copy Digits', async (t) => {
+  await t.test('4.1: ConfirmPage default state for real bookings has empty account_number and no hardcoded promptpay', () => {
+    assert.match(confirmPageSrc, /isKrungsriPreview\s*\?/);
+    assert.match(confirmPageSrc, /account_number:\s*'',/);
     assert.ok(!confirmPageSrc.includes('0125554000401'), 'Must not embed real promptpay ID as default');
   });
 

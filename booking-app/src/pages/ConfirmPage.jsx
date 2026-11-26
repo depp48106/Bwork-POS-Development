@@ -32,7 +32,35 @@ export default function ConfirmPage() {
   const bookingId = query.get('id');
   const queryCode = query.get('code');
 
+  // Staging / Localhost-only visual preview mode (?preview=krungsri) — NEVER active on Production
+  const isStagingOrLocalHost = typeof window !== 'undefined' && (
+    window.location.hostname.includes('staging') ||
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1'
+  );
+  const isKrungsriPreview = isStagingOrLocalHost && query.get('preview') === 'krungsri';
+
   const [booking, setBooking] = useState(() => {
+    if (isKrungsriPreview) {
+      const now = new Date();
+      return {
+        id: 'preview',
+        booking_id: 'preview',
+        booking_code: 'BK-PREVIEW-001',
+        receipt_number: 'BK-PREVIEW-001',
+        room_name: 'Mars (301)',
+        date: '2026-11-27',
+        start_time: '10:00',
+        end_time: '12:00',
+        total_amount: 700,
+        payment_status: 'pending',
+        payment_window_minutes: 15,
+        created_at: now.toISOString(),
+        paymentDeadline: new Date(now.getTime() + 15 * 60 * 1000).toISOString(),
+        guidelines_enforced: false,
+        guidelines_required: false
+      };
+    }
     try {
       if (location.state?.booking) {
         const parsed = location.state.booking;
@@ -57,21 +85,31 @@ export default function ConfirmPage() {
     } catch (e) {}
     return null;
   });
-  const [loadingBooking, setLoadingBooking] = useState(() => Boolean(bookingId));
+  const [loadingBooking, setLoadingBooking] = useState(() => Boolean(bookingId) && !isKrungsriPreview);
   const [needsVerification, setNeedsVerification] = useState(false);
   const [verifyPhoneInput, setVerifyPhoneInput] = useState('');
   const [verifyingPhone, setVerifyingPhone] = useState(false);
   const [verificationError, setVerificationError] = useState('');
   const [bookingCodeMismatch, setBookingCodeMismatch] = useState(false);
 
-  const [paymentSettings, setPaymentSettings] = useState({
-    promptpay_number: '',
-    bank_name: '',
-    account_number: '',
-    account_name: '',
-    qr_image: '/bwork_payment_qr.png'
-  });
-  const [paymentSettingsLoaded, setPaymentSettingsLoaded] = useState(false);
+  const [paymentSettings, setPaymentSettings] = useState(() => (
+    isKrungsriPreview
+      ? {
+          promptpay_number: '',
+          bank_name: 'ธนาคารกรุงศรีอยุธยา',
+          account_number: '329-1-38429-0',
+          account_name: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+          qr_image: '/bwork_payment_qr.png'
+        }
+      : {
+          promptpay_number: '',
+          bank_name: '',
+          account_number: '',
+          account_name: '',
+          qr_image: '/bwork_payment_qr.png'
+        }
+  ));
+  const [paymentSettingsLoaded, setPaymentSettingsLoaded] = useState(() => isKrungsriPreview);
 
   const [slipFile, setSlipFile] = useState(null);
   const [slipPreview, setSlipPreview] = useState(null);
@@ -488,6 +526,8 @@ export default function ConfirmPage() {
 
   // Load completed booking info on mount
   useEffect(() => {
+    if (isKrungsriPreview) return;
+
     // Auto-fetch fresh booking info from backend if id is provided
     fetchFreshBooking();
 
@@ -1109,6 +1149,26 @@ export default function ConfirmPage() {
       ) : (
         /* PAYMENT & SLIP UPLOAD VIEW */
         <div style={{ maxWidth: '520px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '16px', width: '100%' }}>
+          {isKrungsriPreview && (
+            <div
+              id="staging-krungsri-preview-banner"
+              style={{
+                backgroundColor: '#fffbeb',
+                border: '1.5px solid #f59e0b',
+                borderRadius: '14px',
+                padding: '12px 14px',
+                color: '#92400e',
+                fontSize: '0.82rem',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <AlertCircle size={18} style={{ color: '#d97706', flexShrink: 0 }} />
+              <span>ตัวอย่างสำหรับตรวจหน้าตา (Staging Preview) — ข้อมูลจำลองสำหรับตรวจโลโก้และเลขบัญชีกรุงศรี ไม่ใช่รายการจองจริง</span>
+            </div>
+          )}
           {/* 1. TOP BOOKING CONTEXT SUMMARY */}
           <div style={{
             backgroundColor: '#ffffff',
