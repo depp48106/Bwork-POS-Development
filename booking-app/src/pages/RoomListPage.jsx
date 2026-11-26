@@ -211,18 +211,12 @@ export default function RoomListPage() {
   const [timelineTapStep, setTimelineTapStep] = useState({});
   const draggingRef = useRef(null);
 
-  // Optional time range filter for 'byGuests' mode (e.g. start=10:00&end=12:00)
-  const initialFilterStart = useMemo(() => {
-    const qStart = query.get('start');
-    return qStart && /^\d{2}:\d{2}$/.test(qStart) ? qStart : '';
-  }, [query]);
-  const initialFilterEnd = useMemo(() => {
-    const qEnd = query.get('end');
-    return qEnd && /^\d{2}:\d{2}$/.test(qEnd) ? qEnd : '';
-  }, [query]);
-
-  const [filterStartTime, setFilterStartTime] = useState(initialFilterStart);
-  const [filterEndTime, setFilterEndTime] = useState(initialFilterEnd);
+  // Active room displayed in single-room master-detail view
+  const [activeRoomId, setActiveRoomId] = useState(initialRoomId);
+  const [isMobileRoomListOpen, setIsMobileRoomListOpen] = useState(false);
+  const [roomSwitchNotice, setRoomSwitchNotice] = useState('');
+  const [hasUserPickedTime, setHasUserPickedTime] = useState(Boolean(savedDraft?.start_time));
+  const calendarSectionRef = useRef(null);
 
   // -------------------------------------------------------------
   // Bottom Sheet Modal States (staged values until "ตกลง" is pressed)
@@ -232,9 +226,6 @@ export default function RoomListPage() {
   const [modalMode, setModalMode] = useState(initialMode);
   const [modalGuests, setModalGuests] = useState(initialGuests);
   const [modalRoomId, setModalRoomId] = useState(initialRoomId || '');
-  const [modalStartTime, setModalStartTime] = useState(initialFilterStart);
-  const [modalEndTime, setModalEndTime] = useState(initialFilterEnd);
-  const [isModalTimeExpanded, setIsModalTimeExpanded] = useState(Boolean(initialFilterStart && initialFilterEnd));
   const [slotTooltip, setSlotTooltip] = useState(null); // { roomId, text, pct }
 
   // Master Data States
@@ -483,9 +474,6 @@ export default function RoomListPage() {
     setModalMode(searchMode || 'byGuests');
     setModalGuests(guests ? guests : '');
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
-    setModalStartTime(filterStartTime);
-    setModalEndTime(filterEndTime);
-    setIsModalTimeExpanded(Boolean(filterStartTime && filterEndTime));
     setModalError('');
     setIsModalOpen(true);
   };
@@ -496,9 +484,6 @@ export default function RoomListPage() {
     setModalMode(searchMode || 'byGuests');
     setModalGuests(guests ? guests : '');
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
-    setModalStartTime(filterStartTime);
-    setModalEndTime(filterEndTime);
-    setIsModalTimeExpanded(Boolean(filterStartTime && filterEndTime));
     setModalError('');
     setIsModalOpen(true);
   };
@@ -509,34 +494,13 @@ export default function RoomListPage() {
     setIsModalOpen(false);
   };
 
-  // Confirm choices in modal and update the view
+  // Confirm choices in modal and update the view (by date + guests or directRoom; no old time filter)
   const handleConfirmModal = () => {
     setModalError('');
     const gVal = parseInt(modalGuests, 10);
     if (!modalGuests || isNaN(gVal) || gVal < 1) {
       setModalError('กรุณาระบุจำนวนผู้เข้าใช้งานอย่างน้อย 1 ท่าน');
       return;
-    }
-
-    if (modalMode === 'byGuests') {
-      if ((modalStartTime && !modalEndTime) || (!modalStartTime && modalEndTime)) {
-        setModalError('กรุณาเลือกทั้งเวลาเริ่มและเวลาสิ้นสุด หรือเลือก "ทุกช่วงเวลา"');
-        return;
-      }
-      if (modalStartTime && modalEndTime) {
-        if (modalEndTime <= modalStartTime) {
-          setModalError('เวลาสิ้นสุดต้องมากกว่าเวลาเริ่ม');
-          return;
-        }
-        if (modalStartTime < '08:00' || modalEndTime > '18:00') {
-          setModalError('กรุณาเลือกช่วงเวลาภายใน 08:00–18:00 น.');
-          return;
-        }
-        if (isStartTimePastBangkok(modalDate, modalStartTime)) {
-          setModalError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
-          return;
-        }
-      }
     }
 
     if (modalMode === 'directRoom') {
@@ -565,6 +529,10 @@ export default function RoomListPage() {
     setSearchMode(modalMode);
     setGuests(gVal);
     setDirectGuestError('');
+    setRoomSwitchNotice('');
+    setIsMobileRoomListOpen(false);
+    setHasUserPickedTime(false);
+    setRoomSelections({});
 
     const params = new URLSearchParams();
     params.set('mode', modalMode);
@@ -573,33 +541,12 @@ export default function RoomListPage() {
 
     if (modalMode === 'byGuests') {
       setConfirmedRoomId(null);
-      setFilterStartTime(modalStartTime);
-      setFilterEndTime(modalEndTime);
-      if (modalStartTime && modalEndTime) {
-        params.set('start', modalStartTime);
-        params.set('end', modalEndTime);
-        setGlobalStartTime(modalStartTime);
-        setGlobalEndTime(modalEndTime);
-        // Sync per-room selections to searched time window
-        setRoomSelections(prev => {
-          const updated = { ...prev };
-          rooms.forEach(r => {
-            updated[r.id] = {
-              ...(updated[r.id] || {}),
-              mode: 'hourly',
-              startTime: modalStartTime,
-              endTime: modalEndTime
-            };
-          });
-          return updated;
-        });
-      }
+      setActiveRoomId(null);
     } else {
       const parsedRoomId = parseInt(modalRoomId, 10) || modalRoomId;
       setConfirmedRoomId(parsedRoomId);
+      setActiveRoomId(parsedRoomId);
       setExpandedRoomId(parsedRoomId);
-      setFilterStartTime('');
-      setFilterEndTime('');
       params.set('roomId', parsedRoomId);
     }
 
@@ -744,25 +691,54 @@ export default function RoomListPage() {
       }
     }
     current = current || {};
+    const isTimeCleared = Boolean(current.isTimeCleared);
     const mode = current.mode && (
       (current.mode === 'hourly' && hasHourly) ||
       (current.mode === 'halfday' && hasHalfDay) ||
       (current.mode === 'daily' && hasDaily)
     ) ? current.mode : defaultMode;
 
-    const startTime = current.startTime || globalStartTime;
-    const endTime = current.endTime || globalEndTime;
-    const halfDaySlot = current.halfDaySlot || '08-12';
-    const dailySlot = current.dailySlot || '08-17';
+    // Auto-select first free slot for hourly if no explicit user selection and default is occupied
+    let fallbackStart = globalStartTime;
+    let fallbackEnd = globalEndTime;
+    if (!isTimeCleared && !current.startTime && mode === 'hourly' && schedule) {
+      const [gSH, gSM] = fallbackStart.split(':').map(Number);
+      const [gEH, gEM] = fallbackEnd.split(':').map(Number);
+      if (!isIntervalClear(room.id, gSH * 60 + gSM, gEH * 60 + gEM)) {
+        for (let m = 8 * 60; m <= 17 * 60 + 30; m += 30) {
+          if (isToday && m <= currentMins) continue;
+          if (m + 60 <= 18 * 60 && isIntervalClear(room.id, m, m + 60)) {
+            fallbackStart = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+            fallbackEnd = `${String(Math.floor((m + 60) / 60)).padStart(2, '0')}:${String((m + 60) % 60).padStart(2, '0')}`;
+            break;
+          } else if (m + 30 <= 18 * 60 && isIntervalClear(room.id, m, m + 30)) {
+            fallbackStart = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+            fallbackEnd = `${String(Math.floor((m + 30) / 60)).padStart(2, '0')}:${String((m + 30) % 60).padStart(2, '0')}`;
+            break;
+          }
+        }
+      }
+    }
+
+    const startTime = isTimeCleared ? '' : (current.startTime || fallbackStart);
+    const endTime = isTimeCleared ? '' : (current.endTime || fallbackEnd);
+    const halfDaySlot = isTimeCleared ? '' : (current.halfDaySlot || '08-12');
+    const dailySlot = isTimeCleared ? '' : (current.dailySlot || '08-17');
 
     let effStart = startTime;
     let effEnd = endTime;
-    let duration = 2;
-    let totalPrice = hourlyPrice * 2;
+    let duration = 0;
+    let totalPrice = 0;
     let rateLabel = 'อัตรารายชั่วโมง';
     let durText = '';
 
-    if (mode === 'hourly') {
+    if (isTimeCleared) {
+      effStart = '';
+      effEnd = '';
+      duration = 0;
+      totalPrice = 0;
+      durText = '';
+    } else if (mode === 'hourly') {
       const [sH, sM] = startTime.split(':').map(Number);
       const [eH, eM] = endTime.split(':').map(Number);
       const diff = Math.max(0, (eH * 60 + eM) - (sH * 60 + sM));
@@ -804,6 +780,7 @@ export default function RoomListPage() {
 
     return {
       mode,
+      isTimeCleared,
       startTime: effStart,
       endTime: effEnd,
       rawStartTime: startTime,
@@ -952,80 +929,160 @@ export default function RoomListPage() {
     return false;
   }, [isToday, currentMins, isIntervalClear]);
 
-  // Smart Room Categorization for 'byGuests' mode (filtered by capacity + real-time availability)
-  const { recommendedRooms, upgradeRooms, directSelectedRoom, allSortedRooms } = useMemo(() => {
-    const sorted = sortRoomsByStandardOrder(rooms);
+  // Helper: max seat capacity of a room
+  const getRoomMaxCap = useCallback((room) => {
+    const standardCap = room.capacity || 4;
+    const classroomCap = room.has_classroom === 1 ? (room.classroom_capacity || standardCap) : standardCap;
+    return Math.max(standardCap, classroomCap);
+  }, []);
+
+  // Helper: starting price display string for switcher rows
+  const getRoomStartingPriceText = useCallback((room) => {
+    if (room.has_hourly === 1 && (room.hourly_rate || 0) > 0) {
+      return `เริ่มต้น ฿${Number(room.hourly_rate).toLocaleString()}/ชม.`;
+    }
+    if ((room.has_halfday === 1 || (room.half_day_rate || 0) > 0) && (room.half_day_rate || 0) > 0) {
+      return `เริ่มต้น ฿${Number(room.half_day_rate).toLocaleString()}/ครึ่งวัน`;
+    }
+    if (room.has_daily === 1 && (room.daily_rate || 0) > 0) {
+      return `เริ่มต้น ฿${Number(room.daily_rate).toLocaleString()}/วัน`;
+    }
+    return '';
+  }, []);
+
+  // Smart Single-Room Selection, Switcher Ordering & Capacity Notice
+  const {
+    switcherRooms,
+    activeRoom,
+    capacityNotice,
+    directSelectedRoom,
+    allSortedRooms
+  } = useMemo(() => {
+    const sortedByStandard = sortRoomsByStandardOrder(rooms);
+    const sortedByCap = [...sortedByStandard].sort((a, b) => getRoomMaxCap(a) - getRoomMaxCap(b));
+    const reqGuests = Math.max(1, parseInt(guests, 10) || 1);
 
     if (searchMode === 'directRoom') {
-      const selRoom = confirmedRoomId ? sorted.find(r => String(r.id) === String(confirmedRoomId)) : null;
+      const selRoom = (activeRoomId ? sortedByCap.find(r => String(r.id) === String(activeRoomId)) : null)
+        || (confirmedRoomId ? sortedByCap.find(r => String(r.id) === String(confirmedRoomId)) : null)
+        || sortedByCap[0]
+        || null;
       return {
-        recommendedRooms: selRoom ? [selRoom] : sorted,
-        upgradeRooms: [],
+        switcherRooms: sortedByCap,
+        activeRoom: selRoom,
+        capacityNotice: null,
         directSelectedRoom: selRoom,
-        allSortedRooms: sorted
+        allSortedRooms: sortedByStandard
       };
     }
 
-    const reqGuests = Math.max(1, parseInt(guests, 10) || 1);
-    const hasTimeFilter = Boolean(filterStartTime && filterEndTime && filterEndTime > filterStartTime);
-    let fStartMins = null;
-    let fEndMins = null;
-    if (hasTimeFilter) {
-      const [sH, sM] = filterStartTime.split(':').map(Number);
-      const [eH, eM] = filterEndTime.split(':').map(Number);
-      fStartMins = sH * 60 + (sM || 0);
-      fEndMins = eH * 60 + (eM || 0);
+    // Mode: 'byGuests' — filter by capacity >= reqGuests, sort ascending by capacity
+    const capableRooms = sortedByCap.filter(r => getRoomMaxCap(r) >= reqGuests);
+    const availableRooms = capableRooms.filter(r => !schedule || hasAnyBookableSlotInDay(r.id));
+
+    let notice = null;
+    if (availableRooms.length > 0 && capableRooms.length > 0) {
+      const smallestCapableCap = getRoomMaxCap(capableRooms[0]);
+      const firstAvailableCap = getRoomMaxCap(availableRooms[0]);
+      if (smallestCapableCap < firstAvailableCap) {
+        // Exact/smaller fitting room exists but ALL of them are full on the selected date
+        notice = {
+          type: 'fitting_full',
+          line1: `ห้องขนาด ${smallestCapableCap} ที่นั่งเต็มแล้วสำหรับวันที่เลือก`,
+          line2: `ตอนนี้มีห้องขนาด ${firstAvailableCap} ที่นั่งให้จอง`
+        };
+      } else if (firstAvailableCap > reqGuests) {
+        // No room with exact capacity exists in the system
+        notice = {
+          type: 'larger_only',
+          line1: `ห้องที่รองรับ ${reqGuests} คนและยังว่าง เริ่มที่ ${firstAvailableCap} ที่นั่ง`,
+          line2: ''
+        };
+      }
     }
 
-    const recommended = [];
-    const upgrade = [];
-
-    sorted.forEach(room => {
-      const standardCap = room.capacity || 4;
-      const classroomCap = room.has_classroom === 1 ? (room.classroom_capacity || standardCap) : standardCap;
-      const maxRoomCap = Math.max(standardCap, classroomCap);
-
-      if (maxRoomCap < reqGuests) return;
-
-      // Filter by availability according to selected date / time window
-      if (schedule) {
-        if (hasTimeFilter) {
-          if (!isIntervalClear(room.id, fStartMins, fEndMins)) return;
-        } else {
-          if (!hasAnyBookableSlotInDay(room.id)) return;
-        }
-      }
-
-      if (reqGuests <= 4) {
-        if (maxRoomCap <= 4) {
-          recommended.push(room);
-        } else {
-          upgrade.push(room);
-        }
-      } else if (reqGuests <= 8) {
-        if (maxRoomCap <= 10) {
-          recommended.push(room);
-        } else {
-          upgrade.push(room);
-        }
-      } else if (reqGuests <= 12) {
-        if (maxRoomCap <= 12) {
-          recommended.push(room);
-        } else {
-          upgrade.push(room);
-        }
-      } else {
-        recommended.push(room);
-      }
-    });
+    const chosenActive = (activeRoomId ? availableRooms.find(r => String(r.id) === String(activeRoomId)) : null)
+      || availableRooms[0]
+      || null;
 
     return {
-      recommendedRooms: recommended,
-      upgradeRooms: upgrade,
+      switcherRooms: availableRooms,
+      activeRoom: chosenActive,
+      capacityNotice: notice,
       directSelectedRoom: null,
-      allSortedRooms: sorted
+      allSortedRooms: sortedByStandard
     };
-  }, [rooms, searchMode, guests, confirmedRoomId, schedule, filterStartTime, filterEndTime, isIntervalClear, hasAnyBookableSlotInDay]);
+  }, [rooms, searchMode, guests, confirmedRoomId, activeRoomId, schedule, hasAnyBookableSlotInDay, getRoomMaxCap]);
+
+  // Switch active room in-place (NO scroll-to-top) and smartly preserve or clear selected time
+  const handleSwitchActiveRoom = (nextRoom) => {
+    if (!nextRoom) return;
+    setIsMobileRoomListOpen(false);
+    setSlotTooltip(null);
+    setTimelineError('');
+
+    if (activeRoom && String(nextRoom.id) === String(activeRoom.id)) {
+      return;
+    }
+
+    if (activeRoom) {
+      const curSel = getRoomSelection(activeRoom);
+      const hadValidTime = hasUserPickedTime && !curSel.isTimeCleared && curSel.startTime && curSel.endTime;
+
+      if (hadValidTime) {
+        const nextHasHourly = nextRoom.has_hourly === 1 && (nextRoom.hourly_rate || 0) > 0;
+        const nextHasHalfDay = (nextRoom.has_halfday === 1 || (nextRoom.half_day_rate || 0) > 0) && (nextRoom.half_day_rate || 0) > 0;
+        const nextHasDaily = nextRoom.has_daily === 1 && (nextRoom.daily_rate || 0) > 0;
+
+        const modeSupported =
+          (curSel.mode === 'hourly' && nextHasHourly) ||
+          (curSel.mode === 'halfday' && nextHasHalfDay) ||
+          (curSel.mode === 'daily' && nextHasDaily);
+
+        if (!modeSupported) {
+          const modeThai = curSel.mode === 'hourly' ? 'รายชั่วโมง' : curSel.mode === 'halfday' ? 'ครึ่งวัน' : 'ทั้งวัน';
+          const fallbackMode = nextHasHourly ? 'hourly' : (nextHasHalfDay ? 'halfday' : 'daily');
+          setRoomSelections(prev => ({
+            ...prev,
+            [nextRoom.id]: { mode: fallbackMode, startTime: '', endTime: '', halfDaySlot: '', dailySlot: '', isTimeCleared: true }
+          }));
+          setRoomSwitchNotice(`ห้องนี้ไม่รองรับการจองแบบ${modeThai} กรุณาเลือกเวลาใหม่`);
+        } else {
+          const [sH, sM] = curSel.startTime.split(':').map(Number);
+          const [eH, eM] = curSel.endTime.split(':').map(Number);
+          const isNextFree = isIntervalClear(nextRoom.id, sH * 60 + (sM || 0), eH * 60 + (eM || 0));
+
+          if (isNextFree) {
+            setRoomSelections(prev => ({
+              ...prev,
+              [nextRoom.id]: {
+                mode: curSel.mode,
+                startTime: curSel.rawStartTime || curSel.startTime,
+                endTime: curSel.rawEndTime || curSel.endTime,
+                halfDaySlot: curSel.halfDaySlot,
+                dailySlot: curSel.dailySlot,
+                isTimeCleared: false
+              }
+            }));
+            setRoomSwitchNotice('');
+          } else {
+            setRoomSelections(prev => ({
+              ...prev,
+              [nextRoom.id]: { mode: curSel.mode, startTime: '', endTime: '', halfDaySlot: '', dailySlot: '', isTimeCleared: true }
+            }));
+            setRoomSwitchNotice('ห้องนี้ไม่ว่างในช่วงเดิม กรุณาเลือกเวลาใหม่');
+          }
+        }
+      } else {
+        setRoomSwitchNotice('');
+      }
+    }
+
+    setActiveRoomId(nextRoom.id);
+    if (searchMode === 'directRoom') {
+      setConfirmedRoomId(nextRoom.id);
+    }
+  };
 
   // Proceed to Step 2 Form
   const handleProceedToForm = (room) => {
@@ -1113,7 +1170,7 @@ export default function RoomListPage() {
     const curStartMins = cSH * 60 + cSM;
     const curEndMins = cEH * 60 + cEM;
 
-    const curStep = timelineTapStep[room.id] || 'start';
+    const curStep = currentSel.isTimeCleared ? 'start' : (timelineTapStep[room.id] || 'start');
 
     if (curStep === 'start') {
       // Step 1: Picking Start Time
@@ -1133,7 +1190,7 @@ export default function RoomListPage() {
 
       // Check if existing curEnd is still valid from targetStartMins
       let chosenEnd = curEnd;
-      if (curEndMins <= targetStartMins || !isIntervalClear(room.id, targetStartMins, curEndMins)) {
+      if (currentSel.isTimeCleared || curEndMins <= targetStartMins || !isIntervalClear(room.id, targetStartMins, curEndMins)) {
         if (targetStartMins + 60 <= 18 * 60 && isIntervalClear(room.id, targetStartMins, targetStartMins + 60)) {
           chosenEnd = `${String(Math.floor((targetStartMins + 60) / 60)).padStart(2, '0')}:${String((targetStartMins + 60) % 60).padStart(2, '0')}`;
         } else {
@@ -1141,9 +1198,11 @@ export default function RoomListPage() {
         }
       }
 
+      setHasUserPickedTime(true);
+      setRoomSwitchNotice('');
       setRoomSelections(prev => ({
         ...prev,
-        [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStartStr, endTime: chosenEnd }
+        [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStartStr, endTime: chosenEnd, isTimeCleared: false }
       }));
       setTimelineTapStep(prev => ({ ...prev, [room.id]: 'end' }));
     } else {
@@ -1175,9 +1234,11 @@ export default function RoomListPage() {
           }
         }
 
+        setHasUserPickedTime(true);
+        setRoomSwitchNotice('');
         setRoomSelections(prev => ({
           ...prev,
-          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStartStr, endTime: chosenEnd }
+          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStartStr, endTime: chosenEnd, isTimeCleared: false }
         }));
         setTimelineTapStep(prev => ({ ...prev, [room.id]: 'end' }));
         return;
@@ -1190,9 +1251,11 @@ export default function RoomListPage() {
       }
 
       const newEndStr = `${String(Math.floor(targetEndMins / 60)).padStart(2, '0')}:${String(targetEndMins % 60).padStart(2, '0')}`;
+      setHasUserPickedTime(true);
+      setRoomSwitchNotice('');
       setRoomSelections(prev => ({
         ...prev,
-        [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', endTime: newEndStr }
+        [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', endTime: newEndStr, isTimeCleared: false }
       }));
       setTimelineTapStep(prev => ({ ...prev, [room.id]: 'start' }));
     }
@@ -1229,9 +1292,11 @@ export default function RoomListPage() {
       }
     }
 
+    setHasUserPickedTime(true);
+    setRoomSwitchNotice('');
     setRoomSelections(prev => ({
       ...prev,
-      [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStart, endTime: chosenEnd }
+      [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStart, endTime: chosenEnd, isTimeCleared: false }
     }));
     setTimelineTapStep(prev => ({ ...prev, [room.id]: 'end' }));
   };
@@ -1305,9 +1370,11 @@ export default function RoomListPage() {
 
       const newStartStr = `${String(Math.floor(targetMins / 60)).padStart(2, '0')}:${String(targetMins % 60).padStart(2, '0')}`;
       if (newStartStr !== curStart) {
+        setHasUserPickedTime(true);
+        setRoomSwitchNotice('');
         setRoomSelections(prev => ({
           ...prev,
-          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStartStr }
+          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStartStr, isTimeCleared: false }
         }));
       }
     } else {
@@ -1332,9 +1399,11 @@ export default function RoomListPage() {
 
       const newEndStr = `${String(Math.floor(targetMins / 60)).padStart(2, '0')}:${String(targetMins % 60).padStart(2, '0')}`;
       if (newEndStr !== curEnd) {
+        setHasUserPickedTime(true);
+        setRoomSwitchNotice('');
         setRoomSelections(prev => ({
           ...prev,
-          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', endTime: newEndStr }
+          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', endTime: newEndStr, isTimeCleared: false }
         }));
       }
     }
@@ -1351,6 +1420,7 @@ export default function RoomListPage() {
 
   // Handle End Time Change via Dropdown
   const handleEndTimeDropdownChange = (room, newEnd) => {
+    if (!newEnd) return;
     setTimelineError('');
     const currentSel = roomSelections[room.id] || {};
     const curStart = currentSel.startTime || globalStartTime;
@@ -1364,19 +1434,22 @@ export default function RoomListPage() {
       return;
     }
 
+    setHasUserPickedTime(true);
+    setRoomSwitchNotice('');
     setRoomSelections(prev => ({
       ...prev,
-      [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', endTime: newEnd }
+      [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', endTime: newEnd, isTimeCleared: false }
     }));
     setTimelineTapStep(prev => ({ ...prev, [room.id]: 'start' }));
   };
 
   // Render Horizontal Timeline Bar (08:00 - 18:00, 20 slots of 30 mins)
   const renderInteractiveTimelineBar = (room, sel) => {
-    const [selSH, selSM] = sel.startTime.split(':').map(Number);
-    const [selEH, selEM] = sel.endTime.split(':').map(Number);
-    const selStartMins = selSH * 60 + selSM;
-    const selEndMins = selEH * 60 + selEM;
+    const hasSelectedRange = Boolean(!sel.isTimeCleared && sel.startTime && sel.endTime && sel.endTime > sel.startTime);
+    const [selSH, selSM] = hasSelectedRange ? sel.startTime.split(':').map(Number) : [0, 0];
+    const [selEH, selEM] = hasSelectedRange ? sel.endTime.split(':').map(Number) : [0, 0];
+    const selStartMins = hasSelectedRange ? (selSH * 60 + selSM) : -1;
+    const selEndMins = hasSelectedRange ? (selEH * 60 + selEM) : -1;
 
     const slots = [];
     for (let i = 0; i < 20; i++) {
@@ -1439,8 +1512,8 @@ export default function RoomListPage() {
       }
     }
 
-    const selStartPct = Math.max(0, Math.min(100, ((selStartMins - 480) / 600) * 100));
-    const selEndPct = Math.max(0, Math.min(100, ((selEndMins - 480) / 600) * 100));
+    const selStartPct = hasSelectedRange ? Math.max(0, Math.min(100, ((selStartMins - 480) / 600) * 100)) : 0;
+    const selEndPct = hasSelectedRange ? Math.max(0, Math.min(100, ((selEndMins - 480) / 600) * 100)) : 0;
 
     // Valid start options: only times that can actually start a valid booking
     const validStartOptions = [];
@@ -1456,12 +1529,14 @@ export default function RoomListPage() {
 
     // Contiguous valid end options starting from selStartMins
     const validEndOptions = [];
-    for (let m = selStartMins + 30; m <= 18 * 60; m += 30) {
-      if (isIntervalClear(room.id, selStartMins, m)) {
-        const endStr = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-        validEndOptions.push({ time: endStr, value: endStr });
-      } else {
-        break;
+    if (hasSelectedRange) {
+      for (let m = selStartMins + 30; m <= 18 * 60; m += 30) {
+        if (isIntervalClear(room.id, selStartMins, m)) {
+          const endStr = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+          validEndOptions.push({ time: endStr, value: endStr });
+        } else {
+          break;
+        }
       }
     }
 
@@ -1510,6 +1585,7 @@ export default function RoomListPage() {
           }}
         >
           {/* Left Arrow Handle (Start Time) */}
+          {hasSelectedRange && (
           <div
             onPointerDown={(e) => handleArrowPointerDown('start', room, e)}
             onPointerMove={handleArrowPointerMove}
@@ -1537,8 +1613,10 @@ export default function RoomListPage() {
               <polygon points="0,0 10,0 5,7" fill="#0F766E" />
             </svg>
           </div>
+          )}
 
           {/* Right Arrow Handle (End Time) */}
+          {hasSelectedRange && (
           <div
             onPointerDown={(e) => handleArrowPointerDown('end', room, e)}
             onPointerMove={handleArrowPointerMove}
@@ -1566,6 +1644,7 @@ export default function RoomListPage() {
               <polygon points="0,0 10,0 5,7" fill="#0F766E" />
             </svg>
           </div>
+          )}
 
           {/* Slot Status Tooltip (Hover on Desktop / Tap on Mobile for booked & cleaning slots) */}
           {slotTooltip && slotTooltip.roomId === room.id && (
@@ -1797,8 +1876,11 @@ export default function RoomListPage() {
             </label>
             <div style={{ position: 'relative' }}>
               <select
+                id={`select-start-time-${room.id}`}
                 value={sel.startTime}
-                onChange={(e) => handleStartTimeDropdownChange(room, e.target.value)}
+                onChange={(e) => {
+                  if (e.target.value) handleStartTimeDropdownChange(room, e.target.value);
+                }}
                 style={{
                   width: '100%',
                   height: '46px',
@@ -1816,6 +1898,7 @@ export default function RoomListPage() {
                   outline: 'none'
                 }}
               >
+                {!hasSelectedRange && <option value="">-- เลือกเวลา --</option>}
                 {validStartOptions.map(t => (
                   <option key={t} value={t}>{t}</option>
                 ))}
@@ -1835,7 +1918,9 @@ export default function RoomListPage() {
             </label>
             <div style={{ position: 'relative' }}>
               <select
+                id={`select-end-time-${room.id}`}
                 value={sel.endTime}
+                disabled={!hasSelectedRange}
                 onChange={(e) => handleEndTimeDropdownChange(room, e.target.value)}
                 style={{
                   width: '100%',
@@ -1843,17 +1928,18 @@ export default function RoomListPage() {
                   padding: '0 36px 0 14px',
                   borderRadius: '10px',
                   border: '1.5px solid #CBD5E1',
-                  backgroundColor: '#ffffff',
+                  backgroundColor: !hasSelectedRange ? '#f8fafc' : '#ffffff',
                   color: '#0F172A',
                   fontSize: '1rem',
                   fontWeight: 700,
                   appearance: 'none',
                   WebkitAppearance: 'none',
                   MozAppearance: 'none',
-                  cursor: 'pointer',
+                  cursor: !hasSelectedRange ? 'not-allowed' : 'pointer',
                   outline: 'none'
                 }}
               >
+                {!hasSelectedRange && <option value="">-- เลือกเวลา --</option>}
                 {validEndOptions.map(opt => (
                   <option key={opt.time} value={opt.time}>{opt.time}</option>
                 ))}
@@ -2590,13 +2676,525 @@ export default function RoomListPage() {
     );
   };
 
+  // Render Master-Detail Single Room View (Desktop: Left Photo + Switcher, Right Details + Timeline; Mobile: Photo -> Switcher Button -> Details + Timeline)
+  const renderSingleRoomView = (room) => {
+    if (!room) return null;
+    const sel = getRoomSelection(room);
+    const hasBookableSlotToday = !schedule || hasAnyBookableSlotInDay(room.id);
+    const isCleared = Boolean(sel.isTimeCleared || !sel.startTime || !sel.endTime);
+    const occInfo = isCleared
+      ? { isOccupied: true, label: 'กรุณาเลือกช่วงเวลา', reason: 'cleared' }
+      : getRoomOccupiedInfo(room.id, sel.startTime, sel.endTime);
+    const { isOccupied, label: statusLabel, reason } = occInfo;
+    const currentLayout = roomLayouts[room.id] || 'standard';
+    const isClassroom = currentLayout === 'classroom';
+    const rawImage = isClassroom && room.classroom_image_url ? room.classroom_image_url : room.image_url;
+    const displayImage = getRoomImageUrl(room, isClassroom);
+
+    const reqGuests = Math.max(1, parseInt(guests, 10) || 1);
+    let layoutConditionNotice = '';
+    if (room.has_classroom === 1) {
+      if (reqGuests > (room.capacity || 4) && reqGuests <= (room.classroom_capacity || 4)) {
+        layoutConditionNotice = `รองรับ ${reqGuests} ท่านเฉพาะการจัดโต๊ะแบบ Classroom (${room.classroom_capacity} ที่นั่ง)`;
+      } else if (reqGuests <= (room.capacity || 4) && reqGuests > (room.classroom_capacity || 4)) {
+        layoutConditionNotice = `จัดโต๊ะแบบ Standard รองรับได้ ${room.capacity} ท่าน`;
+      }
+    }
+
+    const halfDay0812Info = getRoomOccupiedInfo(room.id, '08:00', '12:00');
+    const halfDay1317Info = getRoomOccupiedInfo(room.id, '13:00', '17:00');
+    const daily0817Info = getRoomOccupiedInfo(room.id, '08:00', '17:00');
+    const daily0918Info = getRoomOccupiedInfo(room.id, '09:00', '18:00');
+
+    const renderSwitcherRows = (prefix) => (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {switcherRooms.map(r => {
+          const isActive = String(r.id) === String(room.id);
+          const cap = getRoomMaxCap(r);
+          const startPriceText = getRoomStartingPriceText(r);
+          return (
+            <button
+              key={r.id}
+              type="button"
+              data-testid={`${prefix}-switch-room-${r.id}`}
+              onClick={() => handleSwitchActiveRoom(r)}
+              className={`room-switcher-item ${isActive ? 'room-switcher-item--active' : ''}`}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: '0.86rem', fontWeight: 800, color: isActive ? '#0F766E' : 'var(--navy)', lineHeight: 1.25 }}>
+                  {r.name}
+                </div>
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  รองรับ {cap} ที่นั่ง{startPriceText ? ` · ${startPriceText}` : ''}
+                </div>
+              </div>
+              {isActive && (
+                <CheckCircle2 size={17} color="#0F766E" style={{ flexShrink: 0 }} />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    );
+
+    return (
+      <div className="room-detail-layout" id={`single-room-view-${room.id}`}>
+        {/* LEFT COLUMN: ROOM PHOTO + SWITCHER (DESKTOP LIST / MOBILE BUTTON) */}
+        <div className="room-detail-left">
+          {/* Room Photo */}
+          <div style={{ position: 'relative', borderRadius: '16px', overflow: 'hidden', height: '215px', backgroundColor: '#f1f5f9', border: '1.5px solid var(--border)' }}>
+            {displayImage ? (
+              <img
+                src={displayImage}
+                alt={room.name}
+                onError={(e) => handleRoomImageError(e, rawImage)}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+              />
+            ) : (
+              <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)', backgroundColor: 'var(--primary-light)' }}>
+                <Building size={48} />
+              </div>
+            )}
+            <div style={{
+              position: 'absolute',
+              top: '10px',
+              left: '10px',
+              padding: '5px 12px',
+              borderRadius: '20px',
+              fontSize: '0.74rem',
+              fontWeight: 800,
+              backgroundColor: !hasBookableSlotToday
+                ? 'rgba(239, 68, 68, 0.95)'
+                : isCleared
+                ? 'rgba(15, 23, 42, 0.85)'
+                : isOccupied
+                ? (reason === 'cleaning' ? 'rgba(245, 158, 11, 0.95)' : 'rgba(239, 68, 68, 0.95)')
+                : 'rgba(16, 185, 129, 0.95)',
+              color: '#ffffff',
+              backdropFilter: 'blur(8px)',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+            }}>
+              {!hasBookableSlotToday ? 'เต็มทั้งวัน' : statusLabel}
+            </div>
+          </div>
+
+          {/* DESKTOP: Room Switcher List below photo */}
+          {switcherRooms.length > 0 && (
+            <div className="room-switcher-desktop" id="desktop-room-switcher">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2px' }}>
+                <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--navy)' }}>เปลี่ยนห้อง</span>
+                <span style={{ fontSize: '0.74rem', fontWeight: 600, color: 'var(--text-muted)' }}>({switcherRooms.length} ห้อง)</span>
+              </div>
+              {renderSwitcherRows('desktop')}
+            </div>
+          )}
+
+          {/* MOBILE: "เปลี่ยนห้อง" Button below photo and above timeline */}
+          {switcherRooms.length > 0 && (
+            <div className="room-switcher-mobile">
+              <button
+                type="button"
+                id="btn-mobile-switch-room"
+                onClick={() => setIsMobileRoomListOpen(prev => !prev)}
+                style={{
+                  width: '100%',
+                  padding: '12px 14px',
+                  borderRadius: '12px',
+                  border: '1.5px solid var(--primary)',
+                  backgroundColor: '#ffffff',
+                  color: 'var(--navy)',
+                  fontSize: '0.88rem',
+                  fontWeight: 800,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '8px'
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                  <Building size={16} color="var(--primary)" />
+                  <span>เปลี่ยนห้อง ({switcherRooms.length} ห้อง)</span>
+                </span>
+                {isMobileRoomListOpen ? <ChevronUp size={18} color="var(--primary)" /> : <ChevronDown size={18} color="var(--primary)" />}
+              </button>
+
+              {isMobileRoomListOpen && (
+                <div
+                  id="mobile-room-switcher-list"
+                  style={{
+                    marginTop: '8px',
+                    padding: '10px',
+                    borderRadius: '14px',
+                    backgroundColor: '#ffffff',
+                    border: '1.5px solid var(--border)',
+                    boxShadow: 'var(--shadow-md)'
+                  }}
+                >
+                  {renderSwitcherRows('mobile')}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT COLUMN: ACTIVE ROOM DETAILS & TIMELINE */}
+        <div className="room-detail-right" id={`room-card-${room.id}`}>
+          {/* Soft grey capacity notice when fitting room is full or exact size doesn't exist */}
+          {searchMode === 'byGuests' && capacityNotice && (
+            <div
+              id="room-capacity-notice"
+              style={{
+                marginBottom: '12px',
+                padding: '10px 14px',
+                borderRadius: '10px',
+                backgroundColor: '#f1f5f9',
+                color: '#475569',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                lineHeight: 1.45
+              }}
+            >
+              <div>{capacityNotice.line1}</div>
+              {capacityNotice.line2 && <div>{capacityNotice.line2}</div>}
+            </div>
+          )}
+
+          {/* Direct Room Full Notice */}
+          {searchMode === 'directRoom' && !hasBookableSlotToday && (
+            <div
+              id="direct-room-full-notice"
+              style={{
+                marginBottom: '12px',
+                padding: '10px 14px',
+                borderRadius: '10px',
+                backgroundColor: '#fef2f2',
+                border: '1px solid #fecaca',
+                color: '#b91c1c',
+                fontSize: '0.84rem',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <AlertCircle size={16} style={{ flexShrink: 0 }} />
+              <span>ห้องนี้ไม่มีช่วงว่างในวันที่เลือก</span>
+            </div>
+          )}
+
+          {/* Room Switch Notice (when switched room is unavailable at previous time or mode unsupported) */}
+          {roomSwitchNotice && (
+            <div
+              id="room-switch-notice"
+              style={{
+                marginBottom: '12px',
+                padding: '10px 14px',
+                borderRadius: '10px',
+                backgroundColor: '#fffbeb',
+                border: '1px solid #fde68a',
+                color: '#b45309',
+                fontSize: '0.82rem',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <AlertCircle size={16} style={{ flexShrink: 0, color: '#d97706' }} />
+              <span>{roomSwitchNotice}</span>
+            </div>
+          )}
+
+          {/* Room Title & Capacity */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 900, color: 'var(--navy)' }}>
+                {room.name}
+              </h3>
+              <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '3px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontWeight: 700, color: '#334155' }}>
+                  <Users size={14} color="var(--primary)" />
+                  รองรับ {sel.effectiveCapacity} ที่นั่ง
+                </span>
+                {room.floor && <span>· ชั้น {room.floor}</span>}
+                <span>· {formatShortThaiDate(dateStr)}</span>
+              </div>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '1.05rem', fontWeight: 900, color: 'var(--primary)' }}>
+                {getRoomStartingPriceText(room)}
+              </div>
+            </div>
+          </div>
+
+          {layoutConditionNotice && (
+            <div style={{ marginBottom: '10px', padding: '7px 10px', borderRadius: '8px', backgroundColor: '#f0f9ff', color: '#0369a1', fontSize: '0.76rem', fontWeight: 700 }}>
+              {layoutConditionNotice}
+            </div>
+          )}
+
+          {/* Classroom Layout Toggle (if supported) */}
+          {room.has_classroom === 1 && (
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+              <button
+                type="button"
+                onClick={() => setRoomLayouts(prev => ({ ...prev, [room.id]: 'standard' }))}
+                style={{
+                  flex: 1,
+                  padding: '7px 10px',
+                  borderRadius: '10px',
+                  border: !isClassroom ? '1.5px solid var(--primary)' : '1px solid var(--border)',
+                  backgroundColor: !isClassroom ? 'var(--primary-light)' : '#ffffff',
+                  color: !isClassroom ? 'var(--primary)' : 'var(--text-muted)',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                Standard ({room.capacity} ที่นั่ง)
+              </button>
+              <button
+                type="button"
+                onClick={() => setRoomLayouts(prev => ({ ...prev, [room.id]: 'classroom' }))}
+                style={{
+                  flex: 1,
+                  padding: '7px 10px',
+                  borderRadius: '10px',
+                  border: isClassroom ? '1.5px solid var(--primary)' : '1px solid var(--border)',
+                  backgroundColor: isClassroom ? 'var(--primary-light)' : '#ffffff',
+                  color: isClassroom ? 'var(--primary)' : 'var(--text-muted)',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                Classroom ({room.classroom_capacity || room.capacity} ที่นั่ง)
+              </button>
+            </div>
+          )}
+
+          {/* Booking Mode Tabs (Hourly / Half-Day / Daily) */}
+          {[sel.hasHourly, sel.hasHalfDay, sel.hasDaily].filter(Boolean).length > 1 && (
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: `repeat(${[sel.hasHourly, sel.hasHalfDay, sel.hasDaily].filter(Boolean).length}, 1fr)`,
+              gap: '8px',
+              marginBottom: '14px'
+            }}>
+              {sel.hasHourly && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHasUserPickedTime(true);
+                    setRoomSwitchNotice('');
+                    setRoomSelections(prev => ({ ...prev, [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', isTimeCleared: false } }));
+                  }}
+                  style={{
+                    padding: '9px 6px',
+                    borderRadius: '10px',
+                    border: sel.mode === 'hourly' ? '1.5px solid #0F766E' : '1px solid var(--border)',
+                    backgroundColor: sel.mode === 'hourly' ? '#0F766E' : '#ffffff',
+                    color: sel.mode === 'hourly' ? '#ffffff' : 'var(--navy)',
+                    fontSize: '0.84rem',
+                    fontWeight: 800,
+                    cursor: 'pointer'
+                  }}
+                >
+                  รายชั่วโมง
+                </button>
+              )}
+              {sel.hasHalfDay && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHasUserPickedTime(true);
+                    setRoomSwitchNotice('');
+                    setRoomSelections(prev => ({ ...prev, [room.id]: { ...(prev[room.id] || {}), mode: 'halfday', halfDaySlot: prev[room.id]?.halfDaySlot || '08-12', isTimeCleared: false } }));
+                  }}
+                  style={{
+                    padding: '9px 6px',
+                    borderRadius: '10px',
+                    border: sel.mode === 'halfday' ? '1.5px solid #0F766E' : '1px solid var(--border)',
+                    backgroundColor: sel.mode === 'halfday' ? '#0F766E' : '#ffffff',
+                    color: sel.mode === 'halfday' ? '#ffffff' : 'var(--navy)',
+                    fontSize: '0.84rem',
+                    fontWeight: 800,
+                    cursor: 'pointer'
+                  }}
+                >
+                  ครึ่งวัน
+                </button>
+              )}
+              {sel.hasDaily && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHasUserPickedTime(true);
+                    setRoomSwitchNotice('');
+                    setRoomSelections(prev => ({ ...prev, [room.id]: { ...(prev[room.id] || {}), mode: 'daily', dailySlot: prev[room.id]?.dailySlot || '08-17', isTimeCleared: false } }));
+                  }}
+                  style={{
+                    padding: '9px 6px',
+                    borderRadius: '10px',
+                    border: sel.mode === 'daily' ? '1.5px solid #0F766E' : '1px solid var(--border)',
+                    backgroundColor: sel.mode === 'daily' ? '#0F766E' : '#ffffff',
+                    color: sel.mode === 'daily' ? '#ffffff' : 'var(--navy)',
+                    fontSize: '0.84rem',
+                    fontWeight: 800,
+                    cursor: 'pointer'
+                  }}
+                >
+                  ทั้งวัน
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* TIMELINE BAR OR PACKAGE CARDS */}
+          {sel.mode === 'hourly' && renderInteractiveTimelineBar(room, sel)}
+
+          {sel.mode === 'halfday' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {[
+                { key: '08-12', label: '08:00–12:00 น.', info: halfDay0812Info },
+                { key: '13-17', label: '13:00–17:00 น.', info: halfDay1317Info }
+              ].map(opt => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  disabled={opt.info.isOccupied}
+                  onClick={() => {
+                    setHasUserPickedTime(true);
+                    setRoomSwitchNotice('');
+                    setRoomSelections(prev => ({ ...prev, [room.id]: { ...(prev[room.id] || {}), mode: 'halfday', halfDaySlot: opt.key, isTimeCleared: false } }));
+                  }}
+                  style={{
+                    padding: '14px 16px',
+                    borderRadius: '12px',
+                    border: sel.halfDaySlot === opt.key && !opt.info.isOccupied ? '2px solid #0F766E' : '1px solid var(--border)',
+                    backgroundColor: opt.info.isOccupied ? '#f1f5f9' : (sel.halfDaySlot === opt.key ? '#f0fdfa' : '#ffffff'),
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    cursor: opt.info.isOccupied ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <div style={{ textAlign: 'left' }}>
+                    <div style={{ fontWeight: 800, color: opt.info.isOccupied ? '#94a3b8' : 'var(--navy)' }}>{opt.label}</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>4 ชม.</div>
+                  </div>
+                  <div style={{ fontWeight: 900, color: opt.info.isOccupied ? '#64748b' : '#0F766E' }}>
+                    {opt.info.isOccupied ? 'ไม่ว่าง' : `฿${Number(sel.halfDayPrice).toLocaleString()}`}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {sel.mode === 'daily' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {[
+                { key: '08-17', label: '08:00–17:00 น.', info: daily0817Info },
+                { key: '09-18', label: '09:00–18:00 น.', info: daily0918Info }
+              ].map(opt => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  disabled={opt.info.isOccupied}
+                  onClick={() => {
+                    setHasUserPickedTime(true);
+                    setRoomSwitchNotice('');
+                    setRoomSelections(prev => ({ ...prev, [room.id]: { ...(prev[room.id] || {}), mode: 'daily', dailySlot: opt.key, isTimeCleared: false } }));
+                  }}
+                  style={{
+                    padding: '14px 16px',
+                    borderRadius: '12px',
+                    border: sel.dailySlot === opt.key && !opt.info.isOccupied ? '2px solid #0F766E' : '1px solid var(--border)',
+                    backgroundColor: opt.info.isOccupied ? '#f1f5f9' : (sel.dailySlot === opt.key ? '#f0fdfa' : '#ffffff'),
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    cursor: opt.info.isOccupied ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  <div style={{ textAlign: 'left' }}>
+                    <div style={{ fontWeight: 800, color: opt.info.isOccupied ? '#94a3b8' : 'var(--navy)' }}>{opt.label}</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>9 ชม.</div>
+                  </div>
+                  <div style={{ fontWeight: 900, color: opt.info.isOccupied ? '#64748b' : '#0F766E' }}>
+                    {opt.info.isOccupied ? 'ไม่ว่าง' : `฿${Number(sel.dailyPrice).toLocaleString()}`}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Summary Bar + CTA */}
+          <div style={{
+            marginTop: '16px',
+            paddingTop: '14px',
+            borderTop: '1px solid #f1f5f9',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center'
+          }}>
+            <div id="active-room-summary-time" style={{ fontSize: '1.08rem', fontWeight: 900, color: isCleared ? '#64748B' : '#0F766E' }}>
+              {isCleared ? 'กรุณาเลือกช่วงเวลา' : `${sel.startTime}–${sel.endTime} น.${sel.durText ? ` · ${sel.durText}` : ''}`}
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div id="active-room-summary-price" style={{ fontSize: '1.3rem', fontWeight: 900, color: isCleared ? '#94A3B8' : '#0F766E' }}>
+                {isCleared ? '-' : `฿${Number(sel.totalPrice).toLocaleString()}`}
+              </div>
+              {!isCleared && sel.isPromotionApplied && (
+                <div style={{ fontSize: '0.72rem', color: '#16a34a', fontWeight: 700 }}>
+                  ส่วนลดออนไลน์ {sel.discountValue ?? (promotion?.discount_value || 5)}% (-฿{Number(sel.discountAmount).toLocaleString()})
+                </div>
+              )}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={isCleared || isOccupied || !hasBookableSlotToday}
+            onClick={() => handleProceedToForm(room)}
+            className="btn-primary"
+            id={`btn-book-room-${room.id}`}
+            style={{
+              width: '100%',
+              height: '50px',
+              fontSize: '0.94rem',
+              fontWeight: 800,
+              borderRadius: '12px',
+              backgroundColor: (isCleared || isOccupied || !hasBookableSlotToday) ? '#cbd5e1' : '#0F766E',
+              color: (isCleared || isOccupied || !hasBookableSlotToday) ? '#475569' : '#ffffff',
+              border: 'none',
+              cursor: (isCleared || isOccupied || !hasBookableSlotToday) ? 'not-allowed' : 'pointer',
+              marginTop: '12px'
+            }}
+          >
+            <span>
+              {!hasBookableSlotToday
+                ? 'ห้องนี้ไม่มีช่วงว่างในวันที่เลือก'
+                : isCleared
+                ? 'กรุณาเลือกเวลาใหม่'
+                : isOccupied
+                ? (reason === 'past' ? 'เลยเวลาเริ่มแล้ว' : 'ช่วงเวลานี้ไม่ว่าง')
+                : 'กรอกข้อมูลผู้จอง'}
+            </span>
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="main-content">
       {/* 3-STEP WIZARD PROGRESS BAR */}
       <StepProgress currentStep={1} />
 
       {/* 1. INTERACTIVE MONTHLY CALENDAR CARD (NAVY & TEAL) */}
-      <section className="customer-cal-card" aria-label="ปฏิทินเลือกวันจองห้องประชุม">
+      <section ref={calendarSectionRef} className="customer-cal-card" aria-label="ปฏิทินเลือกวันจองห้องประชุม">
         {/* Month Navigation Bar */}
         <div className="customer-cal-nav">
           <div className="customer-cal-nav__title-group">
@@ -2712,7 +3310,11 @@ export default function RoomListPage() {
                   >
                     <span className="customer-cal-day__num">{cell.dayNumber}</span>
                     {isPast ? (
-                      <span className="customer-cal-day__diagonal-label">ผ่านมาแล้ว</span>
+                      <span className="customer-cal-day__past-x" aria-hidden="true">
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                          <path d="M2 2L8 8M8 2L2 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                        </svg>
+                      </span>
                     ) : isTodayExpired ? (
                       <span className="customer-cal-day__badge customer-cal-day__badge--expired">หมดรอบวันนี้</span>
                     ) : (
@@ -2774,13 +3376,11 @@ export default function RoomListPage() {
           <div>
             <div className="customer-summary-filter-text">
               {searchMode === 'byGuests'
-                ? `${formatShortThaiDate(dateStr)} · ${guests} คน${filterStartTime && filterEndTime ? ` · ${filterStartTime}–${filterEndTime} น.` : ''}`
-                : `${formatShortThaiDate(dateStr)} · ห้อง ${directSelectedRoom?.name || 'ที่เลือก'}${guests ? ` · ${guests} คน` : ''}`}
+                ? `${formatShortThaiDate(dateStr)} · ${guests} คน`
+                : `${formatShortThaiDate(dateStr)} · ห้อง ${activeRoom?.name || directSelectedRoom?.name || 'ที่เลือก'}${guests ? ` · ${guests} คน` : ''}`}
             </div>
             <div className="customer-summary-filter-sub">
-              {searchMode === 'byGuests'
-                ? (filterStartTime && filterEndTime ? 'ค้นหาตามจำนวนคนและช่วงเวลา' : 'ค้นหาตามจำนวนคน (ทุกช่วงเวลาที่ว่าง)')
-                : 'ค้นหาแบบระบุห้อง'}
+              {searchMode === 'byGuests' ? 'ค้นหาตามจำนวนคน' : 'ค้นหาแบบระบุห้อง'}
             </div>
           </div>
         </div>
@@ -2796,114 +3396,68 @@ export default function RoomListPage() {
         </button>
       </div>
 
-      {/* 3. ROOM CARDS LIST */}
+      {/* 3. SINGLE-ROOM MASTER-DETAIL VIEW */}
       {loading ? (
         <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--text-muted)' }}>
           <div className="spinner" style={{ margin: '0 auto 12px auto' }} />
           <div>กำลังโหลดข้อมูลห้องประชุมและเวลาว่าง…</div>
         </div>
-      ) : searchMode === 'byGuests' ? (
-        recommendedRooms.length === 0 && upgradeRooms.length === 0 ? (
-          /* EMPTY STATE: NO ROOMS AVAILABLE IN SELECTED TIME WINDOW */
-          <div
-            id="empty-rooms-for-time-window"
+      ) : searchMode === 'byGuests' && switcherRooms.length === 0 ? (
+        /* EMPTY STATE: NO AVAILABLE ROOMS FOR GUEST COUNT ON SELECTED DATE */
+        <div
+          id="empty-rooms-for-date"
+          style={{
+            padding: '32px 20px',
+            backgroundColor: '#ffffff',
+            borderRadius: '16px',
+            border: '1.5px solid var(--border)',
+            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '12px',
+            boxShadow: 'var(--shadow-sm)'
+          }}
+        >
+          <div style={{
+            width: '48px',
+            height: '48px',
+            borderRadius: '50%',
+            backgroundColor: '#f1f5f9',
+            color: '#64748b',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}>
+            <Calendar size={24} />
+          </div>
+          <div style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--navy)' }}>
+            ไม่พบห้องว่างสำหรับ {guests} คนในวันที่เลือก
+          </div>
+          <button
+            type="button"
+            id="btn-change-date-empty"
+            onClick={() => {
+              if (calendarSectionRef.current) {
+                calendarSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }
+            }}
+            className="btn-primary"
             style={{
-              padding: '32px 20px',
-              backgroundColor: '#ffffff',
-              borderRadius: '16px',
-              border: '1.5px solid var(--border)',
-              textAlign: 'center',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '12px',
-              boxShadow: 'var(--shadow-sm)'
+              width: 'auto',
+              minWidth: '160px',
+              padding: '10px 22px',
+              height: '44px',
+              fontSize: '0.9rem',
+              fontWeight: 800,
+              borderRadius: '12px'
             }}
           >
-            <div style={{
-              width: '48px',
-              height: '48px',
-              borderRadius: '50%',
-              backgroundColor: '#f1f5f9',
-              color: '#64748b',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <Clock size={24} />
-            </div>
-            <div style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--navy)' }}>
-              ไม่มีห้องว่างในช่วงเวลานี้
-            </div>
-            <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-muted)', maxWidth: '300px', lineHeight: 1.5 }}>
-              {filterStartTime && filterEndTime
-                ? `ช่วง ${filterStartTime}–${filterEndTime} น. สำหรับ ${guests} ท่าน ไม่มีห้องที่ว่างตลอดช่วงเวลาที่เลือก`
-                : `วันที่เลือกไม่มีห้องที่ว่างสำหรับ ${guests} ท่าน`}
-            </p>
-            <button
-              type="button"
-              id="btn-change-search-time"
-              onClick={handleOpenEditModal}
-              className="btn-primary"
-              style={{
-                width: 'auto',
-                minWidth: '160px',
-                padding: '10px 22px',
-                height: '44px',
-                fontSize: '0.9rem',
-                fontWeight: 800,
-                borderRadius: '12px'
-              }}
-            >
-              เปลี่ยนเวลา
-            </button>
-          </div>
-        ) : (
-        /* MODE: BY GUESTS (GROUP 1: ห้องที่เหมาะกับจำนวนคน, GROUP 2: ห้องใหญ่ขึ้น) */
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
-          {/* GROUP 1: ห้องที่เหมาะกับจำนวนคน */}
-          <div>
-            <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--navy)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <CheckCircle2 size={16} color="var(--primary)" />
-              <span>ห้องที่เหมาะกับจำนวนคน ({guests} ท่าน)</span>
-              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 600 }}>({recommendedRooms.length} ห้อง)</span>
-            </div>
-
-            {recommendedRooms.length === 0 ? (
-              <div style={{ padding: '20px', backgroundColor: '#ffffff', borderRadius: '12px', border: '1px solid var(--border)', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                ไม่มีห้องขนาดพอดีกับจำนวนนี้ แต่สามารถดูตัวเลือกห้องขนาดใหญ่ขึ้นด้านล่างได้
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {recommendedRooms.map(r => renderRoomCard(r, false))}
-              </div>
-            )}
-          </div>
-
-          {/* GROUP 2: ห้องใหญ่ขึ้น เพิ่มความสบาย */}
-          {upgradeRooms.length > 0 && (
-            <div>
-              <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--navy)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Sparkles size={16} color="#0284c7" />
-                <span>ห้องใหญ่ขึ้น เพิ่มความสบาย</span>
-                <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 600 }}>({upgradeRooms.length} ห้อง)</span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {upgradeRooms.map(r => renderRoomCard(r, true))}
-              </div>
-            </div>
-          )}
+            เปลี่ยนวัน
+          </button>
         </div>
-        )
       ) : (
-        /* MODE: DIRECT ROOM (SHOWS ONLY THE SELECTED ROOM) */
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {directSelectedRoom ? (
-            renderRoomCard(directSelectedRoom, false)
-          ) : (
-            allSortedRooms.map(r => renderRoomCard(r, false))
-          )}
-        </div>
+        renderSingleRoomView(activeRoom)
       )}
 
         </>
@@ -3072,141 +3626,6 @@ export default function RoomListPage() {
                   : 'ระบบจะแสดงเฉพาะห้องที่เลือก พร้อมตรวจสอบความจุตามจำนวนผู้เข้าร่วม'}
               </div>
             </div>
-
-            {/* Collapsible Optional Time Window Filter for 'byGuests' mode */}
-            {modalMode === 'byGuests' && (() => {
-              if (!isModalTimeExpanded) {
-                return (
-                  <button
-                    type="button"
-                    id="btn-expand-modal-time"
-                    onClick={() => setIsModalTimeExpanded(true)}
-                    style={{
-                      width: '100%',
-                      padding: '11px 14px',
-                      borderRadius: '12px',
-                      border: '1.5px dashed rgba(15, 118, 110, 0.4)',
-                      backgroundColor: '#f8fafc',
-                      color: 'var(--primary)',
-                      fontSize: '0.84rem',
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '6px'
-                    }}
-                  >
-                    <Clock size={15} />
-                    <span>ระบุช่วงเวลา (ไม่บังคับ)</span>
-                  </button>
-                );
-              }
-              const modalIsToday = modalDate === todayIso;
-              const modalStartOpts = TIME_OPTIONS.filter(t => {
-                if (t >= '18:00') return false;
-                if (modalIsToday) {
-                  const [h, m] = t.split(':').map(Number);
-                  if (h * 60 + m <= currentMins) return false;
-                }
-                return true;
-              });
-              const modalEndOpts = TIME_OPTIONS.filter(t => {
-                if (t <= '08:00' || t > '18:00') return false;
-                if (modalStartTime && t <= modalStartTime) return false;
-                return true;
-              });
-              return (
-                <div
-                  id="modal-time-filter-panel"
-                  style={{
-                    padding: '12px 14px',
-                    borderRadius: '12px',
-                    backgroundColor: '#f8fafc',
-                    border: '1px solid var(--border)'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--navy)' }}>
-                      ระบุช่วงเวลา (ไม่บังคับ)
-                    </label>
-                    <button
-                      type="button"
-                      id="btn-clear-modal-time"
-                      onClick={() => {
-                        setModalStartTime('');
-                        setModalEndTime('');
-                        setIsModalTimeExpanded(false);
-                        setModalError('');
-                      }}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: 'var(--primary)',
-                        fontSize: '0.76rem',
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                        padding: 0
-                      }}
-                    >
-                      ล้างช่วงเวลา
-                    </button>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                    <div>
-                      <label htmlFor="select-modal-start-time" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                        เวลาเริ่ม
-                      </label>
-                      <select
-                        id="select-modal-start-time"
-                        value={modalStartTime}
-                        onChange={(e) => {
-                          const nextStart = e.target.value;
-                          setModalError('');
-                          setModalStartTime(nextStart);
-                          if (!nextStart) {
-                            setModalEndTime('');
-                          } else if (!modalEndTime || modalEndTime <= nextStart) {
-                            const [h, m] = nextStart.split(':').map(Number);
-                            const autoEndMins = Math.min(18 * 60, h * 60 + m + 60);
-                            const autoEnd = `${String(Math.floor(autoEndMins / 60)).padStart(2, '0')}:${String(autoEndMins % 60).padStart(2, '0')}`;
-                            setModalEndTime(autoEnd);
-                          }
-                        }}
-                        className="form-input"
-                        style={{ height: '42px', fontSize: '0.86rem', fontWeight: 700, borderRadius: '10px' }}
-                      >
-                        <option value="">ทุกช่วงเวลา</option>
-                        {modalStartOpts.map(t => (
-                          <option key={t} value={t}>{t} น.</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label htmlFor="select-modal-end-time" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                        เวลาสิ้นสุด
-                      </label>
-                      <select
-                        id="select-modal-end-time"
-                        value={modalEndTime}
-                        disabled={!modalStartTime}
-                        onChange={(e) => {
-                          setModalError('');
-                          setModalEndTime(e.target.value);
-                        }}
-                        className="form-input"
-                        style={{ height: '42px', fontSize: '0.86rem', fontWeight: 700, borderRadius: '10px' }}
-                      >
-                        <option value="">{modalStartTime ? '-- เลือกเวลาสิ้นสุด --' : 'ทุกช่วงเวลา'}</option>
-                        {modalEndOpts.map(t => (
-                          <option key={t} value={t}>{t} น.</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
 
             {modalError && (
               <div style={{

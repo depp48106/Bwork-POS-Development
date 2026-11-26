@@ -146,17 +146,16 @@ test('Case 3: Timeline Bar, Header & Calendar UI Rules', async (t) => {
     assert.ok(!roomListPageSrc.includes('backgroundColor: \'#E2E8F0\', border: \'1px solid #CBD5E1\''));
   });
 
-  await t.test('3.3: Header removes "B-WORK · จองออนไลน์ผ่าน LINE", calendar ribbon is watermark-subtle, collapsible time filter exists', () => {
+  await t.test('3.3: Header removes LINE subtitle, past date uses thin top-right cross, modal has no time filter, single-room notices exist', () => {
     assert.ok(!appSrc.includes('จองออนไลน์ผ่าน LINE'));
-    assert.match(indexCssSrc, /rotate\(-32deg\)/);
-    assert.match(indexCssSrc, /font-weight:\s*400;/);
-    assert.match(indexCssSrc, /rgba\(226, 232, 240, 0\.36\)/);
-    assert.match(roomListPageSrc, /ระบุช่วงเวลา \(ไม่บังคับ\)/);
-    assert.match(roomListPageSrc, /ล้างช่วงเวลา/);
-    assert.match(roomListPageSrc, /ผ่านมาแล้ว/);
+    assert.match(indexCssSrc, /\.customer-cal-day__past-x/);
+    assert.ok(!roomListPageSrc.includes('customer-cal-day__diagonal-label'));
+    assert.ok(!roomListPageSrc.includes('ระบุช่วงเวลา (ไม่บังคับ)'));
     assert.match(roomListPageSrc, /หมดรอบวันนี้/);
-    assert.match(roomListPageSrc, /ไม่มีห้องว่างในช่วงเวลานี้/);
-    assert.match(roomListPageSrc, /เปลี่ยนเวลา/);
+    assert.match(roomListPageSrc, /ห้องขนาด \$\{smallestCapableCap\} ที่นั่งเต็มแล้วสำหรับวันที่เลือก/);
+    assert.match(roomListPageSrc, /ไม่พบห้องว่างสำหรับ \{guests\} คนในวันที่เลือก/);
+    assert.match(roomListPageSrc, /ห้องนี้ไม่มีช่วงว่างในวันที่เลือก/);
+    assert.match(roomListPageSrc, /ห้องนี้ไม่ว่างในช่วงเดิม กรุณาเลือกเวลาใหม่/);
   });
 });
 

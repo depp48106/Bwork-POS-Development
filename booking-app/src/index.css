@@ -691,43 +691,113 @@ button:active {
 .customer-cal-day--past {
   position: relative;
   overflow: hidden;
-  background-color: #f1f5f9 !important;
+  background-color: #f8fafc !important;
   border-color: #e2e8f0 !important;
   color: #94a3b8 !important;
   cursor: not-allowed !important;
 }
 
 .customer-cal-day--past .customer-cal-day__num {
-  position: relative;
-  z-index: 3;
-  color: #64748b !important;
+  color: #94a3b8 !important;
   font-weight: 700;
-  align-self: flex-start;
-  margin-bottom: auto;
-  font-size: 0.84rem;
+}
+
+.customer-cal-day__past-x {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  color: #cbd5e1;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   line-height: 1;
 }
 
-.customer-cal-day__diagonal-label {
-  position: absolute;
-  top: 56%;
-  left: 50%;
-  width: 145%;
-  text-align: center;
-  padding: 2px 0;
-  font-family: inherit;
-  font-size: 0.56rem;
-  font-weight: 400;
-  color: rgba(100, 116, 139, 0.45);
-  background-color: rgba(226, 232, 240, 0.36);
-  border: none;
-  transform: translate(-50%, -50%) rotate(-32deg);
-  transform-origin: center;
-  pointer-events: none;
-  line-height: 1.1;
-  white-space: nowrap;
-  letter-spacing: -0.1px;
-  z-index: 1;
+/* ============================================================================
+   SINGLE-ROOM MASTER-DETAIL LAYOUT & ROOM SWITCHER (DESKTOP + MOBILE)
+   ============================================================================ */
+.room-detail-layout {
+  display: grid;
+  grid-template-columns: 310px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.room-detail-left {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.room-detail-right {
+  min-width: 0;
+  background-color: #ffffff;
+  border: 1.5px solid var(--border);
+  border-radius: 18px;
+  padding: 18px;
+  box-shadow: var(--shadow-sm);
+}
+
+.room-switcher-desktop {
+  background-color: #ffffff;
+  border: 1.5px solid var(--border);
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.room-switcher-mobile {
+  display: none;
+}
+
+.room-switcher-item {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border);
+  background-color: #ffffff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.room-switcher-item:hover {
+  border-color: rgba(15, 118, 110, 0.45);
+  background-color: #f8fafc;
+}
+
+.room-switcher-item--active {
+  border-color: var(--primary);
+  background-color: #f0fdfa;
+  box-shadow: 0 2px 8px rgba(15, 118, 110, 0.12);
+}
+
+@media (max-width: 859px) {
+  .room-detail-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .room-detail-right {
+    padding: 14px;
+  }
+
+  .room-switcher-desktop {
+    display: none;
+  }
+
+  .room-switcher-mobile {
+    display: block;
+  }
 }
 
 .customer-cal-day--today-expired {
