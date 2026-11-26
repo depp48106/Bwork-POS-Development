@@ -784,7 +784,13 @@ button:active {
   .room-detail-layout {
     display: flex;
     flex-direction: column;
+    align-items: stretch;
     gap: 12px;
+  }
+
+  .room-detail-left,
+  .room-detail-right {
+    width: 100%;
   }
 
   .room-detail-right {
