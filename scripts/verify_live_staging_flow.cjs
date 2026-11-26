@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 
-const STAGING_PAGES = 'https://c974735b.bwork-booking-staging.pages.dev';
+const STAGING_PAGES = 'https://ec69d9d8.bwork-booking-staging.pages.dev';
 const STAGING_API = 'https://bwork-pos-api-staging.ohnatza74185-ky.workers.dev';
 const ARTIFACT_DIR = 'C:/Users/ADMIN/.gemini/antigravity/brain/93b1ef54-72e7-446f-a6a3-437743441774';
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';

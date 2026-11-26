@@ -1534,33 +1534,65 @@ export default function ConfirmPage() {
                     backgroundColor: 'var(--bg-page)',
                     border: '1px solid var(--border)',
                     borderRadius: '12px',
-                    padding: '12px 14px',
+                    padding: '14px',
                     fontSize: '0.8rem'
                   }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 800, color: 'var(--navy)', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 800, color: 'var(--navy)', marginBottom: '10px' }}>
                       <CreditCard size={15} color="var(--primary)" />
                       <span>หรือโอนผ่านบัญชีธนาคาร</span>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', color: 'var(--text-muted)' }}>
-                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '12px',
+                      flexWrap: 'wrap'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, flex: '1 1 200px' }}>
                         {isKrungsriBank && (
                           <img
-                            src="/krungsri-logo.svg"
-                            alt="ธนาคารกรุงศรีอยุธยา"
+                            src="/krungsri-logo.png"
+                            alt="ธนาคารกรุงศรีอยุธยา (krungsri)"
                             id="bank-logo-krungsri"
                             style={{
-                              width: '28px',
-                              height: '28px',
-                              borderRadius: '6px',
+                              width: '54px',
+                              height: 'auto',
+                              aspectRatio: '148 / 156',
+                              borderRadius: '8px',
                               objectFit: 'contain',
                               flexShrink: 0,
-                              boxShadow: '0 1px 3px rgba(0,0,0,0.12)'
+                              display: 'block',
+                              boxShadow: '0 2px 6px rgba(0,0,0,0.12)'
                             }}
                           />
                         )}
-                        <span id="bank-name-display" style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.86rem' }}>
-                          {displayedBankName || (paymentSettingsLoaded ? '-' : 'กำลังโหลดข้อมูลบัญชี...')}
-                        </span>
+                        <div style={{ minWidth: 0 }}>
+                          <div id="bank-name-display" style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.88rem', lineHeight: 1.3 }}>
+                            {displayedBankName || (paymentSettingsLoaded ? '-' : 'กำลังโหลดข้อมูลบัญชี...')}
+                          </div>
+                          <div
+                            id="bank-account-number-display"
+                            style={{
+                              fontFamily: 'monospace',
+                              fontWeight: 900,
+                              fontSize: '1.12rem',
+                              color: 'var(--navy)',
+                              margin: '3px 0 2px 0',
+                              userSelect: 'all',
+                              WebkitUserSelect: 'all',
+                              cursor: 'text',
+                              letterSpacing: '0.5px',
+                              lineHeight: 1.25
+                            }}
+                          >
+                            {displayedAccountNumber || (paymentSettingsLoaded ? '-' : '...')}
+                          </div>
+                          {paymentSettings.account_name && (
+                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.3 }}>
+                              ชื่อบัญชี: {paymentSettings.account_name}
+                            </div>
+                          )}
+                        </div>
                       </div>
                       <button
                         type="button"
@@ -1571,48 +1603,27 @@ export default function ConfirmPage() {
                           background: copied ? '#ecfdf5' : '#ffffff',
                           border: copied ? '1px solid #10b981' : '1px solid rgba(15, 118, 110, 0.35)',
                           borderRadius: '8px',
-                          padding: '5px 10px',
-                          minHeight: '32px',
+                          padding: '6px 12px',
+                          minHeight: '36px',
                           color: copied ? '#047857' : 'var(--primary)',
                           fontWeight: 800,
-                          fontSize: '0.76rem',
+                          fontSize: '0.78rem',
                           cursor: displayedAccountNumber ? 'pointer' : 'not-allowed',
                           opacity: displayedAccountNumber ? 1 : 0.55,
                           display: 'inline-flex',
                           alignItems: 'center',
-                          gap: '4px',
+                          gap: '5px',
                           flexShrink: 0,
                           whiteSpace: 'nowrap'
                         }}
                       >
-                        {copied ? <Check size={13} /> : <Copy size={13} />}
+                        {copied ? <Check size={14} /> : <Copy size={14} />}
                         <span>{copied ? 'คัดลอกแล้ว' : 'คัดลอกเลขบัญชี'}</span>
                       </button>
                     </div>
-                    <div
-                      id="bank-account-number-display"
-                      style={{
-                        fontFamily: 'monospace',
-                        fontWeight: 900,
-                        fontSize: '1.12rem',
-                        color: 'var(--navy)',
-                        margin: '8px 0 4px 0',
-                        userSelect: 'all',
-                        WebkitUserSelect: 'all',
-                        cursor: 'text',
-                        letterSpacing: '0.5px'
-                      }}
-                    >
-                      {displayedAccountNumber || (paymentSettingsLoaded ? '-' : '...')}
-                    </div>
                     {copyError && (
-                      <div id="bank-account-copy-error" style={{ fontSize: '0.74rem', color: 'var(--danger)', fontWeight: 700, marginBottom: '4px' }}>
+                      <div id="bank-account-copy-error" style={{ fontSize: '0.74rem', color: 'var(--danger)', fontWeight: 700, marginTop: '6px' }}>
                         {copyError}
-                      </div>
-                    )}
-                    {paymentSettings.account_name && (
-                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                        ชื่อบัญชี: {paymentSettings.account_name}
                       </div>
                     )}
                   </div>

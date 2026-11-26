@@ -165,7 +165,65 @@ async function run() {
     // =========================================================================
     await client.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 
-    console.log('1. [Mobile] Testing byGuests 10:00-12:00 filter (Mars 11:00-11:30 hidden, Venus shown)...');
+    console.log('0. [Mobile] Testing collapsible time filter in modal (collapsed by default -> expand -> clear)...');
+    await client.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
+    await new Promise(r => setTimeout(r, 900));
+    await client.eval(`(() => {
+      const btn27 = Array.from(document.querySelectorAll('button.customer-cal-day')).find(b => b.innerText.includes('27'));
+      if (btn27) btn27.click();
+    })()`);
+    await new Promise(r => setTimeout(r, 400));
+
+    const collapseCheck = await client.eval(`(async () => {
+      const expandBtnBefore = Boolean(document.getElementById('btn-expand-modal-time'));
+      const panelBefore = Boolean(document.getElementById('modal-time-filter-panel'));
+      document.getElementById('btn-expand-modal-time')?.click();
+      await new Promise(r => setTimeout(r, 200));
+      const panelAfterExpand = Boolean(document.getElementById('modal-time-filter-panel'));
+      const clearBtn = document.getElementById('btn-clear-modal-time');
+      const clearLabel = clearBtn?.innerText?.trim() || '';
+      clearBtn?.click();
+      await new Promise(r => setTimeout(r, 200));
+      const panelAfterClear = Boolean(document.getElementById('modal-time-filter-panel'));
+      return { expandBtnBefore, panelBefore, panelAfterExpand, clearLabel, panelAfterClear };
+    })()`);
+    console.log('  [RESULT Collapsible Filter]', JSON.stringify(collapseCheck));
+    if (!collapseCheck.expandBtnBefore || collapseCheck.panelBefore || !collapseCheck.panelAfterExpand || collapseCheck.clearLabel !== 'ล้างช่วงเวลา' || collapseCheck.panelAfterClear) {
+      throw new Error('Collapsible time filter check failed: ' + JSON.stringify(collapseCheck));
+    }
+
+    console.log('\n0.5. [Mobile] Testing timeline tap on booked/cleaning slots shows tooltip WITHOUT changing selected time...');
+    await client.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/rooms?mode=directRoom&date=2026-11-27&guests=4&roomId=4` });
+    await new Promise(r => setTimeout(r, 1000));
+
+    const tapBookedCheck = await client.eval(`(async () => {
+      const selectsBefore = Array.from(document.querySelectorAll('select')).map(s => s.value);
+      const bookedSlot = document.querySelector('[data-slot-type="booked"]');
+      const cleaningSlot = document.querySelector('[data-slot-type="cleaning"]');
+      if (!bookedSlot || !cleaningSlot) return { error: 'Booked or cleaning slot missing' };
+      bookedSlot.click();
+      await new Promise(r => setTimeout(r, 200));
+      const bookedTip = document.querySelector('[data-testid="timeline-slot-tooltip-4"]')?.innerText?.trim() || '';
+      const selectsAfterBooked = Array.from(document.querySelectorAll('select')).map(s => s.value);
+
+      cleaningSlot.click();
+      await new Promise(r => setTimeout(r, 200));
+      const cleaningTip = document.querySelector('[data-testid="timeline-slot-tooltip-4"]')?.innerText?.trim() || '';
+      const selectsAfterCleaning = Array.from(document.querySelectorAll('select')).map(s => s.value);
+
+      return {
+        bookedTip,
+        cleaningTip,
+        unchangedAfterBooked: JSON.stringify(selectsBefore) === JSON.stringify(selectsAfterBooked),
+        unchangedAfterCleaning: JSON.stringify(selectsBefore) === JSON.stringify(selectsAfterCleaning)
+      };
+    })()`);
+    console.log('  [RESULT Tap Booked/Cleaning]', JSON.stringify(tapBookedCheck));
+    if (tapBookedCheck.error || !tapBookedCheck.bookedTip.includes('11:00–11:30 น. · ติดจอง') || !tapBookedCheck.cleaningTip.includes('น. · ทำความสะอาด') || !tapBookedCheck.unchangedAfterBooked || !tapBookedCheck.unchangedAfterCleaning) {
+      throw new Error('Timeline tap tooltip check failed: ' + JSON.stringify(tapBookedCheck));
+    }
+
+    console.log('\n1. [Mobile] Testing byGuests 10:00-12:00 filter (Mars 11:00-11:30 hidden, Venus shown)...');
     await client.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/rooms?mode=byGuests&date=2026-11-27&guests=4&start=10:00&end=12:00` });
     await new Promise(r => setTimeout(r, 1200));
 

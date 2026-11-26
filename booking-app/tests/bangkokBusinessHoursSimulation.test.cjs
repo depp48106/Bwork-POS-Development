@@ -135,19 +135,24 @@ test('Case 3: Timeline Bar, Header & Calendar UI Rules', async (t) => {
     assert.ok(!roomListPageSrc.includes('เวลาทั้งหมดเป็นเวลาไทย'));
   });
 
-  await t.test('3.2: Timeline legend has no "เลยเวลา", booked is light orange #FDBA74, past is solid grey #64748B, edge handles exist', () => {
+  await t.test('3.2: Timeline legend has no "เลยเวลา", colors are #6EE7B7/#F47B5B/#FACC15/#64748B, tooltip & edge handles exist', () => {
+    assert.match(roomListPageSrc, /bgColor\s*=\s*'#6EE7B7'/);
+    assert.match(roomListPageSrc, /bgColor\s*=\s*'#F47B5B'/);
+    assert.match(roomListPageSrc, /bgColor\s*=\s*'#FACC15'/);
     assert.match(roomListPageSrc, /bgColor\s*=\s*'#64748B'/);
-    assert.match(roomListPageSrc, /bgColor\s*=\s*'#FDBA74'/);
+    assert.match(roomListPageSrc, /timeline-slot-tooltip-/);
     assert.match(roomListPageSrc, /timeline-edge-start-/);
     assert.match(roomListPageSrc, /timeline-edge-end-/);
     assert.ok(!roomListPageSrc.includes('backgroundColor: \'#E2E8F0\', border: \'1px solid #CBD5E1\''));
   });
 
-  await t.test('3.3: Header removes "B-WORK · จองออนไลน์ผ่าน LINE", calendar ribbon is soft grey without dark border', () => {
+  await t.test('3.3: Header removes "B-WORK · จองออนไลน์ผ่าน LINE", calendar ribbon is watermark-subtle, collapsible time filter exists', () => {
     assert.ok(!appSrc.includes('จองออนไลน์ผ่าน LINE'));
     assert.match(indexCssSrc, /rotate\(-32deg\)/);
     assert.match(indexCssSrc, /font-weight:\s*400;/);
-    assert.match(indexCssSrc, /border:\s*none;/);
+    assert.match(indexCssSrc, /rgba\(226, 232, 240, 0\.36\)/);
+    assert.match(roomListPageSrc, /ระบุช่วงเวลา \(ไม่บังคับ\)/);
+    assert.match(roomListPageSrc, /ล้างช่วงเวลา/);
     assert.match(roomListPageSrc, /ผ่านมาแล้ว/);
     assert.match(roomListPageSrc, /หมดรอบวันนี้/);
     assert.match(roomListPageSrc, /ไม่มีห้องว่างในช่วงเวลานี้/);
@@ -162,8 +167,8 @@ test('Case 4: Payment Page Bank Logo, No Hardcoded Default Account, Staging Prev
     assert.ok(!confirmPageSrc.includes('0125554000401'), 'Must not embed real promptpay ID as default');
   });
 
-  await t.test('4.2: ConfirmPage includes Krungsri logo, clean bank name, and strips non-digits on copy', () => {
-    assert.match(confirmPageSrc, /\/krungsri-logo\.svg/);
+  await t.test('4.2: ConfirmPage includes full Krungsri PNG logo, clean bank name, and strips non-digits on copy', () => {
+    assert.match(confirmPageSrc, /\/krungsri-logo\.png/);
     assert.match(confirmPageSrc, /ธนาคารกรุงศรีอยุธยา/);
     assert.match(confirmPageSrc, /displayedAccountNumber\.replace\(\/\\D\/g,\s*''\)/);
   });

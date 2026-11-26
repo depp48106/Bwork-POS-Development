@@ -234,6 +234,8 @@ export default function RoomListPage() {
   const [modalRoomId, setModalRoomId] = useState(initialRoomId || '');
   const [modalStartTime, setModalStartTime] = useState(initialFilterStart);
   const [modalEndTime, setModalEndTime] = useState(initialFilterEnd);
+  const [isModalTimeExpanded, setIsModalTimeExpanded] = useState(Boolean(initialFilterStart && initialFilterEnd));
+  const [slotTooltip, setSlotTooltip] = useState(null); // { roomId, text, pct }
 
   // Master Data States
   const [rooms, setRooms] = useState([]);
@@ -483,6 +485,7 @@ export default function RoomListPage() {
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
     setModalStartTime(filterStartTime);
     setModalEndTime(filterEndTime);
+    setIsModalTimeExpanded(Boolean(filterStartTime && filterEndTime));
     setModalError('');
     setIsModalOpen(true);
   };
@@ -495,6 +498,7 @@ export default function RoomListPage() {
     setModalRoomId(confirmedRoomId || (rooms.length > 0 ? rooms[0].id : ''));
     setModalStartTime(filterStartTime);
     setModalEndTime(filterEndTime);
+    setIsModalTimeExpanded(Boolean(filterStartTime && filterEndTime));
     setModalError('');
     setIsModalOpen(true);
   };
@@ -1088,6 +1092,7 @@ export default function RoomListPage() {
   // Handle timeline bar tap: 1st tap sets start time, 2nd tap sets end time
   const handleTimelineBarClick = (room, e) => {
     setTimelineError('');
+    setSlotTooltip(null);
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const width = rect.width;
@@ -1235,6 +1240,7 @@ export default function RoomListPage() {
   const handleArrowPointerDown = (type, room, e) => {
     e.preventDefault();
     e.stopPropagation();
+    setSlotTooltip(null);
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch (err) {}
@@ -1382,7 +1388,7 @@ export default function RoomListPage() {
       const isPast = isToday && slotStart <= currentMins;
       const occupiedInfo = getRoomOccupiedInfo(room.id, slotStartStr, slotEndStr);
 
-      let bgColor = '#A7F3D0'; // ว่าง (เขียวอ่อน)
+      let bgColor = '#6EE7B7'; // ว่าง (เขียวมิ้นต์ชัดขึ้น)
       let type = 'available';
 
       if (isPast) {
@@ -1391,10 +1397,10 @@ export default function RoomListPage() {
       } else if (occupiedInfo.isOccupied) {
         if (occupiedInfo.reason === 'cleaning') {
           type = 'cleaning';
-          bgColor = '#FEF08A'; // ทำความสะอาด (เหลืองอ่อน)
+          bgColor = '#FACC15'; // ทำความสะอาด (เหลืองทอง)
         } else {
           type = 'booked';
-          bgColor = '#FDBA74'; // ติดจอง (ส้มอ่อน แยกชัดจากเทาทึบ)
+          bgColor = '#F47B5B'; // ติดจอง (ส้มอมแดง)
         }
       }
 
@@ -1407,6 +1413,30 @@ export default function RoomListPage() {
         bgColor,
         type
       });
+    }
+
+    // Merge contiguous 'booked' / 'cleaning' slots so hover/tap displays full range (e.g. "10:00–11:00 น. · ติดจอง")
+    let idx = 0;
+    while (idx < slots.length) {
+      const sType = slots[idx].type;
+      if (sType === 'booked' || sType === 'cleaning') {
+        let endIdx = idx;
+        while (endIdx + 1 < slots.length && slots[endIdx + 1].type === sType) {
+          endIdx++;
+        }
+        const blockStartStr = slots[idx].startStr;
+        const blockEndStr = slots[endIdx].endStr;
+        const statusLabel = sType === 'booked' ? 'ติดจอง' : 'ทำความสะอาด';
+        const tooltipText = `${blockStartStr}–${blockEndStr} น. · ${statusLabel}`;
+        const blockCenterPct = (((idx + endIdx + 1) / 2) / 20) * 100;
+        for (let k = idx; k <= endIdx; k++) {
+          slots[k].tooltipText = tooltipText;
+          slots[k].blockCenterPct = blockCenterPct;
+        }
+        idx = endIdx + 1;
+      } else {
+        idx++;
+      }
     }
 
     const selStartPct = Math.max(0, Math.min(100, ((selStartMins - 480) / 600) * 100));
@@ -1537,6 +1567,32 @@ export default function RoomListPage() {
             </svg>
           </div>
 
+          {/* Slot Status Tooltip (Hover on Desktop / Tap on Mobile for booked & cleaning slots) */}
+          {slotTooltip && slotTooltip.roomId === room.id && (
+            <div
+              data-testid={`timeline-slot-tooltip-${room.id}`}
+              role="status"
+              style={{
+                position: 'absolute',
+                left: `${Math.max(18, Math.min(82, slotTooltip.pct))}%`,
+                bottom: 'calc(100% + 10px)',
+                transform: 'translateX(-50%)',
+                backgroundColor: '#0F172A',
+                color: '#FFFFFF',
+                fontSize: '0.76rem',
+                fontWeight: 700,
+                padding: '5px 10px',
+                borderRadius: '8px',
+                whiteSpace: 'nowrap',
+                boxShadow: '0 4px 12px rgba(15, 23, 42, 0.28)',
+                zIndex: 25,
+                pointerEvents: 'none'
+              }}
+            >
+              {slotTooltip.text}
+            </div>
+          )}
+
           {/* Background Capsule Tube Track */}
           <div
             onClick={(e) => handleTimelineBarClick(room, e)}
@@ -1546,24 +1602,44 @@ export default function RoomListPage() {
               display: 'flex',
               borderRadius: '9999px',
               overflow: 'hidden',
-              backgroundColor: '#A7F3D0',
+              backgroundColor: '#6EE7B7',
               cursor: 'pointer'
             }}
             title="แตะเพื่อเลือกเวลา"
           >
-            {slots.map(s => (
-              <div
-                key={s.index}
-                data-slot-type={s.type}
-                style={{
-                  flex: 1,
-                  height: '100%',
-                  backgroundColor: s.bgColor,
-                  border: 'none',
-                  cursor: s.type === 'past' ? 'not-allowed' : 'pointer'
-                }}
-              />
-            ))}
+            {slots.map(s => {
+              const isInspectable = s.type === 'booked' || s.type === 'cleaning';
+              return (
+                <div
+                  key={s.index}
+                  data-slot-type={s.type}
+                  data-slot-start={s.startStr}
+                  data-slot-tooltip={s.tooltipText || ''}
+                  onMouseEnter={isInspectable ? () => setSlotTooltip({ roomId: room.id, text: s.tooltipText, pct: s.blockCenterPct, type: s.type }) : undefined}
+                  onMouseLeave={isInspectable ? () => setSlotTooltip(prev => (prev && prev.roomId === room.id ? null : prev)) : undefined}
+                  onClick={
+                    isInspectable
+                      ? (e) => {
+                          e.stopPropagation();
+                          setTimelineError('');
+                          setSlotTooltip({ roomId: room.id, text: s.tooltipText, pct: s.blockCenterPct, type: s.type });
+                        }
+                      : s.type === 'past'
+                      ? (e) => {
+                          e.stopPropagation();
+                        }
+                      : undefined
+                  }
+                  style={{
+                    flex: 1,
+                    height: '100%',
+                    backgroundColor: s.bgColor,
+                    border: 'none',
+                    cursor: s.type === 'past' ? 'not-allowed' : isInspectable ? 'help' : 'pointer'
+                  }}
+                />
+              );
+            })}
           </div>
 
           {/* Selected Range Overlay Capsule */}
@@ -1686,15 +1762,15 @@ export default function RoomListPage() {
         {/* Legend Row */}
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '14px', margin: '14px 18px 0 18px', fontSize: '0.82rem', color: '#0F172A', fontWeight: 600 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#A7F3D0' }} />
+            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#6EE7B7' }} />
             ว่าง
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#FDBA74' }} />
+            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#F47B5B' }} />
             ติดจอง
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#FEF08A', border: '1px solid #FDE047' }} />
+            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#FACC15' }} />
             ทำความสะอาด
           </span>
         </div>
@@ -2997,8 +3073,35 @@ export default function RoomListPage() {
               </div>
             </div>
 
-            {/* Optional Time Window Filter for 'byGuests' mode */}
+            {/* Collapsible Optional Time Window Filter for 'byGuests' mode */}
             {modalMode === 'byGuests' && (() => {
+              if (!isModalTimeExpanded) {
+                return (
+                  <button
+                    type="button"
+                    id="btn-expand-modal-time"
+                    onClick={() => setIsModalTimeExpanded(true)}
+                    style={{
+                      width: '100%',
+                      padding: '11px 14px',
+                      borderRadius: '12px',
+                      border: '1.5px dashed rgba(15, 118, 110, 0.4)',
+                      backgroundColor: '#f8fafc',
+                      color: 'var(--primary)',
+                      fontSize: '0.84rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <Clock size={15} />
+                    <span>ระบุช่วงเวลา (ไม่บังคับ)</span>
+                  </button>
+                );
+              }
               const modalIsToday = modalDate === todayIso;
               const modalStartOpts = TIME_OPTIONS.filter(t => {
                 if (t >= '18:00') return false;
@@ -3014,38 +3117,40 @@ export default function RoomListPage() {
                 return true;
               });
               return (
-                <div style={{
-                  padding: '12px 14px',
-                  borderRadius: '12px',
-                  backgroundColor: '#f8fafc',
-                  border: '1px solid var(--border)'
-                }}>
+                <div
+                  id="modal-time-filter-panel"
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: '12px',
+                    backgroundColor: '#f8fafc',
+                    border: '1px solid var(--border)'
+                  }}
+                >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                     <label style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--navy)' }}>
-                      ช่วงเวลาที่ต้องการ (ไม่บังคับ)
+                      ระบุช่วงเวลา (ไม่บังคับ)
                     </label>
-                    {(modalStartTime || modalEndTime) && (
-                      <button
-                        type="button"
-                        id="btn-clear-modal-time"
-                        onClick={() => {
-                          setModalStartTime('');
-                          setModalEndTime('');
-                          setModalError('');
-                        }}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--primary)',
-                          fontSize: '0.76rem',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                          padding: 0
-                        }}
-                      >
-                        ดูทุกช่วงเวลา
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      id="btn-clear-modal-time"
+                      onClick={() => {
+                        setModalStartTime('');
+                        setModalEndTime('');
+                        setIsModalTimeExpanded(false);
+                        setModalError('');
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--primary)',
+                        fontSize: '0.76rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        padding: 0
+                      }}
+                    >
+                      ล้างช่วงเวลา
+                    </button>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                     <div>
