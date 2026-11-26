@@ -976,14 +976,17 @@ export default function RoomListPage() {
       };
     }
 
-    // Mode: 'byGuests' — filter by capacity >= reqGuests, sort ascending by capacity
+    // Mode: 'byGuests' — find the smallest capacity tier that fits reqGuests and still has bookable slots
     const capableRooms = sortedByCap.filter(r => getRoomMaxCap(r) >= reqGuests);
     const availableRooms = capableRooms.filter(r => !schedule || hasAnyBookableSlotInDay(r.id));
 
     let notice = null;
+    let tierAvailableRooms = [];
     if (availableRooms.length > 0 && capableRooms.length > 0) {
       const smallestCapableCap = getRoomMaxCap(capableRooms[0]);
       const firstAvailableCap = getRoomMaxCap(availableRooms[0]);
+      tierAvailableRooms = availableRooms.filter(r => getRoomMaxCap(r) === firstAvailableCap);
+
       if (smallestCapableCap < firstAvailableCap) {
         // Exact/smaller fitting room exists but ALL of them are full on the selected date
         notice = {
@@ -1001,12 +1004,12 @@ export default function RoomListPage() {
       }
     }
 
-    const chosenActive = (activeRoomId ? availableRooms.find(r => String(r.id) === String(activeRoomId)) : null)
-      || availableRooms[0]
+    const chosenActive = (activeRoomId ? tierAvailableRooms.find(r => String(r.id) === String(activeRoomId)) : null)
+      || tierAvailableRooms[0]
       || null;
 
     return {
-      switcherRooms: availableRooms,
+      switcherRooms: tierAvailableRooms,
       activeRoom: chosenActive,
       capacityNotice: notice,
       directSelectedRoom: null,
