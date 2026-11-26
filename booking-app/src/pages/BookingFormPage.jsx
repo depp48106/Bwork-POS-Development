@@ -726,12 +726,15 @@ export default function BookingFormPage() {
           <form onSubmit={handleSubmit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {/* Full Name */}
             <div>
-              <label className="form-label">
+              <label htmlFor="customer-name" className="form-label">
                 ชื่อ - นามสกุล ผู้จอง <span style={{ color: 'var(--danger)' }}>*</span>
               </label>
               <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
                 <input
                   type="text"
+                  id="customer-name"
+                  name="customer_name"
+                  aria-label="ชื่อ - นามสกุล ผู้จอง"
                   required
                   placeholder="เช่น คุณสมชาย ใจดี"
                   value={name}
@@ -753,11 +756,14 @@ export default function BookingFormPage() {
 
             {/* Phone Number */}
             <div>
-              <label className="form-label">
+              <label htmlFor="customer-phone" className="form-label">
                 เบอร์โทรศัพท์ (สำหรับติดต่อ & ส่ง SMS รหัสผ่าน) <span style={{ color: 'var(--danger)' }}>*</span>
               </label>
               <input
                 type="tel"
+                id="customer-phone"
+                name="customer_phone"
+                aria-label="เบอร์โทรศัพท์"
                 required
                 placeholder="08x-xxx-xxxx"
                 value={contact}
@@ -814,9 +820,12 @@ export default function BookingFormPage() {
             {/* Email & Company (2 columns on desktop, 1 on mobile) */}
             <div className="form-grid-2col">
               <div>
-                <label className="form-label">อีเมล (Email) - ไม่บังคับ</label>
+                <label htmlFor="customer-email" className="form-label">อีเมล (Email) - ไม่บังคับ</label>
                 <input
                   type="email"
+                  id="customer-email"
+                  name="customer_email"
+                  aria-label="อีเมล"
                   placeholder="example@company.com"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
@@ -824,9 +833,12 @@ export default function BookingFormPage() {
                 />
               </div>
               <div>
-                <label className="form-label">บริษัท / องค์กร - ไม่บังคับ</label>
+                <label htmlFor="customer-company" className="form-label">บริษัท / องค์กร - ไม่บังคับ</label>
                 <input
                   type="text"
+                  id="customer-company"
+                  name="customer_company"
+                  aria-label="บริษัท หรือ องค์กร"
                   placeholder="ชื่อหน่วยงาน / บริษัท"
                   value={company}
                   onChange={e => setCompany(e.target.value)}
