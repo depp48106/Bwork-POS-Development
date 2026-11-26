@@ -8,7 +8,7 @@ import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
 import { calculateOnlineBookingPricing } from '../utils/onlinePromotionHelper';
 import { getRoomImageUrl, handleRoomImageError } from '../utils/roomImageHelper';
-import { getBangkokNow, getMinStartMinutesToday, isStartTimePastBangkok, isOnlineBookingOpen } from '../utils/bangkokTime';
+import { getBangkokNow, getMinStartMinutesToday, isStartTimePastBangkok } from '../utils/bangkokTime';
 import {
   getAvailabilityMonth,
   getRoomAvailabilityForDay,
@@ -91,16 +91,14 @@ export default function RoomListPage() {
   const query = new URLSearchParams(location.search);
 
   const [bangkokNow, setBangkokNow] = useState(() => getBangkokNow());
-  const [onlineBookingStatus, setOnlineBookingStatus] = useState(() => isOnlineBookingOpen());
   const todayIso = bangkokNow.dateIso;
   const currentMins = bangkokNow.minutes;
 
-  // Real-time Asia/Bangkok time & booking hours monitor (15s interval + focus/visibility)
+  // Real-time Asia/Bangkok time monitor (15s interval + focus/visibility)
   useEffect(() => {
     const updateTimeAndStatus = () => {
       const now = getBangkokNow();
       setBangkokNow(now);
-      setOnlineBookingStatus(isOnlineBookingOpen());
     };
     const interval = setInterval(updateTimeAndStatus, 15000);
     const onVisible = () => {
@@ -934,12 +932,6 @@ export default function RoomListPage() {
 
   // Proceed to Step 2 Form
   const handleProceedToForm = (room) => {
-    const onlineStatus = isOnlineBookingOpen();
-    if (!onlineStatus.isOpen) {
-      setTimelineError('ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.');
-      return;
-    }
-
     const layout = roomLayouts[room.id] || 'standard';
     const isClassroom = layout === 'classroom';
     const sel = getRoomSelection(room);
@@ -1031,7 +1023,6 @@ export default function RoomListPage() {
       if (targetStartMins >= 18 * 60) targetStartMins = 17 * 60 + 30;
 
       if (isToday && targetStartMins <= currentMins) {
-        setTimelineError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
         return;
       }
 
@@ -1068,7 +1059,6 @@ export default function RoomListPage() {
         if (newStartMins >= 18 * 60) newStartMins = 17 * 60 + 30;
 
         if (isToday && newStartMins <= currentMins) {
-          setTimelineError('เลยเวลาเริ่มแล้ว กรุณาเลือกเวลาใหม่');
           return;
         }
 
@@ -1304,7 +1294,7 @@ export default function RoomListPage() {
 
       if (isPast) {
         type = 'past';
-        bgColor = '#E2E8F0'; // เลยเวลา (เทาอ่อน)
+        bgColor = '#64748B'; // ผ่านเวลาเริ่มแล้ว (เทาทึบ แยกจากติดจอง #94A3B8)
       } else if (occupiedInfo.isOccupied) {
         if (occupiedInfo.reason === 'cleaning') {
           type = 'cleaning';
@@ -1471,11 +1461,13 @@ export default function RoomListPage() {
             {slots.map(s => (
               <div
                 key={s.index}
+                data-slot-type={s.type}
                 style={{
                   flex: 1,
                   height: '100%',
                   backgroundColor: s.bgColor,
-                  border: 'none'
+                  border: 'none',
+                  cursor: s.type === 'past' ? 'not-allowed' : 'pointer'
                 }}
               />
             ))}
@@ -1529,6 +1521,8 @@ export default function RoomListPage() {
                       borderRadius: '50%',
                       backgroundColor: isSelected
                         ? 'rgba(255, 255, 255, 0.75)'
+                        : s.type === 'past'
+                        ? 'transparent'
                         : s.type === 'booked'
                         ? 'rgba(100, 116, 139, 0.4)'
                         : s.type === 'cleaning'
@@ -1547,10 +1541,6 @@ export default function RoomListPage() {
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#A7F3D0' }} />
             ว่าง
-          </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#E2E8F0', border: '1px solid #CBD5E1' }} />
-            เลยเวลา
           </span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#94A3B8' }} />
@@ -2320,24 +2310,7 @@ export default function RoomListPage() {
                 </div>
               </div>
 
-              {!onlineBookingStatus.isOpen ? (
-                <div style={{
-                  marginTop: '8px',
-                  padding: '8px 12px',
-                  borderRadius: '10px',
-                  backgroundColor: '#fffbeb',
-                  border: '1.5px solid #fde68a',
-                  color: '#b45309',
-                  fontSize: '0.82rem',
-                  fontWeight: 700,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}>
-                  <AlertCircle size={16} style={{ flexShrink: 0, color: '#d97706' }} />
-                  <span>ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.</span>
-                </div>
-              ) : isOccupied && reason === 'past' ? (
+              {isOccupied && reason === 'past' ? (
                 <div style={{
                   marginTop: '8px',
                   padding: '8px 10px',
@@ -2359,7 +2332,7 @@ export default function RoomListPage() {
               {/* Full-width Action Button */}
               <button
                 type="button"
-                disabled={isOccupied || !onlineBookingStatus.isOpen}
+                disabled={isOccupied}
                 onClick={() => handleProceedToForm(room)}
                 className="btn-primary"
                 id={`btn-book-room-${room.id}`}
@@ -2369,22 +2342,20 @@ export default function RoomListPage() {
                   fontSize: '0.92rem',
                   fontWeight: 800,
                   borderRadius: '12px',
-                  backgroundColor: (isOccupied || !onlineBookingStatus.isOpen) ? '#cbd5e1' : '#0F766E',
-                  color: (isOccupied || !onlineBookingStatus.isOpen) ? '#475569' : '#ffffff',
+                  backgroundColor: isOccupied ? '#cbd5e1' : '#0F766E',
+                  color: isOccupied ? '#475569' : '#ffffff',
                   border: 'none',
-                  cursor: (isOccupied || !onlineBookingStatus.isOpen) ? 'not-allowed' : 'pointer',
+                  cursor: isOccupied ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '6px',
                   marginTop: '4px',
-                  boxShadow: (isOccupied || !onlineBookingStatus.isOpen) ? 'none' : '0 4px 14px rgba(15, 118, 110, 0.3)'
+                  boxShadow: isOccupied ? 'none' : '0 4px 14px rgba(15, 118, 110, 0.3)'
                 }}
               >
                 <span>
-                  {!onlineBookingStatus.isOpen
-                    ? 'ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.'
-                    : isOccupied
+                  {isOccupied
                     ? (reason === 'past' ? 'เลยเวลาเริ่มแล้ว' : 'ช่วงเวลานี้ไม่ว่าง')
                     : 'กรอกข้อมูลผู้จอง'}
                 </span>
@@ -2400,121 +2371,6 @@ export default function RoomListPage() {
     <div className="main-content">
       {/* 3-STEP WIZARD PROGRESS BAR */}
       <StepProgress currentStep={1} />
-
-      {/* ONLINE BOOKING & ROOM USAGE HOURS BANNER */}
-      <div className="customer-hours-banner" style={{
-        marginBottom: '16px',
-        padding: '16px 18px',
-        borderRadius: '16px',
-        backgroundColor: '#ffffff',
-        border: '1.5px solid var(--border)',
-        boxShadow: 'var(--shadow-sm)'
-      }}>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
-          gap: '12px',
-          alignItems: 'stretch'
-        }}>
-          {/* Block 1: Online Booking Hours */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: '12px',
-            padding: '12px 14px',
-            borderRadius: '12px',
-            backgroundColor: onlineBookingStatus.isOpen ? '#f0fdfa' : '#f8fafc',
-            border: `1.5px solid ${onlineBookingStatus.isOpen ? '#99f6e4' : '#e2e8f0'}`
-          }}>
-            <div style={{
-              width: '36px',
-              height: '36px',
-              borderRadius: '10px',
-              backgroundColor: onlineBookingStatus.isOpen ? '#0F766E' : '#64748B',
-              color: '#ffffff',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0
-            }}>
-              <Clock size={20} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--navy)' }}>เวลารับจองออนไลน์</span>
-                <span style={{
-                  fontSize: '0.70rem',
-                  fontWeight: 800,
-                  padding: '2px 8px',
-                  borderRadius: '999px',
-                  backgroundColor: onlineBookingStatus.isOpen ? '#dcfce7' : '#fee2e2',
-                  color: onlineBookingStatus.isOpen ? '#15803d' : '#b91c1c'
-                }}>
-                  {onlineBookingStatus.isOpen ? '● เปิดรับจองอยู่' : '● ปิดรับจองชั่วคราว'}
-                </span>
-              </div>
-              <div style={{ fontSize: '1.2rem', fontWeight: 900, color: '#0F766E', marginTop: '2px' }}>
-                07:00–20:00 น. <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-muted)' }}>ทุกวัน</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Block 2: Meeting Room Usage Hours */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: '12px',
-            padding: '12px 14px',
-            borderRadius: '12px',
-            backgroundColor: '#f8fafc',
-            border: '1.5px solid #e2e8f0'
-          }}>
-            <div style={{
-              width: '36px',
-              height: '36px',
-              borderRadius: '10px',
-              backgroundColor: '#132440',
-              color: '#ffffff',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0
-            }}>
-              <Building size={20} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--navy)' }}>
-                เวลาเข้าใช้ห้องประชุม
-              </div>
-              <div style={{ fontSize: '1.2rem', fontWeight: 900, color: '#132440', marginTop: '2px' }}>
-                08:00–18:00 น.
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Info footer notes */}
-        <div style={{
-          marginTop: '10px',
-          paddingTop: '10px',
-          borderTop: '1px solid #f1f5f9',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: '6px',
-          fontSize: '0.78rem',
-          color: 'var(--text-muted)'
-        }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-            <CheckCircle2 size={14} color="#0F766E" />
-            <span>ดูวันและเวลาว่างล่วงหน้าได้ตลอดเวลา (24 ชั่วโมง)</span>
-          </span>
-          <span style={{ fontWeight: 700, color: '#475569' }}>
-            เวลาทั้งหมดเป็นเวลาไทย (Asia/Bangkok)
-          </span>
-        </div>
-      </div>
 
       {/* 1. INTERACTIVE MONTHLY CALENDAR CARD (NAVY & TEAL) */}
       <section className="customer-cal-card" aria-label="ปฏิทินเลือกวันจองห้องประชุม">

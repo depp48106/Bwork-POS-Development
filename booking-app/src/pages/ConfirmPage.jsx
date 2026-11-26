@@ -65,12 +65,13 @@ export default function ConfirmPage() {
   const [bookingCodeMismatch, setBookingCodeMismatch] = useState(false);
 
   const [paymentSettings, setPaymentSettings] = useState({
-    promptpay_number: '0125554000401',
-    bank_name: 'ธนาคารกรุงศรีอยุธยา (Krungsri)',
-    account_number: '329-1-38429-0',
-    account_name: 'บริษัท บิลท์ ฮาร์ท จำกัด',
+    promptpay_number: '',
+    bank_name: '',
+    account_number: '',
+    account_name: '',
     qr_image: '/bwork_payment_qr.png'
   });
+  const [paymentSettingsLoaded, setPaymentSettingsLoaded] = useState(false);
 
   const [slipFile, setSlipFile] = useState(null);
   const [slipPreview, setSlipPreview] = useState(null);
@@ -501,23 +502,33 @@ export default function ConfirmPage() {
           setPaymentSettings(prev => ({
             ...prev,
             bank_name: data.payment_bank_name || data.bank_name || prev.bank_name,
-            account_number: data.payment_bank_account || data.bank_account || prev.account_number,
-            account_name: data.payment_bank_account_name || data.bank_account_name || prev.account_name,
+            account_number: data.payment_bank_account || data.bank_account || data.account_number || prev.account_number,
+            account_name: data.payment_bank_account_name || data.bank_account_name || data.account_name || prev.account_name,
             promptpay_number: data.promptpay_id || prev.promptpay_number,
             qr_image: data.qr_image || '/bwork_payment_qr.png'
           }));
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        setPaymentSettingsLoaded(true);
+      });
   }, [bookingId]);
 
-  const displayedAccountNumber = (paymentSettings.account_number || '329-1-38429-0').trim();
+  const rawBankName = (paymentSettings.bank_name || '').trim();
+  const isKrungsriBank = /กรุงศรี|krungsri|\bbay\b/i.test(rawBankName);
+  const displayedBankName = isKrungsriBank ? 'ธนาคารกรุงศรีอยุธยา' : rawBankName;
+  const displayedAccountNumber = (paymentSettings.account_number || '').trim();
 
   // Copy Account Number with Async Clipboard Verification & Fallback
   const handleCopyAccount = async () => {
     setCopyError('');
     setCopied(false);
-    const cleanNum = displayedAccountNumber.replace(/-/g, '');
+    const cleanNum = displayedAccountNumber.replace(/\D/g, '');
+    if (!cleanNum) {
+      setCopyError('ไม่พบเลขบัญชีสำหรับคัดลอก');
+      return;
+    }
     let success = false;
 
     try {
@@ -1466,15 +1477,35 @@ export default function ConfirmPage() {
                     padding: '12px 14px',
                     fontSize: '0.8rem'
                   }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 800, color: 'var(--navy)', marginBottom: '6px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 800, color: 'var(--navy)', marginBottom: '8px' }}>
                       <CreditCard size={15} color="var(--primary)" />
                       <span>หรือโอนผ่านบัญชีธนาคาร</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', color: 'var(--text-muted)' }}>
-                      <span style={{ fontWeight: 600 }}>{paymentSettings.bank_name || 'ธ.กรุงศรีอยุธยา'}</span>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                        {isKrungsriBank && (
+                          <img
+                            src="/krungsri-logo.svg"
+                            alt="ธนาคารกรุงศรีอยุธยา"
+                            id="bank-logo-krungsri"
+                            style={{
+                              width: '28px',
+                              height: '28px',
+                              borderRadius: '6px',
+                              objectFit: 'contain',
+                              flexShrink: 0,
+                              boxShadow: '0 1px 3px rgba(0,0,0,0.12)'
+                            }}
+                          />
+                        )}
+                        <span id="bank-name-display" style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.86rem' }}>
+                          {displayedBankName || (paymentSettingsLoaded ? '-' : 'กำลังโหลดข้อมูลบัญชี...')}
+                        </span>
+                      </div>
                       <button
                         type="button"
                         id="btn-copy-bank-account"
+                        disabled={!displayedAccountNumber}
                         onClick={handleCopyAccount}
                         style={{
                           background: copied ? '#ecfdf5' : '#ffffff',
@@ -1485,7 +1516,8 @@ export default function ConfirmPage() {
                           color: copied ? '#047857' : 'var(--primary)',
                           fontWeight: 800,
                           fontSize: '0.76rem',
-                          cursor: 'pointer',
+                          cursor: displayedAccountNumber ? 'pointer' : 'not-allowed',
+                          opacity: displayedAccountNumber ? 1 : 0.55,
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: '4px',
@@ -1502,25 +1534,27 @@ export default function ConfirmPage() {
                       style={{
                         fontFamily: 'monospace',
                         fontWeight: 900,
-                        fontSize: '1.08rem',
+                        fontSize: '1.12rem',
                         color: 'var(--navy)',
-                        margin: '6px 0 4px 0',
+                        margin: '8px 0 4px 0',
                         userSelect: 'all',
                         WebkitUserSelect: 'all',
                         cursor: 'text',
                         letterSpacing: '0.5px'
                       }}
                     >
-                      {displayedAccountNumber}
+                      {displayedAccountNumber || (paymentSettingsLoaded ? '-' : '...')}
                     </div>
                     {copyError && (
                       <div id="bank-account-copy-error" style={{ fontSize: '0.74rem', color: 'var(--danger)', fontWeight: 700, marginBottom: '4px' }}>
                         {copyError}
                       </div>
                     )}
-                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                      ชื่อบัญชี: {paymentSettings.account_name || 'บริษัท บิลท์ ฮาร์ท จำกัด'}
-                    </div>
+                    {paymentSettings.account_name && (
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                        ชื่อบัญชี: {paymentSettings.account_name}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

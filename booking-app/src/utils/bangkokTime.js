@@ -6,21 +6,17 @@
 export const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
 export const BUSINESS_OPEN_MINS = 8 * 60; // 08:00
 export const BUSINESS_CLOSE_MINS = 18 * 60; // 18:00 (end time only)
-export const ONLINE_BOOKING_OPEN_MINS = 7 * 60; // 07:00
-export const ONLINE_BOOKING_CLOSE_MINS = 20 * 60; // 20:00
-export const ONLINE_CLOSED_MESSAGE = 'ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.';
 
 /**
- * Checks whether online booking creation is currently open in Asia/Bangkok.
- * Allowed: 07:00 <= time < 20:00 (420 <= minutes < 1200).
+ * Online booking creation is open 24/7 (room usage hours remain 08:00–18:00 Asia/Bangkok).
+ * Retained for backwards compatibility with any callers.
  * @param {number} [nowMs=Date.now()]
  */
 export function isOnlineBookingOpen(nowMs = Date.now()) {
   const bkk = getBangkokNow(nowMs);
-  const isOpen = bkk.minutes >= ONLINE_BOOKING_OPEN_MINS && bkk.minutes < ONLINE_BOOKING_CLOSE_MINS;
   return {
-    isOpen,
-    message: isOpen ? '' : ONLINE_CLOSED_MESSAGE,
+    isOpen: true,
+    message: '',
     minutes: bkk.minutes,
     hours: bkk.hours,
     minsOfHour: bkk.minsOfHour

@@ -8933,6 +8933,12 @@ app.post('/api/public/bookings', async (req, res) => {
     return res.status(400).json({ error: 'กรุณากรอกข้อมูลให้ครบถ้วน (ชื่อ, เบอร์โทร, ห้อง, วันที่, เวลา)' });
   }
 
+  // Strict 10-digit numeric phone validation (preserve leading zero)
+  const trimmedContact = String(contact).trim();
+  if (!/^\d{10}$/.test(trimmedContact)) {
+    return res.status(400).json({ error: 'กรุณากรอกเบอร์โทรศัพท์ให้ครบ 10 หลัก', code: 'ERR_INVALID_PHONE' });
+  }
+
   // Mandatory guest_count validation for online bookings
   const parsedGuests = parseInt(guest_count || guests, 10);
   if (isNaN(parsedGuests) || parsedGuests < 1) {
@@ -8956,18 +8962,8 @@ app.post('/api/public/bookings', async (req, res) => {
     return res.status(400).json({ error: 'เวลาสิ้นสุดต้องไม่เกินเวลาปิดทำการ (18:00 น.)' });
   }
 
-  // Validate online booking window (07:00–20:00 Asia/Bangkok server time)
+  // Online booking creation is open 24/7; validate past date & strict real-time Asia/Bangkok start time (no 5-minute grace period)
   const bkkNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  const bkkHours = bkkNow.getUTCHours();
-  const bkkMins = bkkHours * 60 + bkkNow.getUTCMinutes();
-  if (bkkMins < 7 * 60 || bkkMins >= 20 * 60) {
-    return res.status(400).json({
-      error: 'ขณะนี้ปิดรับจองออนไลน์ เปิดรับจองอีกครั้งเวลา 07:00 น.',
-      code: 'ERR_ONLINE_BOOKING_CLOSED'
-    });
-  }
-
-  // Validate past date & strict real-time Asia/Bangkok start time (no 5-minute grace period)
   const bkkTodayStr = `${bkkNow.getUTCFullYear()}-${String(bkkNow.getUTCMonth() + 1).padStart(2, '0')}-${String(bkkNow.getUTCDate()).padStart(2, '0')}`;
   if (booking_date < bkkTodayStr) {
     return res.status(400).json({ error: 'ไม่สามารถจองวันที่ผ่านมาแล้วได้' });

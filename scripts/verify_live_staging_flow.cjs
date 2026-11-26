@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 
-const STAGING_PAGES = 'https://bwork-booking-staging.pages.dev';
+const STAGING_PAGES = 'https://e9215de5.bwork-booking-staging.pages.dev';
 const STAGING_API = 'https://bwork-pos-api-staging.ohnatza74185-ky.workers.dev';
 const ARTIFACT_DIR = 'C:/Users/ADMIN/.gemini/antigravity/brain/93b1ef54-72e7-446f-a6a3-437743441774';
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
@@ -123,6 +123,27 @@ async function run() {
   assertCondition(pagesHtmlRes.ok, 'Pages index.html loads successfully');
   console.log('  [OK] Pages loaded successfully (HTTP 200).');
 
+  // Step 1.5: Verify live Staging API phone validation (9, 11 digits, letters) & room hours (08:00-18:00) & past date
+  console.log('\nStep 1.5: Testing live Staging API validations (phone 9/11/alpha, outside 08:00-18:00, past date)...');
+  const invalidCases = [
+    { label: 'Phone 9 digits', body: { room_id: 4, customer_name: 'Test', contact: '081234567', booking_date: '2026-11-27', start_time: '10:00', end_time: '11:00', guests: 2 }, expectMsg: 'กรุณากรอกเบอร์โทรศัพท์ให้ครบ 10 หลัก' },
+    { label: 'Phone 11 digits', body: { room_id: 4, customer_name: 'Test', contact: '08123456789', booking_date: '2026-11-27', start_time: '10:00', end_time: '11:00', guests: 2 }, expectMsg: 'กรุณากรอกเบอร์โทรศัพท์ให้ครบ 10 หลัก' },
+    { label: 'Phone with letters', body: { room_id: 4, customer_name: 'Test', contact: '08123abc78', booking_date: '2026-11-27', start_time: '10:00', end_time: '11:00', guests: 2 }, expectMsg: 'กรุณากรอกเบอร์โทรศัพท์ให้ครบ 10 หลัก' },
+    { label: 'Before 08:00', body: { room_id: 4, customer_name: 'Test', contact: '0812345678', booking_date: '2026-11-27', start_time: '07:30', end_time: '08:30', guests: 2 }, expectMsg: '08:00' },
+    { label: 'After 18:00', body: { room_id: 4, customer_name: 'Test', contact: '0812345678', booking_date: '2026-11-27', start_time: '17:30', end_time: '18:30', guests: 2 }, expectMsg: '18:00' },
+    { label: 'Past date', body: { room_id: 4, customer_name: 'Test', contact: '0812345678', booking_date: '2026-11-25', start_time: '10:00', end_time: '11:00', guests: 2 }, expectMsg: 'ผ่านมาแล้ว' }
+  ];
+  for (const tc of invalidCases) {
+    const r = await fetch(`${STAGING_API}/api/public/bookings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tc.body)
+    });
+    const d = await r.json();
+    assertCondition(r.status === 400 && String(d.error || '').includes(tc.expectMsg), `${tc.label} rejected properly (got ${r.status}: ${d.error})`);
+    console.log(`  [PASS] ${tc.label} -> 400 "${d.error}"`);
+  }
+
   // Step 2: Create a synthetic test booking
   console.log('\nStep 2: Creating a synthetic test booking on Staging Worker...');
   const createRes = await fetch(`${STAGING_API}/api/public/bookings`, {
@@ -210,19 +231,35 @@ async function run() {
       await new Promise(r => setTimeout(r, 2500));
     }
 
-    const pageInfo = await client.eval(`(() => {
+    const pageInfo = await client.eval(`(async () => {
+      let copiedText = null;
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (txt) => { copiedText = txt; } }
+      });
+      const accNum = document.getElementById('bank-account-number-display')?.innerText?.trim() || '';
+      const copyBtn = document.getElementById('btn-copy-bank-account');
+      if (copyBtn) copyBtn.click();
+      await new Promise(r => setTimeout(r, 250));
+      const btnTextAfter = copyBtn?.innerText?.trim() || '';
       const text = document.body.innerText;
       return {
         url: window.location.href,
         hasCode: text.includes('${bookingCode}') || text.includes('${bookingId}'),
         hasAmount: text.includes('${totalAmount}') || text.includes('฿${totalAmount}'),
+        accNum,
+        copiedText,
+        btnTextAfter,
+        copyMatchesDisplayed: Boolean(accNum) && copiedText === accNum.replace(/\\D/g, ''),
+        hasLineSubtitle: text.includes('จองออนไลน์ผ่าน LINE'),
         snippet: text.slice(0, 400)
       };
     })()`);
 
     console.log('  [CHECK] Live Staging Booking Code:', pageInfo.hasCode ? 'PASSED' : 'FAILED');
     console.log('  [CHECK] Live Staging Total Amount:', pageInfo.hasAmount ? 'PASSED' : 'FAILED');
-    console.log('  [DEBUG Live Page Text]:\n', pageInfo.snippet);
+    console.log('  [CHECK] Live Staging Account Displayed:', pageInfo.accNum, '| Copied:', pageInfo.copiedText, '| Button:', pageInfo.btnTextAfter);
+    console.log('  [CHECK] Live Staging Header NO LINE subtitle:', !pageInfo.hasLineSubtitle ? 'PASSED' : 'FAILED');
 
     if (!pageInfo.hasCode) {
       console.warn('Page snippet:\n', pageInfo.snippet);
@@ -230,6 +267,12 @@ async function run() {
     }
     if (!pageInfo.hasAmount) {
       throw new Error(`Total amount ${totalAmount} not found on live /confirm page`);
+    }
+    if (!pageInfo.copyMatchesDisplayed || !pageInfo.btnTextAfter.includes('คัดลอกแล้ว')) {
+      throw new Error(`Copy check failed: ${JSON.stringify(pageInfo)}`);
+    }
+    if (pageInfo.hasLineSubtitle) {
+      throw new Error('Header still contains "จองออนไลน์ผ่าน LINE"');
     }
 
     await client.captureScreenshot('staging_live_confirm_verified.png');

@@ -167,9 +167,6 @@ function CustomerApp() {
               <div className="header-brand-title" style={{ fontSize: '1rem', fontWeight: 900, letterSpacing: '0.2px', color: '#ffffff', lineHeight: 1.25 }}>
                 จองห้องประชุม Bwork Tower
               </div>
-              <div className="header-subtitle" style={{ fontSize: '0.68rem', fontWeight: 600, color: '#a7f3d0', letterSpacing: '0.3px' }}>
-                B-WORK · จองออนไลน์ผ่าน LINE
-              </div>
             </div>
           </Link>
 
