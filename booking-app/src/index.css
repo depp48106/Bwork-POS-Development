@@ -698,20 +698,38 @@ button:active {
 }
 
 .customer-cal-day--past .customer-cal-day__num {
+  position: relative;
+  z-index: 2;
   color: #94a3b8 !important;
   font-weight: 700;
 }
 
 .customer-cal-day__past-x {
   position: absolute;
-  top: 4px;
-  right: 5px;
-  color: #cbd5e1;
+  inset: 0;
+  z-index: 1;
   pointer-events: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
+  background-image:
+    linear-gradient(
+      to top right,
+      transparent calc(50% - 0.6px),
+      rgba(148, 163, 184, 0.32) calc(50% - 0.6px),
+      rgba(148, 163, 184, 0.32) calc(50% + 0.6px),
+      transparent calc(50% + 0.6px)
+    ),
+    linear-gradient(
+      to bottom right,
+      transparent calc(50% - 0.6px),
+      rgba(148, 163, 184, 0.32) calc(50% - 0.6px),
+      rgba(148, 163, 184, 0.32) calc(50% + 0.6px),
+      transparent calc(50% + 0.6px)
+    );
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}
+
+.customer-cal-day__past-x svg {
+  display: none;
 }
 
 /* ============================================================================

@@ -3310,11 +3310,7 @@ export default function RoomListPage() {
                   >
                     <span className="customer-cal-day__num">{cell.dayNumber}</span>
                     {isPast ? (
-                      <span className="customer-cal-day__past-x" aria-hidden="true">
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                          <path d="M2 2L8 8M8 2L2 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-                        </svg>
-                      </span>
+                      <span className="customer-cal-day__past-x" aria-hidden="true" />
                     ) : isTodayExpired ? (
                       <span className="customer-cal-day__badge customer-cal-day__badge--expired">หมดรอบวันนี้</span>
                     ) : (
