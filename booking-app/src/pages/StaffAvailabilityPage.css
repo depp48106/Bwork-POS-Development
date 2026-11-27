@@ -2220,31 +2220,49 @@
   background-color: var(--staff-bg-subtle);
   border: 1px solid var(--staff-border);
   border-radius: 10px;
-  padding: 10px 14px;
+  padding: 10px 12px;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .staff-day-room-card__header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
   padding-bottom: 6px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  min-width: 0;
 }
 
 .staff-day-room-card__title {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 5px 6px;
   color: var(--staff-navy-primary);
   font-size: 0.9rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.staff-day-room-card__icon {
+  flex-shrink: 0;
+}
+
+.staff-day-room-card__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.3;
 }
 
 .staff-day-room-card__cap {
   font-size: 0.74rem;
   color: var(--staff-text-muted);
   font-weight: normal;
+  white-space: nowrap;
 }
 
 .staff-day-room-card__count {
@@ -2254,25 +2272,96 @@
   background-color: rgba(19, 36, 64, 0.08);
   padding: 2px 7px;
   border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .staff-day-room-card__bookings {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
 .staff-day-room-booking-item {
   background-color: #ffffff;
   border: 1px solid var(--staff-border);
   border-radius: 8px;
-  padding: 8px 12px;
+  padding: 9px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  font-size: 0.82rem;
-  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.85rem;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.staff-day-room-booking-item__summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+  width: 100%;
+  line-height: 1.4;
+}
+
+.staff-day-room-booking-item__icon {
+  color: var(--staff-navy-primary);
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.staff-day-room-booking-item__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--staff-text-main);
+}
+
+.staff-day-room-booking-item__time-range {
+  color: var(--staff-navy-primary);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.staff-day-room-booking-item__sep {
+  color: var(--staff-text-muted);
+  font-weight: 600;
+}
+
+.staff-day-room-booking-item__booker {
+  font-weight: 600;
+  color: var(--staff-text-main);
+}
+
+.staff-day-room-booking-item__booker--builtland {
+  color: #132440;
+}
+
+.staff-day-room-booking-item__booker--external {
+  color: #065f46;
+}
+
+.staff-day-room-booking-item__booker--basecamp {
+  color: #0e7490;
+}
+
+.staff-day-room-booking-item__booker--shop {
+  color: #6d28d9;
+}
+
+.staff-day-room-booking-item__booker--ondemand {
+  color: #c2410c;
+}
+
+.staff-day-room-booking-item__booker--unknown {
+  color: #475569;
+}
+
+.staff-modal-header__text {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .staff-day-room-booking-item__left {

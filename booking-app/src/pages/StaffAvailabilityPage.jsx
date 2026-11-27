@@ -626,11 +626,10 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     return map;
   }, [availabilityData, roomMap, bangkokNowIso]);
 
-  // Group bookings for "ดูเพิ่มเติม" modal in POS monthly view with 30-minute cleaning buffer
+  // Group real bookings by room for "ดูเพิ่มเติม" modal (no buffer rows)
   const dayBookingsGrouped = useMemo(() => {
     if (!dayBookingsModalDate || !monthEventsByDay[dayBookingsModalDate]) return [];
     const events = monthEventsByDay[dayBookingsModalDate];
-    const bufferMins = 30;
     const groupMap = new Map();
     for (const ev of events) {
       if (!groupMap.has(ev.room_id)) {
@@ -646,29 +645,10 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
     for (const grp of groupMap.values()) {
       grp.bookings.sort((a, b) => a.start_time.localeCompare(b.start_time) || a.room_name.localeCompare(b.room_name));
-      const withCleaning = [];
-      for (const b of grp.bookings) {
-        withCleaning.push(b);
-        if (bufferMins > 0 && b.end_time) {
-          const [eH, eM] = b.end_time.split(':').map(Number);
-          const endMins = eH * 60 + eM;
-          if (endMins < 18 * 60) {
-            const bufEndMins = Math.min(18 * 60, endMins + bufferMins);
-            const cleanH = String(Math.floor(bufEndMins / 60) % 24).padStart(2, '0');
-            const cleanM = String(bufEndMins % 60).padStart(2, '0');
-            withCleaning.push({
-              isReservedBuffer: true,
-              start_time: b.end_time,
-              end_time: `${cleanH}:${cleanM}`
-            });
-          }
-        }
-      }
-      grp.displayItems = withCleaning;
     }
 
     return Array.from(groupMap.values()).sort((a, b) => a.room_name.localeCompare(b.room_name));
-  }, [dayBookingsModalDate, monthEventsByDay, availabilityData]);
+  }, [dayBookingsModalDate, monthEventsByDay]);
 
   // Active intervals of room selected for booking modal
   const activeIntervals = useMemo(() => {
@@ -822,6 +802,27 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
       }
     }
 
+    // Client-side overlap + fixed 30-min cleaning buffer check
+    const [reqSH, reqSM] = startTime.split(':').map(Number);
+    const [reqEH, reqEM] = endTime.split(':').map(Number);
+    const reqStartMins = reqSH * 60 + reqSM;
+    const reqEndMins = reqEH * 60 + reqEM;
+    const bufferMins = 30;
+    const dayRoomEvents = (monthEventsByDay[selectedDate] || []).filter(
+      (ev) => String(ev.room_id) === String(bookingModalRoom.id)
+    );
+    const hasLocalConflict = dayRoomEvents.some((ev) => {
+      const [evSH, evSM] = String(ev.start_time || '').split(':').map(Number);
+      const [evEH, evEM] = String(ev.end_time || '').split(':').map(Number);
+      const evStartMins = evSH * 60 + evSM;
+      const evEndMins = evEH * 60 + evEM;
+      return reqStartMins < (evEndMins + bufferMins) && (reqEndMins + bufferMins) > evStartMins;
+    });
+    if (hasLocalConflict) {
+      setBookingError('ไม่สามารถจองช่วงเวลานี้ได้ กรุณาเลือกเวลาอื่น');
+      return;
+    }
+
     setSubmitting(true);
     setBookingError(null);
     setBookingSuccess(null);
@@ -842,7 +843,11 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
 
       const result = await res.json();
       if (!res.ok) {
-        setBookingError(result.error || 'ห้องไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่น');
+        if (res.status === 409) {
+          setBookingError('ไม่สามารถจองช่วงเวลานี้ได้ กรุณาเลือกเวลาอื่น');
+        } else {
+          setBookingError(result.error || 'ไม่สามารถจองช่วงเวลานี้ได้ กรุณาเลือกเวลาอื่น');
+        }
         // Refresh room availability while keeping customerName and department intact in state!
         setRequestVersion(v => v + 1);
         return;
@@ -1840,12 +1845,12 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
             id="staff-pos-day-detail-modal"
           >
             <div className="staff-modal-header">
-              <div>
+              <div className="staff-modal-header__text">
                 <h3 className="staff-modal-title" id="staff-day-detail-title">
-                  รายละเอียดการจองห้องประชุม
+                  ห้องที่มีการจอง
                 </h3>
                 <p className="staff-modal-meta">
-                  {dateFormat.format(new Date(dayBookingsModalDate))} · มีการจองทั้งหมด {monthEventsByDay[dayBookingsModalDate]?.length || 0} รายการ ({dayBookingsGrouped.length} ห้อง)
+                  {dateFormat.format(new Date(dayBookingsModalDate))} · {monthEventsByDay[dayBookingsModalDate]?.length || 0} รายการ ({dayBookingsGrouped.length} ห้อง)
                 </p>
               </div>
               <button
@@ -1867,49 +1872,32 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                     <div key={grp.room_id} className="staff-day-room-card">
                       <div className="staff-day-room-card__header">
                         <div className="staff-day-room-card__title">
-                          <Building size={16} />
-                          <strong>{grp.room_name}</strong>
-                          <span className="staff-day-room-card__cap">{grp.room_capacity} ที่นั่ง</span>
+                          <Building size={16} className="staff-day-room-card__icon" />
+                          <strong className="staff-day-room-card__name">{grp.room_name}</strong>
+                          {grp.room_capacity ? (
+                            <span className="staff-day-room-card__cap">{grp.room_capacity} ที่นั่ง</span>
+                          ) : null}
                         </div>
                         <span className="staff-day-room-card__count">
-                          {grp.bookings.length} ช่วงเวลา
+                          {grp.bookings.length} รายการ
                         </span>
                       </div>
                       <div className="staff-day-room-card__bookings">
-                        {(grp.displayItems || grp.bookings).map((item, bIdx) => (
-                          item.isReservedBuffer ? (
-                            <div key={bIdx} className="staff-day-room-booking-item staff-day-room-booking-item--reserved">
-                              <div className="staff-day-room-booking-item__time" style={{ color: '#64748b' }}>
-                                <Clock size={13} />
-                                <span>{item.start_time} - {item.end_time} น.</span>
-                              </div>
-                              <div className="staff-day-room-booking-item__user">
-                                <span className="staff-reserved-tag">ไม่สามารถจองได้</span>
-                              </div>
+                        {grp.bookings.map((item, bIdx) => (
+                          <div key={bIdx} className="staff-day-room-booking-item">
+                            <div className="staff-day-room-booking-item__summary">
+                              <Clock size={14} className="staff-day-room-booking-item__icon" />
+                              <span className="staff-day-room-booking-item__text">
+                                <strong className="staff-day-room-booking-item__time-range">
+                                  {item.start_time}–{item.end_time} น.
+                                </strong>
+                                <span className="staff-day-room-booking-item__sep" aria-hidden="true"> · </span>
+                                <span className={`staff-day-room-booking-item__booker staff-day-room-booking-item__booker--${item.booker_type_code}`}>
+                                  {getMonthlyEventPrimaryLabel(item)}
+                                </span>
+                              </span>
                             </div>
-                          ) : (
-                            <div key={bIdx} className="staff-day-room-booking-item">
-                              <div className="staff-day-room-booking-item__left">
-                                <div className="staff-day-room-booking-item__time">
-                                  <Clock size={13} />
-                                  <strong>{item.start_time} - {item.end_time} น.</strong>
-                                </div>
-                                <div className="staff-day-room-booking-item__badges">
-                                  <span className="staff-booked-tag">จองแล้ว</span>
-                                  <span className={`staff-booker-type-badge staff-booker-type-badge--${item.booker_type_code}`}>
-                                    {getMonthlyEventPrimaryLabel(item)}
-                                  </span>
-                                </div>
-                              </div>
-                              {item.booker_type_code === 'builtland' && item.department && item.department !== '-' && (
-                                <div className="staff-day-room-booking-item__user">
-                                  <span className="staff-day-room-booking-item__dept">
-                                    {item.department}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          )
+                          </div>
                         ))}
                       </div>
                     </div>

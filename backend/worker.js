@@ -5196,7 +5196,7 @@ export default {
 
         const overlapResult = await checkRoomOverlap(env, room_id, fullStart, fullEnd);
         if (overlapResult.hasOverlap) {
-          return new Response(JSON.stringify({ error: 'ห้องไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่น' }), { status: 409, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: 'ไม่สามารถจองช่วงเวลานี้ได้ กรุณาเลือกเวลาอื่น' }), { status: 409, headers: corsHeaders });
         }
 
         const dateStr = date.replace(/-/g, '');
@@ -5238,7 +5238,7 @@ export default {
 
         if (insItemRes?.meta?.changes !== 1) {
           await env.DB.prepare('DELETE FROM bookings WHERE id = ?').bind(bookingId).run();
-          return new Response(JSON.stringify({ error: 'ห้องไม่ว่างในช่วงเวลานี้ กรุณาเลือกเวลาอื่น' }), { status: 409, headers: corsHeaders });
+          return new Response(JSON.stringify({ error: 'ไม่สามารถจองช่วงเวลานี้ได้ กรุณาเลือกเวลาอื่น' }), { status: 409, headers: corsHeaders });
         }
 
         return new Response(JSON.stringify({

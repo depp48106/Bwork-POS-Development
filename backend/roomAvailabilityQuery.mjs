@@ -58,18 +58,11 @@ export function resolveCheckinStatus(item) {
 
 // These status exclusions match checkRoomOverlap in both backends. Allow for
 // legacy UTC timestamps as well as the Bangkok wall-clock values written today.
-// Public intervals SQL: external customer PII is NEVER returned; internal Builtland staff name is returned only for Builtland records.
+// Public intervals SQL: zero PII — NEVER selects customer_name or any personal identifier.
 export const ROOM_AVAILABILITY_INTERVALS_SQL = `
   SELECT bi.room_id, bi.start_time, bi.end_time,
          bi.checkin_status AS item_checkin_status,
          b.checkin_status AS booking_checkin_status,
-         CASE
-           WHEN LOWER(TRIM(COALESCE(b.customer_type, ''))) = 'builtland'
-             OR LOWER(TRIM(COALESCE(b.booking_source, ''))) = 'staff'
-             OR LOWER(TRIM(COALESCE(b.booking_channel, ''))) = 'staff_calendar'
-           THEN b.customer_name
-           ELSE NULL
-         END AS staff_booker_name,
          b.customer_type,
          b.booking_source,
          b.booking_channel,
@@ -107,7 +100,7 @@ export function getAvailabilityQueryParams(month, bufferMinutes) {
   return [month.end, `+${bufferMinutes} minutes`, month.start, `-${bufferMinutes} minutes`];
 }
 
-// Anonymous response builder for public endpoint (zero external customer PII; Builtland staff name included only for Builtland bookings)
+// Anonymous response builder for public endpoint (strictly zero PII — never returns customer_name)
 export function buildAvailabilityResponse(month, rooms, items, bufferMinutes, normalizeTime) {
   const intervals = [];
   for (const item of items) {
@@ -124,7 +117,6 @@ export function buildAvailabilityResponse(month, rooms, items, bufferMinutes, no
         booker_type: type,
         booker_type_code: code,
         customer_type: item.customer_type || null,
-        customer_name: code === 'builtland' ? (item.staff_booker_name || null) : null,
         checkin_status: checkin
       });
     }
