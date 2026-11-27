@@ -1230,15 +1230,11 @@ function normalizeToLocalISO(dateStr, timeStr) {
   return `${y}-${m}-${day}T${h}:${min}:${sec}`;
 }
 
-// Helper: Get cleaning buffer minutes from settings (defaults to 30 mins)
+const FIXED_CLEANING_BUFFER_MINUTES = 30;
+
+// Helper: Enforce agreed 30-minute cleaning buffer consistently across API and UI
 async function getCleaningBufferMinutes(query = dbQuery) {
-  try {
-    const row = await query.get("SELECT value FROM settings WHERE key = 'cleaning_buffer_minutes'");
-    if (row && row.value !== undefined && row.value !== null && !isNaN(row.value)) {
-      return Math.max(0, parseInt(row.value, 10));
-    }
-  } catch (e) {}
-  return 30;
+  return FIXED_CLEANING_BUFFER_MINUTES;
 }
 
 // Helper: Check if a room has overlapping bookings or conflicts with cleaning buffer (cross-system safe)

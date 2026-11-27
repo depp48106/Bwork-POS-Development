@@ -1246,15 +1246,12 @@ function normalizeToLocalISO(dateStr, timeStr) {
   return `${y}-${m}-${day}T${h}:${min}:${sec}`;
 }
 
+const FIXED_CLEANING_BUFFER_MINUTES = 30;
+
 async function getCleaningBufferMinutes(env) {
-  try {
-    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'cleaning_buffer_minutes'").first();
-    if (row && row.value) {
-      const val = parseInt(row.value, 10);
-      if (!isNaN(val)) return val;
-    }
-  } catch (e) {}
-  return 30;
+  // Agreed production cleaning buffer is fixed at 30 minutes across timeline,
+  // availability, and overlap checks regardless of legacy settings rows.
+  return FIXED_CLEANING_BUFFER_MINUTES;
 }
 
 function addMinutesToLocalISO(isoString, minutes) {

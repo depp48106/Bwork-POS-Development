@@ -716,17 +716,13 @@ button:active {
 
 .customer-cal-day__past-x {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 66%;
-  height: 66%;
-  transform: translate(-50%, -50%);
+  inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 1;
   pointer-events: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(148, 163, 184, 0.36);
+  display: block;
+  color: rgba(148, 163, 184, 0.34);
 }
 
 .customer-cal-day__past-x svg {
@@ -1248,8 +1244,18 @@ button:active {
 
 .customer-summary-filter-info {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.customer-summary-filter-body {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .customer-summary-filter-icon {
@@ -1264,29 +1270,48 @@ button:active {
   flex-shrink: 0;
 }
 
-.customer-summary-filter-text {
-  font-size: 0.95rem;
+.customer-summary-filter-text,
+.customer-summary-filter-date {
+  font-size: 0.94rem;
   font-weight: 800;
   color: var(--navy);
   letter-spacing: -0.01em;
+  line-height: 1.25;
+}
+
+.customer-summary-filter-room {
+  font-size: 0.94rem;
+  font-weight: 800;
+  color: var(--navy);
+  line-height: 1.3;
+  word-break: break-word;
 }
 
 .customer-summary-filter-sub {
   font-size: 0.76rem;
   color: var(--text-muted);
   font-weight: 600;
+  line-height: 1.3;
+}
+
+.customer-summary-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .customer-summary-filter-change-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 5px;
-  padding: 8px 14px;
+  padding: 8px 13px;
   border-radius: 999px;
   border: 1.5px solid var(--primary);
   background-color: #ffffff;
   color: var(--primary);
-  font-size: 0.82rem;
+  font-size: 0.8rem;
   font-weight: 800;
   cursor: pointer;
   white-space: nowrap;
@@ -1297,6 +1322,28 @@ button:active {
 .customer-summary-filter-change-btn:hover {
   background-color: var(--primary);
   color: #ffffff;
+}
+
+@media (max-width: 480px) {
+  .customer-summary-filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .customer-summary-filter-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .customer-summary-filter-change-btn {
+    width: 100%;
+    padding: 8px 10px;
+    font-size: 0.8rem;
+  }
 }
 
 /* iOS-style Modern Toggle Switch */

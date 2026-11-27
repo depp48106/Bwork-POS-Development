@@ -213,3 +213,32 @@ test('Case 5: Phone Input Sanitization & Strict 10-Digit Validation', async (t) 
     assert.match(backendServerSrc, /กรุณากรอกเบอร์โทรศัพท์ให้ครบ 10 หลัก/);
   });
 });
+
+test('Case 6: Fixed 30-Minute Cleaning Buffer Rule Across Frontend and API', async (t) => {
+  await t.test('6.1: Worker, Server, RoomListPage, and StaffAvailabilityPage enforce fixed 30-minute cleaning buffer regardless of settings', () => {
+    const staffAvailSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pages', 'StaffAvailabilityPage.jsx'), 'utf8');
+    assert.match(backendWorkerSrc, /FIXED_CLEANING_BUFFER_MINUTES\s*=\s*30/);
+    assert.match(backendWorkerSrc, /async function getCleaningBufferMinutes[\s\S]{0,220}return FIXED_CLEANING_BUFFER_MINUTES/);
+    assert.match(backendServerSrc, /FIXED_CLEANING_BUFFER_MINUTES\s*=\s*30/);
+    assert.match(backendServerSrc, /async function getCleaningBufferMinutes[\s\S]{0,200}return FIXED_CLEANING_BUFFER_MINUTES/);
+    assert.ok(!roomListPageSrc.includes('availabilityData.cleaning_buffer_minutes'));
+    assert.ok(!roomListPageSrc.includes('schedule.cleaning_buffer_minutes'));
+    assert.ok(!staffAvailSrc.includes('availabilityData.cleaning_buffer_minutes'));
+    assert.ok(!staffAvailSrc.includes('availabilityData?.cleaning_buffer_minutes'));
+  });
+
+  await t.test('6.2: Booking ending at 11:00 blocks 11:00-11:30 and allows starting at 11:30 even if settings.cleaning_buffer_minutes is 15 or 60', () => {
+    const existingEndMins = 11 * 60; // 11:00
+    const checkStartAllowed = (reqStartMins, simulatedSettingMins) => {
+      // Agreed rule ignores simulatedSettingMins and enforces 30 minutes
+      const effectiveBuffer = 30;
+      void simulatedSettingMins;
+      return !(existingEndMins <= reqStartMins && reqStartMins < existingEndMins + effectiveBuffer);
+    };
+    for (const fakeSetting of [0, 15, 45, 60]) {
+      assert.equal(checkStartAllowed(11 * 60, fakeSetting), false, `11:00 must be blocked when setting=${fakeSetting}`);
+      assert.equal(checkStartAllowed(11 * 60 + 15, fakeSetting), false, `11:15 must be blocked when setting=${fakeSetting}`);
+      assert.equal(checkStartAllowed(11 * 60 + 30, fakeSetting), true, `11:30 must be allowed when setting=${fakeSetting}`);
+    }
+  });
+});

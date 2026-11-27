@@ -228,6 +228,7 @@ export default function RoomListPage() {
   const [modalGuests, setModalGuests] = useState(initialGuests);
   const [modalRoomId, setModalRoomId] = useState(initialRoomId || '');
   const [slotTooltip, setSlotTooltip] = useState(null); // { roomId, text, pct }
+  const [activeDrag, setActiveDrag] = useState(null); // { roomId, type: 'start' | 'end' }
 
   // Master Data States
   const [rooms, setRooms] = useState([]);
@@ -574,7 +575,7 @@ export default function RoomListPage() {
 
       let freeCount = 0;
       if (isMonthDataReady) {
-        const buffer = Number(availabilityData.cleaning_buffer_minutes ?? 30);
+        const buffer = 30;
         for (const rm of availabilityData.rooms) {
           const conflicting = getConflictingRoomIds(rm.id);
           const dayBookings = (availabilityData.intervals || []).filter(item => {
@@ -826,7 +827,7 @@ export default function RoomListPage() {
     }
 
     const conflictingIds = getConflictingRoomIds(roomId);
-    const bufferMins = Number(schedule.cleaning_buffer_minutes || schedule.buffer_minutes) || 30;
+    const bufferMins = 30;
 
     for (const confId of conflictingIds) {
       const roomObj = schedule.rooms.find(r => r.id === confId);
@@ -894,7 +895,7 @@ export default function RoomListPage() {
     if (isToday && startMins <= currentMins) return false;
 
     const conflictingIds = getConflictingRoomIds(roomId);
-    const bufferMins = Number(schedule.cleaning_buffer_minutes || schedule.buffer_minutes) || 30;
+    const bufferMins = 30;
 
     for (const confId of conflictingIds) {
       const roomObj = schedule.rooms.find(r => r.id === confId);
@@ -945,16 +946,23 @@ export default function RoomListPage() {
     return Math.max(standardCap, classroomCap);
   }, []);
 
-  // Helper: starting price display string for switcher rows
-  const getRoomStartingPriceText = useCallback((room) => {
-    if (room.has_hourly === 1 && (room.hourly_rate || 0) > 0) {
-      return `เริ่มต้น ฿${Number(room.hourly_rate).toLocaleString()}/ชม.`;
+  // Helper: starting price display string for switcher rows and active room header (respects selected layout when sel is passed)
+  const getRoomStartingPriceText = useCallback((room, sel = null) => {
+    const hourly = sel ? sel.hourlyPrice : (room.hourly_rate || 0);
+    const halfDay = sel ? sel.halfDayPrice : (room.half_day_rate || 0);
+    const daily = sel ? sel.dailyPrice : (room.daily_rate || 0);
+    const hasHourly = sel ? sel.hasHourly : (room.has_hourly === 1 && hourly > 0);
+    const hasHalfDay = sel ? sel.hasHalfDay : ((room.has_halfday === 1 || halfDay > 0) && halfDay > 0);
+    const hasDaily = sel ? sel.hasDaily : (room.has_daily === 1 && daily > 0);
+
+    if (hasHourly && hourly > 0) {
+      return `เริ่มต้น ฿${Number(hourly).toLocaleString()}/ชม.`;
     }
-    if ((room.has_halfday === 1 || (room.half_day_rate || 0) > 0) && (room.half_day_rate || 0) > 0) {
-      return `เริ่มต้น ฿${Number(room.half_day_rate).toLocaleString()}/ครึ่งวัน`;
+    if (hasHalfDay && halfDay > 0) {
+      return `เริ่มต้น ฿${Number(halfDay).toLocaleString()}/ครึ่งวัน`;
     }
-    if (room.has_daily === 1 && (room.daily_rate || 0) > 0) {
-      return `เริ่มต้น ฿${Number(room.daily_rate).toLocaleString()}/วัน`;
+    if (hasDaily && daily > 0) {
+      return `เริ่มต้น ฿${Number(daily).toLocaleString()}/วัน`;
     }
     return '';
   }, []);
@@ -1351,6 +1359,7 @@ export default function RoomListPage() {
       rect,
       pointerId: e.pointerId
     };
+    setActiveDrag({ roomId: room.id, type });
   };
 
   const handleArrowPointerMove = (e) => {
@@ -1445,6 +1454,7 @@ export default function RoomListPage() {
         e.currentTarget.releasePointerCapture(e.pointerId);
       } catch (err) {}
       draggingRef.current = null;
+      setActiveDrag(null);
     }
   };
 
@@ -1518,7 +1528,8 @@ export default function RoomListPage() {
       });
     }
 
-    // Merge contiguous 'booked' / 'cleaning' slots so hover/tap displays full range (e.g. "10:00–11:00 น. · ติดจอง")
+    // Merge contiguous 'booked' / 'cleaning' slots so hover/tap displays full range & 30-min cleaning duration
+    const toTimelinePct = (mins) => Math.max(0, Math.min(100, ((mins - 480) / 600) * 100));
     let idx = 0;
     while (idx < slots.length) {
       const sType = slots[idx].type;
@@ -1529,9 +1540,11 @@ export default function RoomListPage() {
         }
         const blockStartStr = slots[idx].startStr;
         const blockEndStr = slots[endIdx].endStr;
-        const statusLabel = sType === 'booked' ? 'ติดจอง' : 'ทำความสะอาด';
-        const tooltipText = `${blockStartStr}–${blockEndStr} น. · ${statusLabel}`;
-        const blockCenterPct = (((idx + endIdx + 1) / 2) / 20) * 100;
+        const blockMins = (endIdx - idx + 1) * 30;
+        const tooltipText = sType === 'cleaning'
+          ? `ทำความสะอาด · ${blockMins} นาที (${blockStartStr}–${blockEndStr} น.)`
+          : `ติดจอง (${blockStartStr}–${blockEndStr} น.)`;
+        const blockCenterPct = toTimelinePct((slots[idx].startMins + slots[endIdx].endMins) / 2);
         for (let k = idx; k <= endIdx; k++) {
           slots[k].tooltipText = tooltipText;
           slots[k].blockCenterPct = blockCenterPct;
@@ -1542,8 +1555,11 @@ export default function RoomListPage() {
       }
     }
 
-    const selStartPct = hasSelectedRange ? Math.max(0, Math.min(100, ((selStartMins - 480) / 600) * 100)) : 0;
-    const selEndPct = hasSelectedRange ? Math.max(0, Math.min(100, ((selEndMins - 480) / 600) * 100)) : 0;
+    const selStartPct = hasSelectedRange ? toTimelinePct(selStartMins) : 0;
+    const selEndPct = hasSelectedRange ? toTimelinePct(selEndMins) : 0;
+    const isDraggingThisRoom = Boolean(activeDrag && activeDrag.roomId === room.id);
+    const activeDragType = isDraggingThisRoom ? activeDrag.type : null;
+    const isPillsCrowded = (selEndPct - selStartPct) < 22;
 
     // Valid start options: only times that can actually start a valid booking
     const validStartOptions = [];
@@ -1570,29 +1586,39 @@ export default function RoomListPage() {
       }
     }
 
-    const timeMarkers = [
-      { time: '08:00', pct: 0 },
-      { time: '10:00', pct: 20 },
-      { time: '12:00', pct: 40 },
-      { time: '14:00', pct: 60 },
-      { time: '16:00', pct: 80 },
-      { time: '18:00', pct: 100 }
-    ];
+    const timeMarkers = [480, 600, 720, 840, 960, 1080].map(mins => ({
+      mins,
+      time: `${String(Math.floor(mins / 60)).padStart(2, '0')}:00`,
+      pct: toTimelinePct(mins)
+    }));
+
+    // Internal 30-min ticks inside the horizontal bar (08:30 .. 17:30)
+    const internalTicks = [];
+    for (let i = 1; i < 20; i++) {
+      const tickMins = 480 + i * 30;
+      internalTicks.push({
+        mins: tickMins,
+        pct: toTimelinePct(tickMins),
+        isFullHour: tickMins % 60 === 0,
+        isInsideSelected: hasSelectedRange && tickMins > selStartMins && tickMins < selEndMins
+      });
+    }
 
     return (
-      <div className="timeline-bar-wrapper">
-        {/* Time Labels Above the Bar (Clean, NO tick marks) */}
-        <div style={{ position: 'relative', height: '18px', margin: '0 18px 4px 18px' }}>
+      <div className="timeline-bar-wrapper" data-timeline-style="D">
+        {/* 2-Hour Axis Labels Above the Bar (aligned with toTimelinePct) */}
+        <div style={{ position: 'relative', height: '16px', margin: '0 18px 4px 18px' }}>
           {timeMarkers.map(m => (
             <div
               key={m.time}
+              data-axis-time={m.time}
               style={{
                 position: 'absolute',
                 left: `${m.pct}%`,
                 transform: 'translateX(-50%)',
                 textAlign: 'center',
-                color: '#1E293B',
-                fontSize: '0.82rem',
+                color: '#475569',
+                fontSize: '0.74rem',
                 fontWeight: 700,
                 lineHeight: 1,
                 whiteSpace: 'nowrap',
@@ -1604,78 +1630,99 @@ export default function RoomListPage() {
           ))}
         </div>
 
-        {/* Capsule Tube Container with Draggable Arrow Handles */}
+        {/* Live Floating Start / End Time Pills Above Handles (Style D) */}
+        {hasSelectedRange && (
+          <div
+            data-testid={`timeline-pills-${room.id}`}
+            style={{ position: 'relative', height: '24px', margin: '0 18px 4px 18px', pointerEvents: 'none' }}
+          >
+            {isPillsCrowded && !isDraggingThisRoom ? (
+              <div
+                data-testid={`timeline-pill-combined-${room.id}`}
+                style={{
+                  position: 'absolute',
+                  left: `${Math.max(18, Math.min(82, (selStartPct + selEndPct) / 2))}%`,
+                  bottom: 0,
+                  transform: 'translateX(-50%)',
+                  backgroundColor: '#0F766E',
+                  color: '#FFFFFF',
+                  fontSize: '0.72rem',
+                  fontWeight: 800,
+                  padding: '2px 8px',
+                  borderRadius: '999px',
+                  whiteSpace: 'nowrap',
+                  boxShadow: '0 2px 6px rgba(15, 118, 110, 0.28)',
+                  lineHeight: 1.3
+                }}
+              >
+                {sel.startTime}–{sel.endTime}
+              </div>
+            ) : (
+              <>
+                {(!isPillsCrowded || activeDragType === 'start') && (
+                  <div
+                    data-testid={`timeline-pill-start-${room.id}`}
+                    style={{
+                      position: 'absolute',
+                      left: `${Math.max(8, Math.min(92, selStartPct))}%`,
+                      bottom: 0,
+                      transform: 'translateX(-50%)',
+                      backgroundColor: activeDragType === 'start' ? '#0F766E' : '#FFFFFF',
+                      color: activeDragType === 'start' ? '#FFFFFF' : '#0F766E',
+                      border: '1.5px solid #0F766E',
+                      fontSize: '0.72rem',
+                      fontWeight: 800,
+                      padding: '1px 7px',
+                      borderRadius: '999px',
+                      whiteSpace: 'nowrap',
+                      boxShadow: activeDragType === 'start' ? '0 3px 8px rgba(15, 118, 110, 0.35)' : '0 1px 4px rgba(15, 23, 42, 0.1)',
+                      lineHeight: 1.35,
+                      zIndex: activeDragType === 'start' ? 12 : 10
+                    }}
+                  >
+                    {sel.startTime}
+                  </div>
+                )}
+                {(!isPillsCrowded || activeDragType === 'end') && (
+                  <div
+                    data-testid={`timeline-pill-end-${room.id}`}
+                    style={{
+                      position: 'absolute',
+                      left: `${Math.max(8, Math.min(92, selEndPct))}%`,
+                      bottom: 0,
+                      transform: 'translateX(-50%)',
+                      backgroundColor: activeDragType === 'end' ? '#0F766E' : '#FFFFFF',
+                      color: activeDragType === 'end' ? '#FFFFFF' : '#0F766E',
+                      border: '1.5px solid #0F766E',
+                      fontSize: '0.72rem',
+                      fontWeight: 800,
+                      padding: '1px 7px',
+                      borderRadius: '999px',
+                      whiteSpace: 'nowrap',
+                      boxShadow: activeDragType === 'end' ? '0 3px 8px rgba(15, 118, 110, 0.35)' : '0 1px 4px rgba(15, 23, 42, 0.1)',
+                      lineHeight: 1.35,
+                      zIndex: activeDragType === 'end' ? 12 : 10
+                    }}
+                  >
+                    {sel.endTime}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Style D Horizontal Bar Container with Internal 30-min Ticks & Draggable Edge/Knob Handles */}
         <div
+          data-testid={`timeline-track-${room.id}`}
           style={{
             position: 'relative',
-            height: '28px',
-            margin: '14px 18px 0 18px',
+            height: '32px',
+            margin: '2px 18px 0 18px',
             touchAction: 'pan-y',
             userSelect: 'none'
           }}
         >
-          {/* Left Arrow Handle (Start Time) */}
-          {hasSelectedRange && (
-          <div
-            onPointerDown={(e) => handleArrowPointerDown('start', room, e)}
-            onPointerMove={handleArrowPointerMove}
-            onPointerUp={handleArrowPointerUp}
-            onPointerCancel={handleArrowPointerUp}
-            style={{
-              position: 'absolute',
-              left: `${selStartPct}%`,
-              bottom: '100%',
-              transform: 'translate(-80%, 0)',
-              width: '40px',
-              height: '32px',
-              display: 'flex',
-              alignItems: 'flex-end',
-              justifyContent: 'flex-end',
-              paddingRight: '6px',
-              paddingBottom: '2px',
-              cursor: 'ew-resize',
-              touchAction: 'none',
-              zIndex: 10
-            }}
-            title="ลากเพื่อปรับเวลาเริ่ม"
-          >
-            <svg width="10" height="7" viewBox="0 0 10 7" fill="none" style={{ pointerEvents: 'none' }}>
-              <polygon points="0,0 10,0 5,7" fill="#0F766E" />
-            </svg>
-          </div>
-          )}
-
-          {/* Right Arrow Handle (End Time) */}
-          {hasSelectedRange && (
-          <div
-            onPointerDown={(e) => handleArrowPointerDown('end', room, e)}
-            onPointerMove={handleArrowPointerMove}
-            onPointerUp={handleArrowPointerUp}
-            onPointerCancel={handleArrowPointerUp}
-            style={{
-              position: 'absolute',
-              left: `${selEndPct}%`,
-              bottom: '100%',
-              transform: 'translate(-20%, 0)',
-              width: '40px',
-              height: '32px',
-              display: 'flex',
-              alignItems: 'flex-end',
-              justifyContent: 'flex-start',
-              paddingLeft: '6px',
-              paddingBottom: '2px',
-              cursor: 'ew-resize',
-              touchAction: 'none',
-              zIndex: 10
-            }}
-            title="ลากเพื่อปรับเวลาสิ้นสุด"
-          >
-            <svg width="10" height="7" viewBox="0 0 10 7" fill="none" style={{ pointerEvents: 'none' }}>
-              <polygon points="0,0 10,0 5,7" fill="#0F766E" />
-            </svg>
-          </div>
-          )}
-
           {/* Slot Status Tooltip (Hover on Desktop / Tap on Mobile for booked & cleaning slots) */}
           {slotTooltip && slotTooltip.roomId === room.id && (
             <div
@@ -1683,12 +1730,12 @@ export default function RoomListPage() {
               role="status"
               style={{
                 position: 'absolute',
-                left: `${Math.max(18, Math.min(82, slotTooltip.pct))}%`,
+                left: `${Math.max(20, Math.min(80, slotTooltip.pct))}%`,
                 bottom: 'calc(100% + 10px)',
                 transform: 'translateX(-50%)',
                 backgroundColor: '#0F172A',
                 color: '#FFFFFF',
-                fontSize: '0.76rem',
+                fontSize: '0.75rem',
                 fontWeight: 700,
                 padding: '5px 10px',
                 borderRadius: '8px',
@@ -1769,7 +1816,40 @@ export default function RoomListPage() {
             />
           )}
 
-          {/* Invisible Expanded Left Edge Drag Hit-Target (adjusts Start Time) */}
+          {/* Internal 30-min Ruler Ticks Inside the Bar (Full-hour taller than half-hour) */}
+          <div
+            data-testid={`timeline-ticks-${room.id}`}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              zIndex: 3,
+              overflow: 'hidden',
+              borderRadius: '9999px'
+            }}
+          >
+            {internalTicks.map(tk => (
+              <span
+                key={tk.mins}
+                data-tick-mins={tk.mins}
+                data-tick-kind={tk.isFullHour ? 'hour' : 'half'}
+                style={{
+                  position: 'absolute',
+                  left: `${tk.pct}%`,
+                  bottom: 0,
+                  transform: 'translateX(-50%)',
+                  width: tk.isFullHour ? '1.5px' : '1px',
+                  height: tk.isFullHour ? '12px' : '7px',
+                  backgroundColor: tk.isInsideSelected
+                    ? 'rgba(255, 255, 255, 0.72)'
+                    : 'rgba(15, 23, 42, 0.28)',
+                  borderRadius: '1px 1px 0 0'
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Left Draggable Knob + Edge Hit-Target (adjusts Start Time) */}
           {selEndPct > selStartPct && (
             <div
               data-testid={`timeline-edge-start-${room.id}`}
@@ -1784,19 +1864,37 @@ export default function RoomListPage() {
                 left: `${selStartPct}%`,
                 top: '50%',
                 transform: 'translate(-50%, -50%)',
-                width: '32px',
+                width: '36px',
                 height: '44px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 backgroundColor: 'transparent',
                 cursor: 'ew-resize',
                 touchAction: 'none',
-                zIndex: 9
+                zIndex: activeDragType === 'start' ? 12 : 10
               }}
               title="ลากขอบซ้ายเพื่อปรับเวลาเริ่ม"
               aria-label="ลากขอบซ้ายเพื่อปรับเวลาเริ่ม"
-            />
+            >
+              <span
+                style={{
+                  width: activeDragType === 'start' ? '22px' : '18px',
+                  height: activeDragType === 'start' ? '22px' : '18px',
+                  borderRadius: '50%',
+                  backgroundColor: '#FFFFFF',
+                  border: '2.5px solid #0F766E',
+                  boxShadow: activeDragType === 'start'
+                    ? '0 0 0 4px rgba(15, 118, 110, 0.22), 0 2px 6px rgba(15, 23, 42, 0.25)'
+                    : '0 2px 6px rgba(15, 23, 42, 0.22)',
+                  pointerEvents: 'none',
+                  transition: 'width 0.12s ease, height 0.12s ease, box-shadow 0.12s ease'
+                }}
+              />
+            </div>
           )}
 
-          {/* Invisible Expanded Right Edge Drag Hit-Target (adjusts End Time) */}
+          {/* Right Draggable Knob + Edge Hit-Target (adjusts End Time) */}
           {selEndPct > selStartPct && (
             <div
               data-testid={`timeline-edge-end-${room.id}`}
@@ -1811,61 +1909,35 @@ export default function RoomListPage() {
                 left: `${selEndPct}%`,
                 top: '50%',
                 transform: 'translate(-50%, -50%)',
-                width: '32px',
+                width: '36px',
                 height: '44px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 backgroundColor: 'transparent',
                 cursor: 'ew-resize',
                 touchAction: 'none',
-                zIndex: 9
+                zIndex: activeDragType === 'end' ? 12 : 10
               }}
               title="ลากขอบขวาเพื่อปรับเวลาสิ้นสุด"
               aria-label="ลากขอบขวาเพื่อปรับเวลาสิ้นสุด"
-            />
+            >
+              <span
+                style={{
+                  width: activeDragType === 'end' ? '22px' : '18px',
+                  height: activeDragType === 'end' ? '22px' : '18px',
+                  borderRadius: '50%',
+                  backgroundColor: '#FFFFFF',
+                  border: '2.5px solid #0F766E',
+                  boxShadow: activeDragType === 'end'
+                    ? '0 0 0 4px rgba(15, 118, 110, 0.22), 0 2px 6px rgba(15, 23, 42, 0.25)'
+                    : '0 2px 6px rgba(15, 23, 42, 0.22)',
+                  pointerEvents: 'none',
+                  transition: 'width 0.12s ease, height 0.12s ease, box-shadow 0.12s ease'
+                }}
+              />
+            </div>
           )}
-
-          {/* Centerline 30-min Subtle Dots Layer */}
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              pointerEvents: 'none',
-              zIndex: 3
-            }}
-          >
-            {slots.map(s => {
-              const isSelected = s.startMins >= selStartMins && s.endMins <= selEndMins;
-              return (
-                <div
-                  key={s.index}
-                  style={{
-                    flex: 1,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center'
-                  }}
-                >
-                  <div
-                    style={{
-                      width: '3.5px',
-                      height: '3.5px',
-                      borderRadius: '50%',
-                      backgroundColor: isSelected
-                        ? 'rgba(255, 255, 255, 0.75)'
-                        : s.type === 'past'
-                        ? 'transparent'
-                        : s.type === 'booked'
-                        ? 'rgba(100, 116, 139, 0.4)'
-                        : s.type === 'cleaning'
-                        ? 'rgba(180, 83, 9, 0.4)'
-                        : 'rgba(15, 118, 110, 0.3)'
-                    }}
-                  />
-                </div>
-              );
-            })}
-          </div>
         </div>
 
         {/* Legend Row */}
@@ -1885,8 +1957,8 @@ export default function RoomListPage() {
         </div>
 
         {/* Short Instruction */}
-        <div style={{ fontSize: '0.86rem', color: '#64748B', fontWeight: 600, margin: '8px 18px 0 18px' }}>
-          แตะบนแถบ หรือเลื่อนลูกศรเพื่อปรับเวลา
+        <div style={{ fontSize: '0.84rem', color: '#64748B', fontWeight: 600, margin: '8px 18px 0 18px' }}>
+          แตะบนแถบ หรือลากจุดจับซ้าย–ขวาเพื่อปรับเวลา
         </div>
 
         {/* Error / Conflict Alert */}
@@ -2952,8 +3024,8 @@ export default function RoomListPage() {
               </div>
             </div>
             <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: '1.05rem', fontWeight: 900, color: 'var(--primary)' }}>
-                {getRoomStartingPriceText(room)}
+              <div style={{ fontSize: '1.05rem', fontWeight: 900, color: 'var(--primary)' }} id="active-room-starting-price">
+                {getRoomStartingPriceText(room, sel)}
               </div>
             </div>
           </div>
@@ -3342,9 +3414,9 @@ export default function RoomListPage() {
                     <span className="customer-cal-day__num">{cell.dayNumber}</span>
                     {isPast ? (
                       <span className="customer-cal-day__past-x" aria-hidden="true">
-                        <svg viewBox="0 0 24 24" fill="none">
-                          <line x1="5" y1="5" x2="19" y2="19" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-                          <line x1="19" y1="5" x2="5" y2="19" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" fill="none">
+                          <line x1="0" y1="0" x2="100" y2="100" stroke="currentColor" strokeWidth="1.25" vectorEffect="non-scaling-stroke" />
+                          <line x1="100" y1="0" x2="0" y2="100" stroke="currentColor" strokeWidth="1.25" vectorEffect="non-scaling-stroke" />
                         </svg>
                       </span>
                     ) : isTodayExpired ? (
@@ -3406,19 +3478,33 @@ export default function RoomListPage() {
           <div className="customer-summary-filter-icon">
             <Calendar size={18} />
           </div>
-          <div>
-            <div className="customer-summary-filter-text">
-              {searchMode === 'byGuests'
-                ? `${formatShortThaiDate(dateStr)} · ${guests} คน`
-                : `${formatShortThaiDate(dateStr)} · ห้อง ${activeRoom?.name || directSelectedRoom?.name || 'ที่เลือก'}`}
-            </div>
-            <div className="customer-summary-filter-sub">
-              {searchMode === 'byGuests' ? 'ค้นหาตามจำนวนคน' : 'ค้นหาแบบระบุห้อง'}
-            </div>
+          <div className="customer-summary-filter-body">
+            {searchMode === 'byGuests' ? (
+              <>
+                <div className="customer-summary-filter-text">
+                  {formatShortThaiDate(dateStr)} · {guests} คน
+                </div>
+                <div className="customer-summary-filter-sub">
+                  ค้นหาตามจำนวนคน
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="customer-summary-filter-date" id="summary-direct-date">
+                  {formatShortThaiDate(dateStr)}
+                </div>
+                <div className="customer-summary-filter-room" id="summary-direct-room">
+                  ห้อง {activeRoom?.name || directSelectedRoom?.name || 'ที่เลือก'}
+                </div>
+                <div className="customer-summary-filter-sub">
+                  ค้นหาแบบระบุห้อง
+                </div>
+              </>
+            )}
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+        <div className="customer-summary-filter-actions">
           <button
             type="button"
             onClick={() => setIsCalendarExpanded(prev => !prev)}

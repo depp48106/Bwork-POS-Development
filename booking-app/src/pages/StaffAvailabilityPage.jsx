@@ -433,11 +433,11 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     return map;
   }, [rooms]);
 
-  // Calculate day-by-day room availability using POS cleaning buffer
+  // Calculate day-by-day room availability using agreed 30-minute cleaning buffer
   const calculateDayAvailability = (dateStr, roomId) => {
     if (!availabilityData) return { ranges: [], status: 'free' };
     const bookings = availabilityData.intervals.filter(i => i.room_id === roomId);
-    const bufferMins = Number(availabilityData.cleaning_buffer_minutes ?? 30);
+    const bufferMins = 30;
     return getRoomAvailabilityForDay(dateStr, bookings, bufferMins);
   };
 
@@ -591,11 +591,11 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     return map;
   }, [availabilityData, roomMap, bangkokNowIso]);
 
-  // Group bookings for "ดูเพิ่มเติม" modal in POS monthly view with cleaning buffer
+  // Group bookings for "ดูเพิ่มเติม" modal in POS monthly view with 30-minute cleaning buffer
   const dayBookingsGrouped = useMemo(() => {
     if (!dayBookingsModalDate || !monthEventsByDay[dayBookingsModalDate]) return [];
     const events = monthEventsByDay[dayBookingsModalDate];
-    const bufferMins = Number(availabilityData?.cleaning_buffer_minutes ?? 30);
+    const bufferMins = 30;
     const groupMap = new Map();
     for (const ev of events) {
       if (!groupMap.has(ev.room_id)) {
