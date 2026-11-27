@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Users, Wifi, Tv, Wind, CheckCircle2,
-  ArrowLeft, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Calendar, Clock, Sparkles, Building, AlertCircle, Check, Edit3, X, Minus, Plus
+  ArrowLeft, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Calendar, Clock, Sparkles, Building, AlertCircle, Check, Edit3, X, Minus, Plus, MoreHorizontal
 } from 'lucide-react';
 import StepProgress from '../components/StepProgress';
 import { API_BASE } from '../apiConfig';
@@ -214,10 +214,15 @@ export default function RoomListPage() {
   // Active room displayed in single-room master-detail view
   const [activeRoomId, setActiveRoomId] = useState(initialRoomId);
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(() => !hasUrlOrDraftSelection);
+  const [isFullMonthSheetOpen, setIsFullMonthSheetOpen] = useState(false);
   const [isMobileRoomListOpen, setIsMobileRoomListOpen] = useState(false);
+  const [isMoreOptionsOpen, setIsMoreOptionsOpen] = useState(false);
+  const [availabilityByMonth, setAvailabilityByMonth] = useState({});
   const [roomSwitchNotice, setRoomSwitchNotice] = useState('');
   const [hasUserPickedTime, setHasUserPickedTime] = useState(Boolean(savedDraft?.start_time));
   const calendarSectionRef = useRef(null);
+  const roomPhotoSectionRef = useRef(null);
+  const pendingScrollAfterRoomSwitchRef = useRef(false);
 
   // -------------------------------------------------------------
   // Bottom Sheet Modal States (staged values until "ตกลง" is pressed)
@@ -375,28 +380,69 @@ export default function RoomListPage() {
     }
   };
 
-  // Fetch monthly availability intervals for current calendar month
+  // 7-day strip dates starting from today (Asia/Bangkok), supporting cross-month weeks
+  const sevenDayStripDates = useMemo(() => {
+    const [y, m, d] = todayIso.split('-').map(Number);
+    const list = [];
+    for (let i = 0; i < 7; i++) {
+      const dt = new Date(Date.UTC(y, m - 1, d + i));
+      const iso = dt.toISOString().slice(0, 10);
+      const dayOfWeek = dt.getUTCDay(); // 0=Sun..6=Sat
+      const weekdayShort = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'][dayOfWeek];
+      list.push({
+        date: iso,
+        dayNumber: dt.getUTCDate(),
+        monthKey: iso.slice(0, 7),
+        monthShort: THAI_MONTHS_SHORT[dt.getUTCMonth()],
+        thaiYear: dt.getUTCFullYear() + 543,
+        weekdayShort,
+        isMonthStart: i > 0 && dt.getUTCDate() === 1
+      });
+    }
+    return list;
+  }, [todayIso]);
+
+  const sevenDayMonths = useMemo(
+    () => Array.from(new Set(sevenDayStripDates.map(d => d.monthKey))),
+    [sevenDayStripDates]
+  );
+
+  // Fetch monthly availability intervals for current calendar month AND any months covered by 7-day strip
   const fetchMonthlyAvailability = useCallback(async () => {
     setMonthLoading(true);
     setMonthError(false);
+    const targetMonths = Array.from(new Set([currentMonthKey, ...sevenDayMonths]));
     try {
-      const res = await fetch(`${API_BASE}/api/public/rooms/availability-month?month=${currentMonthKey}`, { cache: 'no-store' });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.month === currentMonthKey) {
-          setAvailabilityData(data);
-          setMonthError(false);
+      const responses = await Promise.all(
+        targetMonths.map(async (mk) => {
+          const res = await fetch(`${API_BASE}/api/public/rooms/availability-month?month=${mk}`, { cache: 'no-store' });
+          if (!res.ok) return { mk, ok: false, data: null };
+          const data = await res.json();
+          return { mk, ok: true, data };
+        })
+      );
+      const nextMap = {};
+      let currentOk = false;
+      for (const r of responses) {
+        if (r.ok && r.data && r.data.month === r.mk) {
+          nextMap[r.mk] = r.data;
+          if (r.mk === currentMonthKey) {
+            setAvailabilityData(r.data);
+            currentOk = true;
+          }
         }
-      } else {
-        setMonthError(true);
       }
+      if (Object.keys(nextMap).length > 0) {
+        setAvailabilityByMonth(prev => ({ ...prev, ...nextMap }));
+      }
+      setMonthError(!currentOk && responses.some(r => !r.ok));
     } catch (err) {
       console.warn('Failed to load monthly availability:', err);
       setMonthError(true);
     } finally {
       setMonthLoading(false);
     }
-  }, [currentMonthKey]);
+  }, [currentMonthKey, sevenDayMonths]);
 
   useEffect(() => {
     fetchMonthlyAvailability();
@@ -467,11 +513,20 @@ export default function RoomListPage() {
     };
   }, [fetchMonthlyAvailability, fetchDailySchedule]);
 
-  // When tapping a date on calendar: open bottom sheet modal with staged date
+  // Ensure only one bottom sheet/modal is open at a time
+  const closeAllBottomSheets = () => {
+    setIsFullMonthSheetOpen(false);
+    setIsMobileRoomListOpen(false);
+    setIsMoreOptionsOpen(false);
+    setIsModalOpen(false);
+  };
+
+  // When tapping a date on calendar (7-day strip or full-month sheet/grid): open bottom sheet modal with staged date
   const handleDateTap = (tappedDate) => {
     const liveBkk = getBangkokNow();
     if (tappedDate < liveBkk.dateIso) return;
     if (tappedDate === liveBkk.dateIso && liveBkk.minutes >= 17 * 60 + 30) return;
+    closeAllBottomSheets();
     setModalDate(tappedDate);
     setModalMode(searchMode || 'byGuests');
     setModalGuests(guests ? guests : '');
@@ -480,8 +535,9 @@ export default function RoomListPage() {
     setIsModalOpen(true);
   };
 
-  // When clicking "เปลี่ยน" button above results: open modal with current confirmed values
+  // When clicking "แก้ตัวเลือกการจอง": open modal with current confirmed values
   const handleOpenEditModal = () => {
+    closeAllBottomSheets();
     setModalDate(dateStr);
     setModalMode(searchMode || 'byGuests');
     setModalGuests(guests ? guests : '');
@@ -552,6 +608,64 @@ export default function RoomListPage() {
     setIsModalOpen(false);
   };
 
+  // Shared helper: compute availability cell for any date (used by both 7-day strip and full-month calendar)
+  const buildCalendarDayCell = useCallback((dayDateStr, dayNumber) => {
+    const monthKey = dayDateStr.slice(0, 7);
+    const monthAvail = availabilityByMonth[monthKey] || (availabilityData && availabilityData.month === monthKey ? availabilityData : null);
+    const isMonthDataReady = !!(monthAvail && monthAvail.month === monthKey && Array.isArray(monthAvail.rooms));
+    const liveBkk = getBangkokNow();
+    const isTodayExpired = liveBkk.minutes >= (17 * 60 + 30);
+    const minStartMinsToday = getMinStartMinutesToday(liveBkk.minutes);
+    const isPast = dayDateStr < todayIso;
+    const isDayToday = dayDateStr === todayIso;
+
+    let freeCount = 0;
+    if (isMonthDataReady) {
+      const buffer = 30;
+      for (const rm of monthAvail.rooms) {
+        const conflicting = getConflictingRoomIds(rm.id);
+        const dayBookings = (monthAvail.intervals || []).filter(item => {
+          if (!conflicting.includes(item.room_id)) return false;
+          return (item.start || '').slice(0, 10) === dayDateStr;
+        });
+        const ranges = getRoomAvailabilityForDay(dayDateStr, dayBookings, buffer);
+        if (ranges?.status !== 'full' && Array.isArray(ranges?.ranges)) {
+          if (isDayToday) {
+            if (!isTodayExpired) {
+              const hasValidFutureSlot = ranges.ranges.some(r => {
+                const [sh, sm] = (r.start || '08:00').split(':').map(Number);
+                const [eh, em] = (r.end || '18:00').split(':').map(Number);
+                const sMin = sh * 60 + sm;
+                const eMin = eh * 60 + em;
+                const effStart = Math.max(sMin, minStartMinsToday);
+                return (eMin - effStart) >= 30;
+              });
+              if (hasValidFutureSlot) freeCount++;
+            }
+          } else if (ranges.ranges.length > 0) {
+            freeCount++;
+          }
+        }
+      }
+    }
+
+    return {
+      dayNumber,
+      date: dayDateStr,
+      isPast,
+      isToday: isDayToday,
+      isTodayExpired: isDayToday && isTodayExpired,
+      freeRoomsCount: freeCount,
+      isMonthDataReady
+    };
+  }, [availabilityByMonth, availabilityData, todayIso, bangkokNow.minutes]);
+
+  // 7-day strip cells (shared logic with full-month calendar, supports cross-month weeks)
+  const sevenDayStripCells = useMemo(
+    () => sevenDayStripDates.map(d => ({ ...d, ...buildCalendarDayCell(d.date, d.dayNumber) })),
+    [sevenDayStripDates, buildCalendarDayCell]
+  );
+
   // Build Calendar Weeks for Monthly Interactive Grid
   const calendarWeeks = useMemo(() => {
     const monthInfo = getAvailabilityMonth(currentMonthKey);
@@ -563,59 +677,9 @@ export default function RoomListPage() {
       cells.push(null);
     }
 
-    const isMonthDataReady = !!(availabilityData && availabilityData.month === currentMonthKey && Array.isArray(availabilityData.rooms));
-    const liveBkk = getBangkokNow();
-    const isTodayExpired = liveBkk.minutes >= (17 * 60 + 30); // 17:30 or later -> all start rounds for today are over
-    const minStartMinsToday = getMinStartMinutesToday(liveBkk.minutes);
-
     for (let d = 1; d <= days; d++) {
       const dayDateStr = `${currentMonthKey}-${String(d).padStart(2, '0')}`;
-      const isPast = dayDateStr < todayIso;
-      const isDayToday = dayDateStr === todayIso;
-
-      let freeCount = 0;
-      if (isMonthDataReady) {
-        const buffer = 30;
-        for (const rm of availabilityData.rooms) {
-          const conflicting = getConflictingRoomIds(rm.id);
-          const dayBookings = (availabilityData.intervals || []).filter(item => {
-            if (!conflicting.includes(item.room_id)) return false;
-            return (item.start || '').slice(0, 10) === dayDateStr;
-          });
-          const ranges = getRoomAvailabilityForDay(dayDateStr, dayBookings, buffer);
-          if (ranges?.status !== 'full' && Array.isArray(ranges?.ranges)) {
-            if (isDayToday) {
-              if (!isTodayExpired) {
-                const hasValidFutureSlot = ranges.ranges.some(r => {
-                  const [sh, sm] = (r.start || '08:00').split(':').map(Number);
-                  const [eh, em] = (r.end || '18:00').split(':').map(Number);
-                  const sMin = sh * 60 + sm;
-                  const eMin = eh * 60 + em;
-                  const effStart = Math.max(sMin, minStartMinsToday);
-                  return (eMin - effStart) >= 30;
-                });
-                if (hasValidFutureSlot) {
-                  freeCount++;
-                }
-              }
-            } else {
-              if (ranges.ranges.length > 0) {
-                freeCount++;
-              }
-            }
-          }
-        }
-      }
-
-      cells.push({
-        dayNumber: d,
-        date: dayDateStr,
-        isPast,
-        isToday: isDayToday,
-        isTodayExpired: isDayToday && isTodayExpired,
-        freeRoomsCount: freeCount,
-        isMonthDataReady
-      });
+      cells.push(buildCalendarDayCell(dayDateStr, d));
     }
 
     const weeks = [];
@@ -623,7 +687,7 @@ export default function RoomListPage() {
       weeks.push(cells.slice(i, i + 7));
     }
     return weeks;
-  }, [currentMonthKey, todayIso, availabilityData, bangkokNow.minutes]);
+  }, [currentMonthKey, buildCalendarDayCell]);
 
   // Robust time string extractor (Public, zero PII)
   const extractHHMM = (timeStr) => {
@@ -1045,6 +1109,8 @@ export default function RoomListPage() {
       return;
     }
 
+    pendingScrollAfterRoomSwitchRef.current = true;
+
     if (activeRoom) {
       const curSel = getRoomSelection(activeRoom);
       const hadValidTime = hasUserPickedTime && !curSel.isTimeCleared && curSel.startTime && curSel.endTime;
@@ -1103,6 +1169,26 @@ export default function RoomListPage() {
       setConfirmedRoomId(nextRoom.id);
     }
   };
+
+  // Scroll once to the new room's photo & title after switching to a different room
+  useEffect(() => {
+    if (!pendingScrollAfterRoomSwitchRef.current || !activeRoom?.id) return;
+    pendingScrollAfterRoomSwitchRef.current = false;
+
+    const rafId = window.requestAnimationFrame(() => {
+      const targetEl = roomPhotoSectionRef.current;
+      if (!targetEl) return;
+      const headerEl = document.querySelector('header, .app-header, .navbar');
+      const headerHeight = headerEl ? headerEl.getBoundingClientRect().height : 64;
+      const offsetTop = targetEl.getBoundingClientRect().top + window.scrollY - headerHeight - 12;
+      window.scrollTo({
+        top: Math.max(0, Math.round(offsetTop)),
+        behavior: 'smooth'
+      });
+    });
+
+    return () => window.cancelAnimationFrame(rafId);
+  }, [activeRoom?.id]);
 
   // Proceed to Step 2 Form
   const handleProceedToForm = (room) => {
@@ -1339,11 +1425,12 @@ export default function RoomListPage() {
     setTimelineTapStep(prev => ({ ...prev, [room.id]: 'end' }));
   };
 
-  // Handle dragging start / end arrows
-  const handleArrowPointerDown = (type, room, e) => {
+  // Handle dragging start / end handles (works from first touch without prior tap or dropdown interaction)
+  const handleArrowPointerDown = (type, room, e, sel = null) => {
     e.preventDefault();
     e.stopPropagation();
     setSlotTooltip(null);
+    setTimelineError('');
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch (err) {}
@@ -1352,19 +1439,53 @@ export default function RoomListPage() {
     if (!container) return;
     const rect = container.getBoundingClientRect();
 
+    const resolvedSel = sel || getRoomSelection(room);
+    const curStart = resolvedSel?.startTime || globalStartTime;
+    const curEnd = resolvedSel?.endTime || globalEndTime;
+    if (!curStart || !curEnd) return;
+
+    const [cSH, cSM] = curStart.split(':').map(Number);
+    const [cEH, cEM] = curEnd.split(':').map(Number);
+    const curStartMins = cSH * 60 + (cSM || 0);
+    const curEndMins = cEH * 60 + (cEM || 0);
+
+    // Seed explicit roomSelection immediately on first touch so state matches the displayed range
+    setRoomSelections(prev => {
+      const existing = prev[room.id];
+      if (existing && existing.startTime === curStart && existing.endTime === curEnd && !existing.isTimeCleared) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [room.id]: {
+          ...(existing || {}),
+          mode: 'hourly',
+          startTime: curStart,
+          endTime: curEnd,
+          isTimeCleared: false
+        }
+      };
+    });
+
     draggingRef.current = {
       type,
       roomId: room.id,
       room,
       rect,
-      pointerId: e.pointerId
+      pointerId: e.pointerId,
+      curStart,
+      curEnd,
+      curStartMins,
+      curEndMins
     };
     setActiveDrag({ roomId: room.id, type });
   };
 
   const handleArrowPointerMove = (e) => {
     if (!draggingRef.current || draggingRef.current.pointerId !== e.pointerId) return;
-    const { type, room, rect } = draggingRef.current;
+    e.preventDefault();
+    const drag = draggingRef.current;
+    const { type, room, rect } = drag;
     const width = rect.width;
     if (width <= 0) return;
 
@@ -1377,13 +1498,7 @@ export default function RoomListPage() {
     const clickedMinute = 480 + pct * 600;
     let targetMins = Math.round(clickedMinute / 30) * 30;
 
-    const currentSel = roomSelections[room.id] || {};
-    const curStart = currentSel.startTime || globalStartTime;
-    const curEnd = currentSel.endTime || globalEndTime;
-    const [cSH, cSM] = curStart.split(':').map(Number);
-    const [cEH, cEM] = curEnd.split(':').map(Number);
-    const curStartMins = cSH * 60 + cSM;
-    const curEndMins = cEH * 60 + cEM;
+    const { curStart, curEnd, curStartMins, curEndMins } = drag;
 
     if (type === 'start') {
       // Must not exceed curEndMins - 30
@@ -1409,11 +1524,19 @@ export default function RoomListPage() {
 
       const newStartStr = `${String(Math.floor(targetMins / 60)).padStart(2, '0')}:${String(targetMins % 60).padStart(2, '0')}`;
       if (newStartStr !== curStart) {
+        drag.curStart = newStartStr;
+        drag.curStartMins = targetMins;
         setHasUserPickedTime(true);
         setRoomSwitchNotice('');
         setRoomSelections(prev => ({
           ...prev,
-          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', startTime: newStartStr, isTimeCleared: false }
+          [room.id]: {
+            ...(prev[room.id] || {}),
+            mode: 'hourly',
+            startTime: newStartStr,
+            endTime: curEnd,
+            isTimeCleared: false
+          }
         }));
       }
     } else {
@@ -1438,20 +1561,30 @@ export default function RoomListPage() {
 
       const newEndStr = `${String(Math.floor(targetMins / 60)).padStart(2, '0')}:${String(targetMins % 60).padStart(2, '0')}`;
       if (newEndStr !== curEnd) {
+        drag.curEnd = newEndStr;
+        drag.curEndMins = targetMins;
         setHasUserPickedTime(true);
         setRoomSwitchNotice('');
         setRoomSelections(prev => ({
           ...prev,
-          [room.id]: { ...(prev[room.id] || {}), mode: 'hourly', endTime: newEndStr, isTimeCleared: false }
+          [room.id]: {
+            ...(prev[room.id] || {}),
+            mode: 'hourly',
+            startTime: curStart,
+            endTime: newEndStr,
+            isTimeCleared: false
+          }
         }));
       }
     }
   };
 
   const handleArrowPointerUp = (e) => {
-    if (draggingRef.current && draggingRef.current.pointerId === e.pointerId) {
+    if (draggingRef.current && (!e || e.pointerId === undefined || draggingRef.current.pointerId === e.pointerId)) {
       try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
+        if (e && e.currentTarget && e.pointerId !== undefined) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
       } catch (err) {}
       draggingRef.current = null;
       setActiveDrag(null);
@@ -1855,16 +1988,17 @@ export default function RoomListPage() {
               data-testid={`timeline-edge-start-${room.id}`}
               className="timeline-edge-handle timeline-edge-handle--start"
               onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => handleArrowPointerDown('start', room, e)}
+              onPointerDown={(e) => handleArrowPointerDown('start', room, e, sel)}
               onPointerMove={handleArrowPointerMove}
               onPointerUp={handleArrowPointerUp}
               onPointerCancel={handleArrowPointerUp}
+              onLostPointerCapture={handleArrowPointerUp}
               style={{
                 position: 'absolute',
                 left: `${selStartPct}%`,
                 top: '50%',
                 transform: 'translate(-50%, -50%)',
-                width: '36px',
+                width: '38px',
                 height: '44px',
                 display: 'flex',
                 alignItems: 'center',
@@ -1872,7 +2006,7 @@ export default function RoomListPage() {
                 backgroundColor: 'transparent',
                 cursor: 'ew-resize',
                 touchAction: 'none',
-                zIndex: activeDragType === 'start' ? 12 : 10
+                zIndex: activeDragType === 'start' ? 15 : 12
               }}
               title="ลากขอบซ้ายเพื่อปรับเวลาเริ่ม"
               aria-label="ลากขอบซ้ายเพื่อปรับเวลาเริ่ม"
@@ -1900,16 +2034,17 @@ export default function RoomListPage() {
               data-testid={`timeline-edge-end-${room.id}`}
               className="timeline-edge-handle timeline-edge-handle--end"
               onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => handleArrowPointerDown('end', room, e)}
+              onPointerDown={(e) => handleArrowPointerDown('end', room, e, sel)}
               onPointerMove={handleArrowPointerMove}
               onPointerUp={handleArrowPointerUp}
               onPointerCancel={handleArrowPointerUp}
+              onLostPointerCapture={handleArrowPointerUp}
               style={{
                 position: 'absolute',
                 left: `${selEndPct}%`,
                 top: '50%',
                 transform: 'translate(-50%, -50%)',
-                width: '36px',
+                width: '38px',
                 height: '44px',
                 display: 'flex',
                 alignItems: 'center',
@@ -1917,7 +2052,7 @@ export default function RoomListPage() {
                 backgroundColor: 'transparent',
                 cursor: 'ew-resize',
                 touchAction: 'none',
-                zIndex: activeDragType === 'end' ? 12 : 10
+                zIndex: activeDragType === 'end' ? 15 : 12
               }}
               title="ลากขอบขวาเพื่อปรับเวลาสิ้นสุด"
               aria-label="ลากขอบขวาเพื่อปรับเวลาสิ้นสุด"
@@ -2840,7 +2975,7 @@ export default function RoomListPage() {
     );
 
     return (
-      <div className="room-detail-layout" id={`single-room-view-${room.id}`}>
+      <div className="room-detail-layout" id={`single-room-view-${room.id}`} ref={roomPhotoSectionRef}>
         {/* LEFT COLUMN: ROOM PHOTO + SWITCHER (DESKTOP LIST / MOBILE BUTTON) */}
         <div className="room-detail-left">
           {/* Room Photo */}
@@ -2880,7 +3015,7 @@ export default function RoomListPage() {
             </div>
           </div>
 
-          {/* DESKTOP: Room Switcher List below photo */}
+          {/* DESKTOP (>= 1024px): Room Switcher List below photo */}
           {switcherRooms.length > 0 && (
             <div className="room-switcher-desktop" id="desktop-room-switcher">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2px' }}>
@@ -2888,54 +3023,6 @@ export default function RoomListPage() {
                 <span style={{ fontSize: '0.74rem', fontWeight: 600, color: 'var(--text-muted)' }}>({switcherRooms.length} ห้อง)</span>
               </div>
               {renderSwitcherRows('desktop')}
-            </div>
-          )}
-
-          {/* MOBILE: "เปลี่ยนห้อง" Button below photo and above timeline */}
-          {switcherRooms.length > 0 && (
-            <div className="room-switcher-mobile">
-              <button
-                type="button"
-                id="btn-mobile-switch-room"
-                onClick={() => setIsMobileRoomListOpen(prev => !prev)}
-                style={{
-                  width: '100%',
-                  padding: '12px 14px',
-                  borderRadius: '12px',
-                  border: '1.5px solid var(--primary)',
-                  backgroundColor: '#ffffff',
-                  color: 'var(--navy)',
-                  fontSize: '0.88rem',
-                  fontWeight: 800,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '8px'
-                }}
-              >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-                  <Building size={16} color="var(--primary)" />
-                  <span>เปลี่ยนห้อง ({switcherRooms.length} ห้อง)</span>
-                </span>
-                {isMobileRoomListOpen ? <ChevronUp size={18} color="var(--primary)" /> : <ChevronDown size={18} color="var(--primary)" />}
-              </button>
-
-              {isMobileRoomListOpen && (
-                <div
-                  id="mobile-room-switcher-list"
-                  style={{
-                    marginTop: '8px',
-                    padding: '10px',
-                    borderRadius: '14px',
-                    backgroundColor: '#ffffff',
-                    border: '1.5px solid var(--border)',
-                    boxShadow: 'var(--shadow-md)'
-                  }}
-                >
-                  {renderSwitcherRows('mobile')}
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -3290,148 +3377,234 @@ export default function RoomListPage() {
     );
   };
 
+  const showMobileBottomRoomBar = Boolean(hasConfirmedDate && activeRoom && switcherRooms.length > 0 && !loading);
+
+  const sevenDayHeader = useMemo(() => {
+    if (sevenDayStripDates.length === 0) return formatThaiMonthYear(currentMonthKey);
+    const first = sevenDayStripDates[0];
+    const last = sevenDayStripDates[sevenDayStripDates.length - 1];
+    if (first.monthKey === last.monthKey) {
+      return formatThaiMonthYear(first.monthKey);
+    }
+    if (first.thaiYear === last.thaiYear) {
+      return `${first.monthShort} – ${last.monthShort} ${first.thaiYear}`;
+    }
+    return `${first.monthShort} ${first.thaiYear} – ${last.monthShort} ${last.thaiYear}`;
+  }, [sevenDayStripDates, currentMonthKey]);
+
+  const renderFullMonthCalendarInner = () => (
+    <>
+      {/* Month Navigation Bar */}
+      <div className="customer-cal-nav">
+        <div className="customer-cal-nav__title-group">
+          <Calendar size={20} color="var(--primary)" />
+          <h2 className="customer-cal-nav__title">
+            {formatThaiMonthYear(currentMonthKey)}
+          </h2>
+        </div>
+
+        <div className="customer-cal-nav__controls">
+          <button
+            type="button"
+            className="customer-cal-nav__btn"
+            onClick={() => changeMonth(-1)}
+            title="เดือนก่อนหน้า"
+            aria-label="เดือนก่อนหน้า"
+          >
+            <ChevronLeft size={18} />
+          </button>
+
+          <button
+            type="button"
+            className="customer-cal-nav__today-pill"
+            onClick={jumpToToday}
+            title="ไปที่วันนี้"
+          >
+            วันนี้
+          </button>
+
+          <button
+            type="button"
+            className="customer-cal-nav__btn"
+            onClick={() => changeMonth(1)}
+            title="เดือนถัดไป"
+            aria-label="เดือนถัดไป"
+          >
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      </div>
+
+      {/* Month Error Alert with Retry Button */}
+      {monthError && (
+        <div style={{
+          margin: '0 0 12px 0',
+          padding: '8px 14px',
+          borderRadius: '10px',
+          backgroundColor: '#fef2f2',
+          border: '1px solid #fecaca',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: '0.8rem',
+          color: '#dc2626'
+        }}>
+          <span>ไม่สามารถโหลดสถานะห้องว่างได้</span>
+          <button
+            type="button"
+            onClick={fetchMonthlyAvailability}
+            style={{
+              fontWeight: 800,
+              color: '#0F766E',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              textDecoration: 'underline',
+              padding: '2px 6px'
+            }}
+          >
+            ลองใหม่
+          </button>
+        </div>
+      )}
+
+      {/* 7-Column Weekday Headers (จ. - อา.) */}
+      <div className="customer-cal-weekdays" aria-hidden="true">
+        {WEEKDAYS.map(w => (
+          <span key={w} className="customer-cal-weekday">{w}</span>
+        ))}
+      </div>
+
+      {/* Monthly Calendar Grid */}
+      <div className="customer-cal-grid" role="group" aria-label="ตารางวันที่ในเดือน">
+        {calendarWeeks.map((week, wIdx) => (
+          <div key={wIdx} className="customer-cal-row">
+            {week.map((cell, cIdx) => {
+              if (!cell) {
+                return <div key={`empty-${cIdx}`} className="customer-cal-day customer-cal-day--empty" />;
+              }
+
+              const isSelected = cell.date === dateStr;
+              const isReady = cell.isMonthDataReady;
+              const hasFree = cell.freeRoomsCount > 0;
+              const isPast = cell.isPast;
+              const isTodayExpired = cell.isTodayExpired;
+              const isDisabled = isPast || isTodayExpired;
+
+              return (
+                <button
+                  type="button"
+                  key={cell.date}
+                  disabled={isDisabled}
+                  data-cal-date={cell.date}
+                  className={`customer-cal-day ${cell.isToday ? 'customer-cal-day--today' : ''} ${isSelected ? 'customer-cal-day--selected' : ''} ${isPast ? 'customer-cal-day--past' : ''} ${isTodayExpired ? 'customer-cal-day--today-expired' : ''}`}
+                  aria-pressed={isSelected}
+                  onClick={() => handleDateTap(cell.date)}
+                  title={
+                    isPast
+                      ? `${cell.dayNumber} (ผ่านมาแล้ว)`
+                      : isTodayExpired
+                      ? `${cell.dayNumber} (หมดรอบวันนี้)`
+                      : `${cell.dayNumber} (${!isReady ? 'กำลังโหลด...' : hasFree ? `ว่าง ${cell.freeRoomsCount} ห้อง` : 'เต็ม'})`
+                  }
+                >
+                  <span className="customer-cal-day__num">{cell.dayNumber}</span>
+                  {isPast ? (
+                    <span className="customer-cal-day__past-x" aria-hidden="true">
+                      <svg viewBox="0 0 100 100" preserveAspectRatio="none" fill="none">
+                        <line x1="0" y1="0" x2="100" y2="100" stroke="currentColor" strokeWidth="1.25" vectorEffect="non-scaling-stroke" />
+                        <line x1="100" y1="0" x2="0" y2="100" stroke="currentColor" strokeWidth="1.25" vectorEffect="non-scaling-stroke" />
+                      </svg>
+                    </span>
+                  ) : isTodayExpired ? (
+                    <span className="customer-cal-day__badge customer-cal-day__badge--expired">หมดรอบวันนี้</span>
+                  ) : (
+                    <span className={`customer-cal-day__badge ${!isReady ? 'customer-cal-day__badge--loading' : hasFree ? 'customer-cal-day__badge--free' : 'customer-cal-day__badge--full'}`}>
+                      {!isReady ? '···' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+
   return (
-    <div className="main-content">
+    <div className={`main-content ${showMobileBottomRoomBar ? 'has-bottom-room-bar' : ''}`}>
       {/* 3-STEP WIZARD PROGRESS BAR */}
       <StepProgress currentStep={1} />
 
-      {/* 1. INTERACTIVE MONTHLY CALENDAR CARD (COLLAPSES AFTER CONFIRM) */}
+      {/* 1A. MOBILE & IPAD (< 1024px): 7-DAY STRIP + "ดูทั้งเดือน" BUTTON */}
       {(isCalendarExpanded || !hasConfirmedDate) && (
-      <section ref={calendarSectionRef} className="customer-cal-card" aria-label="ปฏิทินเลือกวันจองห้องประชุม">
-        {/* Month Navigation Bar */}
-        <div className="customer-cal-nav">
-          <div className="customer-cal-nav__title-group">
-            <Calendar size={20} color="var(--primary)" />
-            <h2 className="customer-cal-nav__title">
-              {formatThaiMonthYear(currentMonthKey)}
-            </h2>
-          </div>
-
-          <div className="customer-cal-nav__controls">
+        <section className="customer-cal-strip-card" id="seven-day-strip" aria-label="แถบเลือกวัน 7 วัน">
+          <div className="customer-cal-strip-header">
+            <div className="customer-cal-nav__title-group">
+              <Calendar size={18} color="var(--primary)" />
+              <h2 className="customer-cal-strip-title" id="seven-day-strip-title">
+                {sevenDayHeader}
+              </h2>
+            </div>
             <button
               type="button"
-              className="customer-cal-nav__btn"
-              onClick={() => changeMonth(-1)}
-              title="เดือนก่อนหน้า"
-              aria-label="เดือนก่อนหน้า"
-            >
-              <ChevronLeft size={18} />
-            </button>
-
-            <button
-              type="button"
-              className="customer-cal-nav__today-pill"
-              onClick={jumpToToday}
-              title="ไปที่วันนี้"
-            >
-              วันนี้
-            </button>
-
-            <button
-              type="button"
-              className="customer-cal-nav__btn"
-              onClick={() => changeMonth(1)}
-              title="เดือนถัดไป"
-              aria-label="เดือนถัดไป"
-            >
-              <ChevronRight size={18} />
-            </button>
-          </div>
-        </div>
-
-        {/* Month Error Alert with Retry Button */}
-        {monthError && (
-          <div style={{
-            margin: '0 0 12px 0',
-            padding: '8px 14px',
-            borderRadius: '10px',
-            backgroundColor: '#fef2f2',
-            border: '1px solid #fecaca',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            fontSize: '0.8rem',
-            color: '#dc2626'
-          }}>
-            <span>ไม่สามารถโหลดสถานะห้องว่างได้</span>
-            <button
-              type="button"
-              onClick={fetchMonthlyAvailability}
-              style={{
-                fontWeight: 800,
-                color: '#0F766E',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                textDecoration: 'underline',
-                padding: '2px 6px'
+              id="btn-open-full-month"
+              className="customer-cal-fullmonth-btn"
+              onClick={() => {
+                setCurrentMonthKey((dateStr || todayIso).slice(0, 7));
+                setIsFullMonthSheetOpen(true);
               }}
             >
-              ลองใหม่
+              <Calendar size={14} />
+              <span>ดูทั้งเดือน</span>
             </button>
           </div>
-        )}
 
-        {/* 7-Column Weekday Headers (จ. - อา.) */}
-        <div className="customer-cal-weekdays" aria-hidden="true">
-          {WEEKDAYS.map(w => (
-            <span key={w} className="customer-cal-weekday">{w}</span>
-          ))}
-        </div>
+          <div className="customer-cal-strip-grid" role="group" aria-label="เลือกวันใน 7 วันข้างหน้า">
+            {sevenDayStripCells.map(cell => {
+              const isSelected = cell.date === dateStr;
+              const isReady = cell.isMonthDataReady;
+              const hasFree = cell.freeRoomsCount > 0;
+              const isPast = cell.isPast;
+              const isTodayExpired = cell.isTodayExpired;
+              const isDisabled = isPast || isTodayExpired;
 
-        {/* Monthly Calendar Grid */}
-        <div className="customer-cal-grid" role="group" aria-label="ตารางวันที่ในเดือน">
-          {calendarWeeks.map((week, wIdx) => (
-            <div key={wIdx} className="customer-cal-row">
-              {week.map((cell, cIdx) => {
-                if (!cell) {
-                  return <div key={`empty-${cIdx}`} className="customer-cal-day customer-cal-day--empty" />;
-                }
-
-                const isSelected = cell.date === dateStr;
-                const isReady = cell.isMonthDataReady;
-                const hasFree = cell.freeRoomsCount > 0;
-                const isPast = cell.isPast;
-                const isTodayExpired = cell.isTodayExpired;
-                const isDisabled = isPast || isTodayExpired;
-
-                return (
-                  <button
-                    type="button"
-                    key={cell.date}
-                    disabled={isDisabled}
-                    className={`customer-cal-day ${cell.isToday ? 'customer-cal-day--today' : ''} ${isSelected ? 'customer-cal-day--selected' : ''} ${isPast ? 'customer-cal-day--past' : ''} ${isTodayExpired ? 'customer-cal-day--today-expired' : ''}`}
-                    aria-pressed={isSelected}
-                    onClick={() => handleDateTap(cell.date)}
-                    title={
-                      isPast
-                        ? `${cell.dayNumber} (ผ่านมาแล้ว)`
-                        : isTodayExpired
-                        ? `${cell.dayNumber} (หมดรอบวันนี้)`
-                        : `${cell.dayNumber} (${!isReady ? 'กำลังโหลด...' : hasFree ? `ว่าง ${cell.freeRoomsCount} ห้อง` : 'เต็ม'})`
-                    }
-                  >
-                    <span className="customer-cal-day__num">{cell.dayNumber}</span>
-                    {isPast ? (
-                      <span className="customer-cal-day__past-x" aria-hidden="true">
-                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" fill="none">
-                          <line x1="0" y1="0" x2="100" y2="100" stroke="currentColor" strokeWidth="1.25" vectorEffect="non-scaling-stroke" />
-                          <line x1="100" y1="0" x2="0" y2="100" stroke="currentColor" strokeWidth="1.25" vectorEffect="non-scaling-stroke" />
-                        </svg>
-                      </span>
-                    ) : isTodayExpired ? (
-                      <span className="customer-cal-day__badge customer-cal-day__badge--expired">หมดรอบวันนี้</span>
-                    ) : (
-                      <span className={`customer-cal-day__badge ${!isReady ? 'customer-cal-day__badge--loading' : hasFree ? 'customer-cal-day__badge--free' : 'customer-cal-day__badge--full'}`}>
-                        {!isReady ? '···' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
-                      </span>
+              return (
+                <button
+                  type="button"
+                  key={cell.date}
+                  disabled={isDisabled}
+                  data-strip-date={cell.date}
+                  className={`customer-cal-strip-day ${cell.isToday ? 'customer-cal-day--today' : ''} ${isSelected ? 'customer-cal-day--selected' : ''} ${isPast ? 'customer-cal-day--past' : ''} ${isTodayExpired ? 'customer-cal-day--today-expired' : ''}`}
+                  aria-pressed={isSelected}
+                  onClick={() => handleDateTap(cell.date)}
+                >
+                  <span className="customer-cal-strip-day__weekday">{cell.weekdayShort}</span>
+                  <span className="customer-cal-strip-day__num">
+                    {cell.dayNumber}
+                    {cell.isMonthStart && (
+                      <span className="customer-cal-strip-day__month-tag">{cell.monthShort}</span>
                     )}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </div>
+                  </span>
+                  {isTodayExpired ? (
+                    <span className="customer-cal-day__badge customer-cal-day__badge--expired">หมดรอบวันนี้</span>
+                  ) : (
+                    <span className={`customer-cal-day__badge ${!isReady ? 'customer-cal-day__badge--loading' : hasFree ? 'customer-cal-day__badge--free' : 'customer-cal-day__badge--full'}`}>
+                      {!isReady ? '···' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* 1B. DESKTOP (>= 1024px): INLINE FULL-MONTH CALENDAR CARD (COLLAPSES AFTER CONFIRM) */}
+      {(isCalendarExpanded || !hasConfirmedDate) && (
+      <section ref={calendarSectionRef} className="customer-cal-card customer-cal-desktop" aria-label="ปฏิทินเลือกวันจองห้องประชุม">
+        {renderFullMonthCalendarInner()}
       </section>
       )}
 
@@ -3473,7 +3646,10 @@ export default function RoomListPage() {
       ) : (
         <>
       {/* 2. SUMMARY FILTER BAR ABOVE ROOM RESULTS */}
-      <div className="customer-summary-filter-bar" id="summary-date-bar">
+      <div
+        className={`customer-summary-filter-bar ${showMobileBottomRoomBar ? 'customer-summary-filter-bar--has-bottom-bar' : ''}`}
+        id="summary-date-bar"
+      >
         <div className="customer-summary-filter-info">
           <div className="customer-summary-filter-icon">
             <Calendar size={18} />
@@ -3521,7 +3697,7 @@ export default function RoomListPage() {
             id="btn-open-change-filter"
           >
             <Edit3 size={14} />
-            <span>เปลี่ยน</span>
+            <span>แก้ตัวเลือกการจอง</span>
           </button>
         </div>
       </div>
@@ -3787,6 +3963,213 @@ export default function RoomListPage() {
               <span>ตกลง</span>
               <Check size={18} />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 5. FULL-MONTH CALENDAR BOTTOM SHEET (MOBILE & IPAD < 1024px) */}
+      {isFullMonthSheetOpen && (
+        <div
+          className="bottom-sheet-overlay"
+          id="full-month-calendar-overlay"
+          onClick={() => setIsFullMonthSheetOpen(false)}
+        >
+          <div
+            className="bottom-sheet-container"
+            id="full-month-calendar-sheet"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '540px', width: '100%' }}
+          >
+            <div className="bottom-sheet-handle" />
+            <div className="bottom-sheet-header">
+              <div>
+                <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase' }}>
+                  ปฏิทินเต็มเดือน
+                </div>
+                <h3 className="bottom-sheet-title">เลือกวันที่ต้องการจอง</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsFullMonthSheetOpen(false)}
+                className="bottom-sheet-close-btn"
+                aria-label="ปิดปฏิทินเต็มเดือน"
+                id="btn-close-full-month"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="customer-cal-sheet-body">
+              {renderFullMonthCalendarInner()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. BOTTOM STICKY ACTION BAR (< 1024px AFTER ROOM SELECTED): [เปลี่ยนวัน] [เปลี่ยนห้อง] [⋯] */}
+      {showMobileBottomRoomBar && (
+        <div className="mobile-bottom-room-bar" id="bottom-room-switcher-bar" role="region" aria-label="แถบจัดการวันและห้องประชุม">
+          <button
+            type="button"
+            id="btn-bottom-change-date"
+            data-testid="bottom-change-date-btn"
+            className="mobile-bottom-action-btn"
+            onClick={() => {
+              closeAllBottomSheets();
+              setCurrentMonthKey((dateStr || todayIso).slice(0, 7));
+              setIsFullMonthSheetOpen(true);
+            }}
+          >
+            <Calendar size={16} />
+            <span>เปลี่ยนวัน</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-mobile-switch-room"
+            data-testid="bottom-room-switcher-btn"
+            className="mobile-bottom-action-btn mobile-bottom-action-btn--primary"
+            onClick={() => {
+              closeAllBottomSheets();
+              setIsMobileRoomListOpen(true);
+            }}
+          >
+            <Building size={16} />
+            <span>เปลี่ยนห้อง</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-bottom-more-options"
+            data-testid="bottom-more-options-btn"
+            aria-label="ตัวเลือกเพิ่มเติม"
+            aria-expanded={isMoreOptionsOpen}
+            className="mobile-bottom-action-btn mobile-bottom-action-btn--icon"
+            onClick={() => {
+              const nextOpen = !isMoreOptionsOpen;
+              closeAllBottomSheets();
+              setIsMoreOptionsOpen(nextOpen);
+            }}
+          >
+            <MoreHorizontal size={20} />
+          </button>
+        </div>
+      )}
+
+      {/* 6B. MORE OPTIONS BOTTOM SHEET MENU (< 1024px) */}
+      {isMoreOptionsOpen && (
+        <div
+          className="bottom-sheet-overlay"
+          id="bottom-more-options-overlay"
+          onClick={() => setIsMoreOptionsOpen(false)}
+        >
+          <div
+            className="bottom-sheet-container"
+            id="bottom-more-options-menu"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '540px', width: '100%' }}
+          >
+            <div className="bottom-sheet-handle" />
+            <div className="bottom-sheet-header">
+              <h3 className="bottom-sheet-title">ตัวเลือกเพิ่มเติม</h3>
+              <button
+                type="button"
+                onClick={() => setIsMoreOptionsOpen(false)}
+                className="bottom-sheet-close-btn"
+                aria-label="ปิดตัวเลือกเพิ่มเติม"
+                id="btn-close-more-options"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <button
+              type="button"
+              id="btn-menu-edit-booking-options"
+              onClick={handleOpenEditModal}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                padding: '14px 16px',
+                borderRadius: '14px',
+                border: '1.5px solid var(--border)',
+                backgroundColor: '#ffffff',
+                color: 'var(--navy)',
+                fontSize: '0.94rem',
+                fontWeight: 800,
+                cursor: 'pointer'
+              }}
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '10px' }}>
+                <Edit3 size={18} color="var(--primary)" />
+                <span>แก้ตัวเลือกการจอง</span>
+              </span>
+              <ChevronRight size={18} color="var(--text-muted)" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 7. ROOM SWITCHER BOTTOM SHEET (< 1024px) */}
+      {isMobileRoomListOpen && activeRoom && switcherRooms.length > 0 && (
+        <div
+          className="bottom-sheet-overlay"
+          id="mobile-room-switcher-overlay"
+          onClick={() => setIsMobileRoomListOpen(false)}
+        >
+          <div
+            className="bottom-sheet-container"
+            id="mobile-room-switcher-sheet"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '540px', width: '100%' }}
+          >
+            <div className="bottom-sheet-handle" />
+            <div className="bottom-sheet-header">
+              <div>
+                <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase' }}>
+                  เลือกห้องประชุม
+                </div>
+                <h3 className="bottom-sheet-title">เปลี่ยนห้อง ({switcherRooms.length} ห้อง)</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsMobileRoomListOpen(false)}
+                className="bottom-sheet-close-btn"
+                aria-label="ปิดรายการเปลี่ยนห้อง"
+                id="btn-close-room-switcher"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div id="mobile-room-switcher-list" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {switcherRooms.map(r => {
+                const isActive = String(r.id) === String(activeRoom.id);
+                const cap = getRoomMaxCap(r);
+                const startPriceText = getRoomStartingPriceText(r);
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    data-testid={`mobile-switch-room-${r.id}`}
+                    onClick={() => handleSwitchActiveRoom(r)}
+                    className={`room-switcher-item ${isActive ? 'room-switcher-item--active' : ''}`}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: '0.9rem', fontWeight: 800, color: isActive ? '#0F766E' : 'var(--navy)', lineHeight: 1.3 }}>
+                        {r.name}
+                      </div>
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        รองรับ {cap} ที่นั่ง{startPriceText ? ` · ${startPriceText}` : ''}
+                      </div>
+                    </div>
+                    {isActive && (
+                      <CheckCircle2 size={18} color="#0F766E" style={{ flexShrink: 0 }} />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
