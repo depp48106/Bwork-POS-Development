@@ -111,36 +111,71 @@ function getBangkokNow() {
   return { now, bangkok, dateStr, timeStr, currentIso };
 }
 
-// Booker type resolution helper:
-// Builtland Staff vs External Customer vs Unknown
+// Booker type resolution helper (customer_type takes strict priority over booking_channel/source)
 function resolveBookerTypeClient(item) {
-  if (item.booker_type && item.booker_type_code) {
-    return { type: item.booker_type, code: item.booker_type_code };
-  }
   const cType = (item.customer_type || '').toLowerCase().trim();
   const bSource = (item.booking_source || '').toLowerCase().trim();
   const bChannel = (item.booking_channel || '').toLowerCase().trim();
   const dept = (item.internal_department || item.department || '').trim();
 
-  // 1. Builtland Staff
-  if (
-    cType === 'builtland' ||
-    bSource === 'staff' ||
-    bChannel === 'staff_calendar' ||
-    (dept && dept !== '-' && !['walkin', 'online', 'general'].includes(dept.toLowerCase()))
-  ) {
+  // 1. Check explicit system customer_type FIRST (e.g. Basecamp via POS stays "ลูกค้าชั้น 4")
+  if (cType === 'builtland') {
     return { type: 'พนักงาน Builtland', code: 'builtland' };
   }
-
-  // 2. External Customer
-  const externalTypes = ['walkin', 'basecamp', 'vip_corp', 'general', 'corporate', 'external', 'online', 'customer'];
-  const externalSources = ['online', 'pos', 'walkin', 'line', 'pos_web'];
-  if (externalTypes.includes(cType) || externalSources.includes(bSource) || externalSources.includes(bChannel)) {
+  if (cType === 'basecamp') {
+    return { type: 'ลูกค้าชั้น 4', code: 'basecamp' };
+  }
+  if (cType === 'shop') {
+    return { type: 'ลูกค้าห้อง Shop', code: 'shop' };
+  }
+  if (cType === 'ondemand' || cType === 'on_demand' || cType === 'on-demand') {
+    return { type: 'ลูกค้า Ondemand', code: 'ondemand' };
+  }
+  const externalTypes = ['general', 'walkin', 'walk_in', 'vip_corp', 'corporate', 'external', 'online', 'customer'];
+  if (externalTypes.includes(cType)) {
     return { type: 'ลูกค้าภายนอก', code: 'external' };
   }
 
-  // 3. Fallback for unidentifiable records
+  // 2. If server already resolved a specific booker_type_code, honor it
+  if (item.booker_type && item.booker_type_code) {
+    const serverCode = String(item.booker_type_code).toLowerCase().trim();
+    if (serverCode === 'basecamp') return { type: 'ลูกค้าชั้น 4', code: 'basecamp' };
+    if (serverCode === 'shop') return { type: 'ลูกค้าห้อง Shop', code: 'shop' };
+    if (serverCode === 'ondemand') return { type: 'ลูกค้า Ondemand', code: 'ondemand' };
+    if (serverCode === 'builtland') return { type: 'พนักงาน Builtland', code: 'builtland' };
+    if (serverCode === 'external') return { type: 'ลูกค้าภายนอก', code: 'external' };
+    return { type: item.booker_type, code: serverCode };
+  }
+
+  // 3. Fallback to booking_source / booking_channel only when customer_type is missing
+  if (bSource === 'staff' || bChannel === 'staff_calendar') {
+    return { type: 'พนักงาน Builtland', code: 'builtland' };
+  }
+  const externalChannels = ['line_oa', 'line', 'walkin', 'walk_in', 'online'];
+  if (externalChannels.includes(bChannel) || externalChannels.includes(bSource)) {
+    return { type: 'ลูกค้าภายนอก', code: 'external' };
+  }
+  if (dept && dept !== '-' && !['walkin', 'online', 'general'].includes(dept.toLowerCase())) {
+    return { type: 'พนักงาน Builtland', code: 'builtland' };
+  }
+
+  // 4. Fallback for legacy/incomplete records without guessing
   return { type: 'ไม่ระบุประเภท', code: 'unknown' };
+}
+
+// Primary line label in Monthly Calendar:
+// - Builtland (POS or /staff-booking): real booker name (fallback "พนักงาน Builtland")
+// - Basecamp -> "ลูกค้าชั้น 4"
+// - Shop -> "ลูกค้าห้อง Shop"
+// - Ondemand -> "ลูกค้า Ondemand"
+// - General LINE OA / Walk-in -> "ลูกค้าภายนอก"
+// - Legacy/incomplete -> "ไม่ระบุประเภท"
+function getMonthlyEventPrimaryLabel(ev) {
+  if (ev.booker_type_code === 'builtland') {
+    const realName = (ev.customer_name || '').trim();
+    return realName || 'พนักงาน Builtland';
+  }
+  return ev.booker_type || 'ไม่ระบุประเภท';
 }
 
 // Status computation (Bangkok time + POS confirmed checkin/checkout)
@@ -616,15 +651,17 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
         withCleaning.push(b);
         if (bufferMins > 0 && b.end_time) {
           const [eH, eM] = b.end_time.split(':').map(Number);
-          const bufEndMins = eH * 60 + eM + bufferMins;
-          const cleanH = String(Math.floor(bufEndMins / 60) % 24).padStart(2, '0');
-          const cleanM = String(bufEndMins % 60).padStart(2, '0');
-          withCleaning.push({
-            isCleaning: true,
-            start_time: b.end_time,
-            end_time: `${cleanH}:${cleanM}`,
-            bufferMins
-          });
+          const endMins = eH * 60 + eM;
+          if (endMins < 18 * 60) {
+            const bufEndMins = Math.min(18 * 60, endMins + bufferMins);
+            const cleanH = String(Math.floor(bufEndMins / 60) % 24).padStart(2, '0');
+            const cleanM = String(bufEndMins % 60).padStart(2, '0');
+            withCleaning.push({
+              isReservedBuffer: true,
+              start_time: b.end_time,
+              end_time: `${cleanH}:${cleanM}`
+            });
+          }
         }
       }
       grp.displayItems = withCleaning;
@@ -712,8 +749,9 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     setBookingSuccess(null);
   };
 
-  // Toggle date in home view (inline week accordion)
+  // Toggle date in home view (inline week accordion; past dates blocked)
   const handleToggleDate = (dateStr) => {
+    if (!dateStr || dateStr < today) return;
     setBookingError(null);
     setBookingSuccess(null);
     if (selectedDate === dateStr) {
@@ -738,8 +776,9 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
     }
   };
 
-  // Click date in POS monthly calendar -> return to Home view and expand panel under that week row immediately
+  // Click date in POS monthly calendar -> return to Home view and expand panel (ignore past dates)
   const handleSelectDateFromPosCalendar = (dateStr) => {
+    if (!dateStr || dateStr < today) return;
     setCurrentMonthKey(dateStr.slice(0, 7));
     setSelectedDate(dateStr);
     setIsPosCalendarView(false);
@@ -993,33 +1032,39 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                           }
 
                           const dayEvents = monthEventsByDay[cell.date] || [];
+                          const uniqueRoomCount = new Set(dayEvents.map(ev => ev.room_id)).size;
+                          const showMoreBtn = uniqueRoomCount >= 2;
+                          const visibleEvents = showMoreBtn ? dayEvents.slice(0, 2) : dayEvents;
                           const isSelected = cell.date === selectedDate;
+                          const isPast = cell.isPast || cell.date < today;
 
                           return (
                             <div
                               key={cell.date}
-                              className={`staff-pos-cell ${cell.isToday ? 'staff-pos-cell--today' : ''} ${isSelected ? 'staff-pos-cell--selected' : ''}`}
-                              onClick={() => handleSelectDateFromPosCalendar(cell.date)}
-                              role="button"
-                              tabIndex={0}
+                              data-pos-date={cell.date}
+                              className={`staff-pos-cell ${cell.isToday ? 'staff-pos-cell--today' : ''} ${isSelected ? 'staff-pos-cell--selected' : ''} ${isPast ? 'staff-pos-cell--past' : ''}`}
+                              onClick={() => { if (!isPast) handleSelectDateFromPosCalendar(cell.date); }}
+                              role={isPast ? undefined : 'button'}
+                              tabIndex={isPast ? -1 : 0}
                               onKeyDown={(e) => {
-                                if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                                if (!isPast && e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
                                   e.preventDefault();
                                   handleSelectDateFromPosCalendar(cell.date);
                                 }
                               }}
-                              title={`คลิกพื้นที่ว่างหรือเลขวันที่เพื่อกลับหน้าจองและเลือกวันที่ ${cell.dayNumber}`}
+                              title={isPast ? `วันที่ ${cell.dayNumber} (ผ่านมาแล้ว)` : `คลิกพื้นที่ว่างหรือเลขวันที่เพื่อกลับหน้าจองและเลือกวันที่ ${cell.dayNumber}`}
                             >
                               <div className="staff-pos-cell__head">
                                 <button
                                   type="button"
+                                  disabled={isPast}
                                   className="staff-pos-cell__day-btn"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleSelectDateFromPosCalendar(cell.date);
+                                    if (!isPast) handleSelectDateFromPosCalendar(cell.date);
                                   }}
-                                  title={`เลือกวันที่ ${cell.dayNumber} และกลับหน้าจอง`}
-                                  aria-label={`เลือกวันที่ ${cell.dayNumber} และกลับหน้าจอง`}
+                                  title={isPast ? `วันที่ ${cell.dayNumber} (ผ่านมาแล้ว)` : `เลือกวันที่ ${cell.dayNumber} และกลับหน้าจอง`}
+                                  aria-label={isPast ? `วันที่ ${cell.dayNumber} (ผ่านมาแล้ว)` : `เลือกวันที่ ${cell.dayNumber} และกลับหน้าจอง`}
                                 >
                                   <span className={`staff-pos-cell__day-num ${cell.isToday ? 'staff-pos-cell__day-num--today' : ''}`}>
                                     {cell.dayNumber}
@@ -1032,62 +1077,38 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                                 )}
                               </div>
 
-                              {/* Booked Events List Chips */}
+                              {/* Read-Only Booked Events List (details open ONLY via "ดูเพิ่มเติม" when >= 2 unique rooms) */}
                               <div className="staff-pos-events">
-                                {dayEvents.slice(0, 2).map((ev, evIdx) => {
-                                  const hasBookerName = Boolean(ev.customer_name && ev.customer_name.trim());
-                                  const chipPrimaryText = hasBookerName
-                                    ? `${ev.customer_name} (${ev.booker_type})`
-                                    : ev.booker_type;
+                                {visibleEvents.map((ev, evIdx) => {
+                                  const primaryLabel = getMonthlyEventPrimaryLabel(ev);
+                                  const roomTimeLine = `${ev.room_name} · ${ev.start_time}–${ev.end_time} น.`;
 
                                   return (
-                                    <button
-                                      type="button"
+                                    <div
                                       key={evIdx}
-                                      className={`staff-pos-event-chip staff-pos-event-chip--${ev.booker_type_code}`}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setSelectedEventDetail({
-                                          ...ev,
-                                          date: cell.date,
-                                          dateFormatted: dateFormat.format(new Date(cell.date))
-                                        });
-                                      }}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Enter' || e.key === ' ') {
-                                          e.preventDefault();
-                                          e.stopPropagation();
-                                          setSelectedEventDetail({
-                                            ...ev,
-                                            date: cell.date,
-                                            dateFormatted: dateFormat.format(new Date(cell.date))
-                                          });
-                                        }
-                                      }}
-                                      title={`${chipPrimaryText} | ${ev.room_name} ${ev.start_time} - ${ev.end_time} น. | ${ev.current_status}`}
-                                      aria-label={`ดูรายละเอียดการจอง: ${chipPrimaryText} ${ev.room_name} ${ev.start_time} ถึง ${ev.end_time}`}
+                                      data-event-code={ev.booker_type_code}
+                                      className={`staff-pos-event-chip staff-pos-event-chip--readonly staff-pos-event-chip--${ev.booker_type_code}`}
                                     >
                                       <div className="staff-pos-event-chip__main-row">
-                                        <span className="staff-pos-event-chip__title" title={chipPrimaryText}>
-                                          {chipPrimaryText}
+                                        <span className="staff-pos-event-chip__title" title={primaryLabel}>
+                                          {primaryLabel}
                                         </span>
                                       </div>
                                       <div className="staff-pos-event-chip__sub-row">
-                                        <span className="staff-pos-event-chip__room">{ev.room_name}</span>
-                                        <span className="staff-pos-event-chip__time">{ev.start_time}-{ev.end_time}</span>
-                                        <span className={`staff-pos-event-chip__status staff-pos-event-chip__status--${ev.status_code}`}>
-                                          {ev.current_status}
+                                        <span className="staff-pos-event-chip__room-time">
+                                          {roomTimeLine}
                                         </span>
                                       </div>
-                                    </button>
+                                    </div>
                                   );
                                 })}
 
-                                {/* ปุ่ม "ดูเพิ่มเติม" เปิดรายละเอียดในหน้ารายเดือนโดยไม่เรียกการทำงานของช่องวัน */}
-                                {dayEvents.length > 0 && (
+                                {/* ปุ่ม "ดูเพิ่มเติม" แสดงเฉพาะวันที่ใช้ตั้งแต่ 2 ห้องที่ไม่ซ้ำกันขึ้นไป */}
+                                {showMoreBtn && (
                                   <button
                                     type="button"
                                     className="staff-pos-more-btn"
+                                    data-testid={`pos-more-${cell.date}`}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       setDayBookingsModalDate(cell.date);
@@ -1099,9 +1120,9 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                                         setDayBookingsModalDate(cell.date);
                                       }
                                     }}
-                                    title={`ดูรายละเอียดการจองวันที่ ${cell.dayNumber} ทั้งหมด ${dayEvents.length} รายการ`}
+                                    title={`ดูรายละเอียดการจองวันที่ ${cell.dayNumber} (${uniqueRoomCount} ห้อง · ${dayEvents.length} รายการ)`}
                                   >
-                                    {dayEvents.length > 2 ? `ดูเพิ่มเติม (+${dayEvents.length - 2})` : 'ดูเพิ่มเติม'}
+                                    ดูเพิ่มเติม ({uniqueRoomCount} ห้อง)
                                   </button>
                                 )}
                               </div>
@@ -1406,6 +1427,8 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                               <button
                                 type="button"
                                 key={cell.date}
+                                disabled={isPast}
+                                data-staff-cal-date={cell.date}
                                 className={`staff-cal-day ${cell.isToday ? 'staff-cal-day--today' : ''} ${isSelected ? 'staff-cal-day--selected' : ''} ${isPast ? 'staff-cal-day--past' : ''}`}
                                 aria-pressed={isSelected}
                                 aria-expanded={isSelected}
@@ -1414,9 +1437,18 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                                 onClick={() => handleToggleDate(cell.date)}
                               >
                                 <span className="staff-cal-day__num">{cell.dayNumber}</span>
-                                <span className={`staff-cal-day__badge ${isPast ? 'staff-cal-day__badge--past' : hasFree ? 'staff-cal-day__badge--free' : 'staff-cal-day__badge--full'}`}>
-                                  {isPast ? 'ผ่านแล้ว' : hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
-                                </span>
+                                {isPast ? (
+                                  <span className="staff-cal-day__past-x" aria-hidden="true">
+                                    <svg viewBox="0 0 100 100" preserveAspectRatio="none" fill="none">
+                                      <line x1="0" y1="0" x2="100" y2="100" stroke="currentColor" strokeWidth="1.25" vectorEffect="non-scaling-stroke" />
+                                      <line x1="100" y1="0" x2="0" y2="100" stroke="currentColor" strokeWidth="1.25" vectorEffect="non-scaling-stroke" />
+                                    </svg>
+                                  </span>
+                                ) : (
+                                  <span className={`staff-cal-day__badge ${hasFree ? 'staff-cal-day__badge--free' : 'staff-cal-day__badge--full'}`}>
+                                    {hasFree ? `${cell.freeRoomsCount} ห้อง` : 'เต็ม'}
+                                  </span>
+                                )}
                               </button>
                             );
                           })}
@@ -1845,14 +1877,14 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                       </div>
                       <div className="staff-day-room-card__bookings">
                         {(grp.displayItems || grp.bookings).map((item, bIdx) => (
-                          item.isCleaning ? (
-                            <div key={bIdx} className="staff-day-room-booking-item staff-day-room-booking-item--cleaning">
+                          item.isReservedBuffer ? (
+                            <div key={bIdx} className="staff-day-room-booking-item staff-day-room-booking-item--reserved">
                               <div className="staff-day-room-booking-item__time" style={{ color: '#64748b' }}>
                                 <Clock size={13} />
                                 <span>{item.start_time} - {item.end_time} น.</span>
                               </div>
                               <div className="staff-day-room-booking-item__user">
-                                <span className="staff-cleaning-tag">เว้นทำความสะอาด</span>
+                                <span className="staff-reserved-tag">ไม่สามารถจองได้</span>
                               </div>
                             </div>
                           ) : (
@@ -1863,27 +1895,17 @@ export default function StaffAvailabilityPage({ onNavigateToPos = null } = {}) {
                                   <strong>{item.start_time} - {item.end_time} น.</strong>
                                 </div>
                                 <div className="staff-day-room-booking-item__badges">
+                                  <span className="staff-booked-tag">จองแล้ว</span>
                                   <span className={`staff-booker-type-badge staff-booker-type-badge--${item.booker_type_code}`}>
-                                    {item.booker_type}
-                                  </span>
-                                  <span className={`staff-status-pill staff-status-pill--${item.status_code}`}>
-                                    <span className="staff-status-pill__dot" />
-                                    {item.current_status}
+                                    {getMonthlyEventPrimaryLabel(item)}
                                   </span>
                                 </div>
                               </div>
-                              {(item.customer_name || (item.department && item.department !== '-')) && (
+                              {item.booker_type_code === 'builtland' && item.department && item.department !== '-' && (
                                 <div className="staff-day-room-booking-item__user">
-                                  {item.customer_name && (
-                                    <span className="staff-day-room-booking-item__name">
-                                      <User size={13} /> {item.customer_name}
-                                    </span>
-                                  )}
-                                  {item.department && item.department !== '-' && (
-                                    <span className="staff-day-room-booking-item__dept">
-                                      {item.department}
-                                    </span>
-                                  )}
+                                  <span className="staff-day-room-booking-item__dept">
+                                    {item.department}
+                                  </span>
                                 </div>
                               )}
                             </div>

@@ -538,9 +538,11 @@
   cursor: pointer;
   transition: all 0.15s ease;
   user-select: none;
+  position: relative;
+  overflow: hidden;
 }
 
-.staff-cal-day:hover {
+.staff-cal-day:hover:not(:disabled) {
   border-color: var(--staff-navy-hover);
   background-color: var(--staff-bg-subtle);
 }
@@ -567,6 +569,8 @@
   font-size: 0.9rem;
   font-weight: 700;
   line-height: 1;
+  position: relative;
+  z-index: 2;
 }
 
 .staff-cal-day--selected .staff-cal-day__num {
@@ -603,8 +607,33 @@
 }
 
 .staff-cal-day--past {
-  opacity: 0.65;
-  background-color: #f8fafc;
+  opacity: 1;
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  color: #64748b !important;
+  cursor: not-allowed !important;
+}
+
+.staff-cal-day--past .staff-cal-day__num {
+  color: #64748b !important;
+  font-weight: 700;
+}
+
+.staff-cal-day__past-x {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+  display: block;
+  color: rgba(148, 163, 184, 0.36);
+}
+
+.staff-cal-day__past-x svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .staff-cal-day__badge--past {
@@ -1335,6 +1364,78 @@
   width: 100%;
 }
 
+.staff-pos-event-chip--readonly {
+  cursor: default;
+}
+
+.staff-pos-event-chip--readonly:hover {
+  transform: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.staff-pos-event-chip__room-time {
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: inherit;
+  word-break: break-word;
+}
+
+.staff-pos-event-chip--basecamp,
+.staff-booker-type-badge--basecamp {
+  background-color: #ecfeff;
+  border-color: #a5f3fc;
+  color: #0e7490;
+}
+
+.staff-pos-event-chip--shop,
+.staff-booker-type-badge--shop {
+  background-color: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #6d28d9;
+}
+
+.staff-pos-event-chip--ondemand,
+.staff-booker-type-badge--ondemand {
+  background-color: #fff7ed;
+  border-color: #fed7aa;
+  color: #c2410c;
+}
+
+.staff-booked-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background-color: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.staff-reserved-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background-color: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.staff-day-room-booking-item--reserved {
+  background-color: #f8fafc;
+  border-style: dashed;
+}
+
+.staff-pos-cell--past {
+  background-color: #f8fafc;
+  cursor: not-allowed;
+}
+
 .staff-pos-event-chip__room {
   font-weight: 600;
   overflow: hidden;
@@ -1365,7 +1466,79 @@
   color: #ffffff;
   border-color: #132440;
 }
-.staff-pos-event-chip--builtland .staff-pos-event-chip__room {
+.staff-pos-event-chip--builtland .staff-pos-event-chip--readonly {
+  cursor: default;
+}
+
+.staff-pos-event-chip--readonly:hover {
+  transform: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.staff-pos-event-chip__room-time {
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: inherit;
+  word-break: break-word;
+}
+
+.staff-pos-event-chip--basecamp,
+.staff-booker-type-badge--basecamp {
+  background-color: #ecfeff;
+  border-color: #a5f3fc;
+  color: #0e7490;
+}
+
+.staff-pos-event-chip--shop,
+.staff-booker-type-badge--shop {
+  background-color: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #6d28d9;
+}
+
+.staff-pos-event-chip--ondemand,
+.staff-booker-type-badge--ondemand {
+  background-color: #fff7ed;
+  border-color: #fed7aa;
+  color: #c2410c;
+}
+
+.staff-booked-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background-color: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.staff-reserved-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background-color: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.staff-day-room-booking-item--reserved {
+  background-color: #f8fafc;
+  border-style: dashed;
+}
+
+.staff-pos-cell--past {
+  background-color: #f8fafc;
+  cursor: not-allowed;
+}
+
+.staff-pos-event-chip__room {
   color: #ffffff;
 }
 .staff-pos-event-chip--builtland .staff-pos-event-chip__time {
@@ -1385,7 +1558,79 @@
   color: #065F46;
   border-color: #a7f3d0;
 }
-.staff-pos-event-chip--external .staff-pos-event-chip__room {
+.staff-pos-event-chip--external .staff-pos-event-chip--readonly {
+  cursor: default;
+}
+
+.staff-pos-event-chip--readonly:hover {
+  transform: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.staff-pos-event-chip__room-time {
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: inherit;
+  word-break: break-word;
+}
+
+.staff-pos-event-chip--basecamp,
+.staff-booker-type-badge--basecamp {
+  background-color: #ecfeff;
+  border-color: #a5f3fc;
+  color: #0e7490;
+}
+
+.staff-pos-event-chip--shop,
+.staff-booker-type-badge--shop {
+  background-color: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #6d28d9;
+}
+
+.staff-pos-event-chip--ondemand,
+.staff-booker-type-badge--ondemand {
+  background-color: #fff7ed;
+  border-color: #fed7aa;
+  color: #c2410c;
+}
+
+.staff-booked-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background-color: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.staff-reserved-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background-color: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.staff-day-room-booking-item--reserved {
+  background-color: #f8fafc;
+  border-style: dashed;
+}
+
+.staff-pos-cell--past {
+  background-color: #f8fafc;
+  cursor: not-allowed;
+}
+
+.staff-pos-event-chip__room {
   color: #065F46;
 }
 .staff-pos-event-chip--external .staff-pos-event-chip__time {
@@ -1405,7 +1650,79 @@
   color: #475569;
   border-color: #cbd5e1;
 }
-.staff-pos-event-chip--unknown .staff-pos-event-chip__room {
+.staff-pos-event-chip--unknown .staff-pos-event-chip--readonly {
+  cursor: default;
+}
+
+.staff-pos-event-chip--readonly:hover {
+  transform: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.staff-pos-event-chip__room-time {
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: inherit;
+  word-break: break-word;
+}
+
+.staff-pos-event-chip--basecamp,
+.staff-booker-type-badge--basecamp {
+  background-color: #ecfeff;
+  border-color: #a5f3fc;
+  color: #0e7490;
+}
+
+.staff-pos-event-chip--shop,
+.staff-booker-type-badge--shop {
+  background-color: #f5f3ff;
+  border-color: #ddd6fe;
+  color: #6d28d9;
+}
+
+.staff-pos-event-chip--ondemand,
+.staff-booker-type-badge--ondemand {
+  background-color: #fff7ed;
+  border-color: #fed7aa;
+  color: #c2410c;
+}
+
+.staff-booked-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background-color: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.staff-reserved-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background-color: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+}
+
+.staff-day-room-booking-item--reserved {
+  background-color: #f8fafc;
+  border-style: dashed;
+}
+
+.staff-pos-cell--past {
+  background-color: #f8fafc;
+  cursor: not-allowed;
+}
+
+.staff-pos-event-chip__room {
   color: #1e293b;
 }
 .staff-pos-event-chip--unknown .staff-pos-event-chip__time {

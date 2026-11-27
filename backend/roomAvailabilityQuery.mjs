@@ -5,40 +5,44 @@ export const ACTIVE_AVAILABILITY_ROOMS_SQL = `
   SELECT id, name, capacity FROM rooms WHERE status = 'active' ORDER BY name ASC
 `;
 
-// Booker type resolution helper:
-// Builtland Staff vs External Customer vs Unknown
+// Booker type resolution helper (customer_type takes strict priority over booking_channel/source)
 export function resolveBookerType(item) {
   const cType = (item.customer_type || '').toLowerCase().trim();
   const bSource = (item.booking_source || '').toLowerCase().trim();
   const bChannel = (item.booking_channel || '').toLowerCase().trim();
   const dept = (item.internal_department || item.department || '').trim();
 
-  // 1. Builtland Staff:
-  // customer_type is 'builtland' OR booking_source is 'staff' OR booking_channel is 'staff_calendar'
-  // OR department is specified and not an external placeholder
-  if (
-    cType === 'builtland' ||
-    bSource === 'staff' ||
-    bChannel === 'staff_calendar' ||
-    (dept && dept !== '-' && !['walkin', 'online', 'general'].includes(dept.toLowerCase()))
-  ) {
-    return {
-      type: 'พนักงาน Builtland',
-      code: 'builtland'
-    };
+  // 1. Check explicit system customer_type FIRST (e.g. Basecamp booked via POS stays "ลูกค้าชั้น 4")
+  if (cType === 'builtland') {
+    return { type: 'พนักงาน Builtland', code: 'builtland' };
+  }
+  if (cType === 'basecamp') {
+    return { type: 'ลูกค้าชั้น 4', code: 'basecamp' };
+  }
+  if (cType === 'shop') {
+    return { type: 'ลูกค้าห้อง Shop', code: 'shop' };
+  }
+  if (cType === 'ondemand' || cType === 'on_demand' || cType === 'on-demand') {
+    return { type: 'ลูกค้า Ondemand', code: 'ondemand' };
+  }
+  const externalTypes = ['general', 'walkin', 'walk_in', 'vip_corp', 'corporate', 'external', 'online', 'customer'];
+  if (externalTypes.includes(cType)) {
+    return { type: 'ลูกค้าภายนอก', code: 'external' };
   }
 
-  // 2. External Customer:
-  const externalTypes = ['walkin', 'basecamp', 'vip_corp', 'general', 'corporate', 'external', 'online', 'customer'];
-  const externalSources = ['online', 'pos', 'walkin', 'line', 'pos_web'];
-  if (externalTypes.includes(cType) || externalSources.includes(bSource) || externalSources.includes(bChannel)) {
-    return {
-      type: 'ลูกค้าภายนอก',
-      code: 'external'
-    };
+  // 2. Fallback to booking_source / booking_channel only when customer_type is missing/unrecognized
+  if (bSource === 'staff' || bChannel === 'staff_calendar') {
+    return { type: 'พนักงาน Builtland', code: 'builtland' };
+  }
+  const externalChannels = ['line_oa', 'line', 'walkin', 'walk_in', 'online'];
+  if (externalChannels.includes(bChannel) || externalChannels.includes(bSource)) {
+    return { type: 'ลูกค้าภายนอก', code: 'external' };
+  }
+  if (dept && dept !== '-' && !['walkin', 'online', 'general'].includes(dept.toLowerCase())) {
+    return { type: 'พนักงาน Builtland', code: 'builtland' };
   }
 
-  // 3. Fallback for unidentifiable legacy records:
+  // 3. Fallback for legacy/incomplete records without guessing
   return {
     type: 'ไม่ระบุประเภท',
     code: 'unknown'
@@ -54,11 +58,18 @@ export function resolveCheckinStatus(item) {
 
 // These status exclusions match checkRoomOverlap in both backends. Allow for
 // legacy UTC timestamps as well as the Bangkok wall-clock values written today.
-// Public intervals SQL: STRICTLY ANONYMOUS, ZERO PII (room_id, start_time, end_time, booker_type metadata only).
+// Public intervals SQL: external customer PII is NEVER returned; internal Builtland staff name is returned only for Builtland records.
 export const ROOM_AVAILABILITY_INTERVALS_SQL = `
   SELECT bi.room_id, bi.start_time, bi.end_time,
          bi.checkin_status AS item_checkin_status,
          b.checkin_status AS booking_checkin_status,
+         CASE
+           WHEN LOWER(TRIM(COALESCE(b.customer_type, ''))) = 'builtland'
+             OR LOWER(TRIM(COALESCE(b.booking_source, ''))) = 'staff'
+             OR LOWER(TRIM(COALESCE(b.booking_channel, ''))) = 'staff_calendar'
+           THEN b.customer_name
+           ELSE NULL
+         END AS staff_booker_name,
          b.customer_type,
          b.booking_source,
          b.booking_channel,
@@ -96,7 +107,7 @@ export function getAvailabilityQueryParams(month, bufferMinutes) {
   return [month.end, `+${bufferMinutes} minutes`, month.start, `-${bufferMinutes} minutes`];
 }
 
-// Anonymous response builder for public endpoint (no customer names, no departments)
+// Anonymous response builder for public endpoint (zero external customer PII; Builtland staff name included only for Builtland bookings)
 export function buildAvailabilityResponse(month, rooms, items, bufferMinutes, normalizeTime) {
   const intervals = [];
   for (const item of items) {
@@ -112,6 +123,8 @@ export function buildAvailabilityResponse(month, rooms, items, bufferMinutes, no
         end: normEnd,
         booker_type: type,
         booker_type_code: code,
+        customer_type: item.customer_type || null,
+        customer_name: code === 'builtland' ? (item.staff_booker_name || null) : null,
         checkin_status: checkin
       });
     }
@@ -144,7 +157,8 @@ export function buildStaffAvailabilityResponse(month, rooms, items, bufferMinute
         customer_name: item.customer_name || null,
         internal_department: item.internal_department || null,
         customer_type: item.customer_type || null,
-        booking_source: item.booking_source || null
+        booking_source: item.booking_source || null,
+        booking_channel: item.booking_channel || null
       });
     }
   }
